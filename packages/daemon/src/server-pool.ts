@@ -74,7 +74,17 @@ export type ConnectFn = (
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
   signal?: AbortSignal,
-) => Promise<{ client: Client; transport: Transport }>;
+) => Promise<{
+  client: Client;
+  transport: Transport;
+  /**
+   * Stdio child PID captured synchronously after transport.start() resolves,
+   * before any further event-loop yields. Consumers should prefer this over
+   * reading transport.pid later — the close handler may have already cleared
+   * _process by then (see #2135).
+   */
+  childPid?: number | null;
+}>;
 
 export class ServerPool {
   private connections = new Map<string, ServerConnection>();
@@ -318,7 +328,7 @@ export class ServerPool {
               reject(new Error(`Connection to "${name}" timed out after ${timeoutMs}ms`)),
             );
           });
-          let result!: { client: Client; transport: Transport };
+          let result!: Awaited<ReturnType<ConnectFn>>;
           const connectPromise = this.connectFn(name, config, authProvider, ac.signal);
           try {
             result = await Promise.race([connectPromise, timeoutPromise]);
@@ -330,7 +340,7 @@ export class ServerPool {
             // Without this, each timed-out attempt leaks a promise + unhandled rejection.
             connectPromise.catch(() => {});
           }
-          const { client, transport } = result;
+          const { client, transport, childPid: connectFnPid } = result;
 
           // Attach stderr capture (Node streams buffer in paused mode, so no data is lost)
           this.attachStderrCapture(name, transport, conn);
@@ -341,10 +351,16 @@ export class ServerPool {
           conn.lastUsed = Date.now();
           conn.lastError = undefined;
 
-          // Cache stdio child PID at connect time so disconnect() can kill it
-          // even if the transport's _process is cleared by a close event first.
+          // Cache stdio child PID so disconnect() can kill it even if the transport's
+          // _process is cleared by a close event first.
+          //
+          // Prefer connectFnPid (captured synchronously inside connectFn before any
+          // further await) over reading transport.pid here. By the time this line
+          // executes there has been at least one event-loop yield (the Promise.race
+          // resolution), during which the child may have exited and the SDK's close
+          // handler may have cleared _process → pid becomes null (#2135).
           if (transport instanceof StdioClientTransport) {
-            const pid = transport.pid;
+            const pid = connectFnPid !== undefined ? connectFnPid : transport.pid;
             if (pid == null) {
               this.logger.warn(
                 `[pool] Server "${name}": stdio child PID unavailable at connect time — process cleanup may be incomplete`,
@@ -907,7 +923,7 @@ async function defaultConnect(
   config: ServerConfig,
   authProvider?: OAuthClientProvider,
   signal?: AbortSignal,
-): Promise<{ client: Client; transport: Transport }> {
+): ReturnType<ConnectFn> {
   const transport = createTransport(config, authProvider);
   const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
 
@@ -919,7 +935,12 @@ async function defaultConnect(
   }
 
   await client.connect(transport);
-  return { client, transport };
+  // Capture PID synchronously here — before returning — so the caller receives
+  // it without an intervening event-loop yield. The SDK's close handler clears
+  // _process (and thus transport.pid) as soon as the child exits, so reading
+  // transport.pid after any await in the caller can race with that handler (#2135).
+  const childPid = transport instanceof StdioClientTransport ? transport.pid : undefined;
+  return { client, transport, childPid };
 }
 
 function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {

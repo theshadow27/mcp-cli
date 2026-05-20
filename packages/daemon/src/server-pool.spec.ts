@@ -1783,4 +1783,70 @@ describe("disconnect kills stdio child processes (#940)", () => {
     // Should not throw
     await pool.disconnect("remote");
   });
+
+  // Regression: connectFn PID race (#2135)
+  // The SDK's close handler clears transport._process (→ transport.pid = null) as soon
+  // as the child exits. If the child exits between connectFn resolving and the caller
+  // reading transport.pid, cachedChildPid is stored as null and disconnect() skips
+  // killPid entirely. The fix: connectFn captures the PID synchronously before returning
+  // and includes it as result.childPid. ensureConnected prefers result.childPid over
+  // transport.pid, so the correct PID reaches cachedChildPid regardless of timing.
+  test("disconnect kills child process using connectFn-supplied childPid when transport.pid is null (#2135)", async () => {
+    const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
+    await transport.start();
+    const pid = transport.pid;
+    if (pid == null) throw new Error("expected pid after start()");
+
+    try {
+      // Simulate the race: connectFn captures PID before returning, but by the
+      // time the pool reads it, transport.pid is null (process already exited).
+      // We model this by wrapping the real transport so that .pid always returns
+      // null — but the connectFn still reports the correct PID via result.childPid.
+      const racyTransport = new Proxy(transport, {
+        get(target, prop, receiver) {
+          if (prop === "pid") return null; // simulates close-handler having already fired
+          const val = Reflect.get(target, prop, receiver);
+          return typeof val === "function" ? val.bind(target) : val;
+        },
+      });
+
+      const connectFn: ConnectFn = mock(() =>
+        Promise.resolve({
+          client: makeMockClient() as unknown as Client,
+          transport: racyTransport as unknown as Transport,
+          childPid: pid, // captured synchronously inside connectFn — the fix for #2135
+        }),
+      );
+      const pool = new ServerPool(
+        makeConfig({ sleeper: { command: "sleep", args: ["60"] } }),
+        undefined,
+        connectFn,
+        silentLogger,
+      );
+      await pool.listTools("sleeper");
+
+      if (!isAlive(pid)) {
+        console.warn(`[test] sleep process ${pid} died during setup — skipping #2135 assertion`);
+        return;
+      }
+
+      // disconnect() must kill the child despite transport.pid returning null.
+      // Before the fix, cachedChildPid would be null (from transport.pid) and
+      // killPid would never be called, leaving the process alive.
+      await pool.disconnect("sleeper");
+
+      const deadline = Date.now() + 5_000;
+      let dead = false;
+      while (Date.now() < deadline) {
+        if (!isAlive(pid)) {
+          dead = true;
+          break;
+        }
+        await Bun.sleep(100);
+      }
+      expect(dead).toBe(true);
+    } finally {
+      forceKill(pid);
+    }
+  });
 });
