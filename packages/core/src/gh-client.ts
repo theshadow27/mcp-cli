@@ -921,6 +921,7 @@ export class GhClient {
   private readonly getTokenFn: (() => Promise<string>) | undefined;
   private readonly fetchFn: FetchFn;
   private resolvedRepo: GhRepoInfo | null;
+  private cachedReqOpts: RequestOptions | null = null;
 
   constructor(opts: GhClientOptions) {
     this.repoRoot = opts.repoRoot;
@@ -937,8 +938,23 @@ export class GhClient {
   }
 
   private async makeReqOpts(): Promise<RequestOptions> {
+    if (this.cachedReqOpts) return this.cachedReqOpts;
     const token = await resolveToken({ getToken: this.getTokenFn });
-    return { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    this.cachedReqOpts = { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
+    return this.cachedReqOpts;
+  }
+
+  /**
+   * Eagerly resolve the GitHub token and repo, throwing immediately if either
+   * fails. Call this at phase-script setup time to surface auth/repo errors
+   * before building handles — useful when a phase script constructs multiple
+   * handles and would otherwise only fail on the third `.body()` call.
+   *
+   * Safe to call multiple times; resolution is cached after the first call.
+   */
+  async validate(): Promise<void> {
+    await this.ensureRepo();
+    await this.makeReqOpts();
   }
 
   pr(prNumber: number): PrHandle {

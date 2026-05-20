@@ -916,3 +916,53 @@ describe("rateLimit", () => {
     expect(info.reset).toBeInstanceOf(Date);
   });
 });
+
+// ── validate ──
+
+describe("validate", () => {
+  test("resolves without error when token and repo are valid", async () => {
+    const { fn } = mockFetch([]);
+    const client = makeClient({ fetch: fn });
+    await expect(client.validate()).resolves.toBeUndefined();
+  });
+
+  test("throws GhAuthError eagerly when token resolution fails", async () => {
+    const { fn } = mockFetch([]);
+    const client = new GhClient({
+      repoRoot: "/tmp/test",
+      owner: "o",
+      repo: "r",
+      getToken: async () => {
+        throw new GhAuthError("no token");
+      },
+      fetch: fn,
+    });
+    await expect(client.validate()).rejects.toBeInstanceOf(GhAuthError);
+  });
+
+  test("is safe to call multiple times (env-var path)", async () => {
+    const { fn } = mockFetch([]);
+    const client = makeClient({ fetch: fn });
+    await expect(client.validate()).resolves.toBeUndefined();
+    await expect(client.validate()).resolves.toBeUndefined();
+  });
+
+  test("caches token resolution for getToken clients", async () => {
+    let callCount = 0;
+    const { fn } = mockFetch([]);
+    const client = new GhClient({
+      repoRoot: "/tmp/test",
+      owner: "o",
+      repo: "r",
+      getToken: async () => {
+        callCount++;
+        return "gho_custom";
+      },
+      fetch: fn,
+    });
+    await client.validate();
+    await client.validate();
+    await client.validate();
+    expect(callCount).toBe(1);
+  });
+});
