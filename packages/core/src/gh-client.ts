@@ -941,6 +941,19 @@ export class GhClient {
     return { token, fetchFn: this.fetchFn, getToken: this.getTokenFn };
   }
 
+  /**
+   * Eagerly resolve the GitHub token and repo, throwing immediately if either
+   * fails. Call this at phase-script setup time to surface auth/repo errors
+   * before building handles — useful when a phase script constructs multiple
+   * handles and would otherwise only fail on the third `.body()` call.
+   *
+   * Safe to call multiple times; resolution is cached after the first call.
+   */
+  async validate(): Promise<void> {
+    await this.ensureRepo();
+    await this.makeReqOpts();
+  }
+
   pr(prNumber: number): PrHandle {
     const self = this;
     let cachedOpts: RequestOptions | null = null;

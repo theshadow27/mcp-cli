@@ -916,3 +916,34 @@ describe("rateLimit", () => {
     expect(info.reset).toBeInstanceOf(Date);
   });
 });
+
+// ── validate ──
+
+describe("validate", () => {
+  test("resolves without error when token and repo are valid", async () => {
+    const { fn } = mockFetch([]);
+    const client = makeClient({ fetch: fn });
+    await expect(client.validate()).resolves.toBeUndefined();
+  });
+
+  test("throws GhAuthError eagerly when token resolution fails", async () => {
+    const { fn } = mockFetch([]);
+    const client = new GhClient({
+      repoRoot: "/tmp/test",
+      owner: "o",
+      repo: "r",
+      getToken: async () => {
+        throw new GhAuthError("no token");
+      },
+      fetch: fn,
+    });
+    await expect(client.validate()).rejects.toBeInstanceOf(GhAuthError);
+  });
+
+  test("is safe to call multiple times", async () => {
+    const { fn } = mockFetch([]);
+    const client = makeClient({ fetch: fn });
+    await expect(client.validate()).resolves.toBeUndefined();
+    await expect(client.validate()).resolves.toBeUndefined();
+  });
+});
