@@ -104,6 +104,17 @@ describe("matchFilter", () => {
     expect(matchFilter(makeEvent({ phase: "impl" }), spec)).toBe(false);
   });
 
+  test("repo filter matches repoRoot field", () => {
+    const spec: EventFilterSpec = { repo: "/home/user/myrepo" };
+    expect(matchFilter(makeEvent({ repoRoot: "/home/user/myrepo" }), spec)).toBe(true);
+    expect(matchFilter(makeEvent({ repoRoot: "/home/user/other" }), spec)).toBe(false);
+  });
+
+  test("repo filter passes through events with no repoRoot (unscoped events)", () => {
+    const spec: EventFilterSpec = { repo: "/home/user/myrepo" };
+    expect(matchFilter(makeEvent({}), spec)).toBe(true);
+  });
+
   test("multiple filter axes — all must match (AND)", () => {
     const spec: EventFilterSpec = { pr: 10, type: "ci.*" };
     expect(matchFilter(makeEvent({ prNumber: 10, event: "ci.finished" }), spec)).toBe(true);
@@ -158,12 +169,20 @@ describe("filterSpecToStreamParams", () => {
   });
 
   test("passes through scalar fields", () => {
-    const p = filterSpecToStreamParams({ pr: 42, session: "s1", workItem: "w1", src: "x", phase: "impl" });
+    const p = filterSpecToStreamParams({
+      pr: 42,
+      session: "s1",
+      workItem: "w1",
+      src: "x",
+      phase: "impl",
+      repo: "/repo",
+    });
     expect(p.pr).toBe(42);
     expect(p.session).toBe("s1");
     expect(p.workItem).toBe("w1");
     expect(p.src).toBe("x");
     expect(p.phase).toBe("impl");
+    expect(p.repo).toBe("/repo");
   });
 
   test("undefined fields stay undefined", () => {

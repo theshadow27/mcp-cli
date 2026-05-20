@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { MAIL_RECEIVED, MAIL_SERVER_NAME, type MonitorEvent } from "@mcp-cli/core";
+import { MAIL_SENT, MAIL_SERVER_NAME, type MonitorEvent } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
@@ -239,7 +239,7 @@ describe("MailServer", () => {
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe(MAIL_RECEIVED);
+    expect(events[0].event).toBe(MAIL_SENT);
     expect(events[0].sender).toBe("alice");
     expect(events[0].recipient).toBe("bob");
   });
@@ -270,7 +270,7 @@ describe("MailServer", () => {
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe(MAIL_RECEIVED);
+    expect(events[0].event).toBe(MAIL_SENT);
     expect(events[0].sender).toBe("bob");
     expect(events[0].recipient).toBe("alice");
   });
@@ -305,6 +305,6 @@ describe("MailServer", () => {
     });
 
     expect(events).toHaveLength(1);
-    expect(events[0].event).toBe(MAIL_RECEIVED);
+    expect(events[0].event).toBe(MAIL_SENT);
   });
 });

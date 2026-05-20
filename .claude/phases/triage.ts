@@ -10,7 +10,6 @@
  * State writes: triage_scrutiny, triage_reasons.
  */
 import { defineAlias, z } from "mcp-cli";
-import { prList, spawn } from "./gh";
 import { runTriage } from "./triage-fn";
 
 defineAlias({
@@ -37,18 +36,31 @@ defineAlias({
 
     return runTriage(input, work, {
       async findPr(branch: string): Promise<number | null> {
-        const out = await prList({ head: branch, json: "number", jq: ".[0].number" });
-        const n = Number.parseInt(out, 10);
-        return Number.isFinite(n) ? n : null;
+        try {
+          const result = await ctx.gh.repo().searchIssues({
+            query: `head:${branch} is:pr is:open`,
+          });
+          return result.items.length > 0 ? result.items[0].number : null;
+        } catch {
+          return null;
+        }
       },
       async runEstimate(prNumber: number) {
-        const result = await spawn(
+        const proc = Bun.spawn(
           ["bun", ".claude/skills/estimate/triage.ts", "--pr", String(prNumber), "--json"],
+          { stdout: "pipe", stderr: "pipe" },
         );
-        if (result.exitCode !== 0) {
-          throw new Error(`triage.ts failed: ${result.stderr}`);
+        const timer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        clearTimeout(timer);
+        if (exitCode !== 0) {
+          throw new Error(`triage.ts failed: ${stderr.trim()}`);
         }
-        return JSON.parse(result.stdout) as {
+        return JSON.parse(stdout.trim()) as {
           scrutiny: "low" | "high";
           reasons: string[];
           metrics?: Record<string, unknown>;

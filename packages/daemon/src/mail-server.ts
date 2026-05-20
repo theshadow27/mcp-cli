@@ -14,7 +14,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
 import type { EventBus } from "./event-bus";
-import { publishMailReceived } from "./mail-events";
+import { publishMailSent } from "./mail-events";
 
 const TOOLS = [
   {
@@ -122,7 +122,7 @@ export class MailServer {
             const body = a.body !== undefined ? String(a.body) : undefined;
             const replyTo = a.replyTo !== undefined ? Number(a.replyTo) : undefined;
             const id = this.db.insertMail(sender, recipient, subject, body, replyTo);
-            publishMailReceived(this.eventBus, { mailId: id, sender, recipient });
+            publishMailSent(this.eventBus, { mailId: id, sender, recipient });
             return { content: [{ type: "text" as const, text: JSON.stringify({ id }) }] };
           }
 
@@ -170,7 +170,7 @@ export class MailServer {
             const subject =
               a.subject !== undefined ? String(a.subject) : original.subject ? `Re: ${original.subject}` : undefined;
             const newId = this.db.insertMail(sender, original.sender, subject, body, id);
-            publishMailReceived(this.eventBus, { mailId: newId, sender, recipient: original.sender });
+            publishMailSent(this.eventBus, { mailId: newId, sender, recipient: original.sender });
             return { content: [{ type: "text" as const, text: JSON.stringify({ id: newId }) }] };
           }
 

@@ -18,6 +18,7 @@ import {
   bundleAlias,
   createAliasCache,
   createAliasState,
+  createGhClient,
   createMcpProxy,
   createWaitForEvent,
   executeAliasBundled,
@@ -70,6 +71,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
       workItem: null,
       repoRoot,
+      gh: createGhClient({ repoRoot }),
       signal: controller.signal,
       waitForEvent: createWaitForEvent({ signal: controller.signal }),
     };

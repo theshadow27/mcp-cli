@@ -13,7 +13,7 @@ function workItemEvent(event = "pr.merged", prNumber = 42): MonitorEventInput {
 }
 
 function mailEvent(mailId = 1): MonitorEventInput {
-  return { src: "daemon.mail", event: "mail.received", category: "mail", mailId };
+  return { src: "daemon.mail", event: "mail.sent", category: "mail", mailId };
 }
 
 describe("EventBus", () => {
@@ -47,7 +47,7 @@ describe("EventBus", () => {
     expect(received).toHaveLength(3);
     expect(received[0].event).toBe("session.result");
     expect(received[1].event).toBe("pr.merged");
-    expect(received[2].event).toBe("mail.received");
+    expect(received[2].event).toBe("mail.sent");
   });
 
   test("multiple subscribers all receive events", () => {
@@ -94,7 +94,7 @@ describe("EventBus", () => {
     bus.publish(workItemEvent());
 
     expect(received).toHaveLength(1);
-    expect(received[0].event).toBe("mail.received");
+    expect(received[0].event).toBe("mail.sent");
   });
 
   test("unsubscribe stops delivery", () => {

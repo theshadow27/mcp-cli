@@ -27,6 +27,7 @@ export interface DbUpsertSession {
   cwd?: string;
   worktree?: string;
   repoRoot?: string;
+  claudeSessionId?: string;
 }
 
 interface DbUpsert {

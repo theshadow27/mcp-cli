@@ -49,6 +49,7 @@ import {
   SESSION_TOOL_USE,
   WORKER_RATELIMITED,
   consoleLogger,
+  findGitRoot,
   generateSessionName,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
@@ -1875,11 +1876,15 @@ export class ClaudeWsServer {
     const mapped = ClaudeWsServer.SESSION_EVENT_MAP[event.type];
     if (!mapped) return;
 
+    const sessionConfig = this.sessions.get(sessionId)?.config;
+    const sessionRepoRoot =
+      sessionConfig?.repoRoot ?? (sessionConfig?.cwd ? (findGitRoot(sessionConfig.cwd) ?? undefined) : undefined);
     const input: MonitorEventInput = {
       src: "daemon.claude-server",
       event: mapped,
       category: "session",
       sessionId,
+      ...(sessionRepoRoot ? { repoRoot: sessionRepoRoot } : {}),
     };
 
     if ("cost" in event) input.cost = event.cost;

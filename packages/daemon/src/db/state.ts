@@ -43,6 +43,7 @@ export interface AgentSessionRow {
   totalTokens: number;
   spawnedAt: string;
   endedAt: string | null;
+  claudeSessionId: string | null;
 }
 
 /** @deprecated Use AgentSessionRow instead. */
@@ -268,6 +269,27 @@ export class StateDb {
         this.setSchemaVersion(CONSUMER, 5);
       })();
       version = 5;
+    }
+
+    if (version < 6) {
+      this.db.transaction(() => {
+        const hasAgentSessions =
+          (this.db
+            .query<{ n: number }, []>(
+              "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='agent_sessions'",
+            )
+            .get()?.n ?? 0) > 0;
+        if (hasAgentSessions) {
+          const hasCol = (this.db.prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).some(
+            (r) => r.name === "claude_session_id",
+          );
+          if (!hasCol) {
+            this.db.exec("ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT");
+          }
+        }
+        this.setSchemaVersion(CONSUMER, 6);
+      })();
+      version = 6;
     }
   }
 
@@ -1201,10 +1223,11 @@ export class StateDb {
     cwd?: string;
     worktree?: string;
     repoRoot?: string;
+    claudeSessionId?: string;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
@@ -1214,7 +1237,8 @@ export class StateDb {
          model = COALESCE(excluded.model, agent_sessions.model),
          cwd = COALESCE(excluded.cwd, agent_sessions.cwd),
          worktree = COALESCE(excluded.worktree, agent_sessions.worktree),
-         repo_root = COALESCE(excluded.repo_root, agent_sessions.repo_root)`,
+         repo_root = COALESCE(excluded.repo_root, agent_sessions.repo_root),
+         claude_session_id = COALESCE(excluded.claude_session_id, agent_sessions.claude_session_id)`,
       [
         session.sessionId,
         session.name ?? null,
@@ -1226,6 +1250,7 @@ export class StateDb {
         session.cwd ?? null,
         session.worktree ?? null,
         session.repoRoot ?? null,
+        session.claudeSessionId ?? null,
       ],
     );
   }
@@ -1251,7 +1276,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1261,7 +1286,7 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -1852,6 +1877,7 @@ interface RawSessionRow {
   total_tokens: number;
   spawned_at: string;
   ended_at: string | null;
+  claude_session_id: string | null;
 }
 
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
@@ -1870,6 +1896,7 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
     totalTokens: row.total_tokens,
     spawnedAt: row.spawned_at,
     endedAt: row.ended_at,
+    claudeSessionId: row.claude_session_id,
   };
 }
 

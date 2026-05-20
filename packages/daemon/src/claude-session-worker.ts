@@ -649,6 +649,7 @@ function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
           state: event.state,
           model: event.model,
           cwd: event.cwd,
+          claudeSessionId: event.sessionId,
         },
       });
       break;

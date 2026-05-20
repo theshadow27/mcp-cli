@@ -89,7 +89,7 @@ export const ISSUE_COMMENT = "issue.comment" as const;
 
 // ── Mail event names ──
 
-export const MAIL_RECEIVED = "mail.received" as const;
+export const MAIL_SENT = "mail.sent" as const;
 
 // ── Budget / cost event names (#1587) ──
 
@@ -134,6 +134,8 @@ export interface MonitorEventBase {
   workItemId?: string;
   sessionId?: string;
   prNumber?: number;
+  /** Repo root path this event is scoped to. Present when known / when session is repo-scoped; absent on global events (mail, quota, heartbeats) and sessions started without a configured or discoverable repo root. */
+  repoRoot?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];
   [key: string]: unknown;
@@ -355,7 +357,7 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), author);
   },
 
-  [MAIL_RECEIVED]: (e) => {
+  [MAIL_SENT]: (e) => {
     const sender = typeof e.sender === "string" ? e.sender : "";
     const recipient = typeof e.recipient === "string" ? e.recipient : "";
     return join(sender, "→", recipient);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhResult } from "../.claude/phases/gh";
+import type { GhResult } from "../.claude/phases/review-fn";
 import {
   REVIEW_ROUND_CAP,
   type ReviewDeps,

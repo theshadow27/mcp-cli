@@ -7,7 +7,7 @@ import {
   COST_SESSION_OVER_BUDGET,
   COST_SPRINT_OVER_BUDGET,
   HEARTBEAT,
-  MAIL_RECEIVED,
+  MAIL_SENT,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
@@ -28,6 +28,7 @@ import {
   SESSION_RESPONSE,
   SESSION_RESULT,
   formatMonitorEvent,
+  type openEventStream,
 } from "@mcp-cli/core";
 import type { MonitorDeps } from "./monitor";
 import { cmdMonitor, parseMonitorArgs } from "./monitor";
@@ -153,7 +154,7 @@ describe("formatMonitorEvent", () => {
         from: "impl",
         to: "qa",
       }),
-      makeEvent(MAIL_RECEIVED, {
+      makeEvent(MAIL_SENT, {
         category: "mail",
         src: "daemon.mail",
         sender: "orchestrator@sessions",
@@ -366,6 +367,14 @@ describe("parseMonitorArgs error branches", () => {
     expect(parseMonitorArgs(["--max-events", "abc"]).error).toBeTruthy();
   });
 
+  test("--max-events 0 is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "0"]).error).toBeTruthy();
+  });
+
+  test("--max-events negative is an error", () => {
+    expect(parseMonitorArgs(["--max-events", "-1"]).error).toBeTruthy();
+  });
+
   test("--help sets error to 'help'", () => {
     expect(parseMonitorArgs(["--help"]).error).toBe("help");
     expect(parseMonitorArgs(["-h"]).error).toBe("help");
@@ -387,6 +396,15 @@ describe("parseMonitorArgs error branches", () => {
     const parsed = parseMonitorArgs(["--since", "42"]);
     expect(parsed.since).toBe(42);
   });
+
+  test("--repo parsed correctly", () => {
+    const parsed = parseMonitorArgs(["--repo", "/home/user/myrepo"]);
+    expect(parsed.repo).toBe("/home/user/myrepo");
+  });
+
+  test("--repo without value is an error", () => {
+    expect(parseMonitorArgs(["--repo"]).error).toBeTruthy();
+  });
 });
 
 // ── cmdMonitor unit tests (dependency-injected) ──
@@ -399,6 +417,7 @@ function makeStreamDeps(events: MonitorEvent[], overrides: Partial<MonitorDeps> 
   return {
     openEventStream: () => ({ events: gen(), abort: () => {} }),
     isTTY: true,
+    getCwd: () => "/test/repo",
     writeStdout: () => {},
     writeStderr: () => {},
     exit: (code) => {
@@ -490,6 +509,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: abortStream, abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -514,6 +534,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: errorStream, abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: (l) => stderr.push(l),
       exit: (code) => {
@@ -539,6 +560,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -561,6 +583,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -603,6 +626,7 @@ describe("cmdMonitor", () => {
         },
       }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -625,6 +649,212 @@ describe("cmdMonitor", () => {
     expect(exitCalls).toEqual([0]);
   });
 
+  test("--until satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(PR_MERGED, { category: "work_item" })];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(abortCalled).toBe(true);
+  });
+
+  test("--max-events satisfied calls abort() on the stream", async () => {
+    let abortCalled = false;
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    async function* gen(): AsyncGenerator<MonitorEvent> {
+      for (const e of events) yield e;
+    }
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: gen(),
+        abort: () => {
+          abortCalled = true;
+        },
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        throw new Error(`exit:${code}`);
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+    };
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(abortCalled).toBe(true);
+  });
+
+  test("--until set but stream ends before event → exit 2 with message", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--max-events set but stream ends with fewer events → exit 2 with message", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--max-events", "5"], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--until satisfied → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(PR_MERGED, { category: "work_item" })];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", PR_MERGED], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--max-events satisfied → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {}), makeEvent(SESSION_CLEARED, {})];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--max-events", "2"], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("no terminator set, stream exhausts → no exit(2)", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--timeout fires before --until event → exit 0, not exit 2", async () => {
+    let abortCalled = false;
+    let resolveStream: (() => void) | undefined;
+
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+
+    const exitCalls: number[] = [];
+    let capturedTimerFn: (() => void) | undefined;
+
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: hangingStream(),
+        abort: () => {
+          abortCalled = true;
+          resolveStream?.();
+        },
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+      createTimeout: (fn, _ms) => {
+        capturedTimerFn = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor(["--timeout", "1", "--until", PR_MERGED], deps);
+    capturedTimerFn?.();
+    await promise;
+
+    expect(abortCalled).toBe(true);
+    expect(exitCalls).toEqual([0]);
+  });
+
+  test("--until glob pattern matches prefix (pr.*)", async () => {
+    const events = [
+      makeEvent(SESSION_RESULT, {}),
+      makeEvent(PR_MERGED, { category: "work_item" }),
+      makeEvent(SESSION_ENDED, {}),
+    ];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--until", "pr.*"], deps);
+    expect(stdout.length).toBe(2); // SESSION_RESULT + PR_MERGED
+  });
+
+  test("--until glob pattern does not match unrelated events", async () => {
+    const events = [makeEvent(SESSION_RESULT, {}), makeEvent(SESSION_ENDED, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor(["--until", "pr.*"], deps);
+    expect(exitCalls).toEqual([2]);
+    expect(stderr.join("")).toContain("stream ended before terminator");
+  });
+
+  test("--until wildcard * matches any event", async () => {
+    const events = [makeEvent(SESSION_RESULT, {})];
+    const stdout: string[] = [];
+    const deps = makeStreamDeps(events, { writeStdout: (l) => stdout.push(l) });
+    await cmdMonitor(["--until", "*"], deps);
+    expect(stdout.length).toBe(1);
+  });
+
   test("non-EPIPE stdout errors do not trigger finish", async () => {
     let capturedErrHandler: ((err: Error) => void) | undefined;
     const exitCalls: number[] = [];
@@ -634,6 +864,7 @@ describe("cmdMonitor", () => {
     const deps: MonitorDeps = {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
+      getCwd: () => "/test/repo",
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -652,5 +883,30 @@ describe("cmdMonitor", () => {
     const otherErr = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     capturedErrHandler?.(otherErr);
     expect(exitCalls).toHaveLength(0);
+  });
+
+  test("--repo is passed to openEventStream", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--repo", "/custom/repo"], deps);
+    expect(capturedParams?.repo).toBe("/custom/repo");
+  });
+
+  test("repo defaults to getCwd() when --repo is not specified", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/default/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(capturedParams?.repo).toBe("/default/repo");
   });
 });

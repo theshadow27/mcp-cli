@@ -2558,7 +2558,7 @@ describe("IpcServer HTTP transport", () => {
       await reader.read(); // drain initial flush — subscription is now active
 
       bus.publish({ src: "test", event: "session.response", category: "session", sessionId: "s1", chunk: "hi" });
-      bus.publish({ src: "test", event: "mail.received", category: "mail", mailId: 1, sender: "a", recipient: "b" });
+      bus.publish({ src: "test", event: "mail.sent", category: "mail", mailId: 1, sender: "a", recipient: "b" });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2566,14 +2566,14 @@ describe("IpcServer HTTP transport", () => {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        if (buffer.includes("mail.received")) break;
+        if (buffer.includes("mail.sent")) break;
       }
 
       controller.abort();
       reader.releaseLock();
 
       expect(buffer).not.toContain("session.response");
-      expect(buffer).toContain("mail.received");
+      expect(buffer).toContain("mail.sent");
     });
 
     test("backfill→live handoff: no gap or duplicates when since=<seq> with pre-populated log", async () => {
@@ -2749,7 +2749,7 @@ describe("IpcServer HTTP transport", () => {
       // Publish 3 live events
       bus.publish({ src: "test", event: "session.result", category: "session", sessionId: "s1" });
       bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 1 });
-      bus.publish({ src: "test", event: "mail.received", category: "mail", mailId: 1, sender: "a", recipient: "b" });
+      bus.publish({ src: "test", event: "mail.sent", category: "mail", mailId: 1, sender: "a", recipient: "b" });
 
       let buffer = "";
       const deadline = Date.now() + 2_000;
@@ -2757,7 +2757,7 @@ describe("IpcServer HTTP transport", () => {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        if (buffer.includes("mail.received")) break;
+        if (buffer.includes("mail.sent")) break;
       }
 
       controller.abort();
@@ -2867,7 +2867,7 @@ describe("IpcServer HTTP transport", () => {
       const { bus } = startServerWithBus();
 
       const controller = new AbortController();
-      const res = await fetch(`http://localhost/events?type=${encodeURIComponent("pr.*,mail.received")}`, {
+      const res = await fetch(`http://localhost/events?type=${encodeURIComponent("pr.*,mail.sent")}`, {
         method: "GET",
         unix: socketPath,
         signal: controller.signal,
@@ -2883,7 +2883,7 @@ describe("IpcServer HTTP transport", () => {
       bus.publish({ src: "test", event: "pr.merged", category: "work_item", prNumber: 42 });
       bus.publish({
         src: "test",
-        event: "mail.received",
+        event: "mail.sent",
         category: "mail",
         mailId: 1,
         sender: "a",
@@ -2896,7 +2896,7 @@ describe("IpcServer HTTP transport", () => {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        if (buffer.includes("mail.received")) break;
+        if (buffer.includes("mail.sent")) break;
       }
 
       controller.abort();
@@ -2904,7 +2904,7 @@ describe("IpcServer HTTP transport", () => {
 
       expect(buffer).not.toContain("session.result");
       expect(buffer).toContain("pr.merged");
-      expect(buffer).toContain("mail.received");
+      expect(buffer).toContain("mail.sent");
     });
 
     test("src glob filter matches source attribution with wildcards", async () => {
@@ -3697,7 +3697,7 @@ describe("IpcServer HTTP transport", () => {
     // session event — should pass
     server.pushEvent({ event: "session.result", category: "session", t: "ev" });
     // mail event — should be filtered out
-    server.pushEvent({ event: "mail.received", category: "mail", t: "ev" });
+    server.pushEvent({ event: "mail.sent", category: "mail", t: "ev" });
     // second session event — used as terminator to know mail was skipped
     server.pushEvent({ event: "session.ended", category: "session", t: "ev" });
 
@@ -3719,7 +3719,7 @@ describe("IpcServer HTTP transport", () => {
       .map((l) => JSON.parse(l) as Record<string, unknown>);
     const events = lines.filter((l) => l.t === "ev");
     expect(events.every((e) => e.category === "session")).toBe(true);
-    expect(events.find((e) => e.event === "mail.received")).toBeUndefined();
+    expect(events.find((e) => e.event === "mail.sent")).toBeUndefined();
   });
 
   test("ring-buffer: session.response excluded from live delivery without responseTail", async () => {
@@ -4097,6 +4097,8 @@ describe("IpcServer HTTP transport", () => {
 
 // ── buildEventFilter unit tests ──
 
+import { resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import { buildEventFilter } from "./ipc-server";
 
 describe("buildEventFilter", () => {
@@ -4113,7 +4115,7 @@ describe("buildEventFilter", () => {
     expect(filter).not.toBeNull();
     expect(filter?.({ category: "session", event: "session.result" })).toBe(true);
     expect(filter?.({ category: "work_item", event: "pr.merged" })).toBe(true);
-    expect(filter?.({ category: "mail", event: "mail.received" })).toBe(false);
+    expect(filter?.({ category: "mail", event: "mail.sent" })).toBe(false);
   });
 
   test("session filter matches sessionId", () => {
@@ -4153,7 +4155,7 @@ describe("buildEventFilter", () => {
     const filter = buildEventFilter(params({ type: "pr.*,session.idle" }));
     expect(filter?.({ event: "pr.opened" })).toBe(true);
     expect(filter?.({ event: "session.idle" })).toBe(true);
-    expect(filter?.({ event: "mail.received" })).toBe(false);
+    expect(filter?.({ event: "mail.sent" })).toBe(false);
   });
 
   test("src glob matches src field", () => {
@@ -4193,5 +4195,21 @@ describe("buildEventFilter", () => {
     expect(filter).not.toBeNull();
     expect(filter?.({ category: "heartbeat", event: "heartbeat" })).toBe(true);
     expect(filter?.({ category: "heartbeat", event: "heartbeat", src: "daemon" })).toBe(true);
+  });
+
+  test("repo filter matches repoRoot field", () => {
+    // Use canonical paths — /home on macOS is a symlink; resolveRealpath matches daemon normalisation
+    const REPO = resolveRealpath(resolve("/home/user/myrepo"));
+    const OTHER = resolveRealpath(resolve("/home/user/other"));
+    const filter = buildEventFilter(params({ repo: REPO }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ repoRoot: REPO, event: "session.result" })).toBe(true);
+    expect(filter?.({ repoRoot: OTHER, event: "session.result" })).toBe(false);
+  });
+
+  test("repo filter passes through events with no repoRoot", () => {
+    const filter = buildEventFilter(params({ repo: "/home/user/myrepo" }));
+    expect(filter?.({ event: "mail.sent", category: "mail" })).toBe(true);
+    expect(filter?.({ event: "quota.threshold", category: "quota" })).toBe(true);
   });
 });
