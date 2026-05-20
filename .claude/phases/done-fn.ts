@@ -1,6 +1,10 @@
 /** Core done-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./gh";
+export interface GhResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
 
 export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }

@@ -13,6 +13,9 @@ import {
   stubProxy,
   validateAliasBundled,
 } from "./alias-bundle";
+import type { GhClient } from "./gh-client";
+
+const stubGh = {} as GhClient;
 
 function makeTmpDir(): string {
   const dir = join(tmpdir(), `alias-bundle-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -288,6 +291,7 @@ describe("bundleAlias", () => {
         globalState: stubState,
         workItem: null,
         repoRoot: "__none__",
+        gh: stubGh,
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -430,6 +434,7 @@ describe("executeAliasBundled", () => {
         globalState: stubState,
         workItem: null,
         repoRoot: "__none__",
+        gh: stubGh,
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -471,6 +476,7 @@ describe("executeAliasBundled", () => {
           globalState: stubState,
           workItem: null,
           repoRoot: "__none__",
+          gh: stubGh,
           signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
@@ -514,6 +520,7 @@ describe("executeAliasBundled", () => {
           globalState: stubState,
           workItem: null,
           repoRoot: "__none__",
+          gh: stubGh,
           signal: new AbortController().signal,
           waitForEvent: async () => {
             throw new Error("not in test");
@@ -558,6 +565,7 @@ describe("executeAliasBundled", () => {
         globalState: stubState,
         workItem: null,
         repoRoot: "__none__",
+        gh: stubGh,
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -599,6 +607,7 @@ describe("executeAliasBundled", () => {
         globalState: stubState,
         workItem: null,
         repoRoot: "__none__",
+        gh: stubGh,
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");
@@ -629,6 +638,7 @@ describe("executeAliasBundled", () => {
         globalState: stubState,
         workItem: null,
         repoRoot: "__none__",
+        gh: stubGh,
         signal: new AbortController().signal,
         waitForEvent: async () => {
           throw new Error("not in test");

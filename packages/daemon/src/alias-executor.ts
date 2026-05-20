@@ -24,6 +24,7 @@ import {
   aliasUserNamespace,
   createAliasCache,
   createAliasState,
+  createGhClient,
   createWaitForEvent,
   executeAliasBundled,
   extractContent,
@@ -170,6 +171,7 @@ async function main(): Promise<void> {
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
     repoRoot,
+    gh: createGhClient({ repoRoot }),
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };

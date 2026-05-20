@@ -4,6 +4,7 @@
 
 import type { z } from "zod/v4";
 import type { EventFilterSpec } from "./event-filter";
+import type { GhClient } from "./gh-client";
 import type { MonitorEvent } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
 
@@ -162,6 +163,13 @@ export interface AliasContext {
    * immediately with `signal.reason` (an AbortError by default).
    */
   signal: AbortSignal;
+  /**
+   * Typed GitHub API client. Provides granular access to PR, issue, and repo
+   * operations via `ctx.gh.pr(123).body()`, `ctx.gh.issue(456).comments()`,
+   * etc. Also exposes `ctx.gh.graphql()` and `ctx.gh.rest()` escape hatches.
+   * Auth resolves from GH_TOKEN → GITHUB_TOKEN → `gh auth token`.
+   */
+  gh: GhClient;
   /**
    * Wait for the first monitor event that matches `filter`.
    *

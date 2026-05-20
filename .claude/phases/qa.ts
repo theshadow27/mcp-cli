@@ -15,7 +15,6 @@
  * session ID after spawn; delete it on spawn failure.
  */
 import { defineAlias, z } from "mcp-cli";
-import { gh, prEdit } from "./gh";
 import { runQa } from "./qa-fn";
 
 const ProviderSchema = z
@@ -60,7 +59,25 @@ defineAlias({
       input,
       { id: work.id, prNumber: work.prNumber, branch: work.branch, issueNumber: work.issueNumber },
       ctx.state,
-      { gh, prEdit },
+      {
+        async gh(args) {
+          try {
+            const prNum = Number(args[2]);
+            const pr = await ctx.gh.pr(prNum).body();
+            const stdout = pr.labels.join("\n");
+            return { stdout, stderr: "", exitCode: 0 };
+          } catch (err) {
+            return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
+          }
+        },
+        async prEdit(prNumber, flags) {
+          const removeLabels: string[] = [];
+          for (let i = 0; i < flags.length; i += 2) {
+            if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
+          }
+          await ctx.gh.pr(prNumber).edit({ removeLabels });
+        },
+      },
     );
   },
 });

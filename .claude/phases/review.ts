@@ -24,7 +24,6 @@
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
-import { gh } from "./gh";
 import { runReview } from "./review-fn";
 
 const ProviderSchema = z
@@ -69,7 +68,20 @@ defineAlias({
       input,
       { id: work.id, prNumber: work.prNumber, branch: work.branch, issueNumber: work.issueNumber ?? null },
       ctx.state,
-      { gh, findModelInSprintPlan },
+      {
+        async gh(args) {
+          try {
+            const prNumStr = args[2];
+            const prNum = Number(prNumStr);
+            const comments = await ctx.gh.pr(prNum).bodyComments();
+            const stdout = comments.map((c) => c.body).join("\n");
+            return { stdout, stderr: "", exitCode: 0 };
+          } catch (err) {
+            return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
+          }
+        },
+        findModelInSprintPlan,
+      },
       ctx.repoRoot ?? NO_REPO_ROOT,
     );
   },

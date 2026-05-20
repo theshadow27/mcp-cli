@@ -1,6 +1,10 @@
 /** Core qa-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./gh";
+export interface GhResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
 
 export const QA_FAIL_CAP = 2;
 

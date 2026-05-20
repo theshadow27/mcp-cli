@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AliasContext } from "./alias";
 import { createDryRunMcp, createDryRunState, wrapDryRunContext } from "./alias-dry-run";
+import type { GhClient } from "./gh-client";
 
 describe("createDryRunMcp", () => {
   test("server proxy is not thenable — Promise.resolve does not hang", async () => {
@@ -66,6 +67,7 @@ describe("wrapDryRunContext", () => {
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
       repoRoot: "__none__",
+      gh: {} as GhClient,
       signal: new AbortController().signal,
       waitForEvent: async () => {
         throw new Error("not in test");
@@ -98,6 +100,7 @@ describe("wrapDryRunContext", () => {
       globalState: { get: async () => undefined, all: async () => ({}), set: async () => {}, delete: async () => {} },
       workItem: null,
       repoRoot: "__none__",
+      gh: {} as GhClient,
       signal: new AbortController().signal,
       waitForEvent: async () => {
         throw new Error("not in test");
