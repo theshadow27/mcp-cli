@@ -9,6 +9,7 @@
  * adds daemon-backed caching.
  */
 
+import { consoleLogger } from "./logger";
 import type { Logger } from "./logger";
 
 const GITHUB_API_BASE = "https://api.github.com";
@@ -934,7 +935,7 @@ export class GhClient {
     this.repoRoot = opts.repoRoot;
     this.getTokenFn = opts.getToken;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
-    this.logger = opts.logger;
+    this.logger = opts.logger ?? consoleLogger;
     this.resolvedRepo = opts.owner && opts.repo ? { owner: opts.owner, repo: opts.repo } : null;
   }
 
