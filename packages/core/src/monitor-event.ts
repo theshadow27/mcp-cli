@@ -89,7 +89,7 @@ export const ISSUE_COMMENT = "issue.comment" as const;
 
 // ── Mail event names ──
 
-export const MAIL_RECEIVED = "mail.received" as const;
+export const MAIL_SENT = "mail.sent" as const;
 
 // ── Budget / cost event names (#1587) ──
 
@@ -355,7 +355,7 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), author);
   },
 
-  [MAIL_RECEIVED]: (e) => {
+  [MAIL_SENT]: (e) => {
     const sender = typeof e.sender === "string" ? e.sender : "";
     const recipient = typeof e.recipient === "string" ? e.recipient : "";
     return join(sender, "→", recipient);
