@@ -87,6 +87,13 @@ export interface ClaudeDeps extends SharedSessionDeps {
   runPatchUpdate: typeof updatePatchedClaude;
   /** Read a file by path, enforcing size limits. Injected for testability. */
   readFileWithLimit: (path: string) => string;
+  /** Look up a session from the DB (including ended sessions). Injected for testability. */
+  getAgentSession: (sessionId: string) => Promise<{
+    sessionId: string;
+    state: string;
+    cwd: string | null;
+    claudeSessionId: string | null;
+  } | null>;
 }
 
 /**
@@ -213,6 +220,21 @@ export const defaultDeps: ClaudeDeps = {
   },
   runPatchUpdate: updatePatchedClaude,
   readFileWithLimit,
+  getAgentSession: async (sessionId) => {
+    try {
+      const result = (await ipcCall("getAgentSession", { sessionId })) as {
+        session: {
+          sessionId: string;
+          state: string;
+          cwd: string | null;
+          claudeSessionId: string | null;
+        } | null;
+      };
+      return result.session;
+    } catch {
+      return null;
+    }
+  },
 };
 
 // ── Entry point ──
@@ -449,6 +471,26 @@ function tryWriteInitialTransition(workItemId: string, gitRoot: string): void {
   }
 }
 
+/**
+ * If daemonSessionId refers to an ended session with a known claudeSessionId,
+ * return the info needed to spawn a fresh session restoring its JSONL history.
+ * Returns null for active/in-memory sessions (caller should use sessionId as-is).
+ */
+async function resolveEndedSessionForResume(
+  daemonSessionId: string,
+  d: ClaudeDeps,
+): Promise<{ claudeSessionId: string; cwd: string | null } | null> {
+  const session = await d.getAgentSession(daemonSessionId);
+  if (!session || session.state !== "ended") return null;
+  if (!session.claudeSessionId) {
+    d.printError(
+      `Session ${daemonSessionId} is ended but has no recorded Claude session ID — cannot resume transcript. The session may have ended before its first response was received.`,
+    );
+    d.exit(1);
+  }
+  return { claudeSessionId: session.claudeSessionId, cwd: session.cwd };
+}
+
 async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (hasHelpFlag(args)) {
     const spawnHelp = getHelp("claude spawn");
@@ -496,11 +538,26 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   const toolArgs: Record<string, unknown> = { prompt: task };
-  if (parsed.resume) toolArgs.sessionId = parsed.resume;
+  if (parsed.resume) {
+    // Check if the target session is ended — if so, use resumeSessionId on a fresh spawn
+    // rather than sessionId (which would try to send a follow-up to a dead session).
+    const endedSession = await resolveEndedSessionForResume(parsed.resume, d);
+    if (endedSession) {
+      // Spawn a new session restoring history from the ended session's JSONL transcript.
+      toolArgs.resumeSessionId = endedSession.claudeSessionId;
+      // Inherit the original session's cwd when the caller hasn't set one explicitly.
+      if (!parsed.cwd && !parsed.worktree && endedSession.cwd) {
+        toolArgs.cwd = endedSession.cwd;
+      }
+    } else {
+      // Session is active (or not in DB) — send as follow-up prompt to existing session.
+      toolArgs.sessionId = parsed.resume;
+    }
+  }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
-  else if (!parsed.worktree) toolArgs.cwd = process.cwd();
+  else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;

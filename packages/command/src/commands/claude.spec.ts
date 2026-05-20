@@ -60,6 +60,7 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
       reason: "no patch needed",
     })),
     readFileWithLimit: mock(() => "file content"),
+    getAgentSession: mock(async () => null),
     ...overrides,
   };
 }
@@ -922,6 +923,107 @@ describe("mcx claude spawn", () => {
     });
     await expect(cmdClaude(["spawn", "--task", "@/tmp/missing.md"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
+  });
+
+  test("--resume with ended session uses resumeSessionId instead of sessionId", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "new-session", seq: 1 }));
+    const getAgentSession = mock(async () => ({
+      sessionId: "daemon-ended",
+      state: "ended",
+      cwd: "/tmp/worktree",
+      claudeSessionId: "claude-abc123",
+    }));
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--resume", "daemon-ended", "--task", "continue"], deps);
+      expect(callTool).toHaveBeenCalledWith("claude_prompt", {
+        prompt: "continue",
+        resumeSessionId: "claude-abc123",
+        cwd: "/tmp/worktree",
+      });
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--resume with ended session inherits cwd from DB when caller has no explicit cwd", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "new", seq: 1 }));
+    const getAgentSession = mock(async () => ({
+      sessionId: "daemon-ended",
+      state: "ended",
+      cwd: "/projects/myrepo/.claude/worktrees/feat",
+      claudeSessionId: "claude-xyz789",
+    }));
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--resume", "daemon-ended"], deps);
+      const callArgs = (callTool.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+      expect(callArgs.resumeSessionId).toBe("claude-xyz789");
+      expect(callArgs.cwd).toBe("/projects/myrepo/.claude/worktrees/feat");
+      expect(callArgs.sessionId).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--resume with ended session with no claudeSessionId exits with error", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "new", seq: 1 }));
+    const getAgentSession = mock(async () => ({
+      sessionId: "daemon-ended",
+      state: "ended",
+      cwd: "/tmp/worktree",
+      claudeSessionId: null,
+    }));
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    await expect(cmdClaude(["spawn", "--resume", "daemon-ended"], deps)).rejects.toThrow(ExitError);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("has no recorded Claude session ID"));
+  });
+
+  test("--resume with active session still uses sessionId", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "existing", seq: 5 }));
+    const getAgentSession = mock(async () => ({
+      sessionId: "daemon-active",
+      state: "idle",
+      cwd: "/tmp/worktree",
+      claudeSessionId: "claude-abc",
+    }));
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--resume", "daemon-active", "--task", "keep going"], deps);
+      const callArgs = (callTool.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+      expect(callArgs.sessionId).toBe("daemon-active");
+      expect(callArgs.resumeSessionId).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--resume when session not in DB still uses sessionId (in-memory active session)", async () => {
+    const callTool = mock(async () => toolResult({ sessionId: "abc", seq: 1 }));
+    const getAgentSession = mock(async () => null);
+    const deps = makeDeps({ callTool, getAgentSession });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--resume", "in-memory-id", "--task", "continue"], deps);
+      const callArgs = (callTool.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+      expect(callArgs.sessionId).toBe("in-memory-id");
+      expect(callArgs.resumeSessionId).toBeUndefined();
+    } finally {
+      console.log = origLog;
+    }
   });
 });
 

@@ -19,6 +19,7 @@ import type {
   ServeInstanceInfo,
 } from "@mcp-cli/core";
 import {
+  GetAgentSessionParamsSchema,
   GetDaemonLogsParamsSchema,
   GetLogsParamsSchema,
   IPC_ERROR,
@@ -458,6 +459,26 @@ export class IpcServer {
       return this.getQuotaStatus();
     });
 
+    this.handlers.set("getAgentSession", async (params, _ctx) => {
+      const { sessionId } = GetAgentSessionParamsSchema.parse(params);
+      const row = this.db.getSession(sessionId);
+      if (!row) return { session: null };
+      return {
+        session: {
+          sessionId: row.sessionId,
+          name: row.name,
+          provider: row.provider,
+          state: row.state,
+          cwd: row.cwd,
+          worktree: row.worktree,
+          repoRoot: row.repoRoot,
+          claudeSessionId: row.claudeSessionId,
+          spawnedAt: row.spawnedAt,
+          endedAt: row.endedAt,
+        },
+      };
+    });
+
     this.handlers.set("shutdown", async (params, _ctx) => {
       const { force } = ShutdownParamsSchema.parse(params ?? {});
       if (!force) {
@@ -476,7 +497,7 @@ export class IpcServer {
     });
 
     // Catch duplicate registrations (silently-overwritten handlers are invisible bugs).
-    const EXPECTED = 53;
+    const EXPECTED = 54;
     if (this.handlers.size !== EXPECTED) {
       throw new Error(
         `Handler count mismatch after registration: expected ${EXPECTED}, got ${this.handlers.size}. A handler was duplicated or omitted.`,
