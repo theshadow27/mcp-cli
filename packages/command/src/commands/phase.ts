@@ -46,6 +46,7 @@ import {
   createAliasCache,
   createAliasState,
   createEphemeralState,
+  createGhClient,
   createMcpProxy,
   createWaitForEvent,
   executeAliasBundled,
@@ -1006,6 +1007,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     workItem: null,
     repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
+    gh: createGhClient({ repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT }),
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
@@ -1384,6 +1386,7 @@ export async function executePhase(
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
     repoRoot,
+    gh: createGhClient({ repoRoot }),
     signal: phaseController.signal,
     waitForEvent: createWaitForEvent({ signal: phaseController.signal }),
   };

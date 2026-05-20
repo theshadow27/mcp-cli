@@ -199,8 +199,45 @@ declare module "mcp-cli" {
     [key: string]: unknown;
   }
 
+  export interface GhClient {
+    pr(n: number): GhPrHandle;
+    issue(n: number): GhIssueHandle;
+    repo(): GhRepoHandle;
+    graphql<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T>;
+    rest<T = unknown>(method: string, path: string, body?: unknown): Promise<T>;
+    rateLimit(): Promise<{ limit: number; remaining: number; reset: Date; used: number }>;
+  }
+
+  export interface GhPrHandle {
+    body(): Promise<unknown>;
+    bodyComments(): Promise<unknown[]>;
+    inlineComments(): Promise<unknown[]>;
+    reviews(): Promise<unknown[]>;
+    checks(): Promise<unknown>;
+    files(): Promise<unknown[]>;
+    edit(opts: { title?: string; body?: string; labels?: string[]; addLabels?: string[]; removeLabels?: string[] }): Promise<void>;
+    merge(opts?: { method?: "merge" | "squash" | "rebase"; auto?: boolean; deleteBranch?: boolean }): Promise<void>;
+    comment(body: string): Promise<unknown>;
+    replyToInlineThread(commentId: number, body: string): Promise<unknown>;
+    requestReview(reviewer: string): Promise<void>;
+    allCommentSurfaces(opts?: { linkedIssue?: number }): Promise<unknown>;
+  }
+
+  export interface GhIssueHandle {
+    body(): Promise<unknown>;
+    comments(): Promise<unknown[]>;
+    comment(body: string): Promise<unknown>;
+    edit(opts: { title?: string; body?: string; state?: "open" | "closed"; labels?: string[] }): Promise<void>;
+  }
+
+  export interface GhRepoHandle {
+    labels(): Promise<unknown[]>;
+    searchIssues(opts: { query: string; sort?: string; order?: "asc" | "desc" }): Promise<unknown>;
+  }
+
   export interface AliasContext {
     mcp: McpProxy;
+    gh: GhClient;
     args: Record<string, string>;
     file: (path: string) => Promise<string>;
     json: (path: string) => Promise<unknown>;
@@ -257,6 +294,7 @@ exactly like normal aliases. The handler receives a scoped `ctx`:
 | Field | Purpose |
 |-------|---------|
 | `ctx.mcp` | Proxy for MCP tool calls, e.g. `ctx.mcp._work_items.work_items_update({...})` |
+| `ctx.gh` | Typed GitHub API client — see [ctx.gh](#ctxgh--github-api-client) below |
 | `ctx.state` | Per-work-item scratchpad (`get`, `set`, `delete`, `all`) |
 | `ctx.globalState` | Shared scratchpad across all phases in the repo |
 | `ctx.workItem` | `{ id, issueNumber, prNumber, branch, phase }` or null |
@@ -264,8 +302,85 @@ exactly like normal aliases. The handler receives a scoped `ctx`:
 | `ctx.file`, `ctx.json` | Read utility helpers |
 | `ctx.cache` | TTL-bounded cached producer |
 
-Bun globals (`Bun.spawnSync`, `fetch`) are available — phases typically shell
-out to `gh`, `git`, or project tooling.
+Bun globals (`Bun.spawnSync`, `fetch`) are available — phases typically use
+`ctx.gh` for GitHub operations and shell out to `git` or project tooling.
+
+## `ctx.gh` — GitHub API client
+
+`ctx.gh` provides typed, Bun-native access to the GitHub REST and GraphQL
+APIs. It replaces shell-out wrappers (`Bun.spawn(["gh", ...])`) with direct
+`fetch()` calls, eliminating shell-escaping risk and adding auto-pagination,
+retry/backoff, and typed errors.
+
+Auth resolves in order: `GH_TOKEN` env → `GITHUB_TOKEN` env → `gh auth token`.
+
+### PR operations
+
+```typescript
+// Read
+const pr = await ctx.gh.pr(123).body();          // title, state, labels, head, base, etc.
+const comments = await ctx.gh.pr(123).bodyComments();    // issue-endpoint comments
+const inline = await ctx.gh.pr(123).inlineComments();    // review comments (file-level)
+const reviews = await ctx.gh.pr(123).reviews();          // formal reviews
+const checks = await ctx.gh.pr(123).checks();            // CI check runs
+const files = await ctx.gh.pr(123).files();              // changed files + patches
+
+// Write
+await ctx.gh.pr(123).edit({ title: "New title", addLabels: ["qa:pass"], removeLabels: ["qa:fail"] });
+await ctx.gh.pr(123).merge({ method: "squash", deleteBranch: true });
+await ctx.gh.pr(123).comment("LGTM");
+await ctx.gh.pr(123).replyToInlineThread(commentId, "Fixed");
+await ctx.gh.pr(123).requestReview("reviewer-login");
+
+// Combined: all 4 comment surfaces in parallel
+const surfaces = await ctx.gh.pr(123).allCommentSurfaces({ linkedIssue: 456 });
+// → { bodyComments, inlineComments, reviews, issueComments,
+//     unresolvedThreadCount, byAuthor, substantiveByAuthor }
+```
+
+### Issue operations
+
+```typescript
+const issue = await ctx.gh.issue(456).body();
+const comments = await ctx.gh.issue(456).comments();
+await ctx.gh.issue(456).comment("Acknowledged");
+await ctx.gh.issue(456).edit({ state: "closed", labels: ["wontfix"] });
+```
+
+### Repo operations
+
+```typescript
+const labels = await ctx.gh.repo().labels();
+const results = await ctx.gh.repo().searchIssues({ query: "is:open label:bug" });
+```
+
+### Escape hatches
+
+```typescript
+// GraphQL
+const data = await ctx.gh.graphql<{ viewer: { login: string } }>("{ viewer { login } }");
+
+// Arbitrary REST
+const result = await ctx.gh.rest("POST", "/repos/o/r/labels", { name: "new-label", color: "ff0000" });
+
+// Rate limit check
+const info = await ctx.gh.rateLimit();  // { limit, remaining, reset, used }
+```
+
+### Error handling
+
+All methods throw typed errors on failure:
+
+| Error | When |
+|-------|------|
+| `GhAuthError` | 401 or 403 (non-rate-limit) |
+| `GhRateLimitError` | 403 with `remaining=0` or 429 |
+| `GhNotFoundError` | 404 |
+| `GhValidationError` | 422 or GraphQL errors |
+| `GhServerError` | 5xx after retry exhaustion |
+
+The client automatically retries on 401 (token refresh), 429 (respects
+`Retry-After`), and 5xx (exponential backoff, 3 attempts).
 
 ## What a handler should return
 

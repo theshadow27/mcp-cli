@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhResult } from "../.claude/phases/gh";
+import type { GhResult } from "../.claude/phases/qa-fn";
 import { QA_FAIL_CAP, type QaDeps, type QaState, type QaWork, readQaLabels, runQa } from "../.claude/phases/qa-fn";
 
 function ok(stdout = ""): GhResult {

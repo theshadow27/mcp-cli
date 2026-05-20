@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type MergePrDeps, mergePr } from "../.claude/phases/done-fn";
-import type { GhResult } from "../.claude/phases/gh";
+import type { GhResult } from "../.claude/phases/done-fn";
 
 function ok(stdout = ""): GhResult {
   return { stdout, stderr: "", exitCode: 0 };

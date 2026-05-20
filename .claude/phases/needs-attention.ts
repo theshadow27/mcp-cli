@@ -8,7 +8,6 @@
  * done).
  */
 import { defineAlias, z } from "mcp-cli";
-import { prComment, prEdit } from "./gh";
 import { runNeedsAttention } from "./needs-attention-fn";
 
 defineAlias({
@@ -41,8 +40,16 @@ defineAlias({
       { id: work.id, prNumber: work.prNumber, issueNumber: work.issueNumber },
       ctx.state,
       {
-        prEdit,
-        prComment,
+        async prEdit(prNumber, flags) {
+          const removeLabels: string[] = [];
+          for (let i = 0; i < flags.length; i += 2) {
+            if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
+          }
+          await ctx.gh.pr(prNumber).edit({ removeLabels });
+        },
+        async prComment(prNumber, body) {
+          await ctx.gh.pr(prNumber).comment(body);
+        },
         updateWorkItemPhase: (id, phase) =>
           ctx.mcp._work_items.work_items_update({ id, phase }),
       },

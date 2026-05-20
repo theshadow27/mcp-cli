@@ -12,7 +12,6 @@
  * untrack directly.
  */
 import { defineAlias, z } from "mcp-cli";
-import { gh, prMerge, prView, spawn } from "./gh";
 import { mergePr } from "./done-fn";
 
 defineAlias({
@@ -46,7 +45,55 @@ defineAlias({
       );
     }
 
-    const result = await mergePr(work.prNumber, { gh, prMerge, prView, spawn });
+    const result = await mergePr(work.prNumber, {
+      async gh(args) {
+        try {
+          const prNum = Number(args[2]);
+          const jsonField = args[4];
+          if (jsonField === "labels") {
+            const pr = await ctx.gh.pr(prNum).body();
+            return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
+          }
+          if (jsonField === "statusCheckRollup") {
+            const checks = await ctx.gh.pr(prNum).checks();
+            const failing = checks.check_runs.filter((c) => c.conclusion !== "SUCCESS" && c.conclusion !== null);
+            return { stdout: String(failing.length), stderr: "", exitCode: 0 };
+          }
+          return { stdout: "", stderr: `unsupported gh args: ${args.join(" ")}`, exitCode: 1 };
+        } catch (err) {
+          return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
+        }
+      },
+      async prMerge(prNumber, flags) {
+        try {
+          const method = flags.includes("--squash") ? "squash" as const
+            : flags.includes("--rebase") ? "rebase" as const
+            : "merge" as const;
+          const deleteBranch = flags.includes("--delete-branch");
+          await ctx.gh.pr(prNumber).merge({ method, deleteBranch });
+          return { stdout: "", stderr: "", exitCode: 0 };
+        } catch (err) {
+          return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
+        }
+      },
+      async prView(prNumber, _fields, _jqExpr?) {
+        const pr = await ctx.gh.pr(prNumber).body();
+        return pr.state.toUpperCase();
+      },
+      async spawn(cmd, opts) {
+        const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+        const timer = opts?.timeoutMs
+          ? setTimeout(() => { try { proc.kill(); } catch {} }, opts.timeoutMs)
+          : null;
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (timer) clearTimeout(timer);
+        return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+      },
+    });
     if (!result.ok) {
       return {
         merged: false,
@@ -84,8 +131,15 @@ defineAlias({
       await ctx.state.delete(key);
     }
 
-    const pull = await spawn(["git", "pull"], { timeoutMs: 60_000 });
-    const pullWarning = pull.exitCode !== 0 ? `git pull failed (exit ${pull.exitCode}): ${pull.stderr}` : undefined;
+    const pullProc = Bun.spawn(["git", "pull"], { stdout: "pipe", stderr: "pipe" });
+    const pullTimer = setTimeout(() => { try { pullProc.kill(); } catch {} }, 60_000);
+    const [_pullOut, pullStderr, pullExitCode] = await Promise.all([
+      new Response(pullProc.stdout).text(),
+      new Response(pullProc.stderr).text(),
+      pullProc.exited,
+    ]);
+    clearTimeout(pullTimer);
+    const pullWarning = pullExitCode !== 0 ? `git pull failed (exit ${pullExitCode}): ${pullStderr.trim()}` : undefined;
     const localCleanup = [result.localCleanup, pullWarning].filter(Boolean).join("; ") || undefined;
 
     return {
