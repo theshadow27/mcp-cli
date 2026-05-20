@@ -8,8 +8,9 @@
  * Provider-specific flags (--headed, --agent, --provider) are gated by feature flags.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
@@ -82,6 +83,8 @@ export interface AgentDeps extends SharedSessionDeps {
   pollMail: (recipient: string) => Promise<MailMessage | null>;
   /** Read a file by path, enforcing size limits. Injected for testability. */
   readFileWithLimit: (path: string) => string;
+  /** Find JSONL transcript files for a given worktree cwd. Injected for testability. */
+  findJsonlTranscripts: (cwd: string) => string[];
 }
 
 function makeCallTool(provider: AgentProvider): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
@@ -192,7 +195,25 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
       };
     },
     readFileWithLimit,
+    findJsonlTranscripts: defaultFindJsonlTranscripts,
   };
+}
+
+/**
+ * Find JSONL transcript files for a given worktree cwd.
+ * Claude Code stores transcripts at ~/.claude/projects/<dash-encoded-cwd>/<sessionId>.jsonl
+ */
+function defaultFindJsonlTranscripts(cwd: string): string[] {
+  const encoded = cwd.replace(/\//g, "-");
+  const dir = join(homedir(), ".claude", "projects", encoded);
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
 }
 
 // ── Helpers ──
@@ -1383,9 +1404,16 @@ async function resumeAgentWorktree(
         ]);
         const commitsAhead = Number.parseInt(countOutput.trim(), 10) || 0;
         if (commitsAhead > 0) {
-          d.printError(
-            `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
-          );
+          const transcripts = d.findJsonlTranscripts(wt.path);
+          if (transcripts.length > 0) {
+            d.printError(
+              `Skipping "${branch}" — branch looks merged into ${defaultBranch} but has a session transcript at ${transcripts[0]}. Use --force to resume anyway.`,
+            );
+          } else {
+            d.printError(
+              `Skipping "${branch}" — already merged into ${defaultBranch}. Use "mcx agent ${provider.name} worktrees --prune" to clean up.`,
+            );
+          }
           return true;
         }
       }

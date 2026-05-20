@@ -33,6 +33,7 @@ function makeDeps(overrides?: Partial<AgentDeps>): AgentDeps {
     exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     pollMail: mock(async () => null),
     readFileWithLimit: mock(() => "file content"),
+    findJsonlTranscripts: mock(() => []),
     ...overrides,
   };
 }
@@ -936,6 +937,51 @@ describe("agent codex resume", () => {
     } finally {
       mc.restore();
     }
+  });
+
+  test("shows transcript path hint when merged branch has a JSONL transcript", async () => {
+    const mergedExec = mock((cmd: string[]) => {
+      const cmdStr = cmd.join(" ");
+      if (cmdStr.includes("worktree list")) {
+        return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+      }
+      if (cmdStr.includes("branch --merged")) {
+        return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+      }
+      if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+        return { stdout: "3\n", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const deps = makeResumeDeps({
+      exec: mergedExec,
+      findJsonlTranscripts: mock(() => ["/home/user/.claude/projects/-repo-.claude-worktrees-codex-wt1/abc123.jsonl"]),
+    });
+    await expect(cmdAgent(["codex", "resume", "codex-wt1"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("session transcript at"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--force"));
+    expect(deps.printError).not.toHaveBeenCalledWith(expect.stringContaining("already merged"));
+  });
+
+  test("shows generic prune message when merged branch has no transcript", async () => {
+    const deps = makeResumeDeps({
+      exec: mock((cmd: string[]) => {
+        const cmdStr = cmd.join(" ");
+        if (cmdStr.includes("worktree list")) {
+          return { stdout: WORKTREE_LIST_PORCELAIN, stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("branch --merged")) {
+          return { stdout: "  main\n  feat/issue-42-fix-bug\n", stderr: "", exitCode: 0 };
+        }
+        if (cmdStr.includes("rev-list") && cmdStr.includes("--count")) {
+          return { stdout: "3\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      findJsonlTranscripts: mock(() => []),
+    });
+    await expect(cmdAgent(["codex", "resume", "codex-wt1"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("already merged"));
   });
 
   test("resumes merged branch with zero commits ahead (review/QA worktree)", async () => {
