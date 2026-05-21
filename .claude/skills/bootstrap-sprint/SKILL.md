@@ -19,15 +19,18 @@ Read `references/why-this-works.md` first. Then proceed.
 ## Workflow
 
 1. Read `references/why-this-works.md` — internalize that this is proven, not speculative
-2. Read `references/discovery.md` — explore the target project systematically
-3. Read `references/design.md` — design the sprint skill tailored to what you found
-4. Read `references/iteration.md` — set expectations and plan for improvement
-5. Execute the kickoff checklist at the end of `references/iteration.md`
+2. Read `references/lessons.md` — 36 generalised lessons from 49+ sprints; this
+   is the operating manual for everything that follows. Re-read it after the
+   first retro and after every introspection round.
+3. Read `references/discovery.md` — explore the target project systematically
+4. Read `references/design.md` — design the sprint skill tailored to what you found
+5. Read `references/iteration.md` — set expectations and plan for improvement
+6. Execute the kickoff checklist at the end of `references/iteration.md`
 
-**Migrating an existing sprint skill** (e.g. one written ~20 sprints ago that
+**Migrating an existing sprint skill** (e.g. one written 20+ sprints ago that
 hasn't kept pace with the current `mcx` CLI): read `references/upgrading-30-50.md`
-instead. It has the diagnostic walk + S/M/L upgrade buckets so you can stage
-the migration without rebuilding from scratch.
+instead. It has the diagnostic walk + S / M / L / Sprint-50+ upgrade buckets so
+you can stage the migration without rebuilding from scratch.
 
 ## Arguments
 

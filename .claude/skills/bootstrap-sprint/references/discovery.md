@@ -69,6 +69,19 @@ work cleanly in worktrees:
 - **Ports**: Does the dev server bind a fixed port? Concurrent worktrees will collide.
 - **Build artifacts**: Are there generated files that get confused across worktrees?
 - **Environment files**: `.env` files may need copying or symlinking.
+- **`core.hooksPath` inheritance**: check `git -C <base-repo> config --local
+  core.hooksPath`. If it returns an *absolute* path, every worktree inherits it
+  and pre-commit hooks may silently no-op against the wrong working tree.
+  Either change the value to a relative path (e.g. `.git-hooks`) in the base
+  repo, or document a per-worktree fix that runs `git config core.hooksPath
+  .git-hooks` after every `git worktree add`. Verify by creating a throwaway
+  worktree and committing a known-bad change; the hook must reject it.
+- **Phantom local commits on main**: if previous sessions ran without strict
+  worktree isolation, workers may have committed directly to the base repo's
+  main checkout. Before bootstrap, run `git fetch origin main && git log
+  HEAD ^origin/main --oneline` in the base repo — expect empty output. If
+  there's anything there, save it to a backup branch and reset to origin/main
+  before proceeding; otherwise sprint 1 starts with corrupted state.
 
 Check for `.mcx-worktree.json` or similar worktree hooks. If none exist, you may
 need to create worktree setup/teardown scripts.

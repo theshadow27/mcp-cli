@@ -2,10 +2,11 @@
 
 Sprint 1 will not be perfect. That's expected and fine.
 
-The mcp-cli project — which now runs 14-PR sprints like clockwork — took 20 sprints
-to get to v1.0. The first sprints were messy. Sessions got stuck in retry loops.
-Worktrees collided. The orchestrator lost track of state. A single bad pre-commit
-hook burned $2,700 overnight. These are not failures of the approach — they're the
+The mcp-cli project — which now sustains 13–14 merged PRs per sprint and peaked at
+21 in one sprint — took ~20 sprints to ship v1.0 and is on v1.10.x at sprint 59.
+The first sprints were messy. Sessions got stuck in retry loops. Worktrees
+collided. The orchestrator lost track of state. A single bad pre-commit hook
+burned $2,700 overnight. These are not failures of the approach — they're the
 normal cost of building a system that learns.
 
 What matters is not perfection on sprint 1. What matters is that sprint 2 is better
@@ -80,10 +81,11 @@ either the sprint was perfect (unlikely) or the retro was shallow.
 
 ### Re-read the lessons after every retro
 
-`references/lessons.md` contains 20 lessons from 22 sprints. After your first retro,
-re-read them. You'll recognize patterns you hit. After your third retro, you'll have
-your own lessons to add. The lessons file is a living document — update it with
-project-specific learnings that are general enough to apply elsewhere.
+`references/lessons.md` collects 36 general-purpose lessons distilled from 49+
+sprints of operational experience. After your first retro, re-read them. You'll
+recognize patterns you hit. After your third retro, you'll have your own lessons
+to add. The lessons file is a living document — update it with project-specific
+learnings that are general enough to apply elsewhere.
 
 ### The skill files are living documents
 
@@ -118,12 +120,25 @@ item should be confirmed before proceeding to the next.
 
 ```
 [ ] Sprint skill files written and committed
-    - SKILL.md (router)
+    - SKILL.md (router with auto-chain routing for /sprint and explicit
+      /sprint run, /sprint review, /sprint retro entry points)
     - references/plan.md
     - references/run.md
-    - references/review.md (or combined review+retro)
-    - references/mcx-claude.md
-    - Any additional references (gates.md, etc.)
+    - references/review.md (release / changelog phase)
+    - references/retro.md (diary phase — separate from review, even if
+      the user invokes them together via auto-chain)
+    - references/mcx-claude.md (session management reference; include
+      the "Session Scoping" + "Diagnosing missing sessions" sections
+      verbatim)
+    - references/investigations.md (nerd-snipe gate for flaky / recurring
+      / unclear-mechanism issues — required even for projects that
+      think they don't have flaky tests yet)
+    - references/compaction-survival.md (what survives compaction, the
+      5-command recovery sequence, re-pairing sessions to work items)
+    - references/introspection.md (sprints-ending-in-7 cadence for
+      code-first audits; the round feeds the next sprint's plan)
+    - Optional: references/gates.md (only if the project has >3
+      distinct promotion gates beyond CI/tests/review)
 
 [ ] Phase graph scaffolded and installed
     - .mcx.yaml at repo root declares phases + transitions (see docs/phases.md)
@@ -182,10 +197,28 @@ item should be confirmed before proceeding to the next.
       and remove the corresponding references from the sprint skill files.
 
 [ ] Infrastructure verified
-    - mcx daemon is running
+    - mcx daemon is running (`mcx status` reports a healthy daemon)
     - Worktrees can be created and tests run in them
+    - **Worktree `core.hooksPath` inheritance**: if the base repo has
+      `core.hooksPath` set to an absolute path, every worktree inherits
+      it and pre-commit hooks may silently no-op. Either set the value
+      to a *relative* path in the base repo (e.g. `.git-hooks`), or
+      script the per-worktree fix: `git -C <worktree> config
+      core.hooksPath .git-hooks` after each `git worktree add`.
+      Verify by creating a throwaway worktree and committing a known-
+      bad change; the hook must reject it.
     - gh CLI is authenticated and can create PRs/issues
     - CI pipeline is functional
+    - **Sprint-active sentinel** — add `.claude/sprints/.active` to
+      `.gitignore` (one line). The sprint skill writes the current
+      sprint number to it at run start and removes it at retro;
+      pre-commit hooks on the main checkout reject commits while it
+      exists (orchestrator commits use `SPRINT_OVERRIDE=1`).
+    - **`mcx pr merge` (not `gh pr merge --auto`)** as the canonical
+      merge command in phase scripts and prose. `mcx pr merge`
+      handles re-arming after force-push and surfaces failures to the
+      event stream; `gh pr merge --auto` silently fails on some
+      branch-protection configurations.
 
 [ ] Sprint 1 planned
     - Run /sprint plan
