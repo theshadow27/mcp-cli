@@ -79,12 +79,16 @@ mcx call server tool '{...}'
   +-> mcpd (daemon)         auto-starts on first call, stays alive 5min
   |     +-> server-pool      persistent connections (stdio, SSE, HTTP)
   |     +-> auth             OAuth/PKCE + macOS Keychain (reads Claude Code tokens)
-  |     +-> SQLite           tool cache, usage stats, auth tokens
+  |     +-> SQLite           tool cache, usage stats, auth tokens, work items, spans
+  |     +-> event bus        unified stream of session/work-item/CI/PR/cost events
+  |     +-> phase engine     `.mcx.yaml` → declarative work-item state machine
   |
   +-> stdout (JSON)          pipe to jq, scripts, other tools
 ```
 
 The `mcx` CLI is a thin client. The `mcpd` daemon manages connections, auth, and caching over a Unix socket. First call cold-starts the daemon (~2s); every call after that is instant.
+
+Beyond raw MCP calls, the daemon also hosts Claude / Codex / Copilot / Gemini / OpenCode / ACP sessions, a unified event bus (`mcx monitor`), a per-work-item phase state machine (`mcx phase`, `.mcx.yaml`), and reactive automation modules — see [Monitoring & Events](#monitoring--events) and [Phases & Automation](#phases--automation).
 
 ## Commands
 
@@ -139,11 +143,19 @@ mcx shutdown                        # stop the daemon (legacy shorthand)
 mcx version                         # show CLI, daemon, and protocol versions
 mcx upgrade                         # install latest release binaries
 mcx upgrade --check                 # check for updates without installing
+mcx update                          # update server entries from registry
 mcx metrics                         # show daemon metrics (Prometheus-style)
 mcx spans                           # list trace spans
 mcx spans prune                     # delete exported spans
 mcx logs <server> [-f]              # view server stderr output
 mcx logs --daemon [-f]              # view daemon log file
+mcx dump                            # snapshot daemon state for bug reports
+mcx dump --stdout                   # write JSON to stdout instead of a file
+mcx dump --include-transcripts      # include the last 50 lines of each session log
+mcx gc                              # prune merged branches + stale worktrees
+mcx gc --dry-run                    # preview without changing anything
+mcx telemetry                       # show telemetry status
+mcx telemetry off                   # opt out of telemetry (see PRIVACY.md)
 ```
 
 ### Registry
@@ -277,6 +289,72 @@ mcx tracked --json               # machine-readable output
 mcx tracked --phase <phase>      # filter by phase (impl/review/repair/qa/done)
 ```
 
+### Monitoring & Events
+
+The daemon hosts a unified event bus that fan-outs everything happening across servers, sessions, work items, PRs, CI, and cost/quota. Stream it with `mcx monitor`:
+
+```bash
+mcx monitor                                  # human-readable one-liner per event (TTY)
+mcx monitor --json                           # NDJSON to stdout (pipe to jq)
+mcx monitor --subscribe session,work_item    # filter by category
+mcx monitor --session <id>                   # one session
+mcx monitor --pr <n>                         # one PR
+mcx monitor --work-item <id>                 # one work item (e.g. "#1441")
+mcx monitor --type session.idle              # one event type
+mcx monitor --phase impl                     # only items in this phase
+mcx monitor --all-repos                      # disable repo scoping
+mcx monitor --until 'pr.merged'              # exit when this event fires (glob)
+mcx monitor --timeout 60                     # exit after N seconds
+mcx monitor --max-events 1                   # exit after N events
+mcx monitor --response-tail <id>             # include session.response chunks (debug)
+```
+
+Event types include `session.idle`, `session.result`, `session.permission_request`, `session.stuck`, `ci.started` / `ci.running` / `ci.finished` (with per-check conclusions + `allGreen`), `pr.merge_state_changed` (with `cascadeHead`), `pr.review_comment_posted`, `work_item.phase_changed`, `cost.session_over_budget` / `cost.sprint_over_budget`, `quota.utilization_threshold`, `daemon.restarted`, `worker.ratelimited`.
+
+Payloads come pre-enriched — `cost`, `turns`, `lastTool`, `resultPreview`, `allGreen`, etc. — so orchestrators react push-shaped without a 5-lookup hydration loop. This is the load-bearing primitive for the `/sprint` skill; see [.claude/skills/sprint/README.md](.claude/skills/sprint/README.md).
+
+### Phases & Automation
+
+`mcx` ships a declarative phase engine for work items. Declare a state machine in `.mcx.yaml` at the repo root, write each phase as a `defineAlias` script under `.claude/phases/`, and the daemon drives transitions per work item:
+
+```bash
+mcx phase list                                # all phases + install status
+mcx phase show <name> [--full]                # source, schema, declared transitions
+mcx phase install                             # hash sources, write .mcx.lock
+mcx phase check                               # verify lock matches sources (CI gate)
+mcx phase why <from> <to>                     # is this transition legal?
+mcx phase run <name> --work-item <id>         # execute handler; returns action JSON
+mcx phase run <name> --dry-run                # preview without side effects
+mcx phase advance --work-item <id>            # run current phase, follow goto/spawn chain
+```
+
+Handler return shape: `{ action: "spawn" | "wait" | "goto" | "in-flight", ... }`. The orchestrator pipes this to decide what to do next (spawn a session, wait for an external event, transition phases, etc.).
+
+Automation modules are declared under `automation:` in `.mcx.yaml` and fire reactively off the event bus:
+
+```bash
+mcx automation list              # all modules + status
+mcx automation show <name>       # module details
+mcx automation log [name]        # recent fires (use --limit N)
+```
+
+See [`docs/phases.md`](docs/phases.md) for the manifest schema and authoring guide.
+
+### PR Helpers
+
+Worktree-aware GitHub PR helpers (don't trip over `gh pr merge --delete-branch`'s local-branch cleanup):
+
+```bash
+mcx pr merge <pr>                            # squash-merge (default)
+mcx pr merge <pr> --rebase                   # rebase-merge
+mcx pr merge <pr> --merge                    # merge commit
+mcx pr merge <pr> --auto                     # enable auto-merge
+mcx pr merge <pr> --auto --wait              # arm auto-merge + block until MERGED
+mcx pr merge <pr> --auto --wait --timeout <ms>
+```
+
+`mcx pr merge` never deletes local branches — use `mcx claude bye` or `mcx gc` for worktree/branch cleanup once a PR is merged.
+
 ### Virtual Filesystem
 
 Clone remote content (e.g. Confluence spaces) as local git repos, edit locally, and push changes back:
@@ -298,6 +376,27 @@ mcx note set <server>.<tool> "note text"  # attach a note to a tool
 mcx note get <server>.<tool>              # read a note
 mcx note ls                               # list all notes
 mcx note rm <server>.<tool>              # remove a note
+```
+
+### Sites (browser-mediated APIs)
+
+`mcx site` exposes named HTTP calls that proxy through a harvested browser session — useful for Teams, Outlook, and other web apps that don't have a public API. The catalog is defined in `~/.mcp-cli/sites/`.
+
+```bash
+mcx sites                                       # list configured sites
+mcx site calls <site>                           # list named calls
+mcx site describe <site> <call>                 # show URL, params, jq transforms
+mcx site call <site> <call> --<key> <value>     # invoke a call
+mcx site browser [sites...]                     # open the harvest browser
+mcx site disconnect                             # stop the browser
+mcx site wiggle [site]                          # run the site's keep-alive script
+```
+
+### Memory
+
+```bash
+mcx memory audit         # Haiku-driven staleness + contradiction check
+mcx memory audit --json  # machine-readable (consumed by retro skills)
 ```
 
 ### Scopes
@@ -348,16 +447,18 @@ See [`skill/SKILL.md`](skill/SKILL.md) for the skill definition.
 
 ```
 packages/
-  core/      Shared types, IPC protocol, config types, env expansion
-  daemon/    mcpd — background daemon, server pool, auth, SQLite
-  command/   mcx — CLI entry point, output formatting, alias runner
+  core/      Shared types, IPC protocol, event types, phase manifest, env expansion
+  daemon/    mcpd — server pool, auth, SQLite, event bus, work items, phase engine,
+             agent session hosts (claude, codex, acp, opencode, copilot, gemini, mock)
+  command/   mcx — CLI entry point (main.ts), command dispatch, alias runner
   control/   mcpctl — React/Ink TUI dashboard
 ```
 
 - **Runtime:** [Bun](https://bun.sh) (build, test, compile, SQLite)
 - **Prod dependencies:** `@modelcontextprotocol/sdk`, `zod` (v4)
 - **Transports:** stdio, SSE, Streamable HTTP
-- **State:** `~/.mcp-cli/` — SQLite db, aliases, PID file, Unix socket
+- **State:** `~/.mcp-cli/` — SQLite db (servers, aliases, work items, spans, events), PID file, Unix socket
+- **Event bus:** unified per-daemon stream with server-side filtering; consumed by `mcx monitor`, phase scripts (`ctx.waitForEvent`), and automation modules
 
 ## Development
 
