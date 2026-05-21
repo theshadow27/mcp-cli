@@ -358,21 +358,43 @@ is remote. Sprints that ship 10+ PRs in parallel hit this routinely — sibling
 rebases, branch protection re-evaluation, and label changes can all invalidate
 a queued auto-merge between "queued" and "merged."
 
-### Repo type affects the merge model
+### Branch protection: avoid strict-up-to-date, lean on main-CI
 
-Check `gh api users/<owner> --jq .type` during discovery:
+Whatever branch protection / ruleset governs main, **strict-up-to-date must
+be off**. On GitHub, that's `strict_required_status_checks_policy: false` on
+the required-status-checks rule of the ruleset that targets main. The strict
+policy creates an N² rebase cascade on any sprint that ships >5 parallel PRs:
+each merge invalidates every other PR's up-to-date status, and the
+orchestrator collapses into a serialized loop calling `update-branch` +
+waiting for CI + merging, one PR at a time. Sprint 38 on mcp-cli paid for an
+hour of that before flipping the rule; the 11 queued PRs merged in under a
+minute after the flip.
 
-- **`Organization`** (Team or Enterprise Cloud): native GitHub merge queue is
-  available. Use it. The phase graph collapses to "qa:pass → enqueue → done."
-- **`User`** (personal account): merge queue is **not available at any tier**
-  and does not appear in the UI. The substitute is a long-lived "mergemaster"
-  sonnet session started at sprint kickoff (no worktree, just `gh pr
-  update-branch --rebase` + poll CI + let `mcx pr merge --auto` fire) and fed
-  PRs as they hit `qa:pass`. Document the trade-off in the generated `run.md`
-  so the next operator understands why the workflow uses an agent instead of
-  the native feature. Many maintainers migrate single-project repos into a
-  personal org specifically to unlock merge queue (and team-level CODEOWNERS,
-  per-team runner groups, IP allowlisting, SSO); mention both paths.
+What replaces strict-up-to-date:
+
+1. **`addBlockedBy` edges on hot-shared files at planning time.** Picks that
+   touch a dispatch table / router / registry / feature-flag map serialize
+   through the dependency graph — second PR rebases naturally after the
+   first merges. Most PRs don't need this; only the hot-shared subset does.
+   See lesson #32 in `lessons.md` for the task-list shape.
+2. **Main-CI as the post-merge canary.** If a merge cluster lands and main
+   goes red, the release gate (explicit `/release` at sprint boundary,
+   refusing to tag if main-CI is red) is the backstop.
+
+Avoid the "mergemaster" anti-pattern. mcp-cli briefly ran a long-lived sonnet
+session that polled `gh pr update-branch --rebase` + CI + auto-merge as PRs
+hit `qa:pass`, on the theory that User-owned repos without merge queue
+needed an orchestrator-side substitute. It worked, but it papered over the
+underlying mistake — the strict policy itself. The agent was retired in
+sprint 41 (commit `f952eae`, closes #1866) once the simpler fix was in
+place. If you find yourself reaching for an orchestrator-side merge
+shepherd, you're almost certainly fixing the wrong layer.
+
+GitHub's native merge queue is **org-only** (Team or Enterprise Cloud) and
+does not appear in the UI on User-owned repos at any tier. Check `gh api
+users/<owner> --jq .type` during discovery. It's nice to have for very-high-
+throughput orgs but not necessary — relaxed strict + planning-time
+serialization-by-exception keeps throughput high without the dependency.
 
 ## What to produce
 
