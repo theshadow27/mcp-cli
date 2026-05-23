@@ -60,7 +60,7 @@ The gate is for issues where the wrong fix is worse than no fix.
 **Use `mcx claude spawn`, NOT the Agent tool / `subagent_type: "nerd-snipe"`.**
 
 ```bash
-mcx claude spawn --worktree --model opus -t "$(cat <<'PROMPT'
+mcx claude spawn --worktree --model opus --allow Read Glob Grep Write Edit Bash -t "$(cat <<'PROMPT'
 You are nerd-snipe (read .claude/agents/nerd-snipe.md directly first to
 ground in the persona — do NOT invoke the Agent tool yourself).
 
