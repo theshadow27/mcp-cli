@@ -165,6 +165,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
   const { prefix, label, overrides = {}, extraTools = [] } = opts;
   const p = (name: string) => `${prefix}_${name}`;
   const ov = (name: AgentToolName) => overrides[name];
+  const art = /^[aeiou]/i.test(label) ? "an" : "a";
 
   const schema = (name: AgentToolName, properties: Record<string, JsonSchemaProperty>, required?: readonly string[]) =>
     applyOmit(properties, required, ov(name)?.omitProperties);
@@ -287,7 +288,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
     // -- transcript --
     {
       name: p("transcript"),
-      description: ov("transcript")?.description ?? `Get recent transcript entries from a ${label} session.`,
+      description: ov("transcript")?.description ?? `Get recent transcript entries from ${art} ${label} session.`,
       inputSchema: {
         type: "object" as const,
         ...schema(
@@ -324,7 +325,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
     // -- approve --
     {
       name: p("approve"),
-      description: ov("approve")?.description ?? `Approve a pending permission request for a ${label} session.`,
+      description: ov("approve")?.description ?? `Approve a pending permission request for ${art} ${label} session.`,
       inputSchema: {
         type: "object" as const,
         ...schema(
@@ -345,7 +346,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
     // -- deny --
     {
       name: p("deny"),
-      description: ov("deny")?.description ?? `Deny a pending permission request for a ${label} session.`,
+      description: ov("deny")?.description ?? `Deny a pending permission request for ${art} ${label} session.`,
       inputSchema: {
         type: "object" as const,
         ...schema(

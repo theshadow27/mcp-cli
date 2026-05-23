@@ -133,7 +133,7 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
     "name": "opencode_bye",
   },
   {
-    "description": "Get recent transcript entries from a OpenCode session.",
+    "description": "Get recent transcript entries from an OpenCode session.",
     "inputSchema": {
       "properties": {
         "limit": {
@@ -174,7 +174,7 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
     "name": "opencode_wait",
   },
   {
-    "description": "Approve a pending permission request for a OpenCode session.",
+    "description": "Approve a pending permission request for an OpenCode session.",
     "inputSchema": {
       "properties": {
         "requestId": {
@@ -195,7 +195,7 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
     "name": "opencode_approve",
   },
   {
-    "description": "Deny a pending permission request for a OpenCode session.",
+    "description": "Deny a pending permission request for an OpenCode session.",
     "inputSchema": {
       "properties": {
         "requestId": {
