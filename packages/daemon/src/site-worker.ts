@@ -21,8 +21,10 @@ import { resolve as resolvePath } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createBrowserLock, withDeadline } from "./site/browser-lock";
-import type { BrowserEngine, BrowserEngineName, SiteSpec, StartSiteResult } from "./site/browser/engine";
+import { createBrowserHandlers, shouldAutoRestart } from "./site/browser-handlers";
+export { shouldAutoRestart, parseSitesArg } from "./site/browser-handlers";
+export type { LastBrowserSession } from "./site/browser-handlers";
+import type { SiteSpec } from "./site/browser/engine";
 import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
 import {
   type SiteConfig,
@@ -44,6 +46,8 @@ import { SITE_TOOLS, SITE_TOOL_NAMES } from "./site/tools";
 import { applyFetchFilter, applyJqInput, applyJqOutput } from "./site/transforms";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
+
+void shouldAutoRestart; // re-exported above; suppress unused warning
 
 // ── Control messages ──
 
@@ -69,67 +73,8 @@ let transport: WorkerServerTransport | null = null;
 
 const vault = new CredentialVault();
 const sniffer = new Sniffer(vault);
-let browser: BrowserEngine | null = null;
-let browserEngineName: BrowserEngineName | null = null;
-const sitesOpenInBrowser = new Set<string>();
 
-export interface LastBrowserSession {
-  engine: BrowserEngineName;
-  /** Site names that were open in the browser. */
-  siteNames: string[];
-}
-
-let lastBrowserSession: LastBrowserSession | null = null;
-
-/**
- * Whether an auto-restart should be attempted. Pure function for testability.
- * Returns true when a previous session exists and the vault is empty for the
- * target site. Vault-empty is the observable proxy for "browser may have died"
- * (e.g. after system sleep); browser liveness is not checked here.
- * tryAutoRestartBrowser will no-op immediately if the browser is still alive.
- */
-export function shouldAutoRestart(session: LastBrowserSession | null, vaultEmpty: boolean): boolean {
-  return session !== null && vaultEmpty;
-}
-
-// Serialises all operations that read-modify-write the `browser` module global,
-// preventing a concurrent observer handler from clearing the ref during start-up
-// (when browser is truthy but isRunning() is still false). See #1597.
-const withBrowserLock = createBrowserLock();
-
-async function snapshotBrowser(): Promise<BrowserEngine | null> {
-  return withBrowserLock(async () => {
-    resetIfBrowserDied();
-    return browser;
-  }, "snapshotBrowser");
-}
-
-// ── Lazy browser load ──
-
-async function loadBrowser(engine: BrowserEngineName): Promise<BrowserEngine> {
-  if (browser && browserEngineName === engine) return browser;
-  if (browser && browserEngineName !== engine) {
-    throw new Error(
-      `Browser already running with engine '${browserEngineName}'. Stop it with site_disconnect before switching to '${engine}'.`,
-    );
-  }
-  if (engine === "playwright") {
-    try {
-      const mod = await import("./site/browser/playwright");
-      return new mod.PlaywrightBrowserEngine();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/Cannot find (module|package)|ERR_MODULE_NOT_FOUND|Module not found/.test(msg)) {
-        throw new Error(
-          "Playwright is not installed. Sites with browser tools require the optional 'playwright' dependency: run `bun add -D playwright` and retry.",
-          { cause: err instanceof Error ? err : undefined },
-        );
-      }
-      throw err;
-    }
-  }
-  throw new Error(`Browser engine '${engine}' is not yet implemented. Use 'playwright'.`);
-}
+// ── Helpers for siteSpecFor ──
 
 function resolveProfileDir(cfg: SiteConfig): string {
   const raw = cfg.browser?.profileDir;
@@ -166,6 +111,27 @@ function requireSite(name: string): SiteConfig {
   if (!s) throw new Error(`Unknown site: ${name}`);
   return s;
 }
+
+// ── Browser handler factory ──
+// Production instance: uses real playwright + real site config.
+
+const browserHandlers = createBrowserHandlers({
+  getSiteFn: getSite,
+  listSitesFn: listSites,
+  siteSpecForFn: siteSpecFor,
+  sniffer,
+});
+
+const {
+  handleBrowserStart,
+  handleDisconnect,
+  handleWiggle,
+  handleEval,
+  handleColdStart,
+  snapshotBrowser,
+  tryAutoRestartBrowser,
+  getLastBrowserSession,
+} = browserHandlers;
 
 // ── Tool handlers ──
 
@@ -259,7 +225,7 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
 
   // Auto-restart if the browser died (e.g. system sleep) and the vault is empty for this site.
   // This avoids the confusing "No credentials available" error when the Chrome profile is intact.
-  if (shouldAutoRestart(lastBrowserSession, vault.getAll(site.name).length === 0)) {
+  if (shouldAutoRestart(getLastBrowserSession(), vault.getAll(site.name).length === 0)) {
     const restarted = await tryAutoRestartBrowser();
     if (restarted) browserSnapshot = await snapshotBrowser();
   }
@@ -322,161 +288,6 @@ function handleRemoveCall(args: Record<string, unknown>): ToolResult {
   return ok({ ok: true, removed });
 }
 
-/**
- * If the engine's underlying browser closed unexpectedly (user clicked X,
- * Chrome crashed, network disconnect), PlaywrightBrowserEngine's `ctx.on("close")`
- * listener clears its internal state but nothing notifies this outer module —
- * so `browser` stays truthy while every call fails. Detect and reset.
- */
-function resetIfBrowserDied(): void {
-  if (browser && !browser.isRunning()) {
-    browser = null;
-    browserEngineName = null;
-    sitesOpenInBrowser.clear();
-  }
-}
-
-/**
- * Silently restart the browser using the last known session config, then wiggle
- * each site to repopulate the credential vault. Returns true if the browser
- * started successfully (vault may still be empty if wiggle isn't configured).
- *
- * Called automatically from site_call when the browser has died and the vault
- * is empty — covers the common "laptop slept, Chrome was killed" case.
- *
- * Lock scope is intentionally limited to the start step. Wiggle runs outside
- * the lock so the per-site 15s deadlines don't block unrelated browser ops
- * (e.g. a concurrent site_disconnect or snapshotBrowser).
- */
-async function tryAutoRestartBrowser(): Promise<boolean> {
-  // Lock scope: browser global read-modify-write only. Values needed for the
-  // post-lock wiggle loop are returned from the callback so TypeScript can narrow them.
-  const locked = await withBrowserLock(async () => {
-    resetIfBrowserDied();
-    if (browser) return null; // another concurrent call already restarted it
-    if (!lastBrowserSession) return false as false;
-
-    const { engine, siteNames } = lastBrowserSession;
-    const configs: SiteConfig[] = [];
-    for (const name of siteNames) {
-      const s = getSite(name);
-      if (s) configs.push(s);
-    }
-    if (configs.length === 0) return false as false;
-
-    for (const s of configs) {
-      sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
-    }
-
-    const eng = await loadBrowser(engine);
-    const specs = configs.map(siteSpecFor);
-
-    try {
-      await withDeadline(60_000, "browser auto-restart", eng.start(specs, sniffer.asEvents()));
-    } catch {
-      await withDeadline(5_000, "browser stop on failed auto-restart", eng.stop()).catch(() => {});
-      return false as false;
-    }
-
-    browser = eng;
-    browserEngineName = engine;
-    for (const s of configs) sitesOpenInBrowser.add(s.name);
-
-    return { eng, configs };
-  }, "tryAutoRestartBrowser");
-
-  if (locked === false) return false;
-  if (locked === null) return true; // another concurrent call already restarted; skip wiggle
-
-  // Wiggle outside the lock — best-effort vault repopulation from fresh page requests.
-  // Per-site 15s deadlines don't block concurrent browser ops (snapshotBrowser, site_disconnect).
-  const { eng, configs } = locked;
-  for (const s of configs) {
-    try {
-      await withDeadline(15_000, "wiggle on auto-restart", eng.wiggle(s.name));
-    } catch {
-      // Best-effort — vault may also repopulate from background page activity.
-    }
-  }
-
-  return true;
-}
-
-const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";
-
-/** Validates and returns the `sites` argument as a dense, non-empty string array, or an error string. */
-export function parseSitesArg(sites: unknown): string[] | string {
-  if (!Array.isArray(sites)) return SITES_ARG_ERROR;
-  if (sites.length === 0) return SITES_ARG_ERROR;
-  for (let i = 0; i < sites.length; i++) {
-    if (!(i in sites)) return SITES_ARG_ERROR;
-  }
-  if (!sites.every((s) => typeof s === "string")) return SITES_ARG_ERROR;
-  return sites as string[];
-}
-
-async function handleBrowserStart(args: Record<string, unknown>): Promise<ToolResult> {
-  return withBrowserLock(async () => {
-    resetIfBrowserDied();
-    let siteNames: string[];
-    if ("sites" in args) {
-      const result = parseSitesArg(args.sites);
-      if (typeof result === "string") return error(result);
-      siteNames = result;
-    } else {
-      siteNames = listSites()
-        .filter((s) => s.enabled)
-        .map((s) => s.name);
-    }
-    const sites = siteNames.map((n) => requireSite(n));
-    if (sites.length === 0) return error("No sites configured");
-
-    const engine = (sites[0].browser?.engine ?? "playwright") as BrowserEngineName;
-    // Per-site engine mixing isn't supported in one context. Flag it clearly.
-    for (const s of sites) {
-      if ((s.browser?.engine ?? "playwright") !== engine) {
-        return error(
-          `All sites opened in one browser must use the same engine. Mixed: ${engine} vs ${s.browser?.engine}`,
-        );
-      }
-      sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
-    }
-
-    const eng = await loadBrowser(engine);
-    const specs = sites.map(siteSpecFor);
-    let startResults: StartSiteResult[];
-    try {
-      startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
-    } catch (err) {
-      // eng.start() timed out or threw — stop the partially-launched process so
-      // it doesn't leak, then re-throw so browser stays null.
-      await withDeadline(5_000, "browser stop on failed start", eng.stop()).catch(() => {});
-      throw err;
-    }
-    // Assign globals only after start() succeeds so a failed/timed-out start
-    // never leaves browser pointing at an unstarted engine.
-    browser = eng;
-    browserEngineName = engine;
-    for (const s of sites) sitesOpenInBrowser.add(s.name);
-    lastBrowserSession = { engine, siteNames: sites.map((s) => s.name) };
-
-    return ok({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
-  }, "handleBrowserStart");
-}
-
-async function handleDisconnect(): Promise<ToolResult> {
-  return withBrowserLock(async () => {
-    resetIfBrowserDied();
-    if (!browser) return ok({ ok: true, note: "browser was not running" });
-    await withDeadline(30_000, "browser stop", browser.stop());
-    browser = null;
-    browserEngineName = null;
-    sitesOpenInBrowser.clear();
-    lastBrowserSession = null; // intentional stop — don't auto-restart on next call
-    return ok({ ok: true });
-  }, "handleDisconnect");
-}
-
 function handleSniff(args: Record<string, unknown>): ToolResult {
   const site = requireSite(args.site as string);
   if (args.mode !== undefined) {
@@ -502,36 +313,6 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
       .slice(-limit),
     credentials: vault.getAll(site.name).map(summarizeCredential),
   });
-}
-
-async function handleWiggle(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await snapshotBrowser();
-  if (!snapshot) {
-    return error(
-      lastBrowserSession
-        ? "Browser session was dropped (system sleep or crash). Run 'mcx site browser' to re-attach — login is usually not required as your browser profile is preserved on disk."
-        : "Browser is not running. Start it with site_browser_start.",
-    );
-  }
-  const site = args.site as string | undefined;
-  const touched = await snapshot.wiggle(site);
-  return ok({ ok: true, touched });
-}
-
-async function handleEval(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await snapshotBrowser();
-  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
-  const code = args.code as string;
-  if (!code) return error("Missing 'code'");
-  const site = args.site as string | undefined;
-  return ok({ result: await snapshot.evalInPage(code, site) });
-}
-
-async function handleColdStart(args: Record<string, unknown>): Promise<ToolResult> {
-  const snapshot = await snapshotBrowser();
-  if (!snapshot) return error("Browser is not running. Start it with site_browser_start.");
-  const site = args.site as string | undefined;
-  return ok(await snapshot.coldStart(site));
 }
 
 async function dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -578,7 +359,6 @@ async function dispatch(name: string, args: Record<string, unknown>): Promise<To
 
 // Silence unused warnings for helpers that will be wired up when mcx auth integration lands (#1454 follow-up).
 void getSiteForDomain;
-void sitesOpenInBrowser;
 
 // ── Server startup ──
 
