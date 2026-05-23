@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
@@ -141,4 +141,47 @@ describe("embedded seed data (compiled-binary support)", () => {
       void seedName; // referenced in test name only
     }
   });
+});
+
+describe("seeds/ directory ↔ seeds.ts parity", () => {
+  const seedsDir = join(import.meta.dir, "seeds");
+
+  const diskSeeds = readdirSync(seedsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+
+  const registeredSeeds = Object.keys(BUILTIN_SEEDS).sort();
+
+  test("every directory under seeds/ has an entry in BUILTIN_SEEDS", () => {
+    const missing = diskSeeds.filter((d) => !registeredSeeds.includes(d));
+    expect(missing).toEqual([]);
+  });
+
+  test("every BUILTIN_SEEDS entry has a directory under seeds/", () => {
+    const orphaned = registeredSeeds.filter((s) => !diskSeeds.includes(s));
+    expect(orphaned).toEqual([]);
+  });
+
+  for (const seed of diskSeeds) {
+    describe(`seed "${seed}" file parity`, () => {
+      const seedDir = join(seedsDir, seed);
+
+      test("catalog.json exists on disk and is imported", () => {
+        expect(existsSync(join(seedDir, "catalog.json"))).toBe(true);
+        expect(BUILTIN_SEEDS[seed]?.catalog).toBeTruthy();
+      });
+
+      test("config.json exists on disk and is imported", () => {
+        expect(existsSync(join(seedDir, "config.json"))).toBe(true);
+        expect(BUILTIN_SEEDS[seed]?.config).toBeTruthy();
+      });
+
+      test("wiggle.js parity — if on disk then imported, and vice versa", () => {
+        const onDisk = existsSync(join(seedDir, "wiggle.js"));
+        const imported = typeof BUILTIN_SEEDS[seed]?.wiggleSrc === "string";
+        expect(imported).toBe(onDisk);
+      });
+    });
+  }
 });
