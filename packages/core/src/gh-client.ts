@@ -872,10 +872,10 @@ export class PrHandle {
     if (json.errors?.length) {
       throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
     }
-    return (json.data?.repository.pullRequest.reviewThreads.nodes ?? []).map((t) => ({
+    return (json.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []).map((t) => ({
       id: t.id,
       isResolved: t.isResolved,
-      comments: t.comments.nodes.map((c) => ({ author: c.author.login, body: c.body })),
+      comments: t.comments?.nodes?.map((c) => ({ author: c.author?.login ?? "ghost", body: c.body })) ?? [],
     }));
   }
 

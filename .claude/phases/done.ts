@@ -47,12 +47,11 @@ defineAlias({
 
     // Best-effort: resolve any open review threads before merge so the PR is visually clean.
     try {
-      const threads = await ctx.gh.pr(work.prNumber).reviewThreads();
-      await Promise.all(
-        threads
-          .filter((t) => !t.isResolved)
-          .map((t) => ctx.gh.pr(work.prNumber).resolveReviewThread(t.id).catch(() => {})),
-      );
+      const prHandle = ctx.gh.pr(work.prNumber);
+      const threads = await prHandle.reviewThreads();
+      for (const t of threads.filter((t) => !t.isResolved)) {
+        try { await prHandle.resolveReviewThread(t.id); } catch { /* best-effort */ }
+      }
     } catch {
       /* non-fatal — thread resolution is cosmetic; merge proceeds regardless */
     }
