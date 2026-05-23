@@ -224,7 +224,7 @@ describe("remote-protocol", () => {
     expect(errors[0]).toContain("provider unreachable");
   });
 
-  test("import error: calls onError with message and writes done terminator", async () => {
+  test("import error: calls onError with message and writes blank terminator (no done)", async () => {
     const errors: string[] = [];
     const handlers = makeHandlers({
       handleImport: async () => {
@@ -234,7 +234,7 @@ describe("remote-protocol", () => {
     const stdin = streamFrom("import refs/heads/main\n\n");
     const { stream, result } = collectStream();
     await runProtocol(stdin, stream, handlers, { marksDir: MARKS_DIR, onError: (msg) => errors.push(msg) });
-    expect(result()).toBe("done\n");
+    expect(result()).toBe("\n");
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("import failed");
     expect(errors[0]).toContain("import broken");

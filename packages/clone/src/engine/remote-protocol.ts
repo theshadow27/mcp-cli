@@ -124,7 +124,7 @@ export async function runProtocol(
           await writeLine(writer, response);
         } catch (err) {
           logError(`git-remote-mcx: import failed: ${errorMessage(err)}\n`);
-          await writeLine(writer, "done\n");
+          await writeLine(writer, "\n");
           return;
         }
       } else if (line === "export") {
