@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { OpenCodeSse, parseSseEvent } from "./opencode-sse";
 
+const POLL_MS = 10;
+const SLOW_POLL_MS = 100;
+
 // ── parseSseEvent (pure function tests) ──
 
 describe("parseSseEvent", () => {
@@ -106,7 +109,7 @@ describe("OpenCodeSse", () => {
             async start(controller) {
               controller.enqueue('event: ping\ndata: {"n":1}\n\n');
               // Wait a bit before sending more — gives time for disconnect
-              await Bun.sleep(100);
+              await Bun.sleep(SLOW_POLL_MS);
               try {
                 controller.enqueue('event: ping\ndata: {"n":2}\n\n');
                 controller.close();
@@ -147,7 +150,7 @@ describe("OpenCodeSse", () => {
     // consumeStream runs async — wait for close
     const deadline = Date.now() + 3000;
     while (!closed && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(events).toEqual([
@@ -177,7 +180,7 @@ describe("OpenCodeSse", () => {
     // Wait for stream to close
     const deadline = Date.now() + 3000;
     while (!closed && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
     expect(sse.connected).toBe(false);
   });
@@ -199,7 +202,7 @@ describe("OpenCodeSse", () => {
     // Instead, let's test with a URL that 404s since our baseUrl path is wrong.
     await sse.connect();
     // Give a tick for error handling
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("SSE connect failed");
@@ -222,7 +225,7 @@ describe("OpenCodeSse", () => {
     sse.disconnect();
     const deadline = Date.now() + 3000;
     while (!closed && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
   });
 
@@ -243,7 +246,7 @@ describe("OpenCodeSse", () => {
     // Wait to receive first event
     const deadline1 = Date.now() + 3000;
     while (events.length === 0 && Date.now() < deadline1) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     // Disconnect before second event
@@ -251,7 +254,7 @@ describe("OpenCodeSse", () => {
 
     const deadline2 = Date.now() + 3000;
     while (!closed && Date.now() < deadline2) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(events.length).toBe(1);
@@ -274,7 +277,7 @@ describe("OpenCodeSse", () => {
     await sse.connect();
     const deadline = Date.now() + 3000;
     while (!closed && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
     expect(closed).toBe(true);
   });
@@ -297,7 +300,7 @@ describe("OpenCodeSse", () => {
     await sse.connect();
     const deadline = Date.now() + 3000;
     while (!closed && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
     // Events arrive regardless of cwd encoding
     expect(events.length).toBe(2);

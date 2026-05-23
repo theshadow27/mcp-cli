@@ -73,6 +73,9 @@ function mockConfig() {
 
 const TEST_DAEMON_ID = "aabbccddee112233";
 const TEST_STARTED_AT = 1700000000000;
+const SLOW_HANDLER_MS = 200;
+const SETTLE_MS = 50;
+const TICK_MS = 10;
 
 /** Merge trace defaults into IpcServer options */
 function opts(overrides?: {
@@ -525,7 +528,7 @@ describe("IpcServer HTTP transport", () => {
       ...mockPool(),
       callTool: async () => {
         handlerEntered();
-        await Bun.sleep(200);
+        await Bun.sleep(SLOW_HANDLER_MS);
         return { content: [] };
       },
     };
@@ -1126,7 +1129,7 @@ describe("IpcServer HTTP transport", () => {
     const waitReq = rpc("/rpc", { id: "wm-drain", method: "waitForMail", params: { recipient: "mgr", timeout: 30 } });
 
     // Give it a moment to enter the poll loop
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
 
     // Trigger shutdown — this should cause waitForMail to return early
     const shutdownRes = await rpc("/rpc", { id: "sd-wm", method: "shutdown" });
@@ -1509,7 +1512,7 @@ describe("IpcServer HTTP transport", () => {
     const pool = {
       ...mockPool(),
       callTool: async () => {
-        await Bun.sleep(10);
+        await Bun.sleep(TICK_MS);
         return { content: [] };
       },
     };

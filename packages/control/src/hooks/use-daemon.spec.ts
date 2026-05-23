@@ -5,6 +5,9 @@ import { render } from "ink-testing-library";
 import React, { type FC } from "react";
 import { type UseDaemonOptions, useDaemon } from "./use-daemon";
 
+const FLUSH_MS = 10;
+const SETTLE_MS = 30;
+
 /* ---------- helpers ---------- */
 
 function daemonStatus(overrides: Partial<DaemonStatus> = {}): DaemonStatus {
@@ -29,7 +32,7 @@ const Harness: FC<{ opts: UseDaemonOptions; stateRef: { current: HookState } }> 
   return React.createElement(Text, null, "ok");
 };
 
-async function flush(ms = 10) {
+async function flush(ms = FLUSH_MS) {
   await Bun.sleep(ms);
 }
 
@@ -91,7 +94,7 @@ describe("useDaemon", () => {
     const ipcCallFn = async () => {
       concurrency++;
       maxConcurrency = Math.max(maxConcurrency, concurrency);
-      await Bun.sleep(30);
+      await Bun.sleep(SETTLE_MS);
       concurrency--;
       return daemonStatus();
     };

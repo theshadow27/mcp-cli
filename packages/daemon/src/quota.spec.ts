@@ -3,10 +3,14 @@ import { silentLogger } from "@mcp-cli/core";
 import type { ClaudeOAuthToken } from "./auth/keychain";
 import { QuotaPoller, type QuotaStatus, parseUsageResponse } from "./quota";
 
+const POLL_MS = 10;
+const SETTLE_MS = 50;
+const OBSERVE_MS = 250;
+
 async function waitUntil(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
 }
 
@@ -125,7 +129,7 @@ describe("QuotaPoller", () => {
 
     poller.start();
     // Negative assertion: no token → nothing should happen. Brief sleep is acceptable.
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
     poller.stop();
 
     expect(poller.status).toBeNull();
@@ -333,7 +337,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(250);
+    await Bun.sleep(OBSERVE_MS);
     poller.stop();
 
     const rateLimitWarnings = warnings.filter((w) => w.includes("rate-limited"));
@@ -362,7 +366,7 @@ describe("QuotaPoller", () => {
     });
 
     poller.start();
-    await Bun.sleep(250);
+    await Bun.sleep(OBSERVE_MS);
     poller.stop();
 
     const rateLimitWarnings = warnings.filter((w) => w.includes("rate-limited"));

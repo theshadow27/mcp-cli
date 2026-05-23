@@ -8,6 +8,7 @@ import { WorkItemPoller } from "./work-item-poller";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const TEST_REPO: RepoInfo = { owner: "test", repo: "repo" };
+const SETTLE_MS = 50;
 
 function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStatus {
   return {
@@ -335,7 +336,7 @@ describe("WorkItemPoller", () => {
       fetchPRs: async () => {
         concurrentCalls++;
         maxConcurrent = Math.max(maxConcurrent, concurrentCalls);
-        await Bun.sleep(50);
+        await Bun.sleep(SETTLE_MS);
         concurrentCalls--;
         return [makePRStatus({ number: 1 })];
       },
@@ -461,7 +462,7 @@ describe("WorkItemPoller", () => {
 
     poller.start();
     // Wait for the initial poll from start() to complete
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
     expect(poller.pollCount).toBe(1);
 
     // Reset state so the next poll sees a change
@@ -470,7 +471,7 @@ describe("WorkItemPoller", () => {
 
     poller.pollNow();
     // Wait for the triggered poll to complete
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
 
     expect(poller.pollCount).toBe(2);
     expect(events).toContainEqual({ type: "pr:merged", prNumber: 50, mergeSha: null });

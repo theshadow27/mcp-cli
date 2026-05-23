@@ -5,6 +5,8 @@ import { AcpSession, WATCHDOG_TIMEOUT_MS } from "./acp-session";
 
 const FAKE_AGENT = join(import.meta.dirname, "fake-acp-agent.ts");
 const TEST_CWD = process.cwd();
+const POLL_MS = 10;
+const OBSERVE_MS = 60;
 
 function makeSession(
   overrides: Partial<ConstructorParameters<typeof AcpSession>[1]> = {},
@@ -32,7 +34,7 @@ function fakeCommand(mode = "simple"): string[] {
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
   if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
@@ -379,7 +381,7 @@ describe("AcpSession watchdog", () => {
     });
 
     await session.start();
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(session.currentState).not.toBe("ended");
     expect(events.some((e) => e.type === "session:error")).toBe(false);
@@ -396,7 +398,7 @@ describe("AcpSession watchdog", () => {
     await session.start();
     session.terminate();
 
-    await Bun.sleep(60);
+    await Bun.sleep(OBSERVE_MS);
 
     const errorEvents = events.filter(
       (e): e is Extract<AgentSessionEvent, { type: "session:error" }> => e.type === "session:error",

@@ -5,6 +5,9 @@ import { CodexSession, WATCHDOG_TIMEOUT_MS } from "./codex-session";
 
 const FAKE_SERVER = join(import.meta.dirname, "fake-codex-server.ts");
 const TEST_CWD = process.cwd();
+const POLL_MS = 10;
+const SETTLE_MS = 50;
+const OBSERVE_MS = 60;
 
 function makeSession(
   overrides: Partial<ConstructorParameters<typeof CodexSession>[1]> = {},
@@ -27,7 +30,7 @@ function fakeCommand(mode = "simple"): string[] {
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
   if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
@@ -422,7 +425,7 @@ describe("CodexSession watchdog", () => {
     await session.start();
 
     // Wait a bit — watchdog should NOT fire (watchdogTimeoutMs: 0 = disabled)
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
 
     expect(session.currentState).not.toBe("ended");
     expect(events.some((e) => e.type === "session:error")).toBe(false);
@@ -442,7 +445,7 @@ describe("CodexSession watchdog", () => {
     session.terminate();
 
     // Wait past the watchdog timeout (50ms)
-    await Bun.sleep(60);
+    await Bun.sleep(OBSERVE_MS);
 
     // Should only have the terminate-caused events, no watchdog error
     const errorEvents = events.filter(

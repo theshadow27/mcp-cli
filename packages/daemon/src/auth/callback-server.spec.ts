@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
 
+const SETTLE_MS = 150;
+
 describe("startCallbackServer", () => {
   let server: CallbackServer | undefined;
 
@@ -120,7 +122,7 @@ describe("startCallbackServer", () => {
     await server.waitForCode;
 
     // Wait for the 50ms auto-stop delay
-    await Bun.sleep(150);
+    await Bun.sleep(SETTLE_MS);
 
     // Server should be stopped — fetch should fail
     try {

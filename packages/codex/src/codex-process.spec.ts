@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { CodexProcess } from "./codex-process";
 
+const POLL_MS = 10;
+
 describe("CodexProcess", () => {
   test("spawns a process and receives JSONL messages", async () => {
     const messages: Record<string, unknown>[] = [];
@@ -27,7 +29,7 @@ describe("CodexProcess", () => {
     // Wait for process to complete
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(messages).toHaveLength(2);
@@ -52,7 +54,7 @@ describe("CodexProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(errors).toHaveLength(1);
@@ -76,7 +78,7 @@ describe("CodexProcess", () => {
     // Wait for process to exit naturally after echoing
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(messages.length).toBeGreaterThanOrEqual(1);
@@ -102,7 +104,7 @@ describe("CodexProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(exitCalled).toBe(true);
@@ -147,7 +149,7 @@ describe("CodexProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(stderrChunks.join("")).toContain("error");

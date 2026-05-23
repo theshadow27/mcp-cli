@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { certPaths, ensureSelfSignedCert, generateSelfSignedCert, isCertFresh, readCachedCert } from "./self-signed";
 
+const POLL_MS = 20;
+
 function freshDir(): string {
   return mkdtempSync(join(tmpdir(), "tls-test-"));
 }
@@ -190,7 +192,7 @@ describe("integration: Bun.serve TLS handshake on [::1]", () => {
         `const ws = new WebSocket(${JSON.stringify(url)});
 const deadline = Date.now() + 4000;
 while (Date.now() < deadline && ws.readyState === WebSocket.CONNECTING) {
-  await Bun.sleep(20);
+  await Bun.sleep(${POLL_MS});
 }
 if (ws.readyState !== WebSocket.OPEN) {
   process.stderr.write('readyState=' + ws.readyState + '\\n');
@@ -216,7 +218,7 @@ process.stdout.write('OK');
       expect(exitCode).toBe(0);
       const handlerDeadline = Date.now() + 1_000;
       while (!opened && Date.now() < handlerDeadline) {
-        await Bun.sleep(20);
+        await Bun.sleep(POLL_MS);
       }
       expect(opened).toBe(true);
     } finally {
@@ -249,7 +251,7 @@ process.stdout.write('OK');
         `const ws = new WebSocket(${JSON.stringify(url)});
 const deadline = Date.now() + 4000;
 while (Date.now() < deadline && ws.readyState === WebSocket.CONNECTING) {
-  await Bun.sleep(20);
+  await Bun.sleep(${POLL_MS});
 }
 process.stdout.write('readyState=' + ws.readyState);
 `,

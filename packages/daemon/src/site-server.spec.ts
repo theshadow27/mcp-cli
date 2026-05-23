@@ -5,6 +5,8 @@ import { SiteServer, buildSiteToolCache, isWorkerEvent } from "./site-server";
 import { SITE_TOOLS } from "./site/tools";
 import type { WorkerClientTransport } from "./worker-transport";
 
+const POLL_MS = 10;
+
 describe("isWorkerEvent (site)", () => {
   test("matches known event types", () => {
     expect(isWorkerEvent({ type: "ready" })).toBe(true);
@@ -248,7 +250,7 @@ describe("SiteServer crash recovery", () => {
     // poll until the restart completes or we hit the deadline.
     const deadline = Date.now() + 2000;
     while (!restartedCalled && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(restartedCalled).toBe(true);

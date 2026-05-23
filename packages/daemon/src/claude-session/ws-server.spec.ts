@@ -9,6 +9,14 @@ import type { SessionEvent } from "./session-state";
 import type { SpawnFn, WaitResult } from "./ws-server";
 import { ClaudeWsServer, WaitTimeoutError, readJsonlTranscript, resolveJsonlPath, summarizeInput } from "./ws-server";
 
+// ── Sleep constants (extracted from bare literals for lint compliance) ──
+const SETTLE_MS = 10;
+const SHORT_SETTLE_MS = 30;
+const RACE_TIMEOUT_MS = 50;
+const FLUSH_SETTLE_MS = 50;
+const OBSERVE_MS = 60;
+const SLOW_SETTLE_MS = 400;
+
 // ── Mock spawn ──
 
 function mockSpawn(): {
@@ -286,7 +294,7 @@ describe("ClaudeWsServer", () => {
     await server.start();
     // No reclaim needed when using a random port by choice
     expect(server.reclaimed).toBe(false);
-    await Bun.sleep(30);
+    await Bun.sleep(SHORT_SETTLE_MS);
     expect(server.reclaimed).toBe(false);
   });
 
@@ -1086,7 +1094,7 @@ describe("ClaudeWsServer", () => {
     try {
       // Negative assertion: race a real message against a 50ms deadline.
       // No observable condition to poll for (test/CLAUDE.md §exception).
-      const msg = await Promise.race([waitForMessage(ws2), Bun.sleep(50).then((): null => null)]);
+      const msg = await Promise.race([waitForMessage(ws2), Bun.sleep(RACE_TIMEOUT_MS).then((): null => null)]);
       expect(msg).toBeNull(); // No prompt resent on reconnect
 
       // Should transition back from disconnected
@@ -1245,9 +1253,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Consume the interrupt control_request, then listen for the user message
       const interruptPromise = waitForMessage(ws);
@@ -1278,9 +1286,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Consume the interrupt control_request
       const interruptPromise = waitForMessage(ws);
@@ -1296,7 +1304,7 @@ describe("ClaudeWsServer", () => {
 
       // Session goes idle again
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Second send: no reason prepended
       const secondMsgPromise = waitForMessage(ws);
@@ -1321,9 +1329,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Set a reason via first interrupt
       const firstInterruptPromise = waitForMessage(ws);
@@ -1358,9 +1366,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Consume the interrupt control_request
       const interruptPromise = waitForMessage(ws);
@@ -2309,7 +2317,7 @@ describe("ClaudeWsServer", () => {
     // This prevents findImmediateEvent from short-circuiting with session:result
     await waitForMessage(ws);
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
 
     const before = Date.now();
     // waitForEvent blocks — session is not idle
@@ -2337,7 +2345,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       const before = Date.now();
       const eventPromise = server.waitForEvent("test-session", 5000);
@@ -2366,7 +2374,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       const before = Date.now();
       const eventPromise = server.waitForEvent("test-session", 5000);
@@ -2411,16 +2419,16 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws); // initial prompt
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
     ws.send(resultMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
 
     const events: SessionEvent[] = [];
     server.onSessionEvent = (_id, event) => events.push(event);
 
     // Send /clear — should kill+respawn
     server.sendPrompt("test-session", "/clear");
-    await Bun.sleep(50);
+    await Bun.sleep(FLUSH_SETTLE_MS);
 
     // Should have spawned a second time
     expect(spawnCalls.length).toBe(2);
@@ -2459,7 +2467,7 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws); // initial prompt
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       const events: SessionEvent[] = [];
       server.onSessionEvent = (_id, event) => events.push(event);
@@ -2501,9 +2509,9 @@ describe("ClaudeWsServer", () => {
     try {
       await waitForMessage(ws);
       ws.send(systemInitMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
       ws.send(resultMessage("test-session"));
-      await Bun.sleep(10);
+      await Bun.sleep(SETTLE_MS);
 
       // Regular message should be sent as user message
       const msgPromise = waitForMessage(ws);
@@ -2543,11 +2551,11 @@ describe("ClaudeWsServer", () => {
     const ws = await connectMockClaude(port, "test-session");
     await waitForMessage(ws);
     ws.send(systemInitMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
     ws.send(assistantMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
     ws.send(resultMessage("test-session"));
-    await Bun.sleep(10);
+    await Bun.sleep(SETTLE_MS);
 
     // Verify cost accumulated
     const statusBefore = server.getStatus("test-session");
@@ -3570,7 +3578,7 @@ describe("stderr drain", () => {
     expect(initMsg).toContain('"type":"user"');
 
     // Wait past the timeout period — session should NOT transition to disconnected
-    await Bun.sleep(60);
+    await Bun.sleep(OBSERVE_MS);
     expect(server.listSessions()[0].state).toBe("connecting"); // still waiting for system/init
 
     ws.close();
@@ -3595,7 +3603,7 @@ describe("stderr drain", () => {
       return s?.state === "init";
     }, 1_000);
 
-    await Bun.sleep(60);
+    await Bun.sleep(OBSERVE_MS);
     expect(server.listSessions()[0].state).toBe("init");
     expect(ms.killed).toBe(false);
 
@@ -3691,7 +3699,7 @@ describe("restoreSessions", () => {
     // Simulate Claude CLI reconnecting — should NOT receive a prompt
     const ws = await connectMockClaude(port, "reconnect-1");
     // Negative assertion: race a real message against a 50ms deadline.
-    const msg = await Promise.race([waitForMessage(ws), Bun.sleep(50).then((): null => null)]);
+    const msg = await Promise.race([waitForMessage(ws), Bun.sleep(RACE_TIMEOUT_MS).then((): null => null)]);
     expect(msg).toBeNull(); // No prompt sent on reconnect
 
     // Session should transition from disconnected → connecting
@@ -3730,7 +3738,7 @@ describe("restoreSessions", () => {
 
     const ws = await connectMockClaude(port, "log-level-1");
     // Negative assertion: no observable condition to poll for — wait for handleOpen to finish.
-    await Bun.sleep(50);
+    await Bun.sleep(FLUSH_SETTLE_MS);
 
     // Reconnect should be logged at info, not error
     expect(infos.some((m) => m.includes("reconnected"))).toBe(true);
@@ -4676,7 +4684,7 @@ describe("stuck detector integration", () => {
     const stuckBefore = monitorEvents.filter((e) => e.event === "session.stuck").length;
 
     // Wait past all thresholds — no stuck events should fire
-    await Bun.sleep(400);
+    await Bun.sleep(SLOW_SETTLE_MS);
     const stuckAfter = monitorEvents.filter((e) => e.event === "session.stuck").length;
     expect(stuckAfter).toBe(stuckBefore);
 
@@ -4708,7 +4716,7 @@ describe("stuck detector integration", () => {
     await server.bye(sessionId);
 
     const stuckBefore = monitorEvents.filter((e) => e.event === "session.stuck").length;
-    await Bun.sleep(400);
+    await Bun.sleep(SLOW_SETTLE_MS);
     const stuckAfter = monitorEvents.filter((e) => e.event === "session.stuck").length;
     expect(stuckAfter).toBe(stuckBefore);
 

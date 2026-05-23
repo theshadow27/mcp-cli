@@ -13,6 +13,8 @@ import {
   isPlanReadOnly,
 } from "./use-keyboard-plans";
 
+const TICK_MS = 1;
+
 function makePlan(overrides: Partial<Plan> & { id: string }): Plan {
   return {
     name: `Plan ${overrides.id}`,
@@ -113,7 +115,7 @@ async function pollUntil(fn: () => boolean, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;
-    await Bun.sleep(1);
+    await Bun.sleep(TICK_MS);
   }
 }
 

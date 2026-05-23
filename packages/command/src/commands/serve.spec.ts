@@ -23,6 +23,9 @@ import {
   unregisterServeInstance,
 } from "./serve";
 
+const POLL_MS = 10;
+const SETTLE_MS = 60;
+
 // -- parseMcpTools --
 
 describe("parseMcpTools", () => {
@@ -361,7 +364,7 @@ describe("computeToolsFingerprint", () => {
 async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
   if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
 }
@@ -450,7 +453,7 @@ describe("startToolListPoller", () => {
     await pollUntil(() => callCount >= 2);
     stop();
     const countAtStop = callCount;
-    await Bun.sleep(60);
+    await Bun.sleep(SETTLE_MS);
 
     expect(callCount).toBe(countAtStop);
   });
@@ -475,7 +478,7 @@ describe("registerShutdownHandlers", () => {
     const unregister = registerShutdownHandlers([a, b]);
     process.emit("SIGTERM");
     // Allow async handler to complete
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(closed).toEqual(["a", "b"]);
     unregister();
@@ -491,7 +494,7 @@ describe("registerShutdownHandlers", () => {
 
     const unregister = registerShutdownHandlers([a]);
     process.emit("SIGINT");
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(closed).toEqual(["a"]);
     unregister();
@@ -514,7 +517,7 @@ describe("registerShutdownHandlers", () => {
     process.once("SIGTERM", noop);
     process.emit("SIGTERM");
     process.off("SIGTERM", noop);
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(closed).toEqual([]);
   });
@@ -535,7 +538,7 @@ describe("registerShutdownHandlers", () => {
     process.once("SIGTERM", noop);
     process.emit("SIGTERM");
     process.off("SIGTERM", noop);
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
 
     expect(closed).toEqual(["a"]);
     unregister();
