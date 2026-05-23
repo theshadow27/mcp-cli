@@ -1,6 +1,12 @@
 # Sprint 60
 
-> Planned 2026-05-23 05:35 EDT. Target: 13 PRs. Theme: **tech debt**.
+> Planned 2026-05-23 05:35 EDT. Started 2026-05-23 06:35 EDT. Target: 13 PRs. Theme: **tech debt**.
+>
+> **Run-time amendment:** #2186 pulled mid-run — it exclusively modifies
+> `.claude/phases/impl.ts` (a phase script the orchestrator reads live every
+> tick), an orchestrator/retro-only meta file. Worker was halted before
+> editing; issue stays open for next-plan. Planning bug: a phase-script-only
+> issue should not have been a worker task.
 
 ## Goal
 
