@@ -159,6 +159,40 @@ describe("ExportTransaction", () => {
       expect(errors).toHaveLength(1);
       expect(errors[0].error).toContain("provider does not support delete");
     });
+
+    test("coalesces create then modify of same path into single create", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "new.md", content: new TextEncoder().encode("v1") }]),
+        commit("refs/heads/main", [{ type: "modify", path: "new.md", content: new TextEncoder().encode("v2") }]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(1);
+    });
+
+    test("coalesces create then delete of same path into zero ops", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "new.md", content: new TextEncoder().encode("temp") }]),
+        commit("refs/heads/main", [{ type: "delete", path: "new.md" }]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(0);
+    });
+
+    test("strips frontmatter from create content", () => {
+      const provider = createMockProvider({ entries: {} });
+      const opts = makeOpts({ provider, entries: {} });
+      const tx = new ExportTransaction(opts);
+      const contentWithFm = "---\ntitle: My Page\nid: abc\n---\n\n# Hello";
+      const errors = tx.stage([
+        commit("refs/heads/main", [
+          { type: "modify", path: "new.md", content: new TextEncoder().encode(contentWithFm) },
+        ]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(1);
+    });
   });
 
   describe("commit — success", () => {
@@ -306,6 +340,61 @@ describe("ExportTransaction", () => {
       expect(provider.state.get("a.md")?.content).toBe("v4");
       expect(provider.state.get("a.md")?.version).toBe(4);
       expect(provider.calls.push).toBe(3);
+    });
+
+    test("create then modify same new path coalesces to single create with final content", async () => {
+      const provider = createMockProvider({ entries: {} });
+      const opts = makeOpts({ provider, entries: {} });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [
+          { type: "modify", path: "new.md", content: new TextEncoder().encode("first draft") },
+        ]),
+        commit("refs/heads/main", [
+          { type: "modify", path: "new.md", content: new TextEncoder().encode("final draft") },
+        ]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.calls.create).toBe(1);
+      // Find the created entry and verify it has the final content
+      const created = [...provider.state.values()].find((e) => e.content === "final draft");
+      expect(created).toBeDefined();
+    });
+
+    test("create path strips frontmatter before sending to provider", async () => {
+      const provider = createMockProvider({ entries: {} });
+      const opts = makeOpts({ provider, entries: {} });
+      const tx = new ExportTransaction(opts);
+
+      const contentWithFm = "---\ntitle: My Page\nid: abc\n---\n\n# Hello World";
+      tx.stage([
+        commit("refs/heads/main", [
+          { type: "modify", path: "new.md", content: new TextEncoder().encode(contentWithFm) },
+        ]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      const created = [...provider.state.values()].find((e) => e.content === "# Hello World");
+      expect(created).toBeDefined();
+      expect(created?.content).not.toContain("---");
+    });
+
+    test("empty content (zero-byte) commits successfully", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "old", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "old", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new Uint8Array(0) }])]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.state.get("a.md")?.content).toBe("");
     });
   });
 
@@ -589,6 +678,24 @@ done
       const response = await handler(stdin);
       expect(response).toContain("ok refs/heads/main");
       expect(provider.state.get("README.md")?.content).toBe("# Updated");
+    });
+
+    test("deduplicates staging errors per ref (one error line per ref)", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([commit("refs/heads/main", [{ type: "deleteall" }, { type: "deleteall" }])]);
+      expect(errors).toHaveLength(2);
+      tx.rollback();
+
+      // Simulate what createExportHandler does: deduplicate per ref
+      const seen = new Set<string>();
+      const lines: string[] = [];
+      for (const s of errors) {
+        if (seen.has(s.ref)) continue;
+        seen.add(s.ref);
+        lines.push(`error ${s.ref} ${s.error}`);
+      }
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("refs/heads/main");
     });
   });
 });

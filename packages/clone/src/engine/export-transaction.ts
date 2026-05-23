@@ -80,6 +80,10 @@ export class ExportTransaction {
   private readonly refSet = new Set<string>();
   /** Tracks version updates from successful pushes/creates within this tx. */
   private readonly versionOverrides = new Map<string, { id: string; version: number }>();
+  /** Tracks paths staged as creates (index into this.staged) so later ops coalesce. */
+  private readonly pendingCreates = new Map<string, number>();
+  /** Indices of staged ops that were coalesced away (create+delete same path). */
+  private readonly removedIndices = new Set<number>();
   private committed = false;
   private rolledBack = false;
   private hasStageErrors = false;
@@ -122,6 +126,12 @@ export class ExportTransaction {
     }
 
     if (change.type === "delete") {
+      const pendingIdx = this.pendingCreates.get(change.path);
+      if (pendingIdx != null) {
+        this.removedIndices.add(pendingIdx);
+        this.pendingCreates.delete(change.path);
+        return undefined;
+      }
       if (!provider.delete) {
         return { ref, ok: false, error: "provider does not support delete" };
       }
@@ -139,12 +149,21 @@ export class ExportTransaction {
     }
 
     const decoded = new TextDecoder().decode(change.content);
+    const { content: body, fields } = stripFrontmatter(decoded);
+
+    // Coalesce with a pending create for the same path
+    const pendingIdx = this.pendingCreates.get(change.path);
+    if (pendingIdx != null) {
+      const pending = this.staged[pendingIdx] as StagedOp & { type: "create" };
+      pending.content = body;
+      return undefined;
+    }
+
     const entry = this.resolvePath(change.path);
     if (entry) {
       if (!provider.push) {
         return { ref, ok: false, error: "provider does not support push" };
       }
-      const { content: body, fields } = stripFrontmatter(decoded);
       this.staged.push({
         type: "modify",
         path: change.path,
@@ -159,15 +178,16 @@ export class ExportTransaction {
         return { ref, ok: false, error: "provider does not support create" };
       }
       const title = titleFromPath(change.path);
-      this.staged.push({ type: "create", path: change.path, title, content: decoded, ref });
+      this.pendingCreates.set(change.path, this.staged.length);
+      this.staged.push({ type: "create", path: change.path, title, content: body, ref });
     }
 
     return undefined;
   }
 
-  /** Number of staged operations. */
+  /** Number of staged operations (excludes coalesced-away ops). */
   get size(): number {
-    return this.staged.length;
+    return this.staged.length - this.removedIndices.size;
   }
 
   /** All refs touched by staged commits. */
@@ -189,21 +209,23 @@ export class ExportTransaction {
     if (this.hasStageErrors) throw new Error("ExportTransaction has unresolved stage errors");
     this.committed = true;
 
-    if (this.staged.length === 0) {
+    const ops = this.staged.filter((_, i) => !this.removedIndices.has(i));
+
+    if (ops.length === 0) {
       const ok = this.buildAllOk();
       return { refs: ok, response: this.formatResponse(ok) };
     }
 
-    const preErrors = this.preValidate();
+    const preErrors = this.preValidate(ops);
     if (preErrors.length > 0) {
-      const refs = this.buildRefStatuses(preErrors, 0);
+      const refs = this.buildRefStatuses(preErrors, 0, ops);
       return { refs, response: this.formatResponse(refs) };
     }
 
     let appliedCount = 0;
     const errors: Array<{ ref: string; error: string }> = [];
 
-    for (const op of this.staged) {
+    for (const op of ops) {
       const result = await this.applyOp(op);
       if (result) {
         errors.push({ ref: op.ref, error: result });
@@ -213,7 +235,7 @@ export class ExportTransaction {
     }
 
     if (errors.length > 0) {
-      const refs = this.buildRefStatuses(errors, appliedCount);
+      const refs = this.buildRefStatuses(errors, appliedCount, ops);
       return { refs, response: this.formatResponse(refs) };
     }
 
@@ -228,13 +250,13 @@ export class ExportTransaction {
     this.staged.length = 0;
   }
 
-  private preValidate(): Array<{ ref: string; error: string }> {
+  private preValidate(ops: StagedOp[]): Array<{ ref: string; error: string }> {
     const errors: Array<{ ref: string; error: string }> = [];
     const { provider } = this.opts;
 
     if (!provider.validate) return errors;
 
-    for (const op of this.staged) {
+    for (const op of ops) {
       if (op.type === "delete") continue;
       const result = provider.validate(op.content);
       if (!result.valid) {
@@ -289,16 +311,19 @@ export class ExportTransaction {
     return [...this.refSet].map((ref) => ({ ref, ok: true }));
   }
 
-  private buildRefStatuses(errors: Array<{ ref: string; error: string }>, appliedCount: number): RefStatus[] {
+  private buildRefStatuses(
+    errors: Array<{ ref: string; error: string }>,
+    appliedCount: number,
+    ops: StagedOp[],
+  ): RefStatus[] {
     const errorsByRef = new Map<string, string>();
     for (const { ref, error } of errors) {
       if (!errorsByRef.has(ref)) errorsByRef.set(ref, error);
     }
 
-    // Determine which refs had ALL their ops applied successfully
     const refOpIndices = new Map<string, number[]>();
-    for (let i = 0; i < this.staged.length; i++) {
-      const ref = this.staged[i].ref;
+    for (let i = 0; i < ops.length; i++) {
+      const ref = ops[i].ref;
       const existing = refOpIndices.get(ref);
       if (existing) {
         existing.push(i);
@@ -366,7 +391,13 @@ export function createExportHandler(
     const stageErrors = tx.stage(commits);
     if (stageErrors.length > 0) {
       tx.rollback();
-      const lines = stageErrors.map((s) => `error ${s.ref} ${sanitizeProtocolError(s.error ?? "staging failed")}`);
+      const seen = new Set<string>();
+      const lines: string[] = [];
+      for (const s of stageErrors) {
+        if (seen.has(s.ref)) continue;
+        seen.add(s.ref);
+        lines.push(`error ${s.ref} ${sanitizeProtocolError(s.error ?? "staging failed")}`);
+      }
       return `${lines.join("\n")}\n\n`;
     }
 
