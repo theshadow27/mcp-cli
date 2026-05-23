@@ -46,8 +46,11 @@ echo "{N}" > .claude/sprints/.active
 The sentinel is gitignored. It blocks commits on main's checkout so workers
 that escape their worktree fail loudly. `/sprint retro` removes it.
 Orchestrator commits go to the `sprint-{N}` worktree opened in `plan.md`
-Step 6a (still needs `SPRINT_OVERRIDE=1` because the sentinel applies
-repo-wide).
+Step 6a. **Worktree commits do NOT need `SPRINT_OVERRIDE=1`** —
+`.git-hooks/sprint-active.sh` guards only the *main checkout* ("Worktree
+commits and overrides are allowed"). All sprint-meta and release commits
+are plain `git commit` from the worktree. (`SPRINT_OVERRIDE=1` remains the
+escape hatch for the rare case of committing in the main checkout itself.)
 
 ### Sprint-meta edits during run
 
@@ -279,7 +282,10 @@ while issues remain:
                      mcx call _work_items phase_state_set \
                        '{"workItemId":"<item.id>","repoRoot":"<abs>","key":"session_id","value":"<real-id>"}'
                      (replaces "pending:*"; tracked-item ids are
-                      "issue:<n>" or "pr:<n>"; state keys are snake_case:
+                      "#<n>" — the literal issue/PR number with a leading
+                      "#", as created by `mcx track <n>` (NOT "issue:<n>",
+                      which errors "work item not found"); state keys are
+                      snake_case:
                       session_id / qa_session_id / review_session_id /
                       repair_session_id, matching the spawning phase)
         "in-flight": session running — no action this tick
