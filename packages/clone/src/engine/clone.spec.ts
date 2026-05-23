@@ -121,6 +121,15 @@ describe("clone", () => {
     await expect(clone({ targetDir, provider, scope })).rejects.toThrow("partial clone");
   });
 
+  test("throws when git init does not create .git", async () => {
+    const provider = makeProvider();
+    const scope = makeScope();
+
+    await expect(clone({ targetDir, provider, scope, _gitInit: () => {} })).rejects.toThrow(
+      'git init did not create .git at "',
+    );
+  });
+
   test("clones pages into a new git repo with frontmatter", async () => {
     const entries = [
       makeEntry({ id: "p1", title: "Page One", version: 1, content: "# One\nBody one" }),
