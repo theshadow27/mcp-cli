@@ -1,6 +1,6 @@
 # Sprint 59
 
-> Planned 2026-05-20 00:48 EST. Refreshed 2026-05-23 (pre-run). Started 2026-05-23 01:46 EDT. Target: 14 issues.
+> Planned 2026-05-20 00:48 EST. Refreshed 2026-05-23 (pre-run). Started 2026-05-23 01:46 EDT. Ended 2026-05-23 03:28 EDT. Target: 14 issues → 19 shipped (14 planned + 5 tech-debt pulls).
 
 ## Goal
 
