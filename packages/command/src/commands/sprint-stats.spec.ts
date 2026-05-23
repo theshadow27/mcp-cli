@@ -6,6 +6,7 @@ import type { WorkItem } from "@mcp-cli/core";
 import {
   aggregateSession,
   cmdSprintStats,
+  filterEntriesToWindow,
   parseSprintPlan,
   projectSlug,
   readSessionEntries,
@@ -68,6 +69,7 @@ function makeDeps(
     gitTimestamp?: number | null;
     nowMs?: number;
     repoRoot?: string;
+    worktrees?: string[];
   },
 ) {
   return {
@@ -77,6 +79,7 @@ function makeDeps(
     now: () => overrides?.nowMs ?? new Date("2026-05-20T10:00:00Z").getTime(),
     readSprintPlan: (_n: number) => overrides?.sprintPlan ?? null,
     resolveGitTimestamp: (_ref: string) => overrides?.gitTimestamp ?? null,
+    discoverWorktrees: () => overrides?.worktrees ?? [],
   };
 }
 
@@ -274,7 +277,7 @@ describe("aggregateSession", () => {
     const entries = [makeAssistantEntry({ model: "claude-opus-4-6", inputTokens: 1_000_000, outputTokens: 1_000_000 })];
     const result = aggregateSession(entries);
     const totals = result?.models.get("claude-opus-4-6");
-    expect(totals?.estimatedCostUsd).toBeCloseTo(90, 1);
+    expect(totals?.estimatedCostUsd).toBeCloseTo(30, 1);
     expect(totals?.ratesSource).toBe("matched");
   });
 
@@ -294,6 +297,33 @@ describe("aggregateSession", () => {
     const totals = result?.models.get("gpt-5-turbo");
     expect(totals?.estimatedCostUsd).toBeCloseTo(10, 1);
     expect(totals?.ratesSource).toBe("fallback");
+  });
+
+  test("deduplicates streaming snapshots by message.id", () => {
+    const entries = [
+      {
+        type: "assistant",
+        sessionId: "s1",
+        timestamp: "2026-03-23T10:00:00.000Z",
+        message: { id: "msg-1", model: "claude-opus-4-6", usage: { input_tokens: 500, output_tokens: 100 } },
+      },
+      {
+        type: "assistant",
+        sessionId: "s1",
+        timestamp: "2026-03-23T10:00:01.000Z",
+        message: { id: "msg-1", model: "claude-opus-4-6", usage: { input_tokens: 1000, output_tokens: 200 } },
+      },
+      {
+        type: "assistant",
+        sessionId: "s1",
+        timestamp: "2026-03-23T10:01:00.000Z",
+        message: { id: "msg-2", model: "claude-opus-4-6", usage: { input_tokens: 300, output_tokens: 50 } },
+      },
+    ];
+    const result = aggregateSession(entries);
+    const totals = result?.models.get("claude-opus-4-6");
+    expect(totals?.inputTokens).toBe(1300);
+    expect(totals?.outputTokens).toBe(250);
   });
 });
 
@@ -527,5 +557,115 @@ describe("cmdSprintStats", () => {
     const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--project"], makeDeps(tmpHome)));
     expect(stderr).toContain("--project requires a project slug");
     expect(exitCode).toBe(1);
+  });
+
+  test("--help prints usage and exits cleanly", async () => {
+    const tmpHome = makeTmpDir();
+    const { stdout, exitCode } = await captureOutput(() => cmdSprintStats(["--help"], makeDeps(tmpHome)));
+    expect(stdout).toContain("mcx sprint-stats");
+    expect(stdout).toContain("--sprint");
+    expect(stdout).toContain("--since");
+    expect(stdout).toContain("--project");
+    expect(exitCode).toBe(0);
+  });
+
+  test("-h prints usage and exits cleanly", async () => {
+    const tmpHome = makeTmpDir();
+    const { stdout, exitCode } = await captureOutput(() => cmdSprintStats(["-h"], makeDeps(tmpHome)));
+    expect(stdout).toContain("mcx sprint-stats");
+    expect(exitCode).toBe(0);
+  });
+
+  test("--sprint filters entries by timestamp, not whole sessions", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+
+    writeJsonl(projDir, "straddling.jsonl", [
+      makeAssistantEntry({ sessionId: "s1", timestamp: "2026-05-19T22:00:00.000Z", inputTokens: 900 }),
+      makeAssistantEntry({ sessionId: "s1", timestamp: "2026-05-20T01:00:00.000Z", inputTokens: 100 }),
+    ]);
+
+    const sprintPlan = "> Started 2026-05-19 23:00 UTC. Ended 2026-05-20 12:00 UTC.";
+    const { stdout } = await captureOutput(() => cmdSprintStats(["--sprint", "42"], makeDeps(tmpHome, { sprintPlan })));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.totals.inputTokens).toBe(100);
+  });
+
+  test("phase sessions not double-counted for multi-model sessions", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+
+    writeJsonl(projDir, "multi.jsonl", [
+      makeAssistantEntry({ sessionId: "mm1", model: "claude-opus-4-6", gitBranch: "feat/x", inputTokens: 100 }),
+      makeAssistantEntry({ sessionId: "mm1", model: "claude-sonnet-4-6", gitBranch: "feat/x", inputTokens: 200 }),
+    ]);
+
+    const workItems: WorkItem[] = [
+      {
+        id: "#1",
+        issueNumber: 1,
+        branch: "feat/x",
+        phase: "impl",
+        prNumber: null,
+        prState: null,
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "none",
+        mergeStateStatus: null,
+        automationOverrides: null,
+        createdAt: "2026-05-19T00:00:00Z",
+        updatedAt: "2026-05-19T00:00:00Z",
+        version: 1,
+      },
+    ];
+
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome, { workItems })));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.phases.impl.sessions).toBe(1);
+    expect(parsed.phases.impl.inputTokens).toBe(300);
+  });
+
+  test("includes sessions from worktree project dirs", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+    writeJsonl(projDir, "main.jsonl", [makeAssistantEntry({ sessionId: "m1", inputTokens: 100 })]);
+
+    const wtSlug = "-Users-foo-project-.claude-worktrees-wt1";
+    const wtDir = join(tmpHome, ".claude", "projects", wtSlug);
+    mkdirSync(wtDir, { recursive: true });
+    writeJsonl(wtDir, "wt.jsonl", [makeAssistantEntry({ sessionId: "w1", inputTokens: 200 })]);
+
+    const deps = makeDeps(tmpHome, {
+      worktrees: ["/Users/foo/project/.claude/worktrees/wt1"],
+    });
+
+    const { stdout } = await captureOutput(() => cmdSprintStats([], deps));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.sessions).toBe(2);
+    expect(parsed.totals.inputTokens).toBe(300);
+  });
+});
+
+// ── filterEntriesToWindow ─────────────────────────────────────────────────
+
+describe("filterEntriesToWindow", () => {
+  const window = { start: 1000, end: 2000, label: "test" };
+
+  test("keeps entries within window", () => {
+    const entries = [
+      { timestamp: new Date(1500).toISOString(), sessionId: "s1" },
+      { timestamp: new Date(500).toISOString(), sessionId: "s1" },
+      { timestamp: new Date(2500).toISOString(), sessionId: "s1" },
+    ];
+    const result = filterEntriesToWindow(entries, window);
+    expect(result).toHaveLength(1);
+  });
+
+  test("keeps entries without timestamps", () => {
+    const entries = [{ sessionId: "s1", type: "user" }];
+    const result = filterEntriesToWindow(entries, window);
+    expect(result).toHaveLength(1);
   });
 });

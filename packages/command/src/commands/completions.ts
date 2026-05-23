@@ -59,6 +59,7 @@ export const SUBCOMMANDS = [
   "track",
   "untrack",
   "tracked",
+  "sprint-stats",
 ] as const;
 
 /** Subcommands for `mcx alias` */

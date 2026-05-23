@@ -37,7 +37,7 @@ interface SessionSummary {
   models: Map<string, TokenTotals>;
 }
 
-interface TimeWindow {
+export interface TimeWindow {
   start: number;
   end: number;
   label: string;
@@ -46,10 +46,12 @@ interface TimeWindow {
 /** Raw JSONL entry — only fields we care about. */
 interface RawEntry {
   type?: string;
+  uuid?: string;
   sessionId?: string;
   timestamp?: string;
   gitBranch?: string;
   message?: {
+    id?: string;
     model?: string;
     usage?: {
       input_tokens?: number;
@@ -72,7 +74,7 @@ interface CostRates {
 const MODEL_COSTS: Array<{ pattern: RegExp; rates: CostRates }> = [
   {
     pattern: /opus/i,
-    rates: { input: 15, output: 75, cacheCreate: 18.75, cacheRead: 1.5 },
+    rates: { input: 5, output: 25, cacheCreate: 6.25, cacheRead: 0.5 },
   },
   {
     pattern: /sonnet/i,
@@ -174,6 +176,15 @@ export interface SprintStatsDeps {
   now: () => number;
   readSprintPlan: (sprintN: number) => string | null;
   resolveGitTimestamp: (ref: string) => number | null;
+  discoverWorktrees: () => string[];
+}
+
+function gitRoot(): string {
+  try {
+    const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode === 0) return r.stdout.toString().trim();
+  } catch {}
+  return process.cwd();
 }
 
 const defaultDeps: SprintStatsDeps = {
@@ -182,10 +193,11 @@ const defaultDeps: SprintStatsDeps = {
     return result.items;
   },
   homeDir: homedir,
-  repoRoot: () => process.cwd(),
+  repoRoot: gitRoot,
   now: () => Date.now(),
   readSprintPlan(sprintN) {
-    const dirs = [process.cwd(), join(process.cwd(), ".claude")];
+    const root = gitRoot();
+    const dirs = [root, join(root, ".claude")];
     for (const dir of dirs) {
       const p = join(dir, "sprints", `sprint-${sprintN}.md`);
       if (existsSync(p)) {
@@ -211,6 +223,24 @@ const defaultDeps: SprintStatsDeps = {
       return Number.isNaN(d.getTime()) ? null : d.getTime();
     } catch {
       return null;
+    }
+  },
+  discoverWorktrees() {
+    try {
+      const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) return [];
+      const paths: string[] = [];
+      for (const line of result.stdout.toString().split("\n")) {
+        if (line.startsWith("worktree ")) {
+          paths.push(line.slice("worktree ".length));
+        }
+      }
+      return paths;
+    } catch {
+      return [];
     }
   },
 };
@@ -251,15 +281,38 @@ export function readSessionEntries(filePath: string): RawEntry[] {
   return entries;
 }
 
+/** Filter entries to those within the time window. Entries without timestamps are kept. */
+export function filterEntriesToWindow(entries: RawEntry[], window: TimeWindow): RawEntry[] {
+  return entries.filter((e) => {
+    if (!e.timestamp) return true;
+    const ts = new Date(e.timestamp).getTime();
+    if (Number.isNaN(ts)) return true;
+    return ts >= window.start && ts <= window.end;
+  });
+}
+
 /** Aggregate token usage from a session's entries. Returns null if no usage data. */
 export function aggregateSession(entries: RawEntry[]): SessionSummary | null {
+  // Dedup streaming snapshots: multiple JSONL rows for the same API response
+  // share a message.id. Keep only the last (most complete usage) per id.
+  const byMessageId = new Map<string, RawEntry>();
+  const ungrouped: RawEntry[] = [];
+  for (const entry of entries) {
+    if (entry.type === "assistant" && entry.message?.usage && entry.message.id) {
+      byMessageId.set(entry.message.id, entry);
+    } else {
+      ungrouped.push(entry);
+    }
+  }
+  const deduped = [...ungrouped, ...byMessageId.values()];
+
   let sessionId: string | null = null;
   let firstTs: number | null = null;
   let lastTs: number | null = null;
   let branch: string | null = null;
   const models = new Map<string, TokenTotals>();
 
-  for (const entry of entries) {
+  for (const entry of deduped) {
     if (!entry.sessionId) continue;
     if (!sessionId) sessionId = entry.sessionId;
 
@@ -360,6 +413,25 @@ const KNOWN_FLAGS = new Set(["--sprint", "--since", "--project"]);
 // ── Main command ───────────────────────────────────────────────────────────
 
 export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsDeps>): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(`mcx sprint-stats — aggregate token counts and costs from Claude session transcripts.
+
+Usage:
+  mcx sprint-stats                          # sessions in current project + worktrees
+  mcx sprint-stats --sprint <N>             # sessions within sprint N's time window
+  mcx sprint-stats --since <tag-or-sha>     # sessions since a git tag/sha commit time
+  mcx sprint-stats --project <slug>         # override the auto-detected project slug
+
+Options:
+  --sprint <N>     Filter to sessions within sprint N's time window
+  --since <ref>    Filter to sessions since a git tag or commit SHA
+  --project <slug> Override the auto-detected project slug (skips worktree discovery)
+  --help, -h       Show this help
+
+Output: JSON to stdout with token counts, cost estimates, and optional phase grouping.`);
+    return;
+  }
+
   const d = { ...defaultDeps, ...deps };
   const nowMs = d.now();
 
@@ -462,10 +534,25 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
     if (item.branch) branchPhase.set(item.branch, item.phase);
   }
 
-  // Scope to current repo's project directory
-  const slug = projectFilter ?? projectSlug(d.repoRoot());
-  const projectDir = join(d.homeDir(), ".claude", "projects", slug);
-  const files = scanSessionFiles(projectDir);
+  // Discover project directories to scan
+  const projectsBase = join(d.homeDir(), ".claude", "projects");
+  let files: string[];
+  let slug: string;
+
+  if (projectFilter) {
+    slug = projectFilter;
+    files = scanSessionFiles(join(projectsBase, slug));
+  } else {
+    slug = projectSlug(d.repoRoot());
+    const slugs = new Set([slug]);
+    for (const wt of d.discoverWorktrees()) {
+      slugs.add(projectSlug(wt));
+    }
+    files = [];
+    for (const s of slugs) {
+      files.push(...scanSessionFiles(join(projectsBase, s)));
+    }
+  }
 
   // Aggregate
   const modelTotals = new Map<string, TokenTotals>();
@@ -475,14 +562,15 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
   let totalDurationMs = 0;
 
   for (const filePath of files) {
-    const entries = readSessionEntries(filePath);
+    let entries = readSessionEntries(filePath);
+
+    // Entry-level window filtering: only aggregate entries within the window
+    if (window) {
+      entries = filterEntriesToWindow(entries, window);
+    }
+
     const session = aggregateSession(entries);
     if (!session) continue;
-
-    // Time window filter
-    if (window) {
-      if (session.lastTs < window.start || session.firstTs > window.end) continue;
-    }
 
     sessionCount++;
     totalDurationMs += session.lastTs - session.firstTs;
@@ -499,18 +587,26 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
       }
       addTotals(mt, totals);
 
-      // Phase totals
-      if (phase) {
-        let pt = phaseTotals.get(phase);
-        if (!pt) {
-          pt = zeroTotals();
-          phaseTotals.set(phase, pt);
-        }
-        addTotals(pt, totals);
-      }
-
       // Overall
       addTotals(overall, totals);
+    }
+
+    // Phase totals — counted once per session (not per model)
+    if (phase) {
+      let pt = phaseTotals.get(phase);
+      if (!pt) {
+        pt = zeroTotals();
+        phaseTotals.set(phase, pt);
+      }
+      pt.sessions += 1;
+      for (const [, totals] of session.models) {
+        pt.inputTokens += totals.inputTokens;
+        pt.outputTokens += totals.outputTokens;
+        pt.cacheCreationTokens += totals.cacheCreationTokens;
+        pt.cacheReadTokens += totals.cacheReadTokens;
+        pt.estimatedCostUsd += totals.estimatedCostUsd;
+        if (totals.ratesSource === "fallback") pt.ratesSource = "fallback";
+      }
     }
   }
 
