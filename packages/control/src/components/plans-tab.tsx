@@ -1,11 +1,11 @@
 import type { Plan, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans.js";
-import { findExpanded, getTargetPlan, isPlanReadOnly } from "../hooks/use-keyboard-plans.js";
-import { GatePanel } from "./gate-panel.js";
-import { PlanList } from "./plan-list.js";
-import { StepPipeline } from "./step-pipeline.js";
+import type { ExpandedPlanKey, StatusType } from "../hooks/use-keyboard-plans";
+import { findExpanded, getTargetPlan, isPlanReadOnly } from "../hooks/use-keyboard-plans";
+import { GatePanel } from "./gate-panel";
+import { PlanList } from "./plan-list";
+import { StepPipeline } from "./step-pipeline";
 
 interface PlansTabProps {
   plans: Plan[];

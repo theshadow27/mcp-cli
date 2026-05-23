@@ -34,6 +34,7 @@ export const ACP_TOOLS = buildAgentTools({
           description: "Tool patterns to auto-deny",
         },
       },
+      omitProperties: ["name"],
     },
     session_list: {
       description: "List all active ACP agent sessions with their status, model, and token usage.",
@@ -46,6 +47,7 @@ export const ACP_TOOLS = buildAgentTools({
     },
     bye: {
       description: "Terminate an ACP agent session: kill the process and clean up.",
+      omitProperties: ["message"],
     },
     transcript: {
       description: "Get transcript entries from an ACP agent session.",
