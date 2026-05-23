@@ -30,6 +30,8 @@ export interface CloneOptions {
   limit?: number;
   /** Maximum hierarchy depth to clone. 0 = unlimited. Depth 1 = root pages only. */
   depth?: number;
+  /** Override git init execution (for testing). */
+  _gitInit?: (cwd: string, env: Record<string, string>) => void;
 }
 
 export interface CloneResult {
@@ -232,7 +234,8 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
   cleanEnv.GIT_CEILING_DIRECTORIES = dirname(absTarget);
   const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
-  execSync("git init", gitOpts);
+  const gitInitFn = opts._gitInit ?? ((_cwd, _env) => execSync("git init", gitOpts));
+  gitInitFn(absTarget, cleanEnv);
   if (!existsSync(join(absTarget, ".git"))) {
     throw new Error(
       `git init did not create .git at "${absTarget}". This usually means git resolved to a parent repository. Check GIT_DIR / GIT_WORK_TREE env vars.`,
