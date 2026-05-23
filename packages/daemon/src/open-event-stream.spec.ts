@@ -166,7 +166,7 @@ describe("openEventStream() client integration", () => {
 
     let iterationEnded = false;
 
-    const consuming = (async () => {
+    void (async () => {
       try {
         for await (const _event of stream.events) {
           // Should never reach here — abort was called before iteration
@@ -179,11 +179,7 @@ describe("openEventStream() client integration", () => {
       }
     })();
 
-    // Race against a short timeout — if abort() works cleanly the promise settles quickly.
-    const winner = await Promise.race([consuming.then(() => "done"), Bun.sleep(2_000).then(() => "timeout")]);
-
-    expect(winner).toBe("done");
-    expect(iterationEnded).toBe(true);
+    await pollUntil(() => iterationEnded);
   });
 
   test("?since=N query param is forwarded correctly in the request URL", async () => {
