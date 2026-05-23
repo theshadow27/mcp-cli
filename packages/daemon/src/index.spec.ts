@@ -1409,4 +1409,30 @@ describe("resolveHeadBranch", () => {
     const branch = await resolveHeadBranch(tmpDir);
     expect(branch).toBeNull();
   });
+
+  test("returns null when .git/HEAD is unreadable (FS error after stat)", async () => {
+    const gitDir = join(tmpDir, ".git");
+    mkdirSync(gitDir, { recursive: true });
+    // .git dir exists but HEAD does not — Bun.file().text() would throw
+    // if exists() didn't catch it first. But a worktree pointing at a
+    // broken gitdir exercises the uncaught path: stat succeeds, .text() throws.
+    writeFileSync(join(tmpDir, ".git-file-mode"), "");
+    // Simulate: .git is a file pointing to a gitdir with no HEAD
+    const brokenGitDir = join(tmpDir, "broken-gitdir");
+    mkdirSync(brokenGitDir, { recursive: true });
+    // Remove .git dir and replace with file pointing to broken gitdir
+    require("node:fs").rmSync(gitDir, { recursive: true });
+    writeFileSync(join(tmpDir, ".git"), `gitdir: ${brokenGitDir}\n`);
+    // brokenGitDir has no HEAD file — should return null, not throw
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
+
+  test("returns null when worktree .git file points to nonexistent directory", async () => {
+    writeFileSync(join(tmpDir, ".git"), "gitdir: /nonexistent/path/that/does/not/exist\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
 });

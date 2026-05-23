@@ -406,28 +406,27 @@ export function checkSqliteVersion(rawDb: import("bun:sqlite").Database): string
  * missing .git, or any FS error.
  */
 export async function resolveHeadBranch(cwd: string): Promise<string | null> {
-  const dotGitPath = `${cwd}/.git`;
-  let dotGitStat: import("node:fs").Stats;
   try {
-    dotGitStat = await fsStat(dotGitPath);
+    const dotGitPath = `${cwd}/.git`;
+    const dotGitStat = await fsStat(dotGitPath);
+    let gitDir: string;
+    if (dotGitStat.isFile()) {
+      const gitdirLine = (await Bun.file(dotGitPath).text()).trim();
+      const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
+      const target = match?.[1]?.trim();
+      if (!target) return null;
+      gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
+    } else {
+      gitDir = dotGitPath;
+    }
+    const headFile = Bun.file(`${gitDir}/HEAD`);
+    if (!(await headFile.exists())) return null;
+    const headContent = (await headFile.text()).trim();
+    const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
+    return refMatch?.[1]?.trim() ?? null;
   } catch {
     return null;
   }
-  let gitDir: string;
-  if (dotGitStat.isFile()) {
-    const gitdirLine = (await Bun.file(dotGitPath).text()).trim();
-    const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
-    const target = match?.[1]?.trim();
-    if (!target) return null;
-    gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
-  } else {
-    gitDir = dotGitPath;
-  }
-  const headFile = Bun.file(`${gitDir}/HEAD`);
-  if (!(await headFile.exists())) return null;
-  const headContent = (await headFile.text()).trim();
-  const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
-  return refMatch?.[1]?.trim() ?? null;
 }
 
 /**
