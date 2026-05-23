@@ -71,9 +71,12 @@ defineAlias({
       {
         async gh(op) {
           try {
-            const comments = await ctx.gh.pr(op.prNumber).bodyComments();
-            const stdout = comments.map((c) => c.body).join("\n");
-            return { stdout, stderr: "", exitCode: 0 };
+            if (op.op === "pr:comments") {
+              const comments = await ctx.gh.pr(op.prNumber).bodyComments();
+              const stdout = comments.map((c) => c.body).join("\n");
+              return { stdout, stderr: "", exitCode: 0 };
+            }
+            return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
           } catch (err) {
             return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
           }

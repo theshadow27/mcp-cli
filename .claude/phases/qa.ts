@@ -62,9 +62,11 @@ defineAlias({
       {
         async gh(op) {
           try {
-            const pr = await ctx.gh.pr(op.prNumber).body();
-            const stdout = pr.labels.join("\n");
-            return { stdout, stderr: "", exitCode: 0 };
+            if (op.op === "pr:labels") {
+              const pr = await ctx.gh.pr(op.prNumber).body();
+              return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
+            }
+            return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
           } catch (err) {
             return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
           }
