@@ -1,8 +1,8 @@
 import type { Plan } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans.js";
-import { statusIndicator } from "./step-pipeline.js";
+import type { ExpandedPlanKey } from "../hooks/use-keyboard-plans";
+import { statusIndicator } from "./step-pipeline";
 
 interface PlanListProps {
   plans: Plan[];

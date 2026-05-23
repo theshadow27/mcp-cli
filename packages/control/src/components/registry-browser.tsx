@@ -1,7 +1,7 @@
 import { Box, Text } from "ink";
 import React from "react";
-import type { RegistryEntry, TransportSelection } from "../hooks/registry-client.js";
-import type { RegistryMode } from "../hooks/use-keyboard-registry.js";
+import type { RegistryEntry, TransportSelection } from "../hooks/registry-client";
+import type { RegistryMode } from "../hooks/use-keyboard-registry";
 
 interface RegistryBrowserProps {
   entries: RegistryEntry[];
