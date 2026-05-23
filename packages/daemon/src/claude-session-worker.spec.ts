@@ -276,7 +276,21 @@ describe("handlePrompt: per-request traceparent propagation (#1244)", () => {
     expect(recording.lastEnv()).toEqual({ TRACEPARENT: tp });
   });
 
-  test("falls back to undefined TRACEPARENT when __traceparent is absent", async () => {
+  test("falls back to workerTraceparent when __traceparent is absent", async () => {
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const workerTp = `00-${"e".repeat(32)}-${"f".repeat(16)}-01`;
+    await handlePrompt(server, { prompt: "hello" }, workerTp);
+
+    // Falls back to the worker-level span traceparent (set via init message in production)
+    expect(recording.lastEnv()).toEqual({ TRACEPARENT: workerTp });
+  });
+
+  test("uses no TRACEPARENT when both __traceparent and workerTraceparent are absent", async () => {
     const recording = makeEnvRecordingSpawn();
     server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
     await server.start();
@@ -285,7 +299,6 @@ describe("handlePrompt: per-request traceparent propagation (#1244)", () => {
 
     await handlePrompt(server, { prompt: "hello" });
 
-    // No TRACEPARENT injected — env should be undefined (no env overrides)
     expect(recording.lastEnv()).toBeUndefined();
   });
 });

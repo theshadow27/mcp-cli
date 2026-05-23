@@ -114,7 +114,7 @@ async function handleToolCall(
   try {
     switch (name) {
       case "claude_prompt":
-        return await handlePrompt(server, args);
+        return await handlePrompt(server, args, workerSpan?.traceparent());
       case "claude_session_list":
         return handleSessionList(server, args);
       case "claude_session_status":
@@ -145,6 +145,7 @@ async function handleToolCall(
 export async function handlePrompt(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
+  workerTraceparent?: string,
 ): Promise<{
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
@@ -248,8 +249,8 @@ export async function handlePrompt(
 
     // Use per-request traceparent injected by the IPC tool handler (completes
     // the mcx → ipc-span → tool-span → claude-process causal chain). Fall back
-    // to the long-lived worker span when no per-request traceparent is present.
-    const spawnTraceparent = (args.__traceparent as string | undefined) ?? workerSpan?.traceparent();
+    // to the long-lived worker span traceparent when no per-request one is present.
+    const spawnTraceparent = (args.__traceparent as string | undefined) ?? workerTraceparent;
     let pid: number;
     try {
       pid = server.spawnClaude(sessionId, spawnTraceparent);
