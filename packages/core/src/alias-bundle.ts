@@ -590,7 +590,7 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * Validate a freeform alias script using `bunx tsc --noEmit`.
+ * Validate a freeform alias script using tsc --noEmit.
  *
  * Creates a temp directory with the script, a stub mcp-cli.d.ts, and a
  * tsconfig.json, then runs tsc. Diagnostics are returned as warnings.
@@ -598,11 +598,17 @@ function escapeRegExp(s: string): string {
  */
 export async function validateFreeformTsc(
   sourcePath: string,
-  timeoutMs = 10_000,
+  timeoutMs = 30_000,
+  tscBinOverride?: string | null,
 ): Promise<{ warnings: string[]; timedOut: boolean }> {
   const { mkdtempSync, writeFileSync, cpSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join, basename } = await import("node:path");
+
+  const tscBin = tscBinOverride !== undefined ? tscBinOverride : Bun.which("tsc");
+  if (!tscBin) {
+    return { warnings: ["tsc not found on PATH — skipping type-check"], timedOut: false };
+  }
 
   const tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-tsc-"));
   const scriptName = basename(sourcePath);
@@ -613,7 +619,7 @@ export async function validateFreeformTsc(
     writeFileSync(join(tmpDir, "mcp-cli.d.ts"), MCP_CLI_STUB_DTS);
     writeFileSync(join(tmpDir, "tsconfig.json"), TSC_TSCONFIG);
 
-    const proc = Bun.spawn(["bunx", "tsc", "--noEmit"], {
+    const proc = Bun.spawn([tscBin, "--noEmit"], {
       cwd: tmpDir,
       stdout: "pipe",
       stderr: "pipe",

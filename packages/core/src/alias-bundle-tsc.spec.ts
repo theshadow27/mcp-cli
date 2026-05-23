@@ -143,6 +143,18 @@ describe("validateFreeformTsc", () => {
     expect(result.warnings).toHaveLength(0);
   }, 15_000);
 
+  test("returns graceful warning when tsc is not found", async () => {
+    const dir = makeTmpDir();
+    const scriptPath = join(dir, "no-tsc.ts");
+    writeFileSync(scriptPath, "const x = 1;\n");
+
+    const result = await validateFreeformTsc(scriptPath, 30_000, null);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("tsc not found");
+  });
+
   test("respects timeout", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "timeout-test.ts");
@@ -151,7 +163,7 @@ describe("validateFreeformTsc", () => {
     // Use an extremely short timeout to trigger it
     const result = await validateFreeformTsc(scriptPath, 1);
 
-    // May or may not time out depending on how fast bunx starts,
+    // May or may not time out depending on how fast tsc starts,
     // but the function should not throw
     expect(typeof result.timedOut).toBe("boolean");
   }, 15_000);
