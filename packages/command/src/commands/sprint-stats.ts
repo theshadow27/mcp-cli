@@ -2,9 +2,10 @@
  * mcx sprint-stats — aggregate token counts and costs from Claude session transcripts.
  *
  * Usage:
- *   mcx sprint-stats                       # all sessions in current project
- *   mcx sprint-stats --sprint <N>          # sessions within sprint N's time window
- *   mcx sprint-stats --since <tag-or-sha>  # sessions since a git tag/sha commit time
+ *   mcx sprint-stats                          # sessions in current project (cwd-derived)
+ *   mcx sprint-stats --sprint <N>             # sessions within sprint N's time window
+ *   mcx sprint-stats --since <tag-or-sha>     # sessions since a git tag/sha commit time
+ *   mcx sprint-stats --project <slug>         # override the auto-detected project slug
  *
  * Output: JSON to stdout.
  */
@@ -14,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
+import { printError, printInfo } from "../output";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +26,7 @@ interface TokenTotals {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   estimatedCostUsd: number;
+  ratesSource: "matched" | "fallback";
 }
 
 interface SessionSummary {
@@ -83,22 +86,25 @@ const MODEL_COSTS: Array<{ pattern: RegExp; rates: CostRates }> = [
 
 const BLENDED_RATES: CostRates = { input: 5, output: 5, cacheCreate: 5, cacheRead: 5 };
 
-function ratesForModel(model: string): CostRates {
+function ratesForModel(model: string): { rates: CostRates; source: "matched" | "fallback" } {
   for (const { pattern, rates } of MODEL_COSTS) {
-    if (pattern.test(model)) return rates;
+    if (pattern.test(model)) return { rates, source: "matched" };
   }
-  return BLENDED_RATES;
+  return { rates: BLENDED_RATES, source: "fallback" };
 }
 
-function estimateCostForModel(totals: Omit<TokenTotals, "sessions" | "estimatedCostUsd">, model: string): number {
-  const rates = ratesForModel(model);
-  return (
+function estimateCostForModel(
+  totals: Pick<TokenTotals, "inputTokens" | "outputTokens" | "cacheCreationTokens" | "cacheReadTokens">,
+  model: string,
+): { cost: number; ratesSource: "matched" | "fallback" } {
+  const { rates, source } = ratesForModel(model);
+  const cost =
     (totals.inputTokens * rates.input +
       totals.outputTokens * rates.output +
       totals.cacheCreationTokens * rates.cacheCreate +
       totals.cacheReadTokens * rates.cacheRead) /
-    1_000_000
-  );
+    1_000_000;
+  return { cost, ratesSource: source };
 }
 
 // ── Sprint plan parsing ────────────────────────────────────────────────────
@@ -117,11 +123,18 @@ const TZ_OFFSETS: Record<string, number> = {
 };
 
 /** Parse "2026-05-19 23:35 EST" → ms timestamp. Returns null on failure. */
-function parseDateLabel(s: string): number | null {
+function parseDateLabel(s: string, warnings?: string[]): number | null {
   const m = s.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})(?:\s+([A-Z]{2,4}))?/);
   if (!m) return null;
   const [, date, time, tz] = m;
-  const offsetHours = tz && TZ_OFFSETS[tz] !== undefined ? TZ_OFFSETS[tz] : 0;
+  let offsetHours = 0;
+  if (tz) {
+    if (TZ_OFFSETS[tz] !== undefined) {
+      offsetHours = TZ_OFFSETS[tz];
+    } else {
+      warnings?.push(`unrecognized timezone '${tz}', defaulting to UTC`);
+    }
+  }
   const iso = `${date}T${time}:00${offsetHours < 0 ? "-" : "+"}${String(Math.abs(offsetHours)).padStart(2, "0")}:00`;
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? null : d.getTime();
@@ -130,19 +143,26 @@ function parseDateLabel(s: string): number | null {
 export interface SprintWindow {
   start: number;
   end: number;
+  warnings: string[];
 }
 
 /** Parse sprint plan file to extract the sprint's time window. */
 export function parseSprintPlan(content: string, nowMs: number): SprintWindow | null {
-  // Match: > Planned ... Started 2026-05-19 23:35 EST. [Ended 2026-05-20 01:22 EST.]
+  const warnings: string[] = [];
   const startMatch = content.match(/Started\s+([\d-]+\s+[\d:]+(?:\s+[A-Z]{2,4})?)/);
   const endMatch = content.match(/Ended\s+([\d-]+\s+[\d:]+(?:\s+[A-Z]{2,4})?)/);
 
-  const start = startMatch ? parseDateLabel(startMatch[1]) : null;
-  const end = endMatch ? parseDateLabel(endMatch[1]) : nowMs;
+  const start = startMatch ? parseDateLabel(startMatch[1], warnings) : null;
+  const end = endMatch ? parseDateLabel(endMatch[1], warnings) : nowMs;
 
   if (start === null) return null;
-  return { start, end: end ?? nowMs };
+  return { start, end: end ?? nowMs, warnings };
+}
+
+// ── Project slug ──────────────────────────────────────────────────────────
+
+export function projectSlug(cwd: string): string {
+  return cwd.replace(/\//g, "-");
 }
 
 // ── Dependency interface ───────────────────────────────────────────────────
@@ -152,9 +172,7 @@ export interface SprintStatsDeps {
   homeDir: () => string;
   repoRoot: () => string;
   now: () => number;
-  /** Read sprint plan file content, or null if missing. */
   readSprintPlan: (sprintN: number) => string | null;
-  /** Get commit timestamp for tag/sha, or null on failure. */
   resolveGitTimestamp: (ref: string) => number | null;
 }
 
@@ -178,16 +196,6 @@ const defaultDeps: SprintStatsDeps = {
         }
       }
     }
-    // Also look relative to git root
-    const sprintsDir = join(process.cwd(), ".claude", "sprints");
-    const p = join(sprintsDir, `sprint-${sprintN}.md`);
-    if (existsSync(p)) {
-      try {
-        return readFileSync(p, "utf-8");
-      } catch {
-        return null;
-      }
-    }
     return null;
   },
   resolveGitTimestamp(ref) {
@@ -209,29 +217,15 @@ const defaultDeps: SprintStatsDeps = {
 
 // ── Session file scanning ──────────────────────────────────────────────────
 
-/** List all .jsonl session files under ~/.claude/projects/. */
-export function scanSessionFiles(projectsDir: string): string[] {
-  const files: string[] = [];
-  let entries: string[];
+/** List all .jsonl session files in a specific project directory. */
+export function scanSessionFiles(projectDir: string): string[] {
   try {
-    entries = readdirSync(projectsDir);
+    return readdirSync(projectDir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => join(projectDir, f));
   } catch {
-    return files;
+    return [];
   }
-  for (const entry of entries) {
-    const entryPath = join(projectsDir, entry);
-    try {
-      const sub = readdirSync(entryPath);
-      for (const file of sub) {
-        if (file.endsWith(".jsonl")) {
-          files.push(join(entryPath, file));
-        }
-      }
-    } catch {
-      // Not a directory or unreadable — skip
-    }
-  }
-  return files;
 }
 
 /** Parse a .jsonl file into relevant entries. */
@@ -298,6 +292,7 @@ export function aggregateSession(entries: RawEntry[]): SessionSummary | null {
           cacheCreationTokens: 0,
           cacheReadTokens: 0,
           estimatedCostUsd: 0,
+          ratesSource: "matched",
         };
         models.set(model, totals);
       }
@@ -310,9 +305,10 @@ export function aggregateSession(entries: RawEntry[]): SessionSummary | null {
 
   if (!sessionId || firstTs === null || lastTs === null || models.size === 0) return null;
 
-  // Compute cost per model
   for (const [model, totals] of models) {
-    totals.estimatedCostUsd = estimateCostForModel(totals, model);
+    const { cost, ratesSource } = estimateCostForModel(totals, model);
+    totals.estimatedCostUsd = cost;
+    totals.ratesSource = ratesSource;
     totals.sessions = 1;
   }
 
@@ -329,6 +325,7 @@ function zeroTotals(): TokenTotals {
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
     estimatedCostUsd: 0,
+    ratesSource: "matched",
   };
 }
 
@@ -339,6 +336,7 @@ function addTotals(acc: TokenTotals, src: TokenTotals): void {
   acc.cacheCreationTokens += src.cacheCreationTokens;
   acc.cacheReadTokens += src.cacheReadTokens;
   acc.estimatedCostUsd += src.estimatedCostUsd;
+  if (src.ratesSource === "fallback") acc.ratesSource = "fallback";
 }
 
 // ── Output serialization ───────────────────────────────────────────────────
@@ -351,8 +349,13 @@ function totalsToJson(t: TokenTotals): object {
     cacheCreationTokens: t.cacheCreationTokens,
     cacheReadTokens: t.cacheReadTokens,
     estimatedCostUsd: Math.round(t.estimatedCostUsd * 10000) / 10000,
+    ratesSource: t.ratesSource,
   };
 }
+
+// ── Flag parsing ──────────────────────────────────────────────────────────
+
+const KNOWN_FLAGS = new Set(["--sprint", "--since", "--project"]);
 
 // ── Main command ───────────────────────────────────────────────────────────
 
@@ -360,47 +363,89 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
   const d = { ...defaultDeps, ...deps };
   const nowMs = d.now();
 
-  // Parse flags
-  let window: TimeWindow | null = null;
-
+  // Locate known flag positions and their value indices
   const sprintIdx = args.indexOf("--sprint");
   const sinceIdx = args.indexOf("--since");
+  const projectIdx = args.indexOf("--project");
+
+  const valueIndices = new Set<number>();
+  if (sprintIdx !== -1) valueIndices.add(sprintIdx + 1);
+  if (sinceIdx !== -1) valueIndices.add(sinceIdx + 1);
+  if (projectIdx !== -1) valueIndices.add(projectIdx + 1);
+
+  // Reject unknown flags
+  for (let i = 0; i < args.length; i++) {
+    if (valueIndices.has(i)) continue;
+    if (args[i].startsWith("--") && !KNOWN_FLAGS.has(args[i])) {
+      printError(`sprint-stats: unknown flag '${args[i]}'`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // Mutual exclusivity
+  if (sprintIdx !== -1 && sinceIdx !== -1) {
+    printError("sprint-stats: --sprint and --since are mutually exclusive");
+    process.exitCode = 1;
+    return;
+  }
+
+  // Parse --project
+  let projectFilter: string | undefined;
+  if (projectIdx !== -1) {
+    projectFilter = args[projectIdx + 1];
+    if (!projectFilter || projectFilter.startsWith("--")) {
+      printError("sprint-stats: --project requires a project slug");
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // Parse time window flags
+  let window: TimeWindow | null = null;
+  let sprintWarnings: string[] = [];
 
   if (sprintIdx !== -1) {
     const raw = args[sprintIdx + 1];
     const sprintN = raw ? Number.parseInt(raw, 10) : Number.NaN;
     if (Number.isNaN(sprintN)) {
-      process.stderr.write("sprint-stats: --sprint requires a sprint number\n");
+      printError("sprint-stats: --sprint requires a sprint number");
       process.exitCode = 1;
       return;
     }
     const content = d.readSprintPlan(sprintN);
     if (!content) {
-      process.stderr.write(`sprint-stats: sprint-${sprintN}.md not found\n`);
+      printError(`sprint-stats: sprint-${sprintN}.md not found`);
       process.exitCode = 1;
       return;
     }
     const parsed = parseSprintPlan(content, nowMs);
     if (!parsed) {
-      process.stderr.write(`sprint-stats: could not parse time window from sprint-${sprintN}.md\n`);
+      printError(`sprint-stats: could not parse time window from sprint-${sprintN}.md`);
       process.exitCode = 1;
       return;
     }
+    sprintWarnings = parsed.warnings;
     window = { start: parsed.start, end: parsed.end, label: `sprint-${sprintN}` };
   } else if (sinceIdx !== -1) {
     const ref = args[sinceIdx + 1];
     if (!ref) {
-      process.stderr.write("sprint-stats: --since requires a tag or SHA\n");
+      printError("sprint-stats: --since requires a tag or SHA");
       process.exitCode = 1;
       return;
     }
     const ts = d.resolveGitTimestamp(ref);
     if (ts === null) {
-      process.stderr.write(`sprint-stats: could not resolve git ref '${ref}'\n`);
+      printError(`sprint-stats: could not resolve git ref '${ref}'`);
       process.exitCode = 1;
       return;
     }
     window = { start: ts, end: nowMs, label: `since:${ref}` };
+  }
+
+  // Emit TZ warnings from plan parsing
+  for (const w of sprintWarnings) {
+    printInfo(`sprint-stats: ${w}`);
   }
 
   // Get work items for phase grouping (best-effort)
@@ -417,9 +462,10 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
     if (item.branch) branchPhase.set(item.branch, item.phase);
   }
 
-  // Scan session files
-  const projectsDir = join(d.homeDir(), ".claude", "projects");
-  const files = scanSessionFiles(projectsDir);
+  // Scope to current repo's project directory
+  const slug = projectFilter ?? projectSlug(d.repoRoot());
+  const projectDir = join(d.homeDir(), ".claude", "projects", slug);
+  const files = scanSessionFiles(projectDir);
 
   // Aggregate
   const modelTotals = new Map<string, TokenTotals>();
@@ -435,7 +481,6 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
 
     // Time window filter
     if (window) {
-      // Session overlaps with window if it starts before window end and ends after window start
       if (session.lastTs < window.start || session.firstTs > window.end) continue;
     }
 
@@ -471,6 +516,13 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
 
   overall.sessions = sessionCount;
 
+  // Emit fallback rate warnings
+  for (const [model, totals] of modelTotals) {
+    if (totals.ratesSource === "fallback") {
+      printInfo(`sprint-stats: unknown model '${model}', using fallback cost rates`);
+    }
+  }
+
   // Build output
   const modelsOut: Record<string, object> = {};
   for (const [model, totals] of [...modelTotals.entries()].sort(
@@ -485,6 +537,7 @@ export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsD
   }
 
   const out: Record<string, unknown> = {
+    project: slug,
     window: window
       ? {
           label: window.label,

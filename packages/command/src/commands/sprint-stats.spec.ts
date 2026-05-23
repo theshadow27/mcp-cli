@@ -7,6 +7,7 @@ import {
   aggregateSession,
   cmdSprintStats,
   parseSprintPlan,
+  projectSlug,
   readSessionEntries,
   scanSessionFiles,
 } from "./sprint-stats";
@@ -50,6 +51,35 @@ function makeAssistantEntry(overrides: {
   };
 }
 
+const REPO_ROOT = "/Users/foo/project";
+const PROJECT_SLUG = "-Users-foo-project";
+
+function makeProjectDir(tmpHome: string): string {
+  const projDir = join(tmpHome, ".claude", "projects", PROJECT_SLUG);
+  mkdirSync(projDir, { recursive: true });
+  return projDir;
+}
+
+function makeDeps(
+  tmpHome: string,
+  overrides?: {
+    workItems?: object[];
+    sprintPlan?: string | null;
+    gitTimestamp?: number | null;
+    nowMs?: number;
+    repoRoot?: string;
+  },
+) {
+  return {
+    homeDir: () => tmpHome,
+    listWorkItems: async () => (overrides?.workItems as WorkItem[] | undefined) ?? [],
+    repoRoot: () => overrides?.repoRoot ?? REPO_ROOT,
+    now: () => overrides?.nowMs ?? new Date("2026-05-20T10:00:00Z").getTime(),
+    readSprintPlan: (_n: number) => overrides?.sprintPlan ?? null,
+    resolveGitTimestamp: (_ref: string) => overrides?.gitTimestamp ?? null,
+  };
+}
+
 async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
@@ -80,6 +110,18 @@ async function captureOutput(fn: () => Promise<void>): Promise<{ stdout: string;
   return { stdout: stdoutChunks.join(""), stderr: stderrChunks.join(""), exitCode: capturedExitCode };
 }
 
+// ── projectSlug ───────────────────────────────────────────────────────────
+
+describe("projectSlug", () => {
+  test("encodes cwd path to dash-separated slug", () => {
+    expect(projectSlug("/Users/foo/project")).toBe("-Users-foo-project");
+  });
+
+  test("handles root path", () => {
+    expect(projectSlug("/")).toBe("-");
+  });
+});
+
 // ── parseSprintPlan ────────────────────────────────────────────────────────
 
 describe("parseSprintPlan", () => {
@@ -91,8 +133,9 @@ describe("parseSprintPlan", () => {
 > Planned 2026-05-19 23:20 EST. Started 2026-05-19 23:35 EST. Ended 2026-05-20 01:22 EST. Target: 15 issues.`;
     const result = parseSprintPlan(content, NOW);
     expect(result).not.toBeNull();
-    expect(result?.start).toBe(new Date("2026-05-20T04:35:00Z").getTime()); // 23:35 EST = 04:35 UTC+1day
-    expect(result?.end).toBe(new Date("2026-05-20T06:22:00Z").getTime()); // 01:22 EST = 06:22 UTC
+    expect(result?.start).toBe(new Date("2026-05-20T04:35:00Z").getTime());
+    expect(result?.end).toBe(new Date("2026-05-20T06:22:00Z").getTime());
+    expect(result?.warnings).toEqual([]);
   });
 
   test("uses now as end when Ended is absent", () => {
@@ -114,35 +157,31 @@ describe("parseSprintPlan", () => {
     expect(result).not.toBeNull();
     expect(result?.start).toBe(new Date("2026-01-01T12:00:00Z").getTime());
   });
+
+  test("emits warning for unrecognized timezone", () => {
+    const content = "> Started 2026-05-19 23:35 CEST.";
+    const result = parseSprintPlan(content, NOW);
+    expect(result).not.toBeNull();
+    expect(result?.warnings).toEqual(["unrecognized timezone 'CEST', defaulting to UTC"]);
+  });
 });
 
 // ── scanSessionFiles ───────────────────────────────────────────────────────
 
 describe("scanSessionFiles", () => {
-  test("finds jsonl files in subdirectories", () => {
-    const root = makeTmpDir();
-    const proj = join(root, "-Users-foo-project");
-    mkdirSync(proj);
-    writeFileSync(join(proj, "session-1.jsonl"), "");
-    writeFileSync(join(proj, "session-2.jsonl"), "");
-    writeFileSync(join(proj, "not-a-session.txt"), "");
+  test("finds jsonl files in project directory", () => {
+    const projDir = makeTmpDir();
+    writeFileSync(join(projDir, "session-1.jsonl"), "");
+    writeFileSync(join(projDir, "session-2.jsonl"), "");
+    writeFileSync(join(projDir, "not-a-session.txt"), "");
 
-    const files = scanSessionFiles(root);
+    const files = scanSessionFiles(projDir);
     expect(files).toHaveLength(2);
     expect(files.every((f) => f.endsWith(".jsonl"))).toBe(true);
   });
 
   test("returns empty array for missing directory", () => {
     expect(scanSessionFiles("/nonexistent/path")).toEqual([]);
-  });
-
-  test("skips non-directory entries", () => {
-    const root = makeTmpDir();
-    writeFileSync(join(root, "stray.jsonl"), "");
-    const files = scanSessionFiles(root);
-    // stray.jsonl is directly in root, not in a subdirectory — scanSessionFiles
-    // only looks one level deep (project subdirs)
-    expect(files).toHaveLength(0);
   });
 });
 
@@ -232,11 +271,11 @@ describe("aggregateSession", () => {
   });
 
   test("estimates cost using model rates", () => {
-    // opus: input=$15/M, output=$75/M
     const entries = [makeAssistantEntry({ model: "claude-opus-4-6", inputTokens: 1_000_000, outputTokens: 1_000_000 })];
     const result = aggregateSession(entries);
-    const cost = result?.models.get("claude-opus-4-6")?.estimatedCostUsd;
-    expect(cost).toBeCloseTo(90, 1); // $15 + $75 = $90
+    const totals = result?.models.get("claude-opus-4-6");
+    expect(totals?.estimatedCostUsd).toBeCloseTo(90, 1);
+    expect(totals?.ratesSource).toBe("matched");
   });
 
   test("haiku uses lower cost rates", () => {
@@ -244,58 +283,37 @@ describe("aggregateSession", () => {
       makeAssistantEntry({ model: "claude-haiku-4-5", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
     ];
     const result = aggregateSession(entries);
-    const cost = result?.models.get("claude-haiku-4-5")?.estimatedCostUsd;
-    expect(cost).toBeCloseTo(4.8, 1); // $0.8 + $4 = $4.8
+    const totals = result?.models.get("claude-haiku-4-5");
+    expect(totals?.estimatedCostUsd).toBeCloseTo(4.8, 1);
+    expect(totals?.ratesSource).toBe("matched");
+  });
+
+  test("unknown model uses fallback rates", () => {
+    const entries = [makeAssistantEntry({ model: "gpt-5-turbo", inputTokens: 1_000_000, outputTokens: 1_000_000 })];
+    const result = aggregateSession(entries);
+    const totals = result?.models.get("gpt-5-turbo");
+    expect(totals?.estimatedCostUsd).toBeCloseTo(10, 1);
+    expect(totals?.ratesSource).toBe("fallback");
   });
 });
 
 // ── cmdSprintStats ─────────────────────────────────────────────────────────
 
 describe("cmdSprintStats", () => {
-  function makeDeps(overrides?: {
-    projectsDir?: string;
-    workItems?: object[];
-    sprintPlan?: string | null;
-    gitTimestamp?: number | null;
-    nowMs?: number;
-  }) {
-    const projectsDir = overrides?.projectsDir ?? makeTmpDir();
-    return {
-      homeDir: () => {
-        // Return a parent of projectsDir so scanSessionFiles finds it correctly
-        const parent = projectsDir.replace(/\/projects$/, "");
-        return parent;
-      },
-      listWorkItems: async () => (overrides?.workItems as WorkItem[] | undefined) ?? [],
-      repoRoot: () => "/test/repo",
-      now: () => overrides?.nowMs ?? new Date("2026-05-20T10:00:00Z").getTime(),
-      readSprintPlan: (_n: number) => overrides?.sprintPlan ?? null,
-      resolveGitTimestamp: (_ref: string) => overrides?.gitTimestamp ?? null,
-    };
-  }
-
   test("outputs JSON with sessions:0 when no files found", async () => {
     const tmpHome = makeTmpDir();
-    mkdirSync(join(tmpHome, ".claude", "projects"), { recursive: true });
-    const deps = {
-      homeDir: () => tmpHome,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
-    };
-    const { stdout } = await captureOutput(() => cmdSprintStats([], deps));
+    makeProjectDir(tmpHome);
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome)));
     const parsed = JSON.parse(stdout);
     expect(parsed.sessions).toBe(0);
     expect(parsed.window).toBeNull();
     expect(parsed.totals).toBeDefined();
+    expect(parsed.project).toBe(PROJECT_SLUG);
   });
 
   test("outputs session counts and token aggregates", async () => {
     const tmpHome = makeTmpDir();
-    const projDir = join(tmpHome, ".claude", "projects", "-Users-foo-project");
-    mkdirSync(projDir, { recursive: true });
+    const projDir = makeProjectDir(tmpHome);
     writeJsonl(projDir, "session-a.jsonl", [
       makeAssistantEntry({ sessionId: "aaa", inputTokens: 1000, outputTokens: 200 }),
     ]);
@@ -303,16 +321,7 @@ describe("cmdSprintStats", () => {
       makeAssistantEntry({ sessionId: "bbb", inputTokens: 2000, outputTokens: 400 }),
     ]);
 
-    const deps = {
-      homeDir: () => tmpHome,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
-    };
-
-    const { stdout } = await captureOutput(() => cmdSprintStats([], deps));
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome)));
     const parsed = JSON.parse(stdout);
     expect(parsed.sessions).toBe(2);
     expect(parsed.totals.inputTokens).toBe(3000);
@@ -320,31 +329,49 @@ describe("cmdSprintStats", () => {
     expect(parsed.totals.estimatedCostUsd).toBeGreaterThan(0);
   });
 
+  test("only scans current repo project dir, not all projects", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+    writeJsonl(projDir, "mine.jsonl", [makeAssistantEntry({ sessionId: "mine", inputTokens: 100 })]);
+
+    // Create a different project dir that should NOT be scanned
+    const otherDir = join(tmpHome, ".claude", "projects", "-Users-other-repo");
+    mkdirSync(otherDir, { recursive: true });
+    writeJsonl(otherDir, "theirs.jsonl", [makeAssistantEntry({ sessionId: "theirs", inputTokens: 9999 })]);
+
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome)));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.sessions).toBe(1);
+    expect(parsed.totals.inputTokens).toBe(100);
+  });
+
+  test("--project overrides auto-detected project slug", async () => {
+    const tmpHome = makeTmpDir();
+    const otherSlug = "-Users-other-repo";
+    const otherDir = join(tmpHome, ".claude", "projects", otherSlug);
+    mkdirSync(otherDir, { recursive: true });
+    writeJsonl(otherDir, "sess.jsonl", [makeAssistantEntry({ sessionId: "o1", inputTokens: 777 })]);
+
+    const { stdout } = await captureOutput(() => cmdSprintStats(["--project", otherSlug], makeDeps(tmpHome)));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.sessions).toBe(1);
+    expect(parsed.totals.inputTokens).toBe(777);
+    expect(parsed.project).toBe(otherSlug);
+  });
+
   test("--sprint filters sessions to sprint window", async () => {
     const tmpHome = makeTmpDir();
-    const projDir = join(tmpHome, ".claude", "projects", "-Users-foo-project");
-    mkdirSync(projDir, { recursive: true });
+    const projDir = makeProjectDir(tmpHome);
 
-    // Session inside sprint window
     writeJsonl(projDir, "inside.jsonl", [
       makeAssistantEntry({ sessionId: "in1", timestamp: "2026-05-20T00:00:00.000Z", inputTokens: 500 }),
     ]);
-    // Session outside sprint window (before)
     writeJsonl(projDir, "outside.jsonl", [
       makeAssistantEntry({ sessionId: "out1", timestamp: "2026-05-18T00:00:00.000Z", inputTokens: 999 }),
     ]);
 
     const sprintPlan = "# Sprint 42\n> Started 2026-05-19 23:00 UTC. Ended 2026-05-20 12:00 UTC.";
-    const deps = {
-      homeDir: () => tmpHome,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => new Date("2026-05-20T10:00:00Z").getTime(),
-      readSprintPlan: () => sprintPlan,
-      resolveGitTimestamp: () => null,
-    };
-
-    const { stdout } = await captureOutput(() => cmdSprintStats(["--sprint", "42"], deps));
+    const { stdout } = await captureOutput(() => cmdSprintStats(["--sprint", "42"], makeDeps(tmpHome, { sprintPlan })));
     const parsed = JSON.parse(stdout);
     expect(parsed.sessions).toBe(1);
     expect(parsed.window?.label).toBe("sprint-42");
@@ -353,9 +380,7 @@ describe("cmdSprintStats", () => {
 
   test("--since filters sessions from git timestamp", async () => {
     const tmpHome = makeTmpDir();
-    const projDir = join(tmpHome, ".claude", "projects", "-Users-foo-project");
-    mkdirSync(projDir, { recursive: true });
-
+    const projDir = makeProjectDir(tmpHome);
     const cutoff = new Date("2026-05-19T10:00:00Z").getTime();
 
     writeJsonl(projDir, "new.jsonl", [
@@ -365,16 +390,9 @@ describe("cmdSprintStats", () => {
       makeAssistantEntry({ sessionId: "o1", timestamp: "2026-05-18T00:00:00.000Z", inputTokens: 888 }),
     ]);
 
-    const deps = {
-      homeDir: () => tmpHome,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => new Date("2026-05-21T00:00:00Z").getTime(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => cutoff,
-    };
-
-    const { stdout } = await captureOutput(() => cmdSprintStats(["--since", "v1.0.0"], deps));
+    const { stdout } = await captureOutput(() =>
+      cmdSprintStats(["--since", "v1.0.0"], makeDeps(tmpHome, { gitTimestamp: cutoff })),
+    );
     const parsed = JSON.parse(stdout);
     expect(parsed.sessions).toBe(1);
     expect(parsed.window?.label).toBe("since:v1.0.0");
@@ -383,42 +401,34 @@ describe("cmdSprintStats", () => {
 
   test("includes phases when work items are available", async () => {
     const tmpHome = makeTmpDir();
-    const projDir = join(tmpHome, ".claude", "projects", "-Users-foo-project");
-    mkdirSync(projDir, { recursive: true });
+    const projDir = makeProjectDir(tmpHome);
 
     writeJsonl(projDir, "impl-session.jsonl", [
       makeAssistantEntry({ sessionId: "impl1", gitBranch: "feat/issue-99", inputTokens: 400 }),
     ]);
 
-    const deps = {
-      homeDir: () => tmpHome,
-      listWorkItems: async (): Promise<WorkItem[]> => [
-        {
-          id: "#99",
-          issueNumber: 99,
-          branch: "feat/issue-99",
-          phase: "impl",
-          prNumber: null,
-          prState: null,
-          prUrl: null,
-          ciStatus: "none",
-          ciRunId: null,
-          ciSummary: null,
-          reviewStatus: "none",
-          mergeStateStatus: null,
-          automationOverrides: null,
-          createdAt: "2026-05-19T00:00:00Z",
-          updatedAt: "2026-05-19T00:00:00Z",
-          version: 1,
-        },
-      ],
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
-    };
+    const workItems: WorkItem[] = [
+      {
+        id: "#99",
+        issueNumber: 99,
+        branch: "feat/issue-99",
+        phase: "impl",
+        prNumber: null,
+        prState: null,
+        prUrl: null,
+        ciStatus: "none",
+        ciRunId: null,
+        ciSummary: null,
+        reviewStatus: "none",
+        mergeStateStatus: null,
+        automationOverrides: null,
+        createdAt: "2026-05-19T00:00:00Z",
+        updatedAt: "2026-05-19T00:00:00Z",
+        version: 1,
+      },
+    ];
 
-    const { stdout } = await captureOutput(() => cmdSprintStats([], deps));
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome, { workItems })));
     const parsed = JSON.parse(stdout);
     expect(parsed.phases).toBeDefined();
     expect(parsed.phases.impl).toBeDefined();
@@ -426,54 +436,96 @@ describe("cmdSprintStats", () => {
   });
 
   test("missing --sprint argument exits with error", async () => {
-    const deps = {
-      homeDir: makeTmpDir,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
-    };
-    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--sprint"], deps));
+    const tmpHome = makeTmpDir();
+    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--sprint"], makeDeps(tmpHome)));
     expect(stderr).toContain("--sprint requires a sprint number");
     expect(exitCode).toBe(1);
   });
 
   test("missing --since argument exits with error", async () => {
-    const deps = {
-      homeDir: makeTmpDir,
-      listWorkItems: async () => [],
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
-    };
-    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--since"], deps));
+    const tmpHome = makeTmpDir();
+    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--since"], makeDeps(tmpHome)));
     expect(stderr).toContain("--since requires a tag or SHA");
+    expect(exitCode).toBe(1);
+  });
+
+  test("--sprint and --since together exits with error", async () => {
+    const tmpHome = makeTmpDir();
+    const { stderr, exitCode } = await captureOutput(() =>
+      cmdSprintStats(["--sprint", "42", "--since", "v1.0.0"], makeDeps(tmpHome)),
+    );
+    expect(stderr).toContain("--sprint and --since are mutually exclusive");
+    expect(exitCode).toBe(1);
+  });
+
+  test("unknown flag exits with error", async () => {
+    const tmpHome = makeTmpDir();
+    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--spint", "42"], makeDeps(tmpHome)));
+    expect(stderr).toContain("unknown flag '--spint'");
     expect(exitCode).toBe(1);
   });
 
   test("gracefully handles daemon unavailable for work items", async () => {
     const tmpHome = makeTmpDir();
-    const projDir = join(tmpHome, ".claude", "projects", "-Users-foo-project");
-    mkdirSync(projDir, { recursive: true });
+    const projDir = makeProjectDir(tmpHome);
     writeJsonl(projDir, "sess.jsonl", [makeAssistantEntry({ sessionId: "s1", inputTokens: 100 })]);
 
     const deps = {
-      homeDir: () => tmpHome,
+      ...makeDeps(tmpHome),
       listWorkItems: async () => {
         throw new Error("daemon not running");
       },
-      repoRoot: () => "/test",
-      now: () => Date.now(),
-      readSprintPlan: () => null,
-      resolveGitTimestamp: () => null,
     };
 
     const { stdout } = await captureOutput(() => cmdSprintStats([], deps));
     const parsed = JSON.parse(stdout);
-    // Should still return results — just without phase grouping
     expect(parsed.sessions).toBe(1);
     expect(parsed.phases).toBeUndefined();
+  });
+
+  test("emits warning for unknown TZ in sprint plan", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+    writeJsonl(projDir, "sess.jsonl", [makeAssistantEntry({ sessionId: "s1", timestamp: "2026-05-20T00:00:00.000Z" })]);
+
+    const sprintPlan = "> Started 2026-05-19 23:35 CEST. Ended 2026-05-20 12:00 UTC.";
+    const { stdout, stderr } = await captureOutput(() =>
+      cmdSprintStats(["--sprint", "1"], makeDeps(tmpHome, { sprintPlan })),
+    );
+    expect(stderr).toContain("unrecognized timezone 'CEST'");
+    const parsed = JSON.parse(stdout);
+    expect(parsed.sessions).toBeGreaterThanOrEqual(0);
+  });
+
+  test("emits warning and ratesSource for unknown model fallback", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+    writeJsonl(projDir, "sess.jsonl", [
+      makeAssistantEntry({ sessionId: "s1", model: "future-model-9000", inputTokens: 500 }),
+    ]);
+
+    const { stdout, stderr } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome)));
+    expect(stderr).toContain("unknown model 'future-model-9000'");
+    const parsed = JSON.parse(stdout);
+    expect(parsed.models["future-model-9000"].ratesSource).toBe("fallback");
+  });
+
+  test("ratesSource is 'matched' for known models", async () => {
+    const tmpHome = makeTmpDir();
+    const projDir = makeProjectDir(tmpHome);
+    writeJsonl(projDir, "sess.jsonl", [
+      makeAssistantEntry({ sessionId: "s1", model: "claude-opus-4-6", inputTokens: 500 }),
+    ]);
+
+    const { stdout } = await captureOutput(() => cmdSprintStats([], makeDeps(tmpHome)));
+    const parsed = JSON.parse(stdout);
+    expect(parsed.models["claude-opus-4-6"].ratesSource).toBe("matched");
+  });
+
+  test("missing --project value exits with error", async () => {
+    const tmpHome = makeTmpDir();
+    const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--project"], makeDeps(tmpHome)));
+    expect(stderr).toContain("--project requires a project slug");
+    expect(exitCode).toBe(1);
   });
 });
