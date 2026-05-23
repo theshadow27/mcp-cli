@@ -147,6 +147,11 @@ export function checkStateSubset(
   return errors;
 }
 
+function ensureRelativePrefix(source: string): string {
+  if (source[0] === "." || source[0] === "/" || source.includes(":")) return source;
+  return `./${source}`;
+}
+
 interface InstallResult {
   manifest: Manifest;
   manifestPath: string;
@@ -171,7 +176,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
   const phaseNames = Object.keys(manifest.phases).sort();
   for (const name of phaseNames) {
     const phase = manifest.phases[name];
-    const parsed = parseSource(phase.source, manifestDir);
+    const parsed = parseSource(ensureRelativePrefix(phase.source), manifestDir);
     if (parsed.kind === "error") {
       errors.push(`phase "${name}": ${parsed.reason}`);
       continue;
@@ -225,7 +230,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     const moduleNames = Object.keys(manifest.automation.modules).sort();
     for (const name of moduleNames) {
       const mod = manifest.automation.modules[name];
-      const parsed = parseSource(mod.source, manifestDir);
+      const parsed = parseSource(ensureRelativePrefix(mod.source), manifestDir);
       if (parsed.kind === "error") {
         errors.push(`automation "${name}": ${parsed.reason}`);
         continue;

@@ -167,6 +167,36 @@ describe("cmdPhase install — integration", () => {
     expect(logs.some((l) => l.includes("Installed 1 phase"))).toBe(true);
   }, 15_000);
 
+  test("accepts bare relative paths without ./ prefix", async () => {
+    const manifest = `
+initial: implement
+phases:
+  implement:
+    source: impl.ts
+    next: []
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+
+    const logs: string[] = [];
+    const errs: string[] = [];
+    await cmdPhase(["install"], {
+      cwd: () => dir,
+      log: (m) => logs.push(m),
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        throw new Error(`exit(${code})`);
+      }) as (code: number) => never,
+    });
+
+    const lockPath = join(dir, ".mcx.lock");
+    expect(existsSync(lockPath)).toBe(true);
+
+    const lock = parseLockfile(readFileSync(lockPath, "utf-8"));
+    expect(lock.phases).toHaveLength(1);
+    expect(lock.phases[0].resolvedPath).toBe("impl.ts");
+  }, 15_000);
+
   test("errors when no manifest present", async () => {
     const errs: string[] = [];
     let exitCode: number | undefined;
