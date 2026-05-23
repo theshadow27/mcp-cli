@@ -171,8 +171,9 @@ describe("openEventStream() client integration", () => {
         for await (const _event of stream.events) {
           // Should never reach here — abort was called before iteration
         }
-      } catch {
-        // AbortError from fetch is expected — swallow it
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(DOMException);
+        expect((err as DOMException).name).toBe("AbortError");
       } finally {
         iterationEnded = true;
       }
