@@ -21,7 +21,8 @@ import { resolve as resolvePath } from "node:path";
 import { SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createBrowserHandlers, shouldAutoRestart } from "./site/browser-handlers";
+import { createBrowserHandlers, toolError as error, toolOk as ok, shouldAutoRestart } from "./site/browser-handlers";
+import type { ToolResult } from "./site/browser-handlers";
 export { shouldAutoRestart, parseSitesArg } from "./site/browser-handlers";
 export type { LastBrowserSession } from "./site/browser-handlers";
 import type { SiteSpec } from "./site/browser/engine";
@@ -134,17 +135,6 @@ const {
 } = browserHandlers;
 
 // ── Tool handlers ──
-
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
-
-function ok(data: unknown): ToolResult {
-  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-  return { content: [{ type: "text", text }] };
-}
-
-function error(message: string): ToolResult {
-  return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
-}
 
 function handleList(): ToolResult {
   return ok(
