@@ -246,7 +246,7 @@ describe("ExportTransaction", () => {
         entries: { "a.md": { content: "old", version: 1 } },
       });
       let receivedFrontmatter: Record<string, unknown> | undefined;
-      const originalPush = provider.push?.bind(provider);
+      const originalPush = (provider.push as NonNullable<typeof provider.push>).bind(provider);
       (provider as unknown as Record<string, unknown>).push = async (
         scope: unknown,
         id: string,
@@ -342,7 +342,7 @@ describe("ExportTransaction", () => {
       });
 
       let pushCount = 0;
-      const originalPush = provider.push?.bind(provider);
+      const originalPush = (provider.push as NonNullable<typeof provider.push>).bind(provider);
       (provider as unknown as Record<string, unknown>).push = async (
         scope: unknown,
         id: string,
