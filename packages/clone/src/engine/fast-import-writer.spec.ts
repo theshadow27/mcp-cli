@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatMarksFile, generateFastImport, parseMarksFile } from "./fast-import-writer";
 
+const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
 /**
  * Filter out git-inherited env vars (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE)
  * that would redirect child `git fast-import` processes to the parent repo
@@ -29,13 +31,13 @@ describe("generateFastImport", () => {
 
     expect(marks).toEqual({ "README.md": 1 });
     expect(commitMark).toBe(2);
-    expect(stream).toContain("blob\nmark :1\ndata 6\nhello\n\n");
-    expect(stream).toContain("commit refs/heads/main\n");
-    expect(stream).toContain("mark :2\n");
-    expect(stream).toContain("committer mcx <mcx@local> 0 +0000\n");
-    expect(stream).toContain("data 4\ninit\n");
-    expect(stream).toContain("M 100644 :1 README.md\n");
-    expect(stream.endsWith("done\n")).toBe(true);
+    expect(decode(stream)).toContain("blob\nmark :1\ndata 6\nhello\n\n");
+    expect(decode(stream)).toContain("commit refs/heads/main\n");
+    expect(decode(stream)).toContain("mark :2\n");
+    expect(decode(stream)).toContain("committer mcx <mcx@local> 0 +0000\n");
+    expect(decode(stream)).toContain("data 4\ninit\n");
+    expect(decode(stream)).toContain("M 100644 :1 README.md\n");
+    expect(decode(stream).endsWith("done\n")).toBe(true);
   });
 
   test("nested directory paths are preserved verbatim", () => {
@@ -50,8 +52,8 @@ describe("generateFastImport", () => {
 
     expect(marks["Engineering/Runbooks/Deployment.md"]).toBe(1);
     expect(marks["Product/Roadmap.md"]).toBe(2);
-    expect(stream).toContain("M 100644 :1 Engineering/Runbooks/Deployment.md\n");
-    expect(stream).toContain("M 100644 :2 Product/Roadmap.md\n");
+    expect(decode(stream)).toContain("M 100644 :1 Engineering/Runbooks/Deployment.md\n");
+    expect(decode(stream)).toContain("M 100644 :2 Product/Roadmap.md\n");
   });
 
   test("empty content emits `data 0`", () => {
@@ -60,7 +62,7 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "e",
     });
-    expect(stream).toContain("blob\nmark :1\ndata 0\n\n");
+    expect(decode(stream)).toContain("blob\nmark :1\ndata 0\n\n");
   });
 
   test("byte length is computed in UTF-8 bytes, not codepoints", () => {
@@ -71,7 +73,7 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).toContain("data 2\né\n");
+    expect(decode(stream)).toContain("data 2\né\n");
   });
 
   test("startMark shifts numbering for incremental imports", () => {
@@ -95,8 +97,8 @@ describe("generateFastImport", () => {
       message: "m",
       parent: ":50",
     });
-    expect(stream).toContain("from :50\n");
-    expect(stream).toContain("deleteall\n");
+    expect(decode(stream)).toContain("from :50\n");
+    expect(decode(stream)).toContain("deleteall\n");
   });
 
   test("no parent means no `from` or `deleteall`", () => {
@@ -105,8 +107,8 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).not.toContain("from ");
-    expect(stream).not.toContain("deleteall");
+    expect(decode(stream)).not.toContain("from ");
+    expect(decode(stream)).not.toContain("deleteall");
   });
 
   test("custom committer identity and timestamp", () => {
@@ -118,7 +120,7 @@ describe("generateFastImport", () => {
       committerEmail: "alice@example.com",
       timestamp: 1700000000,
     });
-    expect(stream).toContain("committer Alice <alice@example.com> 1700000000 +0000\n");
+    expect(decode(stream)).toContain("committer Alice <alice@example.com> 1700000000 +0000\n");
   });
 
   test("paths with special characters are C-quoted", () => {
@@ -132,10 +134,10 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).toContain('M 100644 :1 "weird\\"name.md"\n');
-    expect(stream).toContain('M 100644 :2 "with\\nnewline.md"\n');
-    expect(stream).toContain('M 100644 :3 "with\\ttab.md"\n');
-    expect(stream).toContain('M 100644 :4 "back\\\\slash.md"\n');
+    expect(decode(stream)).toContain('M 100644 :1 "weird\\"name.md"\n');
+    expect(decode(stream)).toContain('M 100644 :2 "with\\nnewline.md"\n');
+    expect(decode(stream)).toContain('M 100644 :3 "with\\ttab.md"\n');
+    expect(decode(stream)).toContain('M 100644 :4 "back\\\\slash.md"\n');
   });
 
   test("paths with spaces pass through unquoted (spec allows it)", () => {
@@ -144,7 +146,7 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).toContain("M 100644 :1 my file.md\n");
+    expect(decode(stream)).toContain("M 100644 :1 my file.md\n");
   });
 
   test("paths starting with double-quote are quoted", () => {
@@ -153,7 +155,7 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).toContain('M 100644 :1 "\\"leading.md"\n');
+    expect(decode(stream)).toContain('M 100644 :1 "\\"leading.md"\n');
   });
 
   test("empty entries + parent throws (would wipe branch)", () => {
@@ -175,7 +177,7 @@ describe("generateFastImport", () => {
       ref: "refs/heads/main",
       message: "m",
     });
-    expect(stream).toContain("commit refs/heads/main\n");
+    expect(decode(stream)).toContain("commit refs/heads/main\n");
   });
 
   test("commitMark colliding with blob range throws", () => {
@@ -329,6 +331,86 @@ describe("generateFastImport", () => {
 
       const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:a.md"], { env: cleanGitEnv() });
       expect(show.stdout.toString()).toBe("two\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Uint8Array content uses raw byte length for data header", () => {
+    const binary = new Uint8Array([0xc0, 0x80, 0xff, 0xfe, 0x00]);
+    const { stream } = generateFastImport({
+      entries: [{ path: "binary.bin", content: binary }],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    expect(decode(stream)).toContain("data 5\n");
+  });
+
+  test("Uint8Array content is embedded verbatim in stream", () => {
+    const binary = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const { stream } = generateFastImport({
+      entries: [{ path: "bin", content: binary }],
+      ref: "refs/heads/main",
+      message: "m",
+    });
+    const headerEnd = "data 4\n";
+    const text = decode(stream);
+    const headerIdx = text.indexOf(headerEnd);
+    expect(headerIdx).toBeGreaterThan(0);
+    const blobStart = stream.indexOf(0xde);
+    expect(stream[blobStart]).toBe(0xde);
+    expect(stream[blobStart + 1]).toBe(0xad);
+    expect(stream[blobStart + 2]).toBe(0xbe);
+    expect(stream[blobStart + 3]).toBe(0xef);
+  });
+
+  test("round-trip: binary Uint8Array content survives git fast-import", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const binary = new Uint8Array([0xc0, 0x80, 0xff, 0xfe, 0x00, 0x01, 0x7f, 0x80]);
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-bin-"));
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
+      const { stream } = generateFastImport({
+        entries: [{ path: "binary.bin", content: binary }],
+        ref: "refs/heads/main",
+        message: "import binary",
+        timestamp: 1700000000,
+      });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream, env: cleanGitEnv() });
+      expect(r.status).toBe(0);
+      const show = spawnSync("git", ["-C", dir, "show", "refs/heads/main:binary.bin"], { env: cleanGitEnv() });
+      expect(show.status).toBe(0);
+      expect(new Uint8Array(show.stdout)).toEqual(binary);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("mixed string and Uint8Array entries in same commit", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const binary = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-mix-"));
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
+      const { stream } = generateFastImport({
+        entries: [
+          { path: "readme.md", content: "hello\n" },
+          { path: "image.jpg", content: binary },
+        ],
+        ref: "refs/heads/main",
+        message: "mixed",
+        timestamp: 1700000000,
+      });
+      const r = spawnSync("git", ["-C", dir, "fast-import"], { input: stream, env: cleanGitEnv() });
+      expect(r.status).toBe(0);
+      const showText = spawnSync("git", ["-C", dir, "show", "refs/heads/main:readme.md"], { env: cleanGitEnv() });
+      expect(showText.stdout.toString()).toBe("hello\n");
+      const showBin = spawnSync("git", ["-C", dir, "show", "refs/heads/main:image.jpg"], { env: cleanGitEnv() });
+      expect(new Uint8Array(showBin.stdout)).toEqual(binary);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -8,7 +8,7 @@
 
 export interface FastImportEntry {
   path: string;
-  content: string;
+  content: string | Uint8Array;
 }
 
 export interface GenerateFastImportOptions {
@@ -31,8 +31,8 @@ export interface GenerateFastImportOptions {
 }
 
 export interface GenerateFastImportResult {
-  /** The fast-import stream as a string. */
-  stream: string;
+  /** The fast-import stream as raw bytes (safe for binary blobs). */
+  stream: Uint8Array;
   /** Map of path → mark used for its blob. */
   marks: Record<string, number>;
   /** The mark used for the commit itself. */
@@ -90,14 +90,16 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
     }
   }
 
-  const parts: string[] = [];
+  const parts: Uint8Array[] = [];
   const marks: Record<string, number> = {};
 
   opts.entries.forEach((entry, i) => {
     const mark = startMark + i;
     marks[entry.path] = mark;
-    const byteLen = encoder.encode(entry.content).length;
-    parts.push(`blob\nmark :${mark}\ndata ${byteLen}\n${entry.content}\n`);
+    const contentBytes = typeof entry.content === "string" ? encoder.encode(entry.content) : entry.content;
+    parts.push(encoder.encode(`blob\nmark :${mark}\ndata ${contentBytes.length}\n`));
+    parts.push(contentBytes);
+    parts.push(encoder.encode("\n"));
   });
 
   const messageBytes = encoder.encode(opts.message).length;
@@ -118,10 +120,22 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
     commit += `M 100644 :${mark} ${quoteFastImportPath(entry.path)}\n`;
   }
   commit += "\n";
-  parts.push(commit);
-  parts.push("done\n");
+  parts.push(encoder.encode(commit));
+  parts.push(encoder.encode("done\n"));
 
-  return { stream: parts.join(""), marks, commitMark: resolvedCommitMark };
+  return { stream: concatBytes(parts), marks, commitMark: resolvedCommitMark };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
 }
 
 /**
