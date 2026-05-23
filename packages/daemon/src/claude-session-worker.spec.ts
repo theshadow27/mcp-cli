@@ -117,3 +117,106 @@ describe("handlePrompt spawn failure (#1836)", () => {
     expect(messages.some((m) => (m as { type: string }).type === "db:end")).toBe(true);
   });
 });
+
+// ── handlePrompt: auto-revive on disconnected session (#1765) ──
+
+function makeRecordingSpawn(): { spawn: SpawnFn; lastCmd: () => string[] } {
+  let lastCmd: string[] = [];
+  const spawn: SpawnFn = (cmd) => {
+    lastCmd = [...cmd];
+    return { pid: 42000, exited: new Promise<number>(() => {}), kill: () => {}, stderr: null };
+  };
+  return { spawn, lastCmd: () => lastCmd };
+}
+
+describe("handlePrompt: auto-revive disconnected session (#1765)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  test("revives disconnected session and posts db:upsert with connecting state", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "disconnected-send-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-resume-abc",
+      },
+    ]);
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    const result = await handlePrompt(server, {
+      sessionId: "disconnected-send-1",
+      prompt: "continue the work",
+    });
+
+    // Should succeed (no error)
+    expect(result.isError).toBeFalsy();
+
+    // Session should now be in connecting state (revived)
+    expect(server.listSessions()[0].state).toBe("connecting");
+
+    // DB should be updated with connecting state
+    type UpsertMsg = { type: string; session?: { state?: string } };
+    const upsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.state === "connecting",
+    );
+    expect(upsert).toBeDefined();
+
+    // Spawn command should include --resume with the claudeSessionId
+    const lastCmd = recording.lastCmd();
+    expect(lastCmd).toContain("--resume");
+    expect(lastCmd).toContain("claude-resume-abc");
+  });
+
+  test("returns error when disconnected session has no claudeSessionId", async () => {
+    const noopSpawn: SpawnFn = (_cmd) => ({
+      pid: 1,
+      exited: new Promise<number>(() => {}),
+      kill: () => {},
+      stderr: null,
+    });
+    server = new ClaudeWsServer({ spawn: noopSpawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "disconnected-no-csid",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        // no claudeSessionId → null
+      },
+    ]);
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const result = await handlePrompt(server, {
+      sessionId: "disconnected-no-csid",
+      prompt: "hello",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("claude session ID");
+  });
+});

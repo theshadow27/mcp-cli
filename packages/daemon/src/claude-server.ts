@@ -373,6 +373,7 @@ export class ClaudeServer extends AbstractWorkerServer {
         worktree: row.worktree,
         totalCost: row.totalCost,
         totalTokens: row.totalTokens,
+        claudeSessionId: row.claudeSessionId,
       })),
     });
 
