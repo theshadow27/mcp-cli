@@ -24,6 +24,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { stat as fsStat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
@@ -396,6 +397,37 @@ export function checkSqliteVersion(rawDb: import("bun:sqlite").Database): string
     const hint = process.platform === "darwin" ? " On macOS this means upgrading to 13 Ventura or later." : "";
     return `[mcpd] SQLite ${version} lacks unixepoch() — SQLite >= 3.38 is required.${hint}`;
   }
+}
+
+/**
+ * Read .git/HEAD to resolve the current branch name for a given cwd.
+ * Handles both regular repos and worktrees (where .git is a file
+ * containing "gitdir: <path>"). Returns null for detached HEAD,
+ * missing .git, or any FS error.
+ */
+export async function resolveHeadBranch(cwd: string): Promise<string | null> {
+  const dotGitPath = `${cwd}/.git`;
+  let dotGitStat: import("node:fs").Stats;
+  try {
+    dotGitStat = await fsStat(dotGitPath);
+  } catch {
+    return null;
+  }
+  let gitDir: string;
+  if (dotGitStat.isFile()) {
+    const gitdirLine = (await Bun.file(dotGitPath).text()).trim();
+    const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
+    const target = match?.[1]?.trim();
+    if (!target) return null;
+    gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
+  } else {
+    gitDir = dotGitPath;
+  }
+  const headFile = Bun.file(`${gitDir}/HEAD`);
+  if (!(await headFile.exists())) return null;
+  const headContent = (await headFile.text()).trim();
+  const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
+  return refMatch?.[1]?.trim() ?? null;
 }
 
 /**
@@ -1110,30 +1142,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           // don't need to phone home via IPC to answer ctx.workItem.
           aliasServer.setWorkItemResolver(async (cwd) => {
             try {
-              // Read .git/HEAD directly — `git symbolic-ref --short HEAD` just
-              // parses this file, and forking git blocks the event loop (up to
-              // 3s on slow FS or under .git/index.lock contention). For
-              // worktrees, `.git` is a file "gitdir: <path>" pointing at the
-              // real git dir; follow it to find the per-worktree HEAD.
-              let gitDir = `${cwd}/.git`;
-              const dotGit = Bun.file(gitDir);
-              if (!(await dotGit.exists())) return null;
-              const dotGitStat = await dotGit.stat();
-              if (dotGitStat.isFile()) {
-                const gitdirLine = (await dotGit.text()).trim();
-                const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
-                const target = match?.[1]?.trim();
-                if (!target) return null;
-                gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
-              }
-              const headFile = Bun.file(`${gitDir}/HEAD`);
-              if (!(await headFile.exists())) return null;
-              const headContent = (await headFile.text()).trim();
-              // "ref: refs/heads/<branch>" for attached HEAD; bare SHA for detached
-              const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
-              const branch = refMatch?.[1]?.trim();
-              if (!branch) return null;
-              const item = workItemDb.getWorkItemByBranch(branch);
+              const RESOLVE_TIMEOUT_MS = 500;
+              const resolved = await Promise.race([
+                resolveHeadBranch(cwd),
+                Bun.sleep(RESOLVE_TIMEOUT_MS).then(() => null),
+              ]);
+              if (!resolved) return null;
+              const item = workItemDb.getWorkItemByBranch(resolved);
               if (!item) return null;
               return {
                 id: item.id,
@@ -1142,7 +1157,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 branch: item.branch,
                 phase: item.phase,
               };
-            } catch {
+            } catch (err) {
+              logger.debug(
+                `[mcpd] workItemResolver failed for cwd=${cwd}: ${err instanceof Error ? err.message : String(err)}`,
+              );
               return null;
             }
           });
