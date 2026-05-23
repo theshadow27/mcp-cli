@@ -139,13 +139,14 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
 }
 
 /**
- * Parse a marks file (`:<mark> <sha1>` per line) into a Map.
- * Lines that don't match the format are ignored.
+ * Parse a marks file (`:<mark> <sha>` per line) into a Map.
+ * Accepts both SHA-1 (40-char) and SHA-256 (64-char) hashes.
  */
 export function parseMarksFile(text: string): Map<number, string> {
   const out = new Map<number, string>();
   for (const line of text.split("\n")) {
-    const m = line.match(/^:(\d+)\s+([0-9a-f]{40})$/);
+    const m = line.match(/^:(\d+)\s+([0-9a-f]{40}(?:[0-9a-f]{24})?)$/);
+
     if (m) out.set(Number.parseInt(m[1], 10), m[2]);
   }
   return out;

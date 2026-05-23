@@ -425,10 +425,39 @@ describe("marks file parsing", () => {
     expect(m.get(42)).toBe("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   });
 
+  test("parseMarksFile reads SHA-256 (64-char) hashes", () => {
+    const sha256 = "a".repeat(64);
+    const text = `:1 ${sha256}\n`;
+    const m = parseMarksFile(text);
+    expect(m.get(1)).toBe(sha256);
+  });
+
+  test("parseMarksFile handles mixed SHA-1 and SHA-256 marks", () => {
+    const sha1 = "b".repeat(40);
+    const sha256 = "c".repeat(64);
+    const text = `:1 ${sha1}\n:2 ${sha256}\n`;
+    const m = parseMarksFile(text);
+    expect(m.size).toBe(2);
+    expect(m.get(1)).toBe(sha1);
+    expect(m.get(2)).toBe(sha256);
+  });
+
   test("parseMarksFile ignores malformed lines", () => {
     const m = parseMarksFile("garbage\n:7 short\n:9 cccccccccccccccccccccccccccccccccccccccc\n");
     expect(m.size).toBe(1);
     expect(m.get(9)).toBe("cccccccccccccccccccccccccccccccccccccccc");
+  });
+
+  test("parseMarksFile rejects hashes between 41 and 63 chars", () => {
+    const bad50 = "d".repeat(50);
+    const m = parseMarksFile(`:1 ${bad50}\n`);
+    expect(m.size).toBe(0);
+  });
+
+  test("parseMarksFile rejects hashes longer than 64 chars", () => {
+    const bad70 = "e".repeat(70);
+    const m = parseMarksFile(`:1 ${bad70}\n`);
+    expect(m.size).toBe(0);
   });
 
   test("formatMarksFile round-trips through parseMarksFile in mark order", () => {
