@@ -420,6 +420,6 @@ describe("ConfigWatcher error paths", () => {
     await Bun.sleep(300);
 
     // Should have loaded at most once despite double schedule
-    expect(loadCount).toBeLessThanOrEqual(1);
+    expect(loadCount).toBe(1);
   });
 });
