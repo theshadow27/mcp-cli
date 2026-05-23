@@ -325,18 +325,15 @@ describe("loadManifestFromPath", () => {
     expect(loadManifestFromPath(gone)).toBeNull();
   });
 
-  test("returns null when file disappears between stat and read (read ENOENT race)", () => {
+  test("returns null when a previously-existing file is deleted (lstat ENOENT)", () => {
     const p = join(dir, ".mcx.yaml");
     writeFileSync(p, minimalYaml);
-    // Overwrite with a valid stat but delete before read — simulate by deleting
-    // immediately after writing (the function will re-stat, so we need to
-    // exercise the read path by writing then unlinking inside the call).
-    // Since we can't inject timing, we test the read-ENOENT branch by writing
-    // a valid file, confirming it loads, then verify the deleted-path case
-    // returns null (same ENOENT branch as the lstat path).
     const result = loadManifestFromPath(p);
     expect(result).not.toBeNull();
     unlinkSync(p);
+    // Hits the lstat ENOENT branch (same as the test above). The readFileSync
+    // ENOENT branch (line 503 in manifest.ts) is genuinely untestable without
+    // mock.module() since we can't inject timing between lstat and readFileSync.
     expect(loadManifestFromPath(p)).toBeNull();
   });
 
@@ -358,9 +355,10 @@ describe("loadManifestFromPath", () => {
   });
 
   test("throws ManifestError for stat errors other than ENOENT", () => {
-    // Use a path inside a non-executable directory to trigger EACCES
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
     const restricted = join(dir, "restricted");
     mkdirSync(restricted);
+    writeFileSync(join(restricted, ".mcx.yaml"), minimalYaml);
     chmodSync(restricted, 0o000);
     try {
       const p = join(restricted, ".mcx.yaml");
