@@ -1,15 +1,26 @@
-# Upgrading a sprint-30-era skill to sprint-50-era
+# Upgrading an existing sprint skill
 
-When you encounter an existing sprint skill in another repo (yours or
-someone else's) that was written ~20 sprints ago, the gap between it and
-the current mcp-cli sprint skill is large enough that fixing one symptom
-at a time is the wrong instinct. The deltas cluster — they came in
-together, and they're worth lifting together.
+When you encounter an existing sprint skill in another repo (yours or someone
+else's) that was written 20+ sprints ago, the gap between it and the current
+mcp-cli sprint skill is large enough that fixing one symptom at a time is the
+wrong instinct. The deltas cluster — they came in together, and they're worth
+lifting together.
 
-This doc is the diagnostic checklist + upgrade buckets, written so a
-fresh Claude can audit a target sprint skill without first re-deriving
-the gaps from scratch. **No project-specific details** — every item
-applies to any sprint skill running on the current `mcx` CLI.
+This doc is the diagnostic checklist + upgrade buckets, written so a fresh
+Claude can audit a target sprint skill without first re-deriving the gaps
+from scratch. **No project-specific details** — every item applies to any
+sprint skill running on the current `mcx` CLI (sprint-59 era as of
+2026-05-21).
+
+The buckets are layered chronologically:
+- **S, M, L** — sprint-30 → sprint-50 era. Captures the phase-graph
+  migration, push-event orchestration, the sprint container PR, task-per-
+  issue tasks, work-item state tracking. Most of this is now mainlined
+  into `design.md` as core architecture; the buckets remain useful for
+  audit-and-retrofit workflows on existing skills.
+- **Sprint-50+ era** (new section at the bottom) — verify-merge-actually-
+  fired, qa label hygiene on flaky-CI reruns, worktree `core.hooksPath`
+  inheritance, `mcx pr merge` replacing `gh pr merge --auto`.
 
 ## When this doc applies
 
@@ -143,14 +154,29 @@ project shape — don't push them as universal:
 - **GHA bot routing in promoter** (Copilot / CodeRabbit / Codex). Only
   add the surfaces the project's CI actually uses.
 
+## Sprint-50+ era additions
+
+These items were extracted from sprints 53-58 retrospectives. They tend to
+hit existing skills that already adopted the S/M/L buckets but predate the
+sharper mid-2026 invariants.
+
+| # | Pattern | Add to / fix |
+|---|---------|--------------|
+| 22 | **Verify auto-merge actually fired.** After `mcx pr merge --auto`, poll `gh pr view <n> --json state,mergedAt` until `state == MERGED && mergedAt != null` before marking the work item `done`. QA verdict + auto-merge queue ≠ proof of merge. Sibling rebases, branch protection re-evaluation, and late label changes can all invalidate a queued auto-merge between "queued" and "merged." | `run.md` orchestrator-only nudges |
+| 23 | **QA label hygiene on flaky-CI rerun merges.** When QA returns `qa:fail` because of flaky CI (not the PR's code) and a `gh run rerun --failed` clears green, the orchestrator may skip a fresh QA round — but the label must be flipped `qa:fail` → `qa:pass` (with a comment citing the rerun + tracking issue) *before* arming auto-merge. A `qa:fail`-labelled PR landing on main makes the audit trail misleading. | `run.md` orchestrator-only nudges |
+| 24 | **Worktree `core.hooksPath` inheritance.** If the base repo has `core.hooksPath` set to an *absolute* path, worktrees inherit it and pre-commit hooks may silently no-op. Either change the base config to a relative path (`.git-hooks`) or document the per-worktree fix (`git config core.hooksPath .git-hooks` after every `git worktree add`). Verify with a worktree + known-bad commit. | `discovery.md` worktree-feasibility, `run.md` pre-flight |
+| 25 | **`mcx pr merge` replaces `gh pr merge --auto`** as the canonical merge command in phase scripts. Wraps re-arm-after-force-push and surfaces failures to the daemon event stream as `pr.merge_state_changed`. `gh pr merge --auto` silently fails on some branch-protection configurations and gives the orchestrator nothing to react to. | All phase scripts + `review.md` / `retro.md` merge steps |
+| 26 | **Turn off strict-up-to-date branch protection.** If main's protection / ruleset has `strict_required_status_checks_policy: true` (or any equivalent "branches must be up to date with base before merge" rule), every sprint that ships >5 parallel PRs collapses into an N² rebase cascade. Set strict to false; rely on main-CI as the post-merge canary. Avoid logical conflicts at planning time via `addBlockedBy` edges on hot-shared files (lesson #32). **Do not** retrofit an orchestrator-side "mergemaster" shepherd to paper over the policy — mcp-cli retired that agent in sprint 41 once the policy was fixed. | `discovery.md`, `design.md` (merge gate) |
+| 27 | **`mcx phase run <phase> --dry-run` lacks work-item context** in the current runner. Phase scripts that require `ctx.workItem` will throw under `--dry-run`. Treat dry-run as a sanity check for resolution, not for previewing actual decisions. The per-tick orchestrator invocation must be `mcx phase run <phase> --work-item "#N"` without `--dry-run`. | `run.md` (warn against `--dry-run` in the loop) |
+
 ## Presentation pattern
 
 When auditing a target skill, present findings to the user as:
 
 1. **Diagnostic summary** — which sprint era the skill looks like (~30,
-   ~40, ~50), with 3-5 receipts from the diagnostic walk
-2. **Bucket table** — S / M / L with item counts and "what each
-   unlocks" in one line
+   ~40, ~50, post-50), with 3-5 receipts from the diagnostic walk
+2. **Bucket table** — S / M / L / Sprint-50+ with item counts and "what
+   each unlocks" in one line
 3. **Recommended split** — which buckets to do in this PR vs follow-ups,
    with rationale
 4. **Skipped-on-purpose candidates** — items the user should explicitly
@@ -168,10 +194,11 @@ fresh bootstrap would generic-ify away. Migration > rebuild.
 - `references/discovery.md` — initial bootstrap discovery (different
   audience: writing a skill from scratch)
 - `references/iteration.md` — the per-sprint feedback loop that is
-  *supposed* to keep skills from drifting to sprint-30-era in the first
-  place. If a project's skill drifted anyway, item #20 in Bucket L
-  (meta-file discipline) and item #8 in Bucket S (anti-anecdote rule)
-  are the load-bearing reasons; lift those first.
-- `references/lessons.md` — generalized lessons from mcp-cli sprints
-  1-22. Most still apply; the buckets here are the *additional* lessons
-  from sprints 23-52.
+  *supposed* to keep skills from drifting in the first place. If a
+  project's skill drifted anyway, item #20 in Bucket L (meta-file
+  discipline) and item #8 in Bucket S (anti-anecdote rule) are the
+  load-bearing reasons; lift those first.
+- `references/lessons.md` — 36 generalized lessons from 49 numbered
+  sprints. Most still apply; the S/M/L buckets capture the *additional*
+  lessons from sprints 23-52, and the Sprint-50+ section captures
+  53-58.

@@ -1,7 +1,7 @@
 import { CLAUDE_SERVER_NAME, CODEX_SERVER_NAME, ipcCall } from "@mcp-cli/core";
 import type { AgentSessionInfo } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
-import { extractToolText } from "./ipc-tool-helpers.js";
+import { extractToolText } from "./ipc-tool-helpers";
 
 interface UseAgentSessionsResult {
   sessions: AgentSessionInfo[];

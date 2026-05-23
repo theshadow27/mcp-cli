@@ -1,8 +1,9 @@
-# Lessons from 30 Sprints
+# Lessons from 49 Sprints
 
-These lessons were extracted from retrospectives across 30 autonomous sprints that
-shipped over 1,000 issues. They are general-purpose — not about any specific
-technology, but about how autonomous sprint systems behave in practice.
+These lessons were extracted from retrospectives across 49 numbered autonomous
+sprints (plus ~9 unnumbered prelude sprints) that shipped 917 PRs in ~11 weeks.
+They are general-purpose — not about any specific technology, but about how
+autonomous sprint systems behave in practice.
 
 Read these before your first sprint. Re-read them after your first retro. You'll
 understand them differently with experience.
@@ -251,25 +252,55 @@ session's verdict that depends on a resolvable external state should
 stay idle until the state resolves. Sessions are colleagues, not
 function calls.
 
-**30. Check repo ownership early — merge queue is org-only on GitHub.**
-Sprints that ship 15 PRs in parallel create an N² rebase cascade: each
-merge invalidates the others, so every auto-merge blocks on `BEHIND`.
-GitHub's merge queue solves this natively — but **only for
-Organization-owned repos on Team or Enterprise Cloud plans.** User-owned
-repos (personal accounts) cannot enable merge queue at any tier, and the
-option simply does not appear in the UI. During discovery, check
-`gh api users/<owner> --jq .type` — if it returns `User`, merge queue is
-off the table. The substitute is a long-lived sonnet "mergemaster"
-session (no worktree, only `gh pr update-branch --rebase` + poll CI +
-let auto-merge fire), started at sprint kickoff and fed PRs as they hit
-`qa:pass`. Document this trade-off explicitly in the generated sprint
-skill so the next operator knows *why* the workflow uses an agent
-instead of the native feature. Many consumers of this skill will be on
-orgs and should prefer the native queue; individual maintainers often
-migrate single-project repos into a personal org specifically to unlock
-merge queue and other collaboration-scale features (team-level
-CODEOWNERS, per-team runner groups, IP allowlisting, SSO). Mention both
-paths in the generated skill's pre-flight section.
+**30. Don't use strict-up-to-date branch protection — let main-CI be the gate.**
+Sprints that ship 10+ PRs in parallel against a strict-up-to-date rule
+(`strict_required_status_checks_policy: true` on GitHub, or any
+equivalent "branches must be up to date with base before merge" policy)
+collapse into an N² rebase cascade: each merge invalidates every other
+PR's "up to date" status, so the orchestrator is reduced to a serialized
+loop calling `update-branch` on the next PR, waiting for CI to re-run,
+merging, repeating. For a 10-PR tail that's an hour of a high-capability
+model acting as a retry-loop shepherd — the single most depressing
+pattern in autonomous work, and the velocity hit is severe (sprint 38's
+mid-sprint policy flip merged 11 queued PRs in under a minute once the
+rule came off).
+
+The fix is to *relax the constraint*, not to engineer around it:
+
+1. **Set strict to false** on whatever branch protection / ruleset
+   governs main. On GitHub: `gh api -X PUT
+   /repos/<owner>/<repo>/rulesets/<id>` with `strict: false` on the
+   required-status-checks rule. Branches do *not* need to be up-to-date
+   before merge; main's own post-merge CI catches any conflict that
+   slipped through.
+2. **Avoid logical conflicts at planning time.** Identify picks that
+   touch known hot-shared files (dispatch tables, routers, registries,
+   feature-flag maps) and serialize them via `addBlockedBy` edges, so
+   the second PR rebases after the first merges. See lesson #32 for the
+   task-list shape that makes this work.
+3. **Single-thread by exception, not by default.** Most PRs can merge
+   in any order; only the hot-shared subset needs serialization. The
+   planner identifies which is which.
+4. **Trust main-CI as the post-merge canary.** If a merge cluster lands
+   and main goes red, the release gate (an explicit `/release` at sprint
+   boundary, refusing to tag if main-CI is red) is the backstop.
+
+This is *better than native merge queue*, not just a substitute. Merge
+queue solves the same N² cascade but at the cost of serialized merges
+through a remote queue; relaxing strict + planning-time
+serialization-by-exception keeps throughput high and avoids depending
+on a feature that's org-only on GitHub (User-owned repos can't enable
+merge queue at any tier; check `gh api users/<owner> --jq .type` during
+discovery).
+
+**Anti-pattern recorded for posterity: "mergemaster."** mcp-cli briefly
+tried a long-lived sonnet session that ran `gh pr update-branch --rebase`
++ poll CI + let auto-merge fire, on the theory that User-owned repos
+without merge queue needed a substitute. It worked, but it papered over
+the underlying mistake — the strict policy itself. The agent was retired
+in sprint 41 (commit `f952eae`, closes #1866) once the simpler fix was
+in place. If you find yourself reaching for an orchestrator-side merge
+shepherd, you're almost certainly fixing the wrong layer.
 
 **31. Enumerate every comment/review surface per platform — not just the
 obvious one.** GitHub PRs surface comments on four distinct API endpoints:
@@ -296,3 +327,53 @@ concurrency stays high. This rule lives in the skill's run.md, not in
 retro learnings, because every sprint forgets it otherwise — the visual
 clarity of "3 batches" pulls the orchestrator back toward the wrong
 abstraction unless the skill explicitly forbids it.
+
+**33. Verify the merge actually fired — `qa:pass + auto-merge queued ≠
+merged`.** GitHub's auto-merge can fail silently after `gh pr merge
+--auto`: branch protection re-evaluates, a CI check flips to required,
+a sibling PR's rebase invalidates the queue. The QA verdict is local;
+the merge is remote. Before marking a work item `done` and untracking
+it, poll `gh pr view <n> --json state,mergedAt -q '.state'` until it
+returns `MERGED` *and* `mergedAt != null`. Don't conflate "I queued the
+merge" with "the merge happened." Sprints that ship 10+ PRs in parallel
+hit this routinely — the difference between "queued" and "merged" is
+where the cascade actually drains.
+
+**34. Worktrees inherit absolute `core.hooksPath` from the base repo,
+silently breaking pre-commit hooks.** Many repos store their pre-commit
+hooks in `.git-hooks/` (or similar) and set `core.hooksPath` to that
+path. If the value in the base repo's local config is *absolute*, every
+worktree created from it inherits the same absolute path — which points
+back at the base repo's `.git-hooks/`. On a fresh worktree checkout
+the path resolves but the hooks may use relative paths from the
+worktree's CWD, silently no-op'ing or running against the wrong tree.
+Fix at worktree creation: `git -C <worktree> config core.hooksPath
+.git-hooks` (relative path) or remove the inherited override. Verify
+during bootstrap discovery; bake into the per-worktree spawn script.
+
+**35. Label hygiene matters when merging on flaky-CI reruns.** When QA
+returns `qa:fail` because of flaky CI (unrelated test failures, not the
+PR's code) and a `gh run rerun --failed` clears green, the orchestrator
+may reasonably skip a fresh QA round — re-spawning sonnet QA to flip a
+label is wasteful. But the **PR label must be flipped from `qa:fail` to
+`qa:pass` (with a comment) before arming auto-merge.** A `qa:fail`-
+labelled PR landing on main makes the audit trail misleading: branch
+protection, retro tooling, and any future workflow keyed on the literal
+label sees a failure that wasn't one. The shortcut is fine; the
+misleading record is not. Cost of the label fix is one `gh pr edit`
+command. Cost of a misleading audit trail compounds.
+
+**36. Pipeline logic belongs in code, not markdown.** A sprint skill
+written entirely as prose in `run.md` ("now spawn a review session…
+then if findings exist, spawn a repair session…") becomes
+unmaintainable around sprint 20: the prose grows, transitions diverge
+across reviewers, and the orchestrator interprets the same text two
+different ways. The fix is a declarative phase graph
+(`.mcx.yaml` + `.claude/phases/*.ts` in this project's shape, but the
+principle generalizes): phases declare their transitions, handlers
+return tagged actions, transitions are logged. The markdown documents
+how to *drive* the graph (pre-flight, the loop, stop conditions); the
+graph itself is the executable contract. Round caps, scratchpad keys,
+spawn commands, model selection — all live in typed code, not prose.
+mcp-cli's phase-graph migration was sprint 36; every sprint since has
+been an order of magnitude easier to reason about during incidents.

@@ -10,11 +10,12 @@
  * stable ordering, and one obvious place to find every rule.
  */
 
+import noJsExtensionLocalImport from "./no-js-extension-local-import.rule";
 import shellInjection from "./shell-injection.rule";
 
 import type { Rule } from "./_engine/rule";
 
-export const RULES: readonly Rule[] = [shellInjection];
+export const RULES: readonly Rule[] = [shellInjection, noJsExtensionLocalImport];
 
 export function findRule(id: string): Rule | undefined {
   return RULES.find((r) => r.id === id);

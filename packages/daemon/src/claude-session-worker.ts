@@ -170,7 +170,27 @@ export async function handlePrompt(
         };
       }
     }
-    server.sendPrompt(sessionId, prompt);
+
+    // If the session is disconnected (e.g. after daemon restart / sprite shutdown),
+    // transparently re-spawn Claude with --resume <claudeSessionId> so conversation history
+    // is restored, then deliver the prompt as the first message.
+    const stateCheck = server.checkSessionIdle(sessionId);
+    if (stateCheck?.state === "disconnected") {
+      let pid: number;
+      try {
+        pid = server.reviveSession(stateCheck.resolvedId, prompt);
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+      sessionId = stateCheck.resolvedId;
+      const pidStartTime = getProcessStartTime(pid);
+      self.postMessage({ type: "db:upsert", session: { sessionId, state: "connecting", pid, pidStartTime } });
+    } else {
+      server.sendPrompt(sessionId, prompt);
+    }
   } else {
     // New session
     if (args.worktree && args.resumeSessionId) {

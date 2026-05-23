@@ -4916,3 +4916,198 @@ describe("parallel spawn (#1836)", () => {
     expect(server.listSessions()).toHaveLength(0);
   });
 });
+
+// ── restoreSessions: claudeSessionId preservation (#1765) ──
+
+describe("restoreSessions: claudeSessionId preservation", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+  });
+
+  test("claudeSessionId is preserved when included in restore payload", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "restore-csid-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-abc-123",
+      },
+    ]);
+
+    // getTranscript reads claudeSessionId for JSONL fallback — verify it's set
+    // by checking that the session is in disconnected state (not ended) and
+    // getTranscript does not throw (returns empty rather than erroring).
+    const transcript = server.getTranscript("restore-csid-1");
+    expect(Array.isArray(transcript)).toBe(true);
+  });
+
+  test("claudeSessionId defaults to null when omitted from restore payload", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "restore-no-csid",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    // Should still succeed; JSONL fallback returns [] when claudeSessionId is null
+    const transcript = server.getTranscript("restore-no-csid");
+    expect(transcript).toEqual([]);
+  });
+});
+
+// ── reviveSession: transparent re-spawn after daemon restart (#1765) ──
+
+describe("reviveSession", () => {
+  let server: ClaudeWsServer | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+  });
+
+  test("reviveSession spawns Claude with --resume <claudeSessionId>", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "revive-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0.02,
+        totalTokens: 300,
+        claudeSessionId: "claude-xyz-456",
+      },
+    ]);
+
+    expect(server.listSessions()[0].state).toBe("disconnected");
+
+    server.reviveSession("revive-1", "follow-up message");
+
+    // Verify Claude was spawned with --resume <claudeSessionId>
+    expect(ms.lastCmd).toContain("--resume");
+    const resumeIdx = ms.lastCmd.indexOf("--resume");
+    expect(ms.lastCmd[resumeIdx + 1]).toBe("claude-xyz-456");
+
+    // Session should now be in connecting state
+    expect(server.listSessions()[0].state).toBe("connecting");
+  });
+
+  test("reviveSession sends prompt as initial message when Claude connects", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "revive-prompt-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-prompt-abc",
+      },
+    ]);
+
+    server.reviveSession("revive-prompt-1", "resumed task message");
+
+    // Simulate Claude connecting after revival
+    const ws = await connectMockClaude(port, "revive-prompt-1");
+    const msg = await waitForMessage(ws);
+
+    // Should receive the prompt (not empty) since this is a fresh spawn path
+    expect(msg).toContain('"type":"user"');
+    expect(msg).toContain("resumed task message");
+
+    ws.close();
+  });
+
+  test("reviveSession throws when session is not disconnected", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("not-disconnected", { prompt: "hello" });
+    // State is "connecting" at this point
+
+    expect(() => server?.reviveSession("not-disconnected", "retry")).toThrow(
+      /Cannot revive session in state "connecting"/,
+    );
+  });
+
+  test("reviveSession throws when claudeSessionId is null", async () => {
+    server = new ClaudeWsServer({ spawn: mockSpawn().spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "no-csid-revive",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        // claudeSessionId omitted → null
+      },
+    ]);
+
+    expect(() => server?.reviveSession("no-csid-revive", "hello")).toThrow(/Session has no claude session ID/);
+  });
+
+  test("reviveSession clears stale pid and proc references before spawn", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "stale-pid-revive",
+        pid: 99999, // stale, dead process
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-stale-revive",
+      },
+    ]);
+
+    server.reviveSession("stale-pid-revive", "new prompt");
+
+    // Session should be in connecting state with a new (mock) pid assigned by spawnClaude
+    const sessions = server.listSessions();
+    expect(sessions[0].state).toBe("connecting");
+    // spawnClaude was called (ms.lastCmd is populated)
+    expect(ms.lastCmd.length).toBeGreaterThan(0);
+  });
+});

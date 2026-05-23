@@ -1,9 +1,11 @@
 # Why This Works
 
-The mcp-cli project — the one you're reading this from — was built almost entirely
-by Claude orchestrating other Claudes. Over 1,075 GitHub issues resolved. 22 sprints
-completed. No humans touching the code. The software ships, is used daily, and is
-partially used to improve itself. Sprint 15 landed 14 PRs in a single automated run.
+The mcp-cli project — the one you're reading from — was built almost entirely by
+Claude orchestrating other Claudes. **917 PRs merged across 49 numbered sprints
+plus ~9 earlier unnumbered iterations**, in roughly 11 weeks (2026-03-02 → today).
+No humans touching the code. The software ships, is used daily, and is partially
+used to improve itself. The largest single sprint landed **21 PRs** (sprint 42,
+v1.7.2). Recent sprints sustain 13–14 merged PRs each.
 
 Phoenix-octovalve, a Next.js dance school portal with a completely different tech
 stack, workflow, and definition of done, is running its first automated sprints using

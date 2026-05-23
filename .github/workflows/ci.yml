@@ -293,3 +293,31 @@ jobs:
           else
             exit $code
           fi
+      # Verify compiled binary contains embedded seed assets (wiggle.js + config.json).
+      # Catches regressions where bun build --compile silently drops { type: "text" }
+      # or resolveJsonModule imports — the kind that passes bun test but ships broken.
+      # See #1592 (original bug), PR #1657 (fix), #1682 (this guard).
+      - name: Seed embedding smoke test
+        if: needs.detect.outputs.docs_only != 'true'
+        run: |
+          fail=0
+          check() {
+            local label="$1" pattern="$2"
+            if strings dist/mcpd | grep -q "$pattern"; then
+              echo "  PASS: $label ($pattern)"
+            else
+              echo "  FAIL: $label ($pattern) — not found in dist/mcpd"
+              fail=1
+            fi
+          }
+          echo "Checking embedded seed assets in dist/mcpd..."
+          check "teams wiggle.js"   "AUTOSUGGEST_INPUT"
+          check "teams config.json" "substrate.office.com"
+          check "owa config.json"   "outlook.cloud.microsoft"
+          if [ $fail -ne 0 ]; then
+            echo "One or more seed assets are missing from the compiled binary."
+            echo "Check that all imports in packages/daemon/src/site/seeds.ts use"
+            echo "static imports (resolveJsonModule for .json, { type: 'text' } for .js)."
+            exit 1
+          fi
+          echo "All seed assets confirmed embedded."

@@ -39,6 +39,9 @@ packages/
 - **Config**: reads Claude Code's `~/.claude.json` + `.mcp.json` natively
 - **Transports**: stdio (command+args), HTTP (StreamableHTTP), SSE
 - **Auth**: macOS Keychain reader (Claude Code tokens) → SQLite → env vars
+- **Event bus**: unified per-daemon stream (`event-bus.ts`, `event-stream.ts`) fan-outs server / session / work-item / PR / CI / cost / quota events. Consumed by `mcx monitor`, phase scripts via `ctx.waitForEvent`, and automation modules. Payloads come pre-enriched by the producers so consumers don't need a hydration loop.
+- **Work items**: `work_items` SQLite table — every tracked issue/PR has a row with phase, branch, PR number, scrutiny, session bindings, round counters. Phase scripts read/write via `_work_items` MCP tools and `ctx.state`. `work_item.phase_changed` is emitted on every transition.
+- **Agent sessions**: daemon hosts Claude / Codex / ACP / OpenCode / Copilot / Gemini / Mock sessions as workers. WS protocol for Claude; subprocess wrappers for the others. Unified session-state machine; `mcx claude` and `mcx agent <provider>` share the same surface.
 - **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed via Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Two modes:
   - **defineAlias**: structured definitions with Zod input/output schemas, typed handler function. Virtual module provides `defineAlias`, `z`.
   - **Freeform** (legacy): side-effect scripts; `import { mcp, args, file, json }` auto-prepended if missing.
@@ -75,56 +78,112 @@ install` after editing any phase source to regenerate `.mcx.lock`. See
 
 ```
 packages/core/src/
-  index.ts          Barrel export
+  index.ts          Barrel export (no impl code — see rule below)
   ipc.ts            IPC protocol types (IpcRequest, IpcResponse, IpcMethod)
   ipc-client.ts     IPC client, daemon auto-start, ProtocolMismatchError
   alias.ts          AliasDefinition<I,O>, AliasContext, sentinel detection
+  automation.ts     Automation manifest schema + helpers
+  branch-guard.ts   Refuse-to-commit-on-main sentinel checks
+  cache.ts          Tool cache types + helpers
   config.ts         Server config types and schemas
   cli-config.ts     ~/.mcp-cli/config.json read/write helpers
   constants.ts      Paths, defaults
   env.ts            ${VAR} and ${VAR:-default} expansion
+  monitor-event.ts  Event bus payload types + `openEventStream` + formatter
+  event-filter.ts   Server-side event filter expression types
   fs.ts             File system utilities (ensureDir, permissions)
+  flock.ts          Cross-process file locking
+  gh-client.ts      Lightweight `gh` CLI wrapper
+  git.ts            Git plumbing helpers
+  manifest.ts       `.mcx.yaml` parser + schema
+  manifest-lock.ts  Lock-hash logic for `.mcx.lock`
+  phase-source.ts   Phase source loading + bundling
+  phase-transition.ts  Legal-transition validation
   model.ts          Model shortname → full model ID resolution
+  plan.ts           Sprint plan parsing/serialization
+  sprint-plan.ts    Sprint-N.md helpers
+  sprint-state.ts   Active-sprint sentinel state
   schema-display.ts JSON Schema → compact TypeScript notation
   session-types.ts  Shared session state types (daemon, command, control)
   trace.ts          W3C Trace Context ID generation (trace-id, span-id)
+  work-item.ts      Work-item types + state-key helpers
 
 packages/daemon/src/
-  index.ts                  Entry point
-  ipc-server.ts             HTTP-over-Unix-socket IPC server (main loop)
-  server-pool.ts            Multiplexed server connection management
-  claude-server.ts          Virtual MCP server for Claude Code sessions
-  claude-session-worker.ts  Worker hosting Claude session WS + MCP server
-  alias-server.ts           Virtual MCP server exposing aliases as tools
-  alias-server-worker.ts    Worker hosting alias MCP server
-  alias-worker.ts           Worker for extracting defineAlias metadata
-  worker-plugin.ts          Shared boilerplate for alias worker threads
-  worker-transport.ts       MCP Transport adapters for Worker postMessage
-  daemon-log.ts             Ring-buffer log capture (monkey-patches console)
-  metrics.ts                Prometheus-style metrics collection (counters, gauges, histograms)
-  orphan-reaper.ts          Stale process cleanup on daemon startup
-  stderr-buffer.ts          Per-server circular ring buffer for stderr
-  worker-path.ts            Worker file path resolution (dev vs compiled)
-  claude-session/           Claude Code session management
-    session-state.ts        Session state machine
-    ws-server.ts            WebSocket server for SDK sessions
-    permission-router.ts    Permission routing for can_use_tool requests
-    ndjson.ts               NDJSON parser/serializer for WS protocol
-    tools.ts                Shared tool definitions for _claude server
-  auth/                     OAuth, Keychain, token management
-  config/                   Config file loading and watching
-  db/                       SQLite state database
+  main.ts                     Entry point
+  index.ts                    Barrel export
+  ipc-server.ts               HTTP-over-Unix-socket IPC server (main loop)
+  server-pool.ts              Multiplexed server connection management
+  event-bus.ts                Pub/sub fan-out for daemon events
+  event-log.ts                Persistent event ring + replay
+  monitor-executor.ts         Server-side filtering for `mcx monitor`
+  monitor-runtime.ts          Runtime hooks for monitor projections
+  derived-events.ts           Synthesize higher-level events from raw signals
+  derived-rules.ts            Rule registry for derived-events
+  work-items-server.ts        Virtual MCP server: `_work_items` tools + state DB
+  automation-dispatcher.ts    Routes events to declared automation modules
+  budget-watcher.ts           Cost/quota threshold emitters (cost.*, quota.*)
+  quota.ts                    Quota status + 5h/30d windows
+  plan-aggregator.ts          Cross-session plan rollups
+  github/                     GH API client + PR/CI/comment pollers
+  claude-server.ts            Virtual MCP server for Claude Code sessions
+  claude-session-worker.ts    Worker hosting Claude session WS + MCP server
+  claude-session/             Claude session state, WS server, NDJSON, perms
+  codex-server.ts             Codex provider virtual server
+  codex-session-worker.ts     Codex session worker
+  codex-session/              Codex session machinery
+  acp-server.ts               ACP provider virtual server
+  acp-session-worker.ts       ACP session worker
+  acp-session/                ACP session machinery
+  opencode-server.ts          OpenCode provider virtual server
+  opencode-session-worker.ts  OpenCode session worker
+  opencode-session/           OpenCode session machinery
+  mock-server.ts              Mock provider for tests
+  mock-session-worker.ts      Mock session worker
+  mock-session/               Mock session machinery
+  alias-server.ts             Virtual MCP server exposing aliases as tools
+  alias-server-worker.ts      Worker hosting alias MCP server
+  alias-executor.ts           Phase-script / alias execution + ctx wiring
+  mail-server.ts              Virtual MCP server: inter-session mail
+  mail-events.ts              Mail-related event bus emitters
+  metrics-server.ts           Virtual MCP server: `_metrics` tools
+  metrics.ts                  Prometheus-style counters/gauges/histograms
+  tracing-server.ts           Virtual MCP server: `_spans` tools
+  site/                       Browser-mediated named HTTP calls (sites)
+  site-server.ts              Virtual MCP server: site catalog + invocation
+  site-worker.ts              Worker driving the harvested browser session
+  worker-plugin.ts            Shared boilerplate for alias worker threads
+  worker-transport.ts         MCP Transport adapters for Worker postMessage
+  worker-control-message.ts   Control protocol between daemon and workers
+  daemon-log.ts               Ring-buffer log capture (monkey-patches console)
+  orphan-reaper.ts            Stale process cleanup on daemon startup
+  restart-policy.ts           Server backoff + restart policy
+  stderr-buffer.ts            Per-server circular ring buffer for stderr
+  port-holder.ts              Port reservation for OAuth callbacks
+  process-identity.ts         Daemon identity / single-instance guard
+  worker-path.ts              Worker file path resolution (dev vs compiled)
+  auth/                       OAuth, Keychain, token management
+  config/                     Config file loading and watching
+  db/                         SQLite state database
+  handlers/                   IPC method handlers, dispatched by ipc-server
+  tls/                        TLS helpers for HTTPS servers
 
 packages/command/src/
-  index.ts        Entry point, arg dispatch
+  main.ts         Entry point (CLI dispatch — keep impl out of index.ts)
+  index.ts        Barrel export
   alias-runner.ts Virtual module registration + Proxy + import() execution
+  daemon-lifecycle.ts  Daemon auto-start, ipcCall wrapper, shutdown logic
   output.ts       Output formatting (JSON to stdout, errors to stderr)
   file-read.ts    Safe file reading with size limits
   parse.ts        Stdin reading and input parsing
-  commands/       call, ls, run, alias, mail, status, auth, config, agent,
-                  claude (alias), serve, tty, install, completions, typegen,
-                  logs, version, spans, registry-cmd, export, import, add,
-                  remove, get, config-file
+  commands/       Per-command modules. Files (each exports one or more cmdX
+                  handlers dispatched by main.ts):
+                  add, agent, alias, auth, automation, claude, completions,
+                  config, config-file, dump, export, gc, get, git-remote-helper,
+                  import, install, logs, mail, mail-wait, memory, monitor, note,
+                  phase, pr, registry-cmd, remove, run, scope, serve, serve-kill,
+                  session-display, site, spans, spawn-args, telemetry, track
+                  (track/tracked/untrack), tty, typegen, update, upgrade,
+                  version, vfs, worktree-commands
   jq/             jq filtering support
   registry/       Registry client (transport + API)
   tty/            Terminal detection and adapters (iTerm, Kitty, etc.)

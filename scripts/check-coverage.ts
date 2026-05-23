@@ -113,11 +113,6 @@ const EXCLUSIONS: Record<string, string> = {
   // Daemon internals — connection lifecycle requires integration
   "daemon/src/server-pool.ts": "51% coverage, connection lifecycle (#45/#51)",
 
-  "daemon/src/config/watcher.ts": "47% coverage, FS watcher loop (#48)",
-
-  // ACP server — worker crash/restart lifecycle requires integration with real Worker threads
-  "daemon/src/acp-server.ts": "45% coverage, crash recovery lifecycle requires integration test",
-
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
   // Test harness — not production code

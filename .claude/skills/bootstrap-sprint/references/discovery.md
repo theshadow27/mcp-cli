@@ -69,6 +69,19 @@ work cleanly in worktrees:
 - **Ports**: Does the dev server bind a fixed port? Concurrent worktrees will collide.
 - **Build artifacts**: Are there generated files that get confused across worktrees?
 - **Environment files**: `.env` files may need copying or symlinking.
+- **`core.hooksPath` inheritance**: check `git -C <base-repo> config --local
+  core.hooksPath`. If it returns an *absolute* path, every worktree inherits it
+  and pre-commit hooks may silently no-op against the wrong working tree.
+  Either change the value to a relative path (e.g. `.git-hooks`) in the base
+  repo, or document a per-worktree fix that runs `git config core.hooksPath
+  .git-hooks` after every `git worktree add`. Verify by creating a throwaway
+  worktree and committing a known-bad change; the hook must reject it.
+- **Phantom local commits on main**: if previous sessions ran without strict
+  worktree isolation, workers may have committed directly to the base repo's
+  main checkout. Before bootstrap, run `git fetch origin main && git log
+  HEAD ^origin/main --oneline` in the base repo — expect empty output. If
+  there's anything there, save it to a backup branch and reset to origin/main
+  before proceeding; otherwise sprint 1 starts with corrupted state.
 
 Check for `.mcx-worktree.json` or similar worktree hooks. If none exist, you may
 need to create worktree setup/teardown scripts.
@@ -97,6 +110,27 @@ If issues are vague, the planning phase needs to break them down before implemen
 - How do review comments get resolved? (Who fixes them? How many rounds?)
 - Is there a draft PR → ready-for-review → merge flow?
 - Can Claude mark PRs as ready, or must a human do it?
+- **Branch protection: is strict-up-to-date on?** Check the ruleset / branch
+  protection on main:
+  ```bash
+  gh api /repos/<owner>/<repo>/branches/main/protection 2>/dev/null \
+    --jq '.required_status_checks.strict // false'
+  # or, for rulesets:
+  gh api /repos/<owner>/<repo>/rulesets \
+    --jq '.[] | select(.target == "branch") | {id, name}'
+  gh api /repos/<owner>/<repo>/rulesets/<id> \
+    --jq '.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy'
+  ```
+  If it returns `true`, **flip it to false before the first sprint**. Strict-
+  up-to-date creates an N² rebase cascade as soon as the sprint ships >5
+  parallel PRs — the orchestrator collapses into a serialized
+  `update-branch` → wait-for-CI → merge loop. mcp-cli sprint 38 paid for an
+  hour of this before the policy flip; never retrofit a "mergemaster"
+  shepherd to work around it. The correct mitigations are (1) flip strict to
+  false, (2) serialize hot-shared-file picks at planning time via
+  `addBlockedBy` edges, (3) treat main-CI as the post-merge canary, (4) have
+  the release gate refuse to tag if main-CI is red. See lesson #30 in
+  `lessons.md` for the full reasoning + the sprint 38 retro receipts.
 
 ### 7. Existing automation and commands
 

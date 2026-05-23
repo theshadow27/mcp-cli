@@ -58,9 +58,11 @@ export class GhServerError extends Error {
 export class GhPageCapError extends Error {
   override name = "GhPageCapError" as const;
   itemCount: number;
-  constructor(message: string, itemCount: number) {
+  path: string;
+  constructor(message: string, itemCount: number, path = "") {
     super(message);
     this.itemCount = itemCount;
+    this.path = path;
   }
 }
 
@@ -203,6 +205,12 @@ export interface GhMergeOptions {
   method?: "merge" | "squash" | "rebase";
   auto?: boolean;
   deleteBranch?: boolean;
+}
+
+export interface GhReviewThread {
+  id: string;
+  isResolved: boolean;
+  comments: Array<{ author: string; body: string }>;
 }
 
 // ── Auth ──
@@ -445,8 +453,9 @@ async function ghPaginated<T>(path: string, opts: RequestOptions & { page?: numb
     url = parseNextUrl(resp.headers.get("link"));
     if (page === MAX_PAGES - 1 && url !== null) {
       throw new GhPageCapError(
-        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
+        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) at ${path} but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
         allItems.length,
+        path,
       );
     }
   }
@@ -517,6 +526,12 @@ interface RawIssue {
   user: { login: string };
   created_at: string;
   updated_at: string;
+}
+
+// ── Helpers ──
+
+function normalizeConclusion(conclusion: string | null): string | null {
+  return conclusion !== null ? conclusion.toUpperCase() : null;
 }
 
 // ── Mappers ──
@@ -655,7 +670,7 @@ export class PrHandle {
 
     return {
       total_count: checkRunsRaw.total_count,
-      check_runs: checkRunsRaw.check_runs,
+      check_runs: checkRunsRaw.check_runs.map((cr) => ({ ...cr, conclusion: normalizeConclusion(cr.conclusion) })),
       commit_statuses: dedupedStatuses,
     };
   }
@@ -810,6 +825,80 @@ export class PrHandle {
       byAuthor,
       substantiveByAuthor,
     };
+  }
+
+  async reviewThreads(): Promise<GhReviewThread[]> {
+    type GqlResponse = {
+      data?: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string;
+                isResolved: boolean;
+                comments: { nodes: Array<{ author: { login: string }; body: string }> };
+              }>;
+            };
+          };
+        };
+      };
+      errors?: Array<{ message: string }>;
+    };
+    const json = await ghJson<GqlResponse>(GITHUB_GRAPHQL_URL, {
+      ...this.reqOpts(),
+      method: "POST",
+      body: {
+        query: `query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    nodes {
+                      author { login }
+                      body
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        variables: { owner: this.o, name: this.r, number: this.n },
+      },
+    });
+    if (json.errors?.length) {
+      throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
+    }
+    return (json.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []).map((t) => ({
+      id: t.id,
+      isResolved: t.isResolved,
+      comments: t.comments?.nodes?.map((c) => ({ author: c.author?.login ?? "ghost", body: c.body })) ?? [],
+    }));
+  }
+
+  async resolveReviewThread(threadId: string): Promise<void> {
+    type GqlResponse = {
+      data?: unknown;
+      errors?: Array<{ message: string }>;
+    };
+    const json = await ghJson<GqlResponse>(GITHUB_GRAPHQL_URL, {
+      ...this.reqOpts(),
+      method: "POST",
+      body: {
+        query: `mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }`,
+        variables: { threadId },
+      },
+    });
+    if (json.errors?.length) {
+      throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
+    }
   }
 
   private async nodeId(): Promise<string> {

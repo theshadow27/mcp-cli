@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 import React from "react";
-import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
+import { ALL_TABS, type View } from "../hooks/use-keyboard";
 
 export interface TabBadge {
   count: number;
