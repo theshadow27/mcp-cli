@@ -196,6 +196,30 @@ describe("buildAgentTools", () => {
     expect(prompt.inputSchema.properties.name).toBeUndefined();
     expect(prompt.inputSchema.properties.prompt).toBeDefined();
   });
+
+  test("omitProperties filters required array to match properties", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        bye: { omitProperties: ["sessionId"] },
+      },
+    });
+    const bye = findTool(tools, "test_bye");
+    expect(bye.inputSchema.properties.sessionId).toBeUndefined();
+    expect(bye.inputSchema.required).not.toContain("sessionId");
+  });
+
+  test("omitProperties works on all tool types (not just prompt/bye)", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        interrupt: { omitProperties: ["reason"] },
+      },
+    });
+    const interrupt = findTool(tools, "test_interrupt");
+    expect(interrupt.inputSchema.properties.reason).toBeUndefined();
+    expect(interrupt.inputSchema.properties.sessionId).toBeDefined();
+  });
 });
 
 describe("prefixedToolName", () => {
@@ -295,6 +319,28 @@ describe("provider tool arrays match expected structure", () => {
     for (const tools of [CLAUDE_TOOLS, OPENCODE_TOOLS]) {
       const bye = tools.find((t: AgentToolDef) => t.name.endsWith("_bye"));
       expect(bye?.inputSchema.properties.message).toBeDefined();
+    }
+  });
+
+  test("all provider tools have valid schemas (required ⊆ properties)", async () => {
+    const { CLAUDE_TOOLS } = await import("../../daemon/src/claude-session/tools");
+    const { CODEX_TOOLS } = await import("../../daemon/src/codex-session/tools");
+    const { ACP_TOOLS } = await import("../../daemon/src/acp-session/tools");
+    const { MOCK_TOOLS } = await import("../../daemon/src/mock-session/tools");
+    const { OPENCODE_TOOLS } = await import("../../daemon/src/opencode-session/tools");
+    for (const [label, tools] of [
+      ["claude", CLAUDE_TOOLS],
+      ["codex", CODEX_TOOLS],
+      ["acp", ACP_TOOLS],
+      ["mock", MOCK_TOOLS],
+      ["opencode", OPENCODE_TOOLS],
+    ] as const) {
+      for (const tool of tools) {
+        const propKeys = new Set(Object.keys(tool.inputSchema.properties));
+        for (const req of tool.inputSchema.required ?? []) {
+          expect(propKeys.has(req)).toBe(true);
+        }
+      }
     }
   });
 });
