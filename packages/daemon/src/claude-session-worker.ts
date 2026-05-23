@@ -246,9 +246,13 @@ export async function handlePrompt(
       },
     });
 
+    // Use per-request traceparent injected by the IPC tool handler (completes
+    // the mcx → ipc-span → tool-span → claude-process causal chain). Fall back
+    // to the long-lived worker span when no per-request traceparent is present.
+    const spawnTraceparent = (args.__traceparent as string | undefined) ?? workerSpan?.traceparent();
     let pid: number;
     try {
-      pid = server.spawnClaude(sessionId, workerSpan?.traceparent());
+      pid = server.spawnClaude(sessionId, spawnTraceparent);
     } catch (err) {
       // Spawn failed — clean up the session to avoid ghost entries (#1836).
       server.removeUnspawnedSession(sessionId);

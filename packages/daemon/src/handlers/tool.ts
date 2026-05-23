@@ -1,5 +1,6 @@
 import {
   ALIAS_SERVER_NAME,
+  CLAUDE_SERVER_NAME,
   CallToolParamsSchema,
   GetToolInfoParamsSchema,
   GrepToolsParamsSchema,
@@ -85,10 +86,14 @@ export class ToolHandlers {
         // Route every _aliases call through the alias server directly so the
         // caller's cwd (for repo-root scoping) and optional callChain reach
         // the executor subprocess. The pool route has no cwd channel.
+        //
+        // For _claude, inject the per-request traceparent so the spawned
+        // Claude process becomes a child of this IPC operation span.
+        const resolvedArgs = server === CLAUDE_SERVER_NAME ? { ...args, __traceparent: toolSpan.traceparent() } : args;
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
             ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
-            : await this.pool.callTool(server, tool, args, timeoutMs);
+            : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs);
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
         // Dual-write: usage_stats (Phase 1 compat) + spans table

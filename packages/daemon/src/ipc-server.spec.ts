@@ -1581,6 +1581,62 @@ describe("IpcServer HTTP transport", () => {
     }
   });
 
+  test("callTool on _claude injects __traceparent into args (#1244)", async () => {
+    socketPath = tmpSocket();
+    const capturedArgs: Array<{ server: string; tool: string; args: Record<string, unknown> }> = [];
+    const pool = {
+      ...mockPool(),
+      callTool: async (server: string, tool: string, args: Record<string, unknown>) => {
+        capturedArgs.push({ server, tool, args });
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const traceparent = "00-aabbccddeeff00112233445566778899-1122334455667788-01";
+    await rpc("/rpc", {
+      id: "tp-claude-1",
+      method: "callTool",
+      params: { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hello" } },
+      traceparent,
+    });
+
+    expect(capturedArgs).toHaveLength(1);
+    const { args } = capturedArgs[0];
+    // __traceparent must be present and be a valid traceparent (inherits the same traceId)
+    expect(typeof args.__traceparent).toBe("string");
+    const tp = args.__traceparent as string;
+    expect(tp.startsWith("00-aabbccddeeff00112233445566778899-")).toBe(true);
+    // Original args are preserved
+    expect(args.prompt).toBe("hello");
+  });
+
+  test("callTool on non-claude server does not inject __traceparent (#1244)", async () => {
+    socketPath = tmpSocket();
+    const capturedArgs: Array<{ server: string; args: Record<string, unknown> }> = [];
+    const pool = {
+      ...mockPool(),
+      callTool: async (server: string, _tool: string, args: Record<string, unknown>) => {
+        capturedArgs.push({ server, args });
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(pool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    await rpc("/rpc", {
+      id: "tp-ext-1",
+      method: "callTool",
+      params: { server: "someExternalServer", tool: "some_tool", arguments: { key: "value" } },
+      traceparent: "00-0123456789abcdef0123456789abcdef-fedcba9876543210-01",
+    });
+
+    expect(capturedArgs).toHaveLength(1);
+    expect(capturedArgs[0].args.__traceparent).toBeUndefined();
+    expect(capturedArgs[0].args.key).toBe("value");
+  });
+
   test("getMetrics includes daemonId and startedAt", async () => {
     socketPath = tmpSocket();
     server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
