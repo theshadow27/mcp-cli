@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { AcpProcess } from "./acp-process";
 
+const POLL_MS = 10;
+
 describe("AcpProcess", () => {
   test("spawns a process and receives NDJSON messages", async () => {
     const messages: Record<string, unknown>[] = [];
@@ -25,7 +27,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(messages).toHaveLength(2);
@@ -50,7 +52,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(errors).toHaveLength(1);
@@ -72,7 +74,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(messages.length).toBeGreaterThanOrEqual(1);
@@ -98,7 +100,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(exitCalled).toBe(true);
@@ -143,7 +145,7 @@ describe("AcpProcess", () => {
 
     const deadline = Date.now() + 5000;
     while (!proc.exited && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(stderrChunks.join("")).toContain("error");

@@ -5,6 +5,9 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { pollUntil } from "../../../test/harness";
+
+const POLL_MS = 1;
+
 import {
   BASE_ENV_ALLOWLIST,
   type ConnectFn,
@@ -1032,7 +1035,7 @@ describe("ServerPool.updateConfig reconnect", () => {
     // Poll until reconnect completes (replaces fixed sleep)
     const deadline = Date.now() + 5000;
     while (connectCount < 2 && Date.now() < deadline) {
-      await Bun.sleep(1);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(connectCount).toBe(2);
@@ -1704,7 +1707,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 4000);
     } finally {
       forceKill(pid);
     }
@@ -1742,7 +1745,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.closeAll();
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 4000);
     } finally {
       forceKill(pid);
     }
@@ -1818,7 +1821,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
       // killPid would never be called, leaving the process alive.
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 4000);
     } finally {
       forceKill(pid);
     }

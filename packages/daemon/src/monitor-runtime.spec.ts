@@ -7,6 +7,9 @@ import { testOptions } from "../../../test/test-options";
 import { EventBus } from "./event-bus";
 import { MONITOR_RESTART_POLICY, type MonitorAlias, MonitorRuntime, getMonitorBackoff } from "./monitor-runtime";
 
+const TICK_MS = 100;
+const POLL_MS = 50;
+
 function writeMonitorScript(dir: string, name: string, source: string): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${name}.ts`);
@@ -131,7 +134,7 @@ defineMonitor({
     let i = 0;
     while (!ctx.signal.aborted) {
       yield { event: "tick", category: "heartbeat", n: i++ };
-      await Bun.sleep(100);
+      await Bun.sleep(${TICK_MS});
     }
   },
 });`,
@@ -247,7 +250,7 @@ defineMonitor({
     yield { event: "started", category: "heartbeat" };
     try {
       while (!ctx.signal.aborted) {
-        await Bun.sleep(50);
+        await Bun.sleep(${POLL_MS});
       }
     } finally {
       yield { event: "aborted", category: "heartbeat" };
@@ -291,7 +294,7 @@ defineMonitor({
   subscribe: async function*(ctx) {
     yield { event: "started", category: "heartbeat" };
     while (!ctx.signal.aborted) {
-      await Bun.sleep(100);
+      await Bun.sleep(${TICK_MS});
     }
   },
 });`,

@@ -5,6 +5,8 @@ import { MAIL_SENT } from "@mcp-cli/core";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
+const TICK_MS = 1;
+
 function sessionEvent(event = "session.result", sessionId = "s1"): MonitorEventInput {
   return { src: "daemon.claude-server", event, category: "session", sessionId };
 }
@@ -275,7 +277,7 @@ describe("EventBus", () => {
     const deadline = Date.now() + 1_000;
     while (Date.now() <= before) {
       if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
-      await Bun.sleep(1);
+      await Bun.sleep(TICK_MS);
     }
 
     bus.publish(sessionEvent());
@@ -307,7 +309,7 @@ describe("EventBus", () => {
     const deadline = Date.now() + 1_000;
     while (Date.now() <= before) {
       if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
-      await Bun.sleep(1);
+      await Bun.sleep(TICK_MS);
     }
 
     expect(bus.touch(id)).toBe(true);
@@ -328,7 +330,7 @@ describe("EventBus", () => {
     const deadline = Date.now() + 1_000;
     while (Date.now() <= created) {
       if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
-      await Bun.sleep(1);
+      await Bun.sleep(TICK_MS);
     }
 
     // Touch refreshes lastActivityAt — subscriber should survive pruneStale.

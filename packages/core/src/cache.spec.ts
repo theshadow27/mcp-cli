@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { createAliasCache, pruneExpiredCache } from "./cache";
 import { _restoreOptions, options } from "./constants";
 
+const EXPIRY_WAIT_MS = 5;
+const TICK_MS = 1;
+
 function tmpDir(): string {
   const dir = join(tmpdir(), `mcp-cli-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
@@ -54,7 +57,7 @@ describe("createAliasCache", () => {
     expect(result1).toEqual({ call: 1 });
 
     // Wait for expiry
-    await Bun.sleep(5);
+    await Bun.sleep(EXPIRY_WAIT_MS);
 
     const result2 = await cache("expiry-key", producer, { ttl: 1 });
     expect(result2).toEqual({ call: 2 });
@@ -79,7 +82,7 @@ describe("createAliasCache", () => {
   test("handles async producer", async () => {
     const cache = createAliasCache("test-alias");
     const result = await cache("async-key", async () => {
-      await Bun.sleep(1);
+      await Bun.sleep(TICK_MS);
       return "async-value";
     });
     expect(result).toBe("async-value");

@@ -9,6 +9,12 @@ import type { DerivedCtx, DerivedRule } from "./derived-rules";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
+const TICK_MS = 5;
+const POLL_MS = 10;
+const SETTLE_MS = 50;
+const OBSERVE_MS = 100;
+const EXHAUST_MS = 200;
+
 function freshDb(): Database {
   const db = new Database(":memory:");
   db.exec("PRAGMA journal_mode = WAL");
@@ -162,7 +168,7 @@ describe("DerivedEventPublisher", () => {
     // Poll until the derived event appears (retry fires at ~10ms)
     const deadline = Date.now() + 2000;
     while (received.length < 2 && Date.now() < deadline) {
-      await Bun.sleep(5);
+      await Bun.sleep(TICK_MS);
     }
 
     pub.dispose();
@@ -185,7 +191,7 @@ describe("DerivedEventPublisher", () => {
 
     const deadline = Date.now() + 2000;
     while (workItemDb.getWorkItem(wi.id)?.phase !== "done" && Date.now() < deadline) {
-      await Bun.sleep(5);
+      await Bun.sleep(TICK_MS);
     }
 
     pub.dispose();
@@ -208,7 +214,7 @@ describe("DerivedEventPublisher", () => {
     // Wait long enough for all 3 retries to exhaust (10 + 20 + 40 = 70ms, give margin)
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
       // Break early once we're well past all retries
       if (Date.now() > deadline - 1500) break;
     }
@@ -235,7 +241,7 @@ describe("DerivedEventPublisher", () => {
 
     // Create work item after dispose — retry should never fire
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
 
     expect(received).toHaveLength(1);
     expect(received[0].event).toBe("pr.merged");
@@ -617,7 +623,7 @@ describe("DerivedEventPublisher", () => {
     // Create work item in "done" phase — retry should find it but skip (null, not pending)
     workItemDb.createWorkItem({ prNumber: 42, phase: "done" });
 
-    await Bun.sleep(100);
+    await Bun.sleep(OBSERVE_MS);
     pub.dispose();
 
     // Only the original pr.merged — no derived event
@@ -647,7 +653,7 @@ describe("DerivedEventPublisher", () => {
 
     bus.publish(prMergedInput(42));
 
-    await Bun.sleep(200);
+    await Bun.sleep(EXHAUST_MS);
     pub.dispose();
 
     expect(applyCalls).toBe(2);
@@ -677,7 +683,7 @@ describe("DerivedEventPublisher", () => {
     bus.publish(prMergedInput(42));
 
     // Wait for all retries to exhaust
-    await Bun.sleep(200);
+    await Bun.sleep(EXHAUST_MS);
     pub.dispose();
 
     // 1 initial + 3 retries = 4 total apply calls

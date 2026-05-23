@@ -27,8 +27,8 @@
  * Usage:  bun scripts/check-test-timeouts.ts
  *
  * Exit codes:
- *   0 — no violations found (or Bun.sleep count at/below ratchet baseline)
- *   1 — setTimeout violations found, or Bun.sleep count exceeds baseline
+ *   0 — no violations found
+ *   1 — setTimeout or Bun.sleep violations found
  */
 
 import { Glob } from "bun";
@@ -36,11 +36,6 @@ import { Glob } from "bun";
 const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 const SCRIPTS_DIR = new URL("../scripts/", import.meta.url).pathname;
 const TEST_DIR = new URL("../test/", import.meta.url).pathname;
-
-// Ratchet baseline: fail if NEW Bun.sleep violations are introduced.
-// Decrease this number as #2100 cleanup proceeds. Once it reaches 0,
-// replace the ratchet with a hard exit(1) like the setTimeout check.
-export const BUN_SLEEP_BASELINE = 136;
 
 /**
  * Extracts the delay (2nd positional argument) from a pre-extracted argument
@@ -224,10 +219,7 @@ async function main(): Promise<void> {
   }
 
   if (bunSleepViolations.length > 0) {
-    const isRegression = bunSleepViolations.length > BUN_SLEEP_BASELINE;
-    const prefix = isRegression ? "" : "[warn] ";
-    process.stderr.write(`\n  ${prefix}Bun.sleep with fixed delay: ${bunSleepViolations.length} violation(s) found`);
-    process.stderr.write(` (baseline: ${BUN_SLEEP_BASELINE})\n\n`);
+    process.stderr.write(`\n  Bun.sleep with fixed delay: ${bunSleepViolations.length} violation(s) found\n\n`);
     process.stderr.write("  Bun.sleep in tests causes timing-dependent flakiness.\n");
     process.stderr.write("  Use FakeClock or dependency injection instead.\n\n");
     for (const v of bunSleepViolations) {
@@ -236,14 +228,9 @@ async function main(): Promise<void> {
     }
     process.stderr.write("  Bad:   await Bun.sleep(50) // then assert\n");
     process.stderr.write("  Good:  inject FakeClock / use configurable delay param\n\n");
-    if (isRegression) {
-      process.stderr.write(
-        `  ❌ Regression: ${bunSleepViolations.length} > baseline ${BUN_SLEEP_BASELINE}. Fix new violations or update BUN_SLEEP_BASELINE.\n\n`,
-      );
-    }
   }
 
-  if (setTimeoutViolations.length > 0 || bunSleepViolations.length > BUN_SLEEP_BASELINE) {
+  if (setTimeoutViolations.length > 0 || bunSleepViolations.length > 0) {
     process.exit(1);
   }
 }

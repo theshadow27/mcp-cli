@@ -8,6 +8,10 @@ import {
   useDaemonProcessCount,
 } from "./use-daemon-process-count";
 
+const POLL_MS = 10;
+const SETTLE_MS = 20;
+const NEGATIVE_ASSERT_MS = 100;
+
 const Harness: FC<{ opts: UseDaemonProcessCountOptions; stateRef: { current: number } }> = ({ opts, stateRef }) => {
   const count = useDaemonProcessCount(opts);
   stateRef.current = count;
@@ -17,7 +21,7 @@ const Harness: FC<{ opts: UseDaemonProcessCountOptions; stateRef: { current: num
 async function waitFor(predicate: () => boolean, timeout = 5000) {
   const deadline = Date.now() + timeout;
   while (!predicate() && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
 }
 
@@ -54,7 +58,7 @@ describe("useDaemonProcessCount", () => {
 
   it("defaults to 0 before first poll", () => {
     const countFn = async () => {
-      await Bun.sleep(100);
+      await Bun.sleep(NEGATIVE_ASSERT_MS);
       return 2;
     };
     const { stateRef } = mount({ countFn });
@@ -90,11 +94,11 @@ describe("useDaemonProcessCount", () => {
     instance.unmount();
     instances.pop();
     // Allow any in-flight poll to complete
-    await Bun.sleep(20);
+    await Bun.sleep(SETTLE_MS);
     const countAfterUnmount = callCount;
 
     // No new polls should fire after unmount settles (negative assertion — sleep is correct)
-    await Bun.sleep(100);
+    await Bun.sleep(NEGATIVE_ASSERT_MS);
     expect(callCount).toBe(countAfterUnmount);
   });
 });

@@ -5,6 +5,10 @@ import { render } from "ink-testing-library";
 import React, { type FC } from "react";
 import { type UsePlanMetricsOptions, type UsePlansOptions, usePlanMetrics, usePlans } from "./use-plans";
 
+const TICK_MS = 1;
+const SETTLE_MS = 30;
+const FLUSH_MS = 100;
+
 /* ---------- fixtures ---------- */
 
 function makePlan(id: string, server: string): Plan {
@@ -57,7 +61,7 @@ async function waitFor(predicate: () => boolean, deadlineMs = 2000): Promise<voi
     if (performance.now() - start > deadlineMs) {
       throw new Error(`waitFor timed out after ${deadlineMs}ms`);
     }
-    await Bun.sleep(1);
+    await Bun.sleep(TICK_MS);
   }
 }
 
@@ -198,7 +202,7 @@ describe("usePlans", () => {
 
     mount({ enabled: false, ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
     // Give a short window to confirm no calls are made
-    await Bun.sleep(30);
+    await Bun.sleep(SETTLE_MS);
 
     expect(callCount).toBe(0);
   });
@@ -455,7 +459,7 @@ describe("usePlans", () => {
     const countAtUnmount = callCount;
 
     // Wait and confirm no more calls after unmount
-    await Bun.sleep(100);
+    await Bun.sleep(FLUSH_MS);
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -856,7 +860,7 @@ describe("usePlanMetrics", () => {
       supportsMetrics: false,
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
-    await Bun.sleep(30);
+    await Bun.sleep(SETTLE_MS);
 
     expect(callCount).toBe(0);
     expect(stateRef.current.metrics).toBeNull();
@@ -928,7 +932,7 @@ describe("usePlanMetrics", () => {
     instances.pop();
     const countAtUnmount = callCount;
 
-    await Bun.sleep(100);
+    await Bun.sleep(FLUSH_MS);
     expect(callCount).toBe(countAtUnmount);
   });
 
@@ -945,7 +949,7 @@ describe("usePlanMetrics", () => {
       ipcCallFn: ipcCallFn as UsePlanMetricsOptions["ipcCallFn"],
     });
 
-    await Bun.sleep(30);
+    await Bun.sleep(SETTLE_MS);
     expect(callCount).toBe(0);
   });
 

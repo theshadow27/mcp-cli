@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  BUN_SLEEP_BASELINE,
-  findBunSleepViolations,
-  findViolations,
-  hasBunSleep,
-  hasFixedDelay,
-} from "./check-test-timeouts";
+import { findBunSleepViolations, findViolations, hasBunSleep, hasFixedDelay } from "./check-test-timeouts";
 
 // Shared matrices — exercised by both hasFixedDelay (per-line) and
 // findViolations (whole-content) so the production scan path is covered.
@@ -119,13 +113,6 @@ setTimeout(
     expect(vs).toHaveLength(2);
     expect(vs[0].line).toBe(2);
     expect(vs[1].line).toBe(4);
-  });
-});
-
-describe("check-test-timeouts BUN_SLEEP_BASELINE", () => {
-  test("baseline is a positive integer", () => {
-    expect(BUN_SLEEP_BASELINE).toBeGreaterThan(0);
-    expect(Number.isInteger(BUN_SLEEP_BASELINE)).toBe(true);
   });
 });
 
