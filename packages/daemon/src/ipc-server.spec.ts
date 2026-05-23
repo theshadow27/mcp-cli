@@ -3677,6 +3677,42 @@ describe("IpcServer HTTP transport", () => {
     }
   });
 
+  test("GET /events ring-buffer heartbeat poll rate is 1/6 of silence threshold (closes #1528)", () => {
+    // Verify setInterval is called with heartbeatIntervalMs/6, not heartbeatIntervalMs,
+    // so the worst-case heartbeat delay is ~1.17× the threshold, not 2×.
+    const heartbeatMs = 600;
+    const capturedIntervals: number[] = [];
+    const origSetInterval = globalThis.setInterval;
+    (globalThis as unknown as Record<string, unknown>).setInterval = (fn: (...args: unknown[]) => void, ms: number) =>
+      origSetInterval(fn, ms);
+    const patchedSetInterval = (fn: (...args: unknown[]) => void, ms: number) => {
+      capturedIntervals.push(ms);
+      return origSetInterval(fn, ms);
+    };
+    (globalThis as unknown as Record<string, unknown>).setInterval = patchedSetInterval;
+
+    try {
+      const es = new (
+        EventStreamServer as unknown as new (
+          ...args: unknown[]
+        ) => { handleEventsNDJSON(u: URL): Response }
+      )(null, mockPool(), silentLogger, heartbeatMs);
+
+      // handleEventsNDJSON creates the ReadableStream; start() runs synchronously,
+      // calling setInterval before returning. We just need to trigger stream creation.
+      const res = es.handleEventsNDJSON(new URL("http://localhost/events"));
+      // Cancel the body to release resources; we only care about the setInterval call.
+      res.body?.cancel().catch(() => {});
+
+      const pollInterval = capturedIntervals[capturedIntervals.length - 1];
+      expect(pollInterval).toBeDefined();
+      expect(pollInterval).toBe(Math.ceil(heartbeatMs / 6)); // 100ms poll, not 600ms
+      expect(pollInterval).toBeLessThan(heartbeatMs);
+    } finally {
+      (globalThis as unknown as Record<string, unknown>).setInterval = origSetInterval;
+    }
+  });
+
   test("GET /events respects subscribe filter server-side", async () => {
     startServer();
 
