@@ -230,3 +230,75 @@ describe("handlePrompt: auto-revive disconnected session (#1765)", () => {
     expect(result.content[0].text).toContain("claude session ID");
   });
 });
+
+// ── handlePrompt: per-request traceparent propagation (#1244) ──
+
+function makeEnvRecordingSpawn(): {
+  spawn: SpawnFn;
+  lastEnv: () => Record<string, string | undefined> | undefined;
+} {
+  let lastEnv: Record<string, string | undefined> | undefined;
+  const spawn: SpawnFn = (_cmd, opts) => {
+    lastEnv = opts?.env;
+    let exitResolve: (code: number) => void = () => {};
+    return {
+      pid: 42001,
+      exited: new Promise<number>((r) => {
+        exitResolve = r;
+      }),
+      kill: () => exitResolve(143),
+      stderr: null,
+    };
+  };
+  return { spawn, lastEnv: () => lastEnv };
+}
+
+describe("handlePrompt: per-request traceparent propagation (#1244)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  test("passes __traceparent from args as TRACEPARENT env to spawned Claude", async () => {
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const tp = `00-${"c".repeat(32)}-${"d".repeat(16)}-01`;
+    await handlePrompt(server, { prompt: "hello", __traceparent: tp });
+
+    expect(recording.lastEnv()).toEqual({ TRACEPARENT: tp });
+  });
+
+  test("falls back to workerTraceparent when __traceparent is absent", async () => {
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const workerTp = `00-${"e".repeat(32)}-${"f".repeat(16)}-01`;
+    await handlePrompt(server, { prompt: "hello" }, workerTp);
+
+    // Falls back to the worker-level span traceparent (set via init message in production)
+    expect(recording.lastEnv()).toEqual({ TRACEPARENT: workerTp });
+  });
+
+  test("uses no TRACEPARENT when both __traceparent and workerTraceparent are absent", async () => {
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    await handlePrompt(server, { prompt: "hello" });
+
+    expect(recording.lastEnv()).toBeUndefined();
+  });
+});
