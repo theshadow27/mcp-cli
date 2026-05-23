@@ -18,7 +18,7 @@ import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import type { DaemonHandle, PruneGitOps } from "./index";
-import { checkSqliteVersion, pruneOrphanedWorktrees, startDaemon, sweepCoreBare } from "./index";
+import { checkSqliteVersion, pruneOrphanedWorktrees, resolveHeadBranch, startDaemon, sweepCoreBare } from "./index";
 import { metrics } from "./metrics";
 
 setDefaultTimeout(15_000);
@@ -1342,5 +1342,97 @@ describe("checkSqliteVersion (#2092)", () => {
     const result = checkSqliteVersion(fakeDb);
     expect(result).toContain("macOS");
     expect(result).toContain("13 Ventura");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveHeadBranch unit tests (#1353)
+// ---------------------------------------------------------------------------
+describe("resolveHeadBranch", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(require("node:os").tmpdir(), `resolve-head-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    require("node:fs").rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("returns branch name from a regular .git directory", async () => {
+    const gitDir = join(tmpDir, ".git");
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/feat/my-branch\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBe("feat/my-branch");
+  });
+
+  test("returns null for detached HEAD", async () => {
+    const gitDir = join(tmpDir, ".git");
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, "HEAD"), "abc123def456\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
+
+  test("returns null when .git does not exist", async () => {
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
+
+  test("follows worktree .git file to real git dir", async () => {
+    const realGitDir = join(tmpDir, "real-git-dir");
+    mkdirSync(realGitDir, { recursive: true });
+    writeFileSync(join(realGitDir, "HEAD"), "ref: refs/heads/worktree-branch\n");
+    writeFileSync(join(tmpDir, ".git"), `gitdir: ${realGitDir}\n`);
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBe("worktree-branch");
+  });
+
+  test("follows worktree .git file with relative path", async () => {
+    const realGitDir = join(tmpDir, "relative-git");
+    mkdirSync(realGitDir, { recursive: true });
+    writeFileSync(join(realGitDir, "HEAD"), "ref: refs/heads/relative-branch\n");
+    writeFileSync(join(tmpDir, ".git"), "gitdir: relative-git\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBe("relative-branch");
+  });
+
+  test("returns null for malformed .git file (no gitdir: prefix)", async () => {
+    writeFileSync(join(tmpDir, ".git"), "garbage content\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
+
+  test("returns null when .git/HEAD is unreadable (FS error after stat)", async () => {
+    const gitDir = join(tmpDir, ".git");
+    mkdirSync(gitDir, { recursive: true });
+    // .git dir exists but HEAD does not — Bun.file().text() would throw
+    // if exists() didn't catch it first. But a worktree pointing at a
+    // broken gitdir exercises the uncaught path: stat succeeds, .text() throws.
+    writeFileSync(join(tmpDir, ".git-file-mode"), "");
+    // Simulate: .git is a file pointing to a gitdir with no HEAD
+    const brokenGitDir = join(tmpDir, "broken-gitdir");
+    mkdirSync(brokenGitDir, { recursive: true });
+    // Remove .git dir and replace with file pointing to broken gitdir
+    require("node:fs").rmSync(gitDir, { recursive: true });
+    writeFileSync(join(tmpDir, ".git"), `gitdir: ${brokenGitDir}\n`);
+    // brokenGitDir has no HEAD file — should return null, not throw
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
+  });
+
+  test("returns null when worktree .git file points to nonexistent directory", async () => {
+    writeFileSync(join(tmpDir, ".git"), "gitdir: /nonexistent/path/that/does/not/exist\n");
+
+    const branch = await resolveHeadBranch(tmpDir);
+    expect(branch).toBeNull();
   });
 });
