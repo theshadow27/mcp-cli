@@ -499,15 +499,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
   const claudeServer = new ClaudeServer(db, daemonId, undefined, logger, 10_000, wsPort);
 
-  // Run all binary 'which' checks in parallel to avoid blocking the critical path 4× sequentially.
-  const whichBinary = (bin: string) =>
-    Bun.spawn(["which", bin], { stdout: "pipe", stderr: "pipe" }).exited.then((code) => code === 0);
-  const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled] = await Promise.all([
-    whichBinary("codex"),
-    whichBinary("gh"),
-    whichBinary("gemini"),
-    whichBinary("opencode"),
-  ]);
+  // Bun.which() is a synchronous builtin — no subprocess, no await needed.
+  const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled] = [
+    Bun.which("codex") !== null,
+    Bun.which("gh") !== null,
+    Bun.which("gemini") !== null,
+    Bun.which("opencode") !== null,
+  ];
 
   // Codex server: only created if `codex` binary is installed
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
