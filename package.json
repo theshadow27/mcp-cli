@@ -32,6 +32,7 @@
     "am-i-done": "bun scripts/am-i-done.ts",
     "doing-it-wrong": "bun scripts/doing-it-wrong.ts",
     "test": "bun install && bun test --parallel",
+    "test:phases": "cd .claude/phases && bun test",
     "test:coverage": "bun scripts/check-coverage.ts",
     "dev:daemon": "bun packages/daemon/src/main.ts",
     "dev:mcx": "bun packages/command/src/main.ts",
