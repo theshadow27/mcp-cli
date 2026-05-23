@@ -1,7 +1,7 @@
 import type { ServeInstanceInfo, ServerStatus, UsageStat } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { ServerDetail } from "./server-detail.js";
+import { ServerDetail } from "./server-detail";
 
 interface ServerListProps {
   servers: ServerStatus[];

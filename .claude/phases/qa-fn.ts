@@ -1,7 +1,7 @@
 /** Core qa-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./phase-types.js";
-export type { GhResult };
+import type { GhOp, GhResult } from "./phase-types.js";
+export type { GhOp, GhResult };
 
 export const QA_FAIL_CAP = 2;
 
@@ -19,7 +19,7 @@ export interface QaState {
 }
 
 export interface QaDeps {
-  gh(args: string[]): Promise<GhResult>;
+  gh(op: GhOp): Promise<GhResult>;
   prEdit(prNumber: number, flags: string[]): Promise<void>;
 }
 
@@ -39,7 +39,7 @@ export async function readQaLabels(
   prNumber: number,
   deps: Pick<QaDeps, "gh">,
 ): Promise<{ hasPass: boolean; hasFail: boolean }> {
-  const result = await deps.gh(["pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"]);
+  const result = await deps.gh({ op: "pr:labels", prNumber });
   if (result.exitCode !== 0) return { hasPass: false, hasFail: false };
   const names = new Set(result.stdout.split(/\r?\n/).map((l) => l.trim()));
   return { hasPass: names.has("qa:pass"), hasFail: names.has("qa:fail") };

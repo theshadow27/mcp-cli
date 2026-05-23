@@ -1,7 +1,7 @@
 import type { MailMessage } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { getMessageLines } from "../hooks/use-keyboard-mail.js";
+import { getMessageLines } from "../hooks/use-keyboard-mail";
 
 const MAIL_VIEW_HEIGHT = 20;
 
