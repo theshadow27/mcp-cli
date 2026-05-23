@@ -241,15 +241,19 @@ describe("TracingServer", () => {
     test("clamps limit to valid range", async () => {
       using opts = testOptions();
       db = new StateDb(opts.DB_PATH);
+      for (let i = 0; i < 5; i++) {
+        insertSpan(db, { spanId: `s${i}`.padEnd(16, "0"), startTimeMs: 1000 + i });
+      }
       server = new TracingServer(db);
       const { client } = await server.start();
 
-      // Should not error with oversized or zero limit
+      // 9999 clamps to 1000, which is > 5 — all spans returned
       const over = parseResult(await client.callTool({ name: "query_traces", arguments: { limit: 9999 } }));
-      expect(over.spans).toEqual([]);
+      expect((over.spans as unknown[]).length).toBe(5);
 
+      // 0 clamps to 1 — exactly one span returned
       const zero = parseResult(await client.callTool({ name: "query_traces", arguments: { limit: 0 } }));
-      expect(zero.spans).toEqual([]);
+      expect((zero.spans as unknown[]).length).toBe(1);
     });
 
     test("filters by server name substring", async () => {
