@@ -82,10 +82,36 @@ Write `build/harvest/REPORT.md` tiering clusters by
   *pre-commit/process* gap, not a missing rule), or needs semantic judgment
   (stale doc comments), or is one-off.
 
-Present the tiered report. Let the user pick what to file, then write the
-`scripts/rules/<id>.rule.ts` + fixtures for the approved ones (see
-`scripts/rules/_engine/rule.ts` for the `Rule` type and an existing
-`*.rule.ts` for the shape).
+Present the tiered report. Let the user pick what to file.
+
+### 4. File issues (the ticket bar)
+
+This repo's bar for a rule ticket is stricter than a generic "suggestion."
+Before filing, search open issues to dedup (`gh issue list --state open
+--search "<keyword>"`). Then **every rule ticket must specify all three of:**
+
+1. **Mechanical detection** — exactly what a regex / AST / `check` rule matches,
+   and which paths it's scoped to. No "improve X" — a concrete predicate.
+2. **A test fixture** — the rule engine is fixture-driven: name the
+   `<id>__clean.fixture.ts` (`@expect 0`) and `<id>__flagged.fixture.ts`
+   (`@expect N`) cases, using the `@rule` / `@expect` / `@path` JSDoc frontmatter
+   format (see `scripts/rules/fixtures/`).
+3. **A non-smelling alternative** — the better pattern the rule's `guidance`
+   will point authors to. If the alternative is "use helper X" and X doesn't
+   exist yet, the ticket is a **helper + rule double-header** (build X, then ban
+   the manual form) — say so.
+
+**If you can't write all three, it isn't a rule.** File it instead as a
+process note (pre-commit/lint-scope gap, fixture-coverage gap) or a
+judgment-only review item — don't dress it up as a dotw rule.
+
+Conventions: title `feat(rules): …` (or `feat(core)`/`feat(command)` for a
+helper double-header); label `enhancement`; body leads with the source PR list
+(`harvested from #A, #B, …`) and `blocked-merge` count, since recurrence +
+cost is the justification. Implementation lands later as
+`scripts/rules/<id>.rule.ts` + fixtures (`scripts/rules/_engine/rule.ts` has the
+`Rule` type; copy an existing `*.rule.ts` for shape), with the rule's
+`documentation` field pointing back at the issue number.
 
 ## Diary mining (secondary, lower yield)
 
