@@ -1,7 +1,7 @@
 import type { LogEntry, ServerStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { type LogSource, buildLogSources } from "../hooks/use-logs.js";
+import { type LogSource, buildLogSources } from "../hooks/use-logs";
 
 interface LogViewerProps {
   lines: LogEntry[];

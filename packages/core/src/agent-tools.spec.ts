@@ -146,6 +146,80 @@ describe("buildAgentTools", () => {
       expect(codexNames).not.toContain(name);
     }
   });
+
+  test("omitProperties removes named fields from inputSchema", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        prompt: { omitProperties: ["name"] },
+        bye: { omitProperties: ["message"] },
+      },
+    });
+    const prompt = findTool(tools, "test_prompt");
+    expect(prompt.inputSchema.properties.name).toBeUndefined();
+    // Other common properties still present
+    expect(prompt.inputSchema.properties.prompt).toBeDefined();
+    expect(prompt.inputSchema.properties.cwd).toBeDefined();
+
+    const bye = findTool(tools, "test_bye");
+    expect(bye.inputSchema.properties.message).toBeUndefined();
+    // sessionId still present
+    expect(bye.inputSchema.properties.sessionId).toBeDefined();
+  });
+
+  test("omitProperties does not affect other tools", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        prompt: { omitProperties: ["name"] },
+      },
+    });
+    // session_list, interrupt, etc. are unaffected
+    const sessionList = findTool(tools, "test_session_list");
+    expect(sessionList.inputSchema).toBeDefined();
+    const interrupt = findTool(tools, "test_interrupt");
+    expect(interrupt.inputSchema.properties.sessionId).toBeDefined();
+  });
+
+  test("omitProperties coexists with extraProperties", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        prompt: {
+          extraProperties: { sandbox: { type: "string", description: "Sandbox mode" } },
+          omitProperties: ["name"],
+        },
+      },
+    });
+    const prompt = findTool(tools, "test_prompt");
+    expect(prompt.inputSchema.properties.sandbox).toBeDefined();
+    expect(prompt.inputSchema.properties.name).toBeUndefined();
+    expect(prompt.inputSchema.properties.prompt).toBeDefined();
+  });
+
+  test("omitProperties filters required array to match properties", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        bye: { omitProperties: ["sessionId"] },
+      },
+    });
+    const bye = findTool(tools, "test_bye");
+    expect(bye.inputSchema.properties.sessionId).toBeUndefined();
+    expect(bye.inputSchema.required).toBeUndefined();
+  });
+
+  test("omitProperties works on all tool types (not just prompt/bye)", () => {
+    const tools = buildAgentTools({
+      ...minimal,
+      overrides: {
+        interrupt: { omitProperties: ["reason"] },
+      },
+    });
+    const interrupt = findTool(tools, "test_interrupt");
+    expect(interrupt.inputSchema.properties.reason).toBeUndefined();
+    expect(interrupt.inputSchema.properties.sessionId).toBeDefined();
+  });
 });
 
 describe("prefixedToolName", () => {
@@ -200,5 +274,73 @@ describe("provider tool arrays match expected structure", () => {
     expect(prompt.inputSchema.properties.agent).toBeDefined();
     expect(prompt.inputSchema.properties.customCommand).toBeDefined();
     expect(prompt.inputSchema.properties.disallowedTools).toBeDefined();
+  });
+
+  test("codex/acp/mock prompt omit 'name' (unimplemented by those workers)", async () => {
+    const { CODEX_TOOLS } = await import("../../daemon/src/codex-session/tools");
+    const { ACP_TOOLS } = await import("../../daemon/src/acp-session/tools");
+    const { MOCK_TOOLS } = await import("../../daemon/src/mock-session/tools");
+    for (const [label, tools] of [
+      ["codex", CODEX_TOOLS],
+      ["acp", ACP_TOOLS],
+      ["mock", MOCK_TOOLS],
+    ] as const) {
+      const prompt = findTool(tools, `${label}_prompt`);
+      expect(prompt.inputSchema.properties.name).toBeUndefined();
+    }
+  });
+
+  test("codex/acp/mock bye omit 'message' (unimplemented by those workers)", async () => {
+    const { CODEX_TOOLS } = await import("../../daemon/src/codex-session/tools");
+    const { ACP_TOOLS } = await import("../../daemon/src/acp-session/tools");
+    const { MOCK_TOOLS } = await import("../../daemon/src/mock-session/tools");
+    for (const [label, tools] of [
+      ["codex", CODEX_TOOLS],
+      ["acp", ACP_TOOLS],
+      ["mock", MOCK_TOOLS],
+    ] as const) {
+      const bye = findTool(tools, `${label}_bye`);
+      expect(bye.inputSchema.properties.message).toBeUndefined();
+    }
+  });
+
+  test("claude and opencode prompt retain 'name' (both implement it)", async () => {
+    const { CLAUDE_TOOLS } = await import("../../daemon/src/claude-session/tools");
+    const { OPENCODE_TOOLS } = await import("../../daemon/src/opencode-session/tools");
+    for (const tools of [CLAUDE_TOOLS, OPENCODE_TOOLS]) {
+      const prompt = tools.find((t: AgentToolDef) => t.name.endsWith("_prompt"));
+      expect(prompt?.inputSchema.properties.name).toBeDefined();
+    }
+  });
+
+  test("claude and opencode bye retain 'message' (both implement it)", async () => {
+    const { CLAUDE_TOOLS } = await import("../../daemon/src/claude-session/tools");
+    const { OPENCODE_TOOLS } = await import("../../daemon/src/opencode-session/tools");
+    for (const tools of [CLAUDE_TOOLS, OPENCODE_TOOLS]) {
+      const bye = tools.find((t: AgentToolDef) => t.name.endsWith("_bye"));
+      expect(bye?.inputSchema.properties.message).toBeDefined();
+    }
+  });
+
+  test("all provider tools have valid schemas (required ⊆ properties)", async () => {
+    const { CLAUDE_TOOLS } = await import("../../daemon/src/claude-session/tools");
+    const { CODEX_TOOLS } = await import("../../daemon/src/codex-session/tools");
+    const { ACP_TOOLS } = await import("../../daemon/src/acp-session/tools");
+    const { MOCK_TOOLS } = await import("../../daemon/src/mock-session/tools");
+    const { OPENCODE_TOOLS } = await import("../../daemon/src/opencode-session/tools");
+    for (const [label, tools] of [
+      ["claude", CLAUDE_TOOLS],
+      ["codex", CODEX_TOOLS],
+      ["acp", ACP_TOOLS],
+      ["mock", MOCK_TOOLS],
+      ["opencode", OPENCODE_TOOLS],
+    ] as const) {
+      for (const tool of tools) {
+        const propKeys = new Set(Object.keys(tool.inputSchema.properties));
+        for (const req of tool.inputSchema.required ?? []) {
+          expect(propKeys.has(req)).toBe(true);
+        }
+      }
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhResult } from "../.claude/phases/review-fn";
+import type { GhOp, GhResult } from "../.claude/phases/review-fn";
 import {
   REVIEW_ROUND_CAP,
   type ReviewDeps,
@@ -179,6 +179,17 @@ describe("scanReviewComments — parsing", () => {
     ].join("\n");
     const result = await scanReviewComments(100, { gh: async () => ok(body) });
     expect(result).toMatchObject({ found: true, hasBlockers: true });
+  });
+
+  test("passes correct op to gh", async () => {
+    let captured: GhOp | undefined;
+    await scanReviewComments(99, {
+      gh: async (op) => {
+        captured = op;
+        return ok("");
+      },
+    });
+    expect(captured).toEqual({ op: "pr:comments", prNumber: 99 });
   });
 });
 

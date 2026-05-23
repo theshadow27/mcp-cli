@@ -5,6 +5,7 @@ import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import { metrics } from "./metrics";
 import { OpenCodeServer, buildOpenCodeToolCache, isOpenCodeWorkerEvent } from "./opencode-server";
+import { OPENCODE_TOOLS } from "./opencode-session/tools";
 
 // ── isOpenCodeWorkerEvent ──
 
@@ -75,6 +76,14 @@ describe("buildOpenCodeToolCache", () => {
       expect(tool.description).toBeTruthy();
       expect(tool.inputSchema).toBeDefined();
     }
+  });
+});
+
+// ── OPENCODE_TOOLS snapshot ──
+
+describe("OPENCODE_TOOLS", () => {
+  test("schema snapshot", () => {
+    expect(OPENCODE_TOOLS).toMatchSnapshot();
   });
 });
 

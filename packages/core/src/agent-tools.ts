@@ -94,11 +94,16 @@ const requestIdProp: JsonSchemaProperty = {
  * - `extraProperties`: additional inputSchema properties merged on top of the
  *   common ones.
  * - `extraRequired`: additional required fields appended to the common ones.
+ * - `omitProperties`: common property names to drop from the inputSchema.
+ *   Use this when a provider does not implement a field that the shared base
+ *   includes, so the tool description does not promise behaviour the worker
+ *   cannot deliver.
  * - `description`: replaces the default description entirely.
  */
 export interface ToolOverride {
   extraProperties?: Record<string, JsonSchemaProperty>;
   extraRequired?: readonly string[];
+  omitProperties?: readonly string[];
   description?: string;
 }
 
@@ -112,6 +117,27 @@ export interface ExtraTool {
   basename: string;
   description: string;
   inputSchema: ToolInputSchema;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function applyOmit(
+  properties: Record<string, JsonSchemaProperty>,
+  required: readonly string[] | undefined,
+  omit: readonly string[] | undefined,
+): { properties: Record<string, JsonSchemaProperty>; required?: readonly string[] } {
+  if (!omit || omit.length === 0) {
+    return required && required.length > 0 ? { properties, required } : { properties };
+  }
+  const set = new Set(omit);
+  const filtered = required?.filter((r) => !set.has(r));
+  const result: { properties: Record<string, JsonSchemaProperty>; required?: readonly string[] } = {
+    properties: Object.fromEntries(Object.entries(properties).filter(([k]) => !set.has(k))),
+  };
+  if (filtered && filtered.length > 0) result.required = filtered;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +166,9 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
   const p = (name: string) => `${prefix}_${name}`;
   const ov = (name: AgentToolName) => overrides[name];
 
+  const schema = (name: AgentToolName, properties: Record<string, JsonSchemaProperty>, required?: readonly string[]) =>
+    applyOmit(properties, required, ov(name)?.omitProperties);
+
   const tools: AgentToolDef[] = [
     // -- prompt --
     {
@@ -149,26 +178,32 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `Start a new ${label} session with a prompt, or send a follow-up prompt to an existing session. Returns the session ID immediately by default. Set wait=true to block until the next actionable event.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          prompt: { type: "string", description: `The message to send to ${label}` },
-          sessionId: {
-            type: "string",
-            description: "Existing session ID to continue (omit for new session)",
+        ...schema(
+          "prompt",
+          {
+            prompt: { type: "string", description: `The message to send to ${label}` },
+            sessionId: {
+              type: "string",
+              description: "Existing session ID to continue (omit for new session)",
+            },
+            cwd: { type: "string", description: "Working directory for the process" },
+            model: { type: "string", description: "Model to use" },
+            allowedTools: {
+              type: "array",
+              items: { type: "string" },
+              description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
+            },
+            worktree: { type: "string", description: "Git worktree name for isolation" },
+            name: {
+              type: "string",
+              description: "Human-readable session name (auto-generated if omitted)",
+            },
+            timeout: timeoutProp,
+            wait: { type: "boolean", description: "Block until result (default: false)" },
+            ...ov("prompt")?.extraProperties,
           },
-          cwd: { type: "string", description: "Working directory for the process" },
-          model: { type: "string", description: "Model to use" },
-          allowedTools: {
-            type: "array",
-            items: { type: "string" },
-            description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
-          },
-          worktree: { type: "string", description: "Git worktree name for isolation" },
-          name: { type: "string", description: "Human-readable session name (auto-generated if omitted)" },
-          timeout: timeoutProp,
-          wait: { type: "boolean", description: "Block until result (default: false)" },
-          ...ov("prompt")?.extraProperties,
-        },
-        required: ["prompt", ...(ov("prompt")?.extraRequired ?? [])] as const,
+          ["prompt", ...(ov("prompt")?.extraRequired ?? [])],
+        ),
       },
     },
 
@@ -180,9 +215,9 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `List all active ${label} sessions with their status, model, and token usage.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
+        ...schema("session_list", {
           ...ov("session_list")?.extraProperties,
-        },
+        }),
       },
     },
 
@@ -192,11 +227,14 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       description: ov("session_status")?.description ?? `Get detailed status for a specific ${label} session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to query" },
-          ...ov("session_status")?.extraProperties,
-        },
-        required: ["sessionId"] as const,
+        ...schema(
+          "session_status",
+          {
+            sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to query" },
+            ...ov("session_status")?.extraProperties,
+          },
+          ["sessionId"],
+        ),
       },
     },
 
@@ -206,16 +244,19 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       description: ov("interrupt")?.description ?? `Interrupt the current turn of a ${label} session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to interrupt" },
-          reason: {
-            type: "string" as const,
-            description:
-              "Optional reason for the interruption. When provided, it is prepended to the next send so the session understands why it was interrupted.",
+        ...schema(
+          "interrupt",
+          {
+            sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to interrupt" },
+            reason: {
+              type: "string" as const,
+              description:
+                "Optional reason for the interruption. When provided, it is prepended to the next send so the session understands why it was interrupted.",
+            },
+            ...ov("interrupt")?.extraProperties,
           },
-          ...ov("interrupt")?.extraProperties,
-        },
-        required: ["sessionId"] as const,
+          ["sessionId"],
+        ),
       },
     },
 
@@ -227,15 +268,19 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `Gracefully end a ${label} session: close the connection, stop the process, clean up.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to end" },
-          message: {
-            type: "string",
-            description: "Closing message explaining why the session is being ended. Logged to the session transcript.",
+        ...schema(
+          "bye",
+          {
+            sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to end" },
+            message: {
+              type: "string",
+              description:
+                "Closing message explaining why the session is being ended. Logged to the session transcript.",
+            },
+            ...ov("bye")?.extraProperties,
           },
-          ...ov("bye")?.extraProperties,
-        },
-        required: ["sessionId"] as const,
+          ["sessionId"],
+        ),
       },
     },
 
@@ -245,12 +290,15 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       description: ov("transcript")?.description ?? `Get recent transcript entries from a ${label} session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to query" },
-          limit: limitProp,
-          ...ov("transcript")?.extraProperties,
-        },
-        required: ["sessionId"] as const,
+        ...schema(
+          "transcript",
+          {
+            sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to query" },
+            limit: limitProp,
+            ...ov("transcript")?.extraProperties,
+          },
+          ["sessionId"],
+        ),
       },
     },
 
@@ -262,14 +310,14 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `Block until a ${label} session event occurs (result, error, or permission request). If sessionId is provided, waits for that session only. Otherwise waits for any session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
+        ...schema("wait", {
           sessionId: {
             ...sessionIdProp,
             description: "Session ID or unique prefix to wait on (omit for any session)",
           },
           timeout: timeoutProp,
           ...ov("wait")?.extraProperties,
-        },
+        }),
       },
     },
 
@@ -279,15 +327,18 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       description: ov("approve")?.description ?? `Approve a pending permission request for a ${label} session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: {
-            ...sessionIdProp,
-            description: "Session ID or unique prefix containing the permission request",
+        ...schema(
+          "approve",
+          {
+            sessionId: {
+              ...sessionIdProp,
+              description: "Session ID or unique prefix containing the permission request",
+            },
+            requestId: { ...requestIdProp, description: "Permission request ID to approve" },
+            ...ov("approve")?.extraProperties,
           },
-          requestId: { ...requestIdProp, description: "Permission request ID to approve" },
-          ...ov("approve")?.extraProperties,
-        },
-        required: ["sessionId", "requestId"] as const,
+          ["sessionId", "requestId"],
+        ),
       },
     },
 
@@ -297,15 +348,18 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       description: ov("deny")?.description ?? `Deny a pending permission request for a ${label} session.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: {
-            ...sessionIdProp,
-            description: "Session ID or unique prefix containing the permission request",
+        ...schema(
+          "deny",
+          {
+            sessionId: {
+              ...sessionIdProp,
+              description: "Session ID or unique prefix containing the permission request",
+            },
+            requestId: { ...requestIdProp, description: "Permission request ID to deny" },
+            ...ov("deny")?.extraProperties,
           },
-          requestId: { ...requestIdProp, description: "Permission request ID to deny" },
-          ...ov("deny")?.extraProperties,
-        },
-        required: ["sessionId", "requestId"] as const,
+          ["sessionId", "requestId"],
+        ),
       },
     },
   ];

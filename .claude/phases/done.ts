@@ -12,7 +12,7 @@
  * untrack directly.
  */
 import { defineAlias, z } from "mcp-cli";
-import { mergePr } from "./done-fn";
+import { mergePr, spawnWithTimeout } from "./done-fn";
 
 defineAlias({
   name: "phase-done",
@@ -46,22 +46,20 @@ defineAlias({
     }
 
     const result = await mergePr(work.prNumber, {
-      async gh(args) {
+      async gh(op) {
         try {
-          const prNum = Number(args[2]);
-          const jsonField = args[4];
-          if (jsonField === "labels") {
-            const pr = await ctx.gh.pr(prNum).body();
+          if (op.op === "pr:labels") {
+            const pr = await ctx.gh.pr(op.prNumber).body();
             return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
           }
-          if (jsonField === "statusCheckRollup") {
-            const checks = await ctx.gh.pr(prNum).checks();
+          if (op.op === "pr:checks") {
+            const checks = await ctx.gh.pr(op.prNumber).checks();
             // Merge check-runs and legacy commit statuses; null (pending) counts as non-SUCCESS.
             const all = [...checks.check_runs, ...checks.commit_statuses];
             const failing = all.filter((c) => c.conclusion !== "SUCCESS");
             return { stdout: String(failing.length), stderr: "", exitCode: 0 };
           }
-          return { stdout: "", stderr: `unsupported gh args: ${args.join(" ")}`, exitCode: 1 };
+          return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
         } catch (err) {
           return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
         }
@@ -84,22 +82,7 @@ defineAlias({
         return pr.state.toUpperCase();
       },
       async spawn(cmd, opts) {
-        const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-        let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-        const timer = opts?.timeoutMs
-          ? setTimeout(() => {
-              try { proc.kill(); } catch {}
-              sigkillTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 5_000);
-            }, opts.timeoutMs)
-          : null;
-        const [stdout, stderr, exitCode] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ]);
-        if (timer) clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
-        return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+        return spawnWithTimeout(cmd, opts);
       },
     });
     if (!result.ok) {

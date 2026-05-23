@@ -1,7 +1,53 @@
 /** Core done-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./phase-types.js";
-export type { GhResult };
+import type { GhOp, GhResult } from "./phase-types.js";
+export type { GhOp, GhResult };
+
+export interface ProcessHandle {
+  kill(signal?: number): void;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+}
+
+export type Spawner = (cmd: string[], opts: { stdout: "pipe"; stderr: "pipe" }) => ProcessHandle;
+
+export interface SpawnTimeoutTestDeps {
+  spawner?: Spawner;
+  sigkillDelayMs?: number;
+}
+
+export async function spawnWithTimeout(
+  cmd: string[],
+  opts?: { timeoutMs?: number },
+  _testDeps: SpawnTimeoutTestDeps = {},
+): Promise<GhResult> {
+  const spawner: Spawner =
+    _testDeps.spawner ?? ((c, o) => Bun.spawn(c, o) as unknown as ProcessHandle);
+  const sigkillDelayMs = _testDeps.sigkillDelayMs ?? 5_000;
+  const proc = spawner(cmd, { stdout: "pipe", stderr: "pipe" });
+  let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = opts?.timeoutMs
+    ? setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {}
+        sigkillTimer = setTimeout(() => {
+          try {
+            proc.kill(9);
+          } catch {}
+        }, sigkillDelayMs);
+      }, opts.timeoutMs)
+    : null;
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (timer) clearTimeout(timer);
+  if (sigkillTimer) clearTimeout(sigkillTimer);
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
 
 export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
@@ -18,7 +64,7 @@ export type MergeResult =
     };
 
 export interface MergePrDeps {
-  gh(args: string[]): Promise<GhResult>;
+  gh(op: GhOp): Promise<GhResult>;
   prMerge(prNumber: number, flags: string[]): Promise<GhResult>;
   prView(prNumber: number, fields: string, jqExpr?: string): Promise<string>;
   spawn(cmd: string[], opts?: { timeoutMs?: number }): Promise<GhResult>;
@@ -27,12 +73,8 @@ export interface MergePrDeps {
 export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<MergeResult> {
   // Guard 1 + Guard 2 in parallel: fetch labels and CI status concurrently.
   const [labelOut, ciOut] = await Promise.all([
-    deps.gh(["pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"]),
-    deps.gh([
-      "pr", "view", String(prNumber),
-      "--json", "statusCheckRollup",
-      "-q", '[.statusCheckRollup[] | select(.conclusion != "SUCCESS")] | length',
-    ]),
+    deps.gh({ op: "pr:labels", prNumber }),
+    deps.gh({ op: "pr:checks", prNumber }),
   ]);
 
   if (labelOut.exitCode !== 0) {
