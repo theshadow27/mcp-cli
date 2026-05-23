@@ -417,6 +417,249 @@ describe("generateFastImport", () => {
   });
 });
 
+describe("generateFastImport incremental mode", () => {
+  test("incremental + parent emits `from` without `deleteall`", () => {
+    const { stream } = generateFastImport({
+      entries: [{ path: "x", content: "x" }],
+      ref: "refs/heads/main",
+      message: "m",
+      parent: ":50",
+      incremental: true,
+    });
+    const text = decode(stream);
+    expect(text).toContain("from :50\n");
+    expect(text).not.toContain("deleteall");
+    expect(text).toContain("M 100644 :1 x\n");
+  });
+
+  test("deletions emit D lines with correct paths", () => {
+    const { stream } = generateFastImport({
+      entries: [{ path: "new.md", content: "hi" }],
+      ref: "refs/heads/main",
+      message: "m",
+      parent: ":10",
+      incremental: true,
+      deletions: ["old.md", "docs/removed.md"],
+    });
+    const text = decode(stream);
+    expect(text).toContain("D old.md\n");
+    expect(text).toContain("D docs/removed.md\n");
+    expect(text).not.toContain("deleteall");
+  });
+
+  test("deletions with special characters are C-quoted", () => {
+    const { stream } = generateFastImport({
+      entries: [],
+      ref: "refs/heads/main",
+      message: "m",
+      parent: ":10",
+      incremental: true,
+      deletions: ['weird"name.md', "with\nnewline.md"],
+    });
+    const text = decode(stream);
+    expect(text).toContain('D "weird\\"name.md"\n');
+    expect(text).toContain('D "with\\nnewline.md"\n');
+  });
+
+  test("incremental with empty entries + parent is allowed (delete-only commit)", () => {
+    const { stream } = generateFastImport({
+      entries: [],
+      ref: "refs/heads/main",
+      message: "remove old files",
+      parent: ":5",
+      incremental: true,
+      deletions: ["gone.md"],
+    });
+    const text = decode(stream);
+    expect(text).toContain("from :5\n");
+    expect(text).toContain("D gone.md\n");
+    expect(text).not.toContain("deleteall");
+  });
+
+  test("deletions without parent throws", () => {
+    expect(() =>
+      generateFastImport({
+        entries: [{ path: "x", content: "x" }],
+        ref: "refs/heads/main",
+        message: "m",
+        deletions: ["old.md"],
+      }),
+    ).toThrow(/deletions require a parent/);
+  });
+
+  test("D lines appear before M lines in the stream", () => {
+    const { stream } = generateFastImport({
+      entries: [{ path: "new.md", content: "hi" }],
+      ref: "refs/heads/main",
+      message: "m",
+      parent: ":1",
+      incremental: true,
+      startMark: 10,
+      deletions: ["old.md"],
+    });
+    const text = decode(stream);
+    const dIdx = text.indexOf("D old.md");
+    const mIdx = text.indexOf("M 100644 :10 new.md");
+    expect(dIdx).toBeGreaterThan(0);
+    expect(mIdx).toBeGreaterThan(dIdx);
+  });
+
+  test("round-trip: incremental add preserves existing files", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-inc-"));
+    const marksOut = join(dir, "marks");
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
+
+      const first = generateFastImport({
+        entries: [
+          { path: "a.md", content: "alpha\n" },
+          { path: "b.md", content: "beta\n" },
+        ],
+        ref: "refs/heads/main",
+        message: "initial",
+        timestamp: 1700000000,
+      });
+      const r1 = spawnSync("git", ["-C", dir, "fast-import", `--export-marks=${marksOut}`], {
+        input: first.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r1.status).toBe(0);
+
+      const second = generateFastImport({
+        entries: [{ path: "c.md", content: "gamma\n" }],
+        ref: "refs/heads/main",
+        message: "add c only",
+        parent: `:${first.commitMark}`,
+        startMark: first.commitMark + 1,
+        timestamp: 1700000001,
+        incremental: true,
+      });
+      const r2 = spawnSync("git", ["-C", dir, "fast-import", `--import-marks=${marksOut}`], {
+        input: second.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r2.status).toBe(0);
+
+      const showA = spawnSync("git", ["-C", dir, "show", "refs/heads/main:a.md"], { env: cleanGitEnv() });
+      expect(showA.status).toBe(0);
+      expect(showA.stdout.toString()).toBe("alpha\n");
+
+      const showB = spawnSync("git", ["-C", dir, "show", "refs/heads/main:b.md"], { env: cleanGitEnv() });
+      expect(showB.status).toBe(0);
+      expect(showB.stdout.toString()).toBe("beta\n");
+
+      const showC = spawnSync("git", ["-C", dir, "show", "refs/heads/main:c.md"], { env: cleanGitEnv() });
+      expect(showC.status).toBe(0);
+      expect(showC.stdout.toString()).toBe("gamma\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("round-trip: incremental delete removes specific file, preserves others", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-del-"));
+    const marksOut = join(dir, "marks");
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
+
+      const first = generateFastImport({
+        entries: [
+          { path: "keep.md", content: "keep\n" },
+          { path: "remove.md", content: "bye\n" },
+        ],
+        ref: "refs/heads/main",
+        message: "initial",
+        timestamp: 1700000000,
+      });
+      const r1 = spawnSync("git", ["-C", dir, "fast-import", `--export-marks=${marksOut}`], {
+        input: first.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r1.status).toBe(0);
+
+      const second = generateFastImport({
+        entries: [],
+        ref: "refs/heads/main",
+        message: "delete remove.md",
+        parent: `:${first.commitMark}`,
+        startMark: first.commitMark + 1,
+        timestamp: 1700000001,
+        incremental: true,
+        deletions: ["remove.md"],
+      });
+      const r2 = spawnSync("git", ["-C", dir, "fast-import", `--import-marks=${marksOut}`], {
+        input: second.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r2.status).toBe(0);
+
+      const showKeep = spawnSync("git", ["-C", dir, "show", "refs/heads/main:keep.md"], { env: cleanGitEnv() });
+      expect(showKeep.status).toBe(0);
+      expect(showKeep.stdout.toString()).toBe("keep\n");
+
+      const showRemoved = spawnSync("git", ["-C", dir, "show", "refs/heads/main:remove.md"], { env: cleanGitEnv() });
+      expect(showRemoved.status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("round-trip: incremental update modifies one file, preserves another", () => {
+    const gitOk = spawnSync("git", ["--version"]).status === 0;
+    if (!gitOk) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-upd-"));
+    const marksOut = join(dir, "marks");
+    try {
+      spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
+
+      const first = generateFastImport({
+        entries: [
+          { path: "a.md", content: "v1\n" },
+          { path: "b.md", content: "unchanged\n" },
+        ],
+        ref: "refs/heads/main",
+        message: "initial",
+        timestamp: 1700000000,
+      });
+      const r1 = spawnSync("git", ["-C", dir, "fast-import", `--export-marks=${marksOut}`], {
+        input: first.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r1.status).toBe(0);
+
+      const second = generateFastImport({
+        entries: [{ path: "a.md", content: "v2\n" }],
+        ref: "refs/heads/main",
+        message: "update a only",
+        parent: `:${first.commitMark}`,
+        startMark: first.commitMark + 1,
+        timestamp: 1700000001,
+        incremental: true,
+      });
+      const r2 = spawnSync("git", ["-C", dir, "fast-import", `--import-marks=${marksOut}`], {
+        input: second.stream,
+        env: cleanGitEnv(),
+      });
+      expect(r2.status).toBe(0);
+
+      const showA = spawnSync("git", ["-C", dir, "show", "refs/heads/main:a.md"], { env: cleanGitEnv() });
+      expect(showA.stdout.toString()).toBe("v2\n");
+
+      const showB = spawnSync("git", ["-C", dir, "show", "refs/heads/main:b.md"], { env: cleanGitEnv() });
+      expect(showB.stdout.toString()).toBe("unchanged\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("marks file parsing", () => {
   test("parseMarksFile reads `:mark sha` lines", () => {
     const text = ":1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n:42 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n";
