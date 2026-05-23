@@ -400,6 +400,110 @@ defineAlias(({ z }) => ({
     expect(joined).toContain('phase "implement"');
     expect(joined).toContain("not found");
   });
+
+  test("rejects remote github: sources at install time", async () => {
+    const manifest = `
+initial: deploy
+phases:
+  deploy:
+    source: "github:acme/phases/deploy.ts@v1#sha256=${"a".repeat(64)}"
+    next: []
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await cmdPhase(["install"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        exitCode = code;
+        throw new Error("exit");
+      }) as (code: number) => never,
+    }).catch(() => {});
+
+    expect(exitCode).toBe(1);
+    expect(errs.join("\n")).toContain("remote sources not yet supported");
+  });
+
+  test("rejects remote https:// sources at install time", async () => {
+    const manifest = `
+initial: deploy
+phases:
+  deploy:
+    source: "https://example.com/deploy.ts#sha256=${"b".repeat(64)}"
+    next: []
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await cmdPhase(["install"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        exitCode = code;
+        throw new Error("exit");
+      }) as (code: number) => never,
+    }).catch(() => {});
+
+    expect(exitCode).toBe(1);
+    expect(errs.join("\n")).toContain("remote sources not yet supported");
+  });
+
+  test("rejects invalid source URIs at install time", async () => {
+    const manifest = `
+initial: deploy
+phases:
+  deploy:
+    source: "http://insecure.example.com/deploy.ts"
+    next: []
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await cmdPhase(["install"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        exitCode = code;
+        throw new Error("exit");
+      }) as (code: number) => never,
+    }).catch(() => {});
+
+    expect(exitCode).toBe(1);
+    expect(errs.join("\n")).toContain("insecure http://");
+  });
+
+  test("rejects path escapes at install time", async () => {
+    const manifest = `
+initial: deploy
+phases:
+  deploy:
+    source: "../../etc/passwd"
+    next: []
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+
+    const errs: string[] = [];
+    let exitCode: number | undefined;
+    await cmdPhase(["install"], {
+      cwd: () => dir,
+      log: () => {},
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        exitCode = code;
+        throw new Error("exit");
+      }) as (code: number) => never,
+    }).catch(() => {});
+
+    expect(exitCode).toBe(1);
+    expect(errs.join("\n")).toContain("escapes manifest directory");
+  });
 });
 
 describe("parsePhaseRunArgs", () => {

@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import {
   type AliasContext,
   type AliasStateAccessor,
@@ -61,9 +61,11 @@ import {
   isPhaseInCycle,
   loadManifest,
   parseLockfile,
+  parseSource,
   readAllTransitions,
   readCliConfig,
   readTransitionHistory,
+  rejectionForInstall,
   resolveRunsOn,
   serializeLockfile,
   sha256Hex,
@@ -159,6 +161,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
   }
 
   const { path: manifestPath, manifest } = loaded;
+  const manifestDir = dirname(manifestPath);
   const manifestHash = deps.hashFileSync(manifestPath);
 
   const warnings: string[] = [];
@@ -168,13 +171,16 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
   const phaseNames = Object.keys(manifest.phases).sort();
   for (const name of phaseNames) {
     const phase = manifest.phases[name];
-    let resolvedAbs: string;
-    try {
-      resolvedAbs = resolvePhaseSource(phase.source, cwd);
-    } catch (err) {
-      errors.push(`phase "${name}": ${err instanceof Error ? err.message : String(err)}`);
+    const parsed = parseSource(phase.source, manifestDir);
+    if (parsed.kind === "error") {
+      errors.push(`phase "${name}": ${parsed.reason}`);
       continue;
     }
+    if (parsed.kind !== "file") {
+      errors.push(`phase "${name}": ${rejectionForInstall(parsed)}`);
+      continue;
+    }
+    const resolvedAbs = parsed.absPath;
 
     let contentHash: string;
     try {
@@ -219,13 +225,16 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
     const moduleNames = Object.keys(manifest.automation.modules).sort();
     for (const name of moduleNames) {
       const mod = manifest.automation.modules[name];
-      let resolvedAbs: string;
-      try {
-        resolvedAbs = resolvePhaseSource(mod.source, cwd);
-      } catch (err) {
-        errors.push(`automation "${name}": ${err instanceof Error ? err.message : String(err)}`);
+      const parsed = parseSource(mod.source, manifestDir);
+      if (parsed.kind === "error") {
+        errors.push(`automation "${name}": ${parsed.reason}`);
         continue;
       }
+      if (parsed.kind !== "file") {
+        errors.push(`automation "${name}": ${rejectionForInstall(parsed)}`);
+        continue;
+      }
+      const resolvedAbs = parsed.absPath;
 
       let contentHash: string;
       try {
