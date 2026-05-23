@@ -206,7 +206,7 @@ describe("buildAgentTools", () => {
     });
     const bye = findTool(tools, "test_bye");
     expect(bye.inputSchema.properties.sessionId).toBeUndefined();
-    expect(bye.inputSchema.required).not.toContain("sessionId");
+    expect(bye.inputSchema.required).toBeUndefined();
   });
 
   test("omitProperties works on all tool types (not just prompt/bye)", () => {

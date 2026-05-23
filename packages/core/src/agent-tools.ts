@@ -127,13 +127,17 @@ function applyOmit(
   properties: Record<string, JsonSchemaProperty>,
   required: readonly string[] | undefined,
   omit: readonly string[] | undefined,
-): { properties: Record<string, JsonSchemaProperty>; required: readonly string[] | undefined } {
-  if (!omit || omit.length === 0) return { properties, required };
+): { properties: Record<string, JsonSchemaProperty>; required?: readonly string[] } {
+  if (!omit || omit.length === 0) {
+    return required && required.length > 0 ? { properties, required } : { properties };
+  }
   const set = new Set(omit);
-  return {
+  const filtered = required?.filter((r) => !set.has(r));
+  const result: { properties: Record<string, JsonSchemaProperty>; required?: readonly string[] } = {
     properties: Object.fromEntries(Object.entries(properties).filter(([k]) => !set.has(k))),
-    required: required ? required.filter((r) => !set.has(r)) : undefined,
   };
+  if (filtered && filtered.length > 0) result.required = filtered;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
