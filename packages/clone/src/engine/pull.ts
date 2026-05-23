@@ -144,6 +144,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       for (const [k, v] of Object.entries(process.env)) {
         if (!k.startsWith("GIT_") && v !== undefined) cleanEnv[k] = v;
       }
+      cleanEnv.GIT_CEILING_DIRECTORIES = dirname(repoDir);
       const gitOpts = { cwd: repoDir, stdio: "pipe" as const, env: cleanEnv };
       execSync("git add -A", gitOpts);
 

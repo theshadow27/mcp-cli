@@ -16,6 +16,7 @@ function cleanEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
   }
+  env.GIT_CEILING_DIRECTORIES = TMP;
   return env;
 }
 
