@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
-import type { RegistryEntry } from "./registry-client.js";
-import { listRegistry, searchRegistry } from "./registry-client.js";
+import type { RegistryEntry } from "./registry-client";
+import { listRegistry, searchRegistry } from "./registry-client";
 
 const SEARCH_DEBOUNCE_MS = 300;
 

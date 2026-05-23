@@ -1,7 +1,7 @@
 import { Box, Text } from "ink";
 import React from "react";
-import type { RegistryMode } from "../hooks/use-keyboard-registry.js";
-import { ALL_TABS, type View } from "../hooks/use-keyboard.js";
+import { ALL_TABS, type View } from "../hooks/use-keyboard";
+import type { RegistryMode } from "../hooks/use-keyboard-registry";
 
 interface FooterProps {
   view: View;

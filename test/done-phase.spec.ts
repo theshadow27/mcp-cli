@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type MergePrDeps, mergePr } from "../.claude/phases/done-fn";
-import type { GhResult } from "../.claude/phases/done-fn";
+import { type MergePrDeps, type ProcessHandle, mergePr, spawnWithTimeout } from "../.claude/phases/done-fn";
+import type { GhOp, GhResult } from "../.claude/phases/done-fn";
 
 function ok(stdout = ""): GhResult {
   return { stdout, stderr: "", exitCode: 0 };
@@ -12,10 +12,10 @@ function fail(stderr = "oops", exitCode = 1): GhResult {
 
 function makeDeps(overrides: Partial<MergePrDeps> = {}): MergePrDeps {
   return {
-    gh: async (args) => {
+    gh: async (op) => {
       // Default: labels returns qa:pass, CI returns 0 ungreen checks
-      if (args.includes("labels")) return ok("qa:pass");
-      if (args.includes("statusCheckRollup")) return ok("0");
+      if (op.op === "pr:labels") return ok("qa:pass");
+      if (op.op === "pr:checks") return ok("0");
       return ok();
     },
     prMerge: async () => ok(),
@@ -32,8 +32,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return ok("needs-review");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("needs-review");
           return ok("0");
         },
       }),
@@ -46,8 +46,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return ok("qa:pass\nqa:fail");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("qa:pass\nqa:fail");
           return ok("0");
         },
       }),
@@ -60,8 +60,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return fail("auth required");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return fail("auth required");
           return ok("0");
         },
       }),
@@ -74,8 +74,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return ok("qa:pass");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("qa:pass");
           return fail("rate limited");
         },
       }),
@@ -88,8 +88,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return ok("qa:pass");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("qa:pass");
           return ok("3");
         },
       }),
@@ -101,8 +101,8 @@ describe("mergePr — label guard", () => {
     const result = await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          if (args.includes("labels")) return ok("qa:pass");
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("qa:pass");
           return ok("null");
         },
       }),
@@ -308,22 +308,128 @@ describe("mergePr — merge failure paths", () => {
 // ── Guard order ──
 
 describe("mergePr — guard ordering", () => {
-  test("gh calls happen in parallel (both args captured)", async () => {
-    const capturedArgs: string[][] = [];
+  test("gh calls happen in parallel (both ops captured)", async () => {
+    const capturedOps: GhOp[] = [];
     await mergePr(
       100,
       makeDeps({
-        gh: async (args) => {
-          capturedArgs.push(args);
-          if (args.includes("labels")) return ok("qa:pass");
+        gh: async (op) => {
+          capturedOps.push(op);
+          if (op.op === "pr:labels") return ok("qa:pass");
           return ok("0");
         },
       }),
     );
     // Both calls should have occurred
-    const hasLabels = capturedArgs.some((a) => a.includes("labels"));
-    const hasCi = capturedArgs.some((a) => a.includes("statusCheckRollup"));
-    expect(hasLabels).toBe(true);
-    expect(hasCi).toBe(true);
+    expect(capturedOps.some((o) => o.op === "pr:labels")).toBe(true);
+    expect(capturedOps.some((o) => o.op === "pr:checks")).toBe(true);
+  });
+});
+
+// ── spawnWithTimeout — kill escalation ──
+
+function makeStream(data = ""): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      if (data) controller.enqueue(encoder.encode(data));
+      controller.close();
+    },
+  });
+}
+
+describe("spawnWithTimeout — kill escalation", () => {
+  test("no timeout → process runs to completion without kill", async () => {
+    const killCalls: Array<number | undefined> = [];
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+      },
+      stdout: makeStream("hello"),
+      stderr: makeStream(),
+      exited: Promise.resolve(0),
+    };
+    const result = await spawnWithTimeout(["true"], undefined, {
+      spawner: () => proc,
+    });
+    expect(killCalls).toHaveLength(0);
+    expect(result).toEqual({ stdout: "hello", stderr: "", exitCode: 0 });
+  });
+
+  test("SIGTERM fires when timeout expires", async () => {
+    const killCalls: Array<number | undefined> = [];
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+        if (signal === undefined) resolveExited(143);
+      },
+      stdout: makeStream(),
+      stderr: makeStream(),
+      exited,
+    };
+    await spawnWithTimeout(
+      ["sleep", "100"],
+      { timeoutMs: 10 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 200,
+      },
+    );
+    expect(killCalls).toContain(undefined);
+    expect(killCalls).not.toContain(9);
+  });
+
+  test("SIGKILL fires if process ignores SIGTERM", async () => {
+    const killCalls: Array<number | undefined> = [];
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+        if (signal === 9) resolveExited(137);
+        // SIGTERM is ignored — process stays alive
+      },
+      stdout: makeStream(),
+      stderr: makeStream(),
+      exited,
+    };
+    await spawnWithTimeout(
+      ["sleep", "100"],
+      { timeoutMs: 10 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 50,
+      },
+    );
+    expect(killCalls).toEqual([undefined, 9]);
+  });
+
+  test("timeout cleared on normal exit — no spurious kill", async () => {
+    const killCalls: Array<number | undefined> = [];
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+      },
+      stdout: makeStream("output"),
+      stderr: makeStream(),
+      exited: Promise.resolve(0),
+    };
+    const result = await spawnWithTimeout(
+      ["true"],
+      { timeoutMs: 10_000 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 50,
+      },
+    );
+    expect(killCalls).toHaveLength(0);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("output");
   });
 });

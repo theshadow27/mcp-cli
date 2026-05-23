@@ -1,0 +1,219 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`OPENCODE_TOOLS schema snapshot 1`] = `
+[
+  {
+    "description": "Start a new OpenCode agent session with a prompt, or send a follow-up prompt to an existing session. OpenCode is provider-agnostic: it wraps any LLM (Grok, Gemini, Bedrock, open-source) in a coding agent harness. Returns the session ID immediately by default. Set wait=true to block until the next actionable event (result, error, permission request, or ended).",
+    "inputSchema": {
+      "properties": {
+        "allowedTools": {
+          "description": "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "cwd": {
+          "description": "Working directory for the process",
+          "type": "string",
+        },
+        "disallowedTools": {
+          "description": "Tool patterns to auto-deny",
+          "items": {
+            "type": "string",
+          },
+          "type": "array",
+        },
+        "model": {
+          "description": "Model to use",
+          "type": "string",
+        },
+        "name": {
+          "description": "Human-readable session name (auto-generated if omitted)",
+          "type": "string",
+        },
+        "prompt": {
+          "description": "The message to send to OpenCode",
+          "type": "string",
+        },
+        "provider": {
+          "description": "LLM provider (e.g. "anthropic", "openai", "google", "xai", "bedrock")",
+          "type": "string",
+        },
+        "repoRoot": {
+          "description": "Repository root for worktree cleanup",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Existing session ID to continue (omit for new session)",
+          "type": "string",
+        },
+        "timeout": {
+          "description": "Max wait time in ms (default: 270000)",
+          "type": "number",
+        },
+        "wait": {
+          "description": "Block until result (default: false)",
+          "type": "boolean",
+        },
+        "worktree": {
+          "description": "Git worktree name for isolation",
+          "type": "string",
+        },
+      },
+      "required": [
+        "prompt",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_prompt",
+  },
+  {
+    "description": "List all active OpenCode sessions with their status, model, and token usage.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object",
+    },
+    "name": "opencode_session_list",
+  },
+  {
+    "description": "Get detailed status for a specific OpenCode session.",
+    "inputSchema": {
+      "properties": {
+        "sessionId": {
+          "description": "Session ID to query",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_session_status",
+  },
+  {
+    "description": "Interrupt the current prompt of an OpenCode agent session (sends abort).",
+    "inputSchema": {
+      "properties": {
+        "reason": {
+          "description": "Optional reason for the interruption. When provided, it is prepended to the next send so the session understands why it was interrupted.",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Session ID to interrupt",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_interrupt",
+  },
+  {
+    "description": "Terminate an OpenCode agent session: kill the process and clean up.",
+    "inputSchema": {
+      "properties": {
+        "message": {
+          "description": "Closing message explaining why the session is being ended. Logged to the session transcript.",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Session ID to end",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_bye",
+  },
+  {
+    "description": "Get recent transcript entries from a OpenCode session.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "Max entries to return (default: 50)",
+          "type": "number",
+        },
+        "sessionId": {
+          "description": "Session ID to query",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_transcript",
+  },
+  {
+    "description": "Block until an OpenCode agent session event occurs (result, error, permission request, or ended). If sessionId is provided, waits for that session only. Otherwise waits for any session. Use afterSeq for race-free cursor-based polling: returns immediately if events exist past the cursor.",
+    "inputSchema": {
+      "properties": {
+        "afterSeq": {
+          "description": "Return events after this sequence number. Enables race-free polling.",
+          "type": "number",
+        },
+        "sessionId": {
+          "description": "Session ID to wait on (omit for any session)",
+          "type": "string",
+        },
+        "timeout": {
+          "description": "Max wait time in ms (default: 270000)",
+          "type": "number",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opencode_wait",
+  },
+  {
+    "description": "Approve a pending permission request for a OpenCode session.",
+    "inputSchema": {
+      "properties": {
+        "requestId": {
+          "description": "Permission request ID to approve",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Session ID containing the permission request",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+        "requestId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_approve",
+  },
+  {
+    "description": "Deny a pending permission request for a OpenCode session.",
+    "inputSchema": {
+      "properties": {
+        "requestId": {
+          "description": "Permission request ID to deny",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Session ID containing the permission request",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+        "requestId",
+      ],
+      "type": "object",
+    },
+    "name": "opencode_deny",
+  },
+]
+`;

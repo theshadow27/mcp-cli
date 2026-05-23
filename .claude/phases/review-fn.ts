@@ -1,7 +1,7 @@
 /** Core review-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./phase-types.js";
-export type { GhResult };
+import type { GhOp, GhResult } from "./phase-types.js";
+export type { GhOp, GhResult };
 
 export const REVIEW_ROUND_CAP = 2;
 
@@ -18,7 +18,7 @@ export interface ReviewState {
 }
 
 export interface ReviewDeps {
-  gh(args: string[]): Promise<GhResult>;
+  gh(op: GhOp): Promise<GhResult>;
   findModelInSprintPlan(issueNumber: number, repoRoot: string): "opus" | "sonnet" | null;
 }
 
@@ -53,7 +53,7 @@ export async function scanReviewComments(
   prNumber: number,
   deps: Pick<ReviewDeps, "gh">,
 ): Promise<{ found: boolean; hasBlockers: boolean; summary: string }> {
-  const result = await deps.gh(["pr", "view", String(prNumber), "--json", "comments", "-q", ".comments[].body"]);
+  const result = await deps.gh({ op: "pr:comments", prNumber });
   if (result.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
   const lastIdx = result.stdout.lastIndexOf("## Adversarial Review");
   if (lastIdx === -1) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };

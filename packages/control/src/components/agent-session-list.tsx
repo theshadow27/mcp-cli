@@ -1,7 +1,7 @@
 import type { AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
-import { AgentSessionDetail, type TranscriptEntry } from "./agent-session-detail.js";
+import { AgentSessionDetail, type TranscriptEntry } from "./agent-session-detail";
 
 interface AgentSessionListProps {
   sessions: AgentSessionInfo[];
