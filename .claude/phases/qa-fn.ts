@@ -1,6 +1,6 @@
 /** Core qa-phase logic, extracted for testability via dependency injection. */
 
-import type { GhOp, GhResult } from "./phase-types.js";
+import type { GhOp, GhResult } from "./phase-types";
 export type { GhOp, GhResult };
 
 export const QA_FAIL_CAP = 2;
