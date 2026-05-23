@@ -84,14 +84,12 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
   const withBrowserLock = createBrowserLock();
   let browser: BrowserEngine | null = null;
   let browserEngineName: BrowserEngineName | null = null;
-  const sitesOpenInBrowser = new Set<string>();
   let lastBrowserSession: LastBrowserSession | null = null;
 
   function resetIfBrowserDied(): void {
     if (browser && !browser.isRunning()) {
       browser = null;
       browserEngineName = null;
-      sitesOpenInBrowser.clear();
     }
   }
 
@@ -158,7 +156,6 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
 
       browser = eng;
       browserEngineName = engine;
-      for (const s of configs) sitesOpenInBrowser.add(s.name);
 
       return { eng, configs };
     }, "tryAutoRestartBrowser");
@@ -218,7 +215,6 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
       }
       browser = eng;
       browserEngineName = engine;
-      for (const s of sites) sitesOpenInBrowser.add(s.name);
       lastBrowserSession = { engine, siteNames: sites.map((s) => s.name) };
 
       return toolOk({ ok: true, engine, sites: eng.getSiteNames(), results: startResults });
@@ -232,7 +228,6 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
       await withDeadline(30_000, "browser stop", browser.stop());
       browser = null;
       browserEngineName = null;
-      sitesOpenInBrowser.clear();
       lastBrowserSession = null;
       return toolOk({ ok: true });
     }, "handleDisconnect");
