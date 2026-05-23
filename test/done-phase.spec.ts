@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type MergePrDeps, mergePr } from "../.claude/phases/done-fn";
+import { type MergePrDeps, type ProcessHandle, mergePr, spawnWithTimeout } from "../.claude/phases/done-fn";
 import type { GhOp, GhResult } from "../.claude/phases/done-fn";
 
 function ok(stdout = ""): GhResult {
@@ -323,5 +323,113 @@ describe("mergePr — guard ordering", () => {
     // Both calls should have occurred
     expect(capturedOps.some((o) => o.op === "pr:labels")).toBe(true);
     expect(capturedOps.some((o) => o.op === "pr:checks")).toBe(true);
+  });
+});
+
+// ── spawnWithTimeout — kill escalation ──
+
+function makeStream(data = ""): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      if (data) controller.enqueue(encoder.encode(data));
+      controller.close();
+    },
+  });
+}
+
+describe("spawnWithTimeout — kill escalation", () => {
+  test("no timeout → process runs to completion without kill", async () => {
+    const killCalls: Array<number | undefined> = [];
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+      },
+      stdout: makeStream("hello"),
+      stderr: makeStream(),
+      exited: Promise.resolve(0),
+    };
+    const result = await spawnWithTimeout(["true"], undefined, {
+      spawner: () => proc,
+    });
+    expect(killCalls).toHaveLength(0);
+    expect(result).toEqual({ stdout: "hello", stderr: "", exitCode: 0 });
+  });
+
+  test("SIGTERM fires when timeout expires", async () => {
+    const killCalls: Array<number | undefined> = [];
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+        if (signal === undefined) resolveExited(143);
+      },
+      stdout: makeStream(),
+      stderr: makeStream(),
+      exited,
+    };
+    await spawnWithTimeout(
+      ["sleep", "100"],
+      { timeoutMs: 10 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 200,
+      },
+    );
+    expect(killCalls).toContain(undefined);
+    expect(killCalls).not.toContain(9);
+  });
+
+  test("SIGKILL fires if process ignores SIGTERM", async () => {
+    const killCalls: Array<number | undefined> = [];
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+        if (signal === 9) resolveExited(137);
+        // SIGTERM is ignored — process stays alive
+      },
+      stdout: makeStream(),
+      stderr: makeStream(),
+      exited,
+    };
+    await spawnWithTimeout(
+      ["sleep", "100"],
+      { timeoutMs: 10 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 50,
+      },
+    );
+    expect(killCalls).toEqual([undefined, 9]);
+  });
+
+  test("timeout cleared on normal exit — no spurious kill", async () => {
+    const killCalls: Array<number | undefined> = [];
+    const proc: ProcessHandle = {
+      kill(signal?: number) {
+        killCalls.push(signal);
+      },
+      stdout: makeStream("output"),
+      stderr: makeStream(),
+      exited: Promise.resolve(0),
+    };
+    const result = await spawnWithTimeout(
+      ["true"],
+      { timeoutMs: 10_000 },
+      {
+        spawner: () => proc,
+        sigkillDelayMs: 50,
+      },
+    );
+    expect(killCalls).toHaveLength(0);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("output");
   });
 });

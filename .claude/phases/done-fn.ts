@@ -3,6 +3,52 @@
 import type { GhOp, GhResult } from "./phase-types.js";
 export type { GhOp, GhResult };
 
+export interface ProcessHandle {
+  kill(signal?: number): void;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+}
+
+export type Spawner = (cmd: string[], opts: { stdout: "pipe"; stderr: "pipe" }) => ProcessHandle;
+
+export interface SpawnTimeoutTestDeps {
+  spawner?: Spawner;
+  sigkillDelayMs?: number;
+}
+
+export async function spawnWithTimeout(
+  cmd: string[],
+  opts?: { timeoutMs?: number },
+  _testDeps: SpawnTimeoutTestDeps = {},
+): Promise<GhResult> {
+  const spawner: Spawner =
+    _testDeps.spawner ?? ((c, o) => Bun.spawn(c, o) as unknown as ProcessHandle);
+  const sigkillDelayMs = _testDeps.sigkillDelayMs ?? 5_000;
+  const proc = spawner(cmd, { stdout: "pipe", stderr: "pipe" });
+  let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = opts?.timeoutMs
+    ? setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {}
+        sigkillTimer = setTimeout(() => {
+          try {
+            proc.kill(9);
+          } catch {}
+        }, sigkillDelayMs);
+      }, opts.timeoutMs)
+    : null;
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (timer) clearTimeout(timer);
+  if (sigkillTimer) clearTimeout(sigkillTimer);
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
 export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
   | {
