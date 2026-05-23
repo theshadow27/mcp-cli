@@ -1,8 +1,8 @@
 import { ipcCall } from "@mcp-cli/core";
 import type { AgentProviderName } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
-import type { TranscriptEntry } from "../components/agent-session-detail.js";
-import { extractToolText, serverForProvider, toolForProvider } from "./ipc-tool-helpers.js";
+import type { TranscriptEntry } from "../components/agent-session-detail";
+import { extractToolText, serverForProvider, toolForProvider } from "./ipc-tool-helpers";
 
 const MAX_ENTRIES = 10;
 

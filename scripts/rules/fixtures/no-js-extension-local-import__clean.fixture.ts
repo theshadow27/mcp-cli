@@ -1,7 +1,7 @@
 /**
  * @rule no-js-extension-local-import
  * @expect 0
- * @path .claude/phases/example-fn.ts
+ * @path packages/daemon/src/example-fn.ts
  *
  * Extensionless relative imports and package imports are both fine.
  * Asset imports with `with { type: ... }` are also exempt.
