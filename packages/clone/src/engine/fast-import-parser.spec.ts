@@ -247,8 +247,8 @@ describe("parseFastImport", () => {
     expect(() => parseFastImport("commit refs/heads/main\nM 100644 inline x.md\nfoo\n")).toThrow(/expected "data"/);
   });
 
-  test("unterminated here-doc throws", () => {
-    expect(() => parseFastImport("commit refs/heads/main\ndata <<END\nhello\n")).toThrow(/unterminated/);
+  test("unterminated here-doc throws with actual delimiter", () => {
+    expect(() => parseFastImport("commit refs/heads/main\ndata <<END\nhello\n")).toThrow(/unterminated data <<"END"/);
   });
 
   test("comment lines are skipped", () => {

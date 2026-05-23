@@ -225,7 +225,7 @@ function readDataBytes(bytes: Uint8Array, state: { pos: number }): Uint8Array {
     while (true) {
       const lineStart = state.pos;
       const line = readLine(bytes, state);
-      if (line === null) throw new Error("fast-import: unterminated data <<DELIM block");
+      if (line === null) throw new Error(`fast-import: unterminated data <<"${delim}" block`);
       if (line === delim) break;
       const lineEnd = state.pos; // includes the LF if present
       parts.push(bytes.subarray(lineStart, lineEnd));
