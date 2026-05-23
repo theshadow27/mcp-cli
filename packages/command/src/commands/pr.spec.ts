@@ -25,7 +25,18 @@ const emptySnapshot: PrThreadSnapshot = {
   reviews: [],
   topLevelComments: [],
   fetchedAt: "2026-05-23T00:00:00.000Z",
+  pushedAt: null,
+  truncated: false,
 };
+
+function neverStream() {
+  return {
+    events: (async function* () {
+      // Never yields — simulates no events arriving
+    })(),
+    abort: () => {},
+  };
+}
 
 function makeDeps(overrides: Partial<PrDeps> = {}): PrDeps {
   return {
@@ -37,6 +48,7 @@ function makeDeps(overrides: Partial<PrDeps> = {}): PrDeps {
     sleep: () => Promise.resolve(),
     ipcCall: (() => Promise.resolve(emptySnapshot)) as PrDeps["ipcCall"],
     repoRoot: () => "/tmp/test-repo",
+    openStream: neverStream,
     ...overrides,
   };
 }
@@ -428,6 +440,7 @@ describe("prWaitForCopilot", () => {
   test("exits 0 immediately when Copilot has posted and push is old", async () => {
     const copilotSnapshot: PrThreadSnapshot = {
       ...emptySnapshot,
+      pushedAt: new Date(Date.now() - 120_000).toISOString(),
       threads: [
         {
           threadId: "T1",
@@ -444,17 +457,9 @@ describe("prWaitForCopilot", () => {
 
     const deps = makeDeps({
       ipcCall: (() => Promise.resolve(copilotSnapshot)) as PrDeps["ipcCall"],
-      exec: (cmd: string[]) => {
-        if (cmd.some((c: string) => c.includes("pulls/"))) {
-          // Return a push time >90s ago
-          return { stdout: new Date(Date.now() - 120_000).toISOString(), stderr: "", exitCode: 0 };
-        }
-        return { stdout: "", stderr: "", exitCode: 0 };
-      },
     });
 
     await prWaitForCopilot(["42"], deps);
-    // If we get here without ExitError, it exited 0
   });
 
   test("exits 1 on parse error", async () => {
@@ -462,6 +467,137 @@ describe("prWaitForCopilot", () => {
     const deps = makeDeps({ printError: (m: string) => errors.push(m) });
     await expect(prWaitForCopilot([], deps)).rejects.toBeInstanceOf(ExitError);
     expect(errors[0]).toMatch(/Usage/);
+  });
+
+  test("exits 1 when event stream dies and Copilot not ready", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      ipcCall: (() => Promise.resolve(emptySnapshot)) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+      openStream: () => ({
+        events: (async function* () {
+          // Stream ends immediately (simulates daemon restart)
+        })(),
+        abort: () => {},
+      }),
+    });
+
+    const err = await prWaitForCopilot(["42", "--max-wait", "60"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
+    expect(errors.some((e: string) => e.includes("Timed out"))).toBe(true);
+  });
+
+  test("exits 0 when event stream dies but final check finds Copilot ready", async () => {
+    const copilotSnapshot: PrThreadSnapshot = {
+      ...emptySnapshot,
+      pushedAt: new Date(Date.now() - 120_000).toISOString(),
+      reviews: [{ id: 1, user: "Copilot", state: "COMMENTED", body: "LGTM" }],
+    };
+
+    let callCount = 0;
+    const deps = makeDeps({
+      ipcCall: (() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve(emptySnapshot);
+        return Promise.resolve(copilotSnapshot);
+      }) as PrDeps["ipcCall"],
+      openStream: () => ({
+        events: (async function* () {
+          // Stream dies immediately
+        })(),
+        abort: () => {},
+      }),
+    });
+
+    await prWaitForCopilot(["42"], deps);
+    expect(callCount).toBe(2);
+  });
+
+  test("exits 1 on timeout when Copilot never posts", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      ipcCall: (() => Promise.resolve(emptySnapshot)) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+      openStream: () => ({
+        events: (async function* () {
+          // Yield one event to exercise the loop
+          yield { type: "pr.review_comment_posted", ts: Date.now() } as never;
+        })(),
+        abort: () => {},
+      }),
+    });
+
+    const err = await prWaitForCopilot(["42", "--max-wait", "0"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
+    expect(errors.some((e: string) => e.includes("Timed out"))).toBe(true);
+  });
+
+  test("returns false when Copilot posted but pushedAt is null", async () => {
+    const snapshot: PrThreadSnapshot = {
+      ...emptySnapshot,
+      pushedAt: null,
+      threads: [
+        {
+          threadId: "T1",
+          rootCommentId: 100,
+          user: "Copilot",
+          location: "src/main.ts:10",
+          body: "Suggestion",
+          resolved: false,
+          outdated: false,
+          replies: [],
+        },
+      ],
+    };
+
+    const errors: string[] = [];
+    const deps = makeDeps({
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+      openStream: () => ({
+        events: (async function* () {})(),
+        abort: () => {},
+      }),
+    });
+
+    const err = await prWaitForCopilot(["42", "--max-wait", "0"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
+  });
+
+  test("returns false when Copilot posted but push is too recent", async () => {
+    const snapshot: PrThreadSnapshot = {
+      ...emptySnapshot,
+      pushedAt: new Date(Date.now() - 10_000).toISOString(),
+      threads: [
+        {
+          threadId: "T1",
+          rootCommentId: 100,
+          user: "Copilot",
+          location: "src/main.ts:10",
+          body: "Suggestion",
+          resolved: false,
+          outdated: false,
+          replies: [],
+        },
+      ],
+    };
+
+    const errors: string[] = [];
+    const deps = makeDeps({
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+      openStream: () => ({
+        events: (async function* () {})(),
+        abort: () => {},
+      }),
+    });
+
+    const err = await prWaitForCopilot(["42", "--max-wait", "0"], deps).catch((e) => e);
+    expect(err).toBeInstanceOf(ExitError);
+    expect((err as ExitError).code).toBe(1);
   });
 });
 

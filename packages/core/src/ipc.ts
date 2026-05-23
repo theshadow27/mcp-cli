@@ -782,6 +782,10 @@ export const SetBudgetConfigParamsSchema = z.object({
   quotaDeadband: z.number().nonnegative().optional(),
 });
 
+// -- Copilot user detection --
+
+export const COPILOT_USERS = new Set(["Copilot", "copilot-pull-request-reviewer[bot]"]);
+
 // -- PR thread snapshot types --
 
 export const GetPrThreadSnapshotParamsSchema = z.object({
@@ -825,6 +829,8 @@ export interface PrThreadSnapshot {
   reviews: PrReviewEntry[];
   topLevelComments: PrCommentEntry[];
   fetchedAt: string;
+  pushedAt: string | null;
+  truncated: boolean;
 }
 
 // -- Method → Result type map --

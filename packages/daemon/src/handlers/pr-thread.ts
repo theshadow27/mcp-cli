@@ -1,5 +1,5 @@
 import type { IpcMethod, PrCommentEntry, PrReviewEntry, PrThread, PrThreadSnapshot } from "@mcp-cli/core";
-import { GetPrThreadSnapshotParamsSchema, createGhClient } from "@mcp-cli/core";
+import { GetPrThreadSnapshotParamsSchema, createGhClient, parseGitRemoteUrl } from "@mcp-cli/core";
 import type { RequestHandler } from "../handler-types";
 
 // ── Bot-noise filter ──
@@ -7,7 +7,7 @@ import type { RequestHandler } from "../handler-types";
 const CODERABBIT_USER = "coderabbitai[bot]";
 const ROBOBUN_WATERMARK = /<!-- generated-comment/;
 
-export const COPILOT_USERS = new Set(["Copilot", "copilot-pull-request-reviewer[bot]"]);
+export { COPILOT_USERS } from "@mcp-cli/core";
 
 export function isBotNoise(entry: { user: string; body: string }): boolean {
   if (entry.user === CODERABBIT_USER) return true;
@@ -22,6 +22,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage }
         nodes {
           id
           isResolved
@@ -38,6 +39,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
         }
       }
       reviews(first: 50) {
+        pageInfo { hasNextPage }
         nodes {
           databaseId
           body
@@ -46,6 +48,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
         }
       }
       comments(first: 100) {
+        pageInfo { hasNextPage }
         nodes {
           databaseId
           body
@@ -89,12 +92,16 @@ interface GqlComment {
   author: { login: string } | null;
 }
 
+interface GqlPageInfo {
+  hasNextPage: boolean;
+}
+
 interface GqlResponse {
   repository: {
     pullRequest: {
-      reviewThreads: { nodes: GqlThread[] };
-      reviews: { nodes: GqlReview[] };
-      comments: { nodes: GqlComment[] };
+      reviewThreads: { pageInfo: GqlPageInfo; nodes: GqlThread[] };
+      reviews: { pageInfo: GqlPageInfo; nodes: GqlReview[] };
+      comments: { pageInfo: GqlPageInfo; nodes: GqlComment[] };
       headRefOid: string;
       pushedAt: string | null;
     };
@@ -190,23 +197,30 @@ export class PrThreadHandlers {
 
     const topLevelComments = pr.comments.nodes.map(mapComment).filter((c) => !isBotNoise(c));
 
+    const truncated =
+      pr.reviewThreads.pageInfo.hasNextPage || pr.reviews.pageInfo.hasNextPage || pr.comments.pageInfo.hasNextPage;
+
     return {
       threads,
       reviews,
       topLevelComments,
       fetchedAt: new Date().toISOString(),
+      pushedAt: pr.pushedAt,
+      truncated,
     };
   }
 
   private async resolveOwnerRepo(repoRoot: string): Promise<{ owner: string; repo: string }> {
-    const result = Bun.spawnSync(["git", "remote", "get-url", "origin"], {
+    const proc = Bun.spawn(["git", "remote", "get-url", "origin"], {
       cwd: repoRoot,
       stdout: "pipe",
       stderr: "pipe",
     });
-    const url = result.stdout.toString().trim();
-    const match = url.match(/[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
-    if (!match) throw new Error(`Cannot parse GitHub owner/repo from remote: ${url}`);
-    return { owner: match[1], repo: match[2] };
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      throw new Error(`Failed to detect GitHub repo from git remote in ${repoRoot}`);
+    }
+    const url = (await new Response(proc.stdout).text()).trim();
+    return parseGitRemoteUrl(url);
   }
 }

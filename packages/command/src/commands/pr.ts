@@ -6,8 +6,8 @@
  * (#1800). Local cleanup is left to `mcx claude bye` → cleanupWorktree.
  */
 
-import type { IpcMethod, IpcMethodResult, PrThreadSnapshot } from "@mcp-cli/core";
-import { DEFAULT_TIMEOUT_MS, findGitRoot, openEventStream } from "@mcp-cli/core";
+import type { IpcMethod, IpcMethodResult, MonitorEvent, PrThreadSnapshot } from "@mcp-cli/core";
+import { COPILOT_USERS, DEFAULT_TIMEOUT_MS, findGitRoot, openEventStream } from "@mcp-cli/core";
 import { ipcCall as defaultIpcCall } from "../daemon-lifecycle";
 import { printError as defaultPrintError } from "../output";
 
@@ -20,6 +20,7 @@ export interface PrDeps {
   sleep: (ms: number) => Promise<void>;
   ipcCall: <M extends IpcMethod>(method: M, params?: unknown) => Promise<IpcMethodResult[M]>;
   repoRoot: () => string;
+  openStream: (params: Record<string, unknown>) => { events: AsyncIterable<MonitorEvent>; abort: () => void };
 }
 
 export const defaultPrDeps: PrDeps = {
@@ -36,11 +37,8 @@ export const defaultPrDeps: PrDeps = {
   sleep: (ms) => Bun.sleep(ms),
   ipcCall: defaultIpcCall,
   repoRoot: () => findGitRoot(process.cwd()) ?? process.cwd(),
+  openStream: openEventStream,
 };
-
-// ── Copilot user detection ──
-
-const COPILOT_USERS = new Set(["Copilot", "copilot-pull-request-reviewer[bot]"]);
 
 // ── Arg parsing ──
 
@@ -285,9 +283,9 @@ export async function prWaitForCopilot(args: string[], deps: Partial<PrDeps> = {
   const ready = await checkCopilotReady(prNumber, repoRoot, d);
   if (ready) return;
 
-  const { events, abort } = openEventStream({
+  const { events, abort } = d.openStream({
     pr: prNumber,
-    type: "pr.review_comment_posted",
+    type: "pr.review_comment_posted,review.approved,review.changes_requested,review.commented",
     repo: repoRoot,
   });
 
@@ -301,10 +299,15 @@ export async function prWaitForCopilot(args: string[], deps: Partial<PrDeps> = {
     abort();
   }
 
-  if (Date.now() >= deadline) {
-    d.printError(`Timed out waiting for Copilot on PR #${prNumber} (${parsed.maxWaitMs / 1000}s).`);
-    d.exit(1);
+  // Stream ended without returning (daemon restart, connection drop).
+  // Do a final check before giving up.
+  if (Date.now() < deadline) {
+    const lastCheck = await checkCopilotReady(prNumber, repoRoot, d);
+    if (lastCheck) return;
   }
+
+  d.printError(`Timed out waiting for Copilot on PR #${prNumber} (${parsed.maxWaitMs / 1000}s).`);
+  d.exit(1);
 }
 
 async function checkCopilotReady(prNumber: number, repoRoot: string, d: PrDeps): Promise<boolean> {
@@ -319,21 +322,10 @@ async function checkCopilotReady(prNumber: number, repoRoot: string, d: PrDeps):
 
   if (!hasCopilot) return false;
 
-  // Push-age check: fetchedAt - pushedAt must be ≥ 90s.
-  // The pushedAt is not in the snapshot (would need separate API call).
-  // Use the head commit date from gh api as a proxy.
-  const { stdout, exitCode } = d.exec([
-    "gh",
-    "api",
-    `repos/{owner}/{repo}/pulls/${prNumber}`,
-    "--jq",
-    ".pushed_at // .updated_at",
-  ]);
+  if (!snapshot.pushedAt) return false;
 
-  if (exitCode !== 0 || !stdout) return hasCopilot;
-
-  const pushedAt = new Date(stdout).getTime();
-  if (Number.isNaN(pushedAt)) return hasCopilot;
+  const pushedAt = new Date(snapshot.pushedAt).getTime();
+  if (Number.isNaN(pushedAt)) return false;
 
   return Date.now() - pushedAt >= 90_000;
 }
