@@ -28,6 +28,13 @@ export interface GenerateFastImportOptions {
   committerEmail?: string;
   /** Commit timestamp (unix seconds). Defaults to 0 for deterministic output. */
   timestamp?: number;
+  /**
+   * When true, skip `deleteall` — entries are adds/updates only, preserving
+   * the rest of the parent tree. Use with `deletions` to remove specific paths.
+   */
+  incremental?: boolean;
+  /** Paths to emit `D` (fileDelete) lines for. Requires `parent` to be set. */
+  deletions?: string[];
 }
 
 export interface GenerateFastImportResult {
@@ -71,11 +78,17 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   const committerName = opts.committerName ?? "mcx";
   const committerEmail = opts.committerEmail ?? "mcx@local";
   const timestamp = opts.timestamp ?? 0;
+  const deletions = opts.deletions ?? [];
+  const incremental = opts.incremental ?? false;
   const encoder = new TextEncoder();
 
-  // Guard: empty entries + parent would emit `deleteall` with no M lines,
-  // silently replacing the branch tip with an empty tree.
-  if (opts.entries.length === 0 && opts.parent) {
+  if (deletions.length > 0 && !opts.parent) {
+    throw new Error("generateFastImport: deletions require a parent commit");
+  }
+
+  // Guard: non-incremental empty entries + parent would emit `deleteall` with
+  // no M lines, silently replacing the branch tip with an empty tree.
+  if (opts.entries.length === 0 && opts.parent && !incremental) {
     throw new Error("generateFastImport: refusing to emit branch-wiping commit (entries is empty but parent is set)");
   }
 
@@ -111,9 +124,12 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   commit += `data ${messageBytes}\n${opts.message}\n`;
   if (opts.parent) {
     commit += `from ${opts.parent}\n`;
-    // Reset the tree so only the listed entries survive — callers that want
-    // incremental updates should pass their own M/D lines via a different API.
-    commit += "deleteall\n";
+    if (!incremental) {
+      commit += "deleteall\n";
+    }
+  }
+  for (const path of deletions) {
+    commit += `D ${quoteFastImportPath(path)}\n`;
   }
   for (const entry of opts.entries) {
     const mark = marks[entry.path];
