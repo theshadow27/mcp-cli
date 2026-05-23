@@ -70,7 +70,8 @@ export type IpcMethod =
   | "publishEvent"
   | "listAutomation"
   | "getAutomationLog"
-  | "getAgentSession";
+  | "getAgentSession"
+  | "getPrThreadSnapshot";
 
 // -- Request/Response --
 
@@ -781,6 +782,57 @@ export const SetBudgetConfigParamsSchema = z.object({
   quotaDeadband: z.number().nonnegative().optional(),
 });
 
+// -- Copilot user detection --
+
+export const COPILOT_USERS = new Set(["Copilot", "copilot-pull-request-reviewer[bot]"]);
+
+// -- PR thread snapshot types --
+
+export const GetPrThreadSnapshotParamsSchema = z.object({
+  prNumber: z.number().int().positive(),
+  repoRoot: z.string().refine((s) => isAbsolute(s), "repoRoot must be absolute"),
+  includeResolved: z.boolean().optional(),
+});
+
+export interface PrThread {
+  threadId: string;
+  rootCommentId: number;
+  user: string;
+  location: string;
+  body: string;
+  resolved: boolean;
+  outdated: boolean;
+  replies: PrThreadReply[];
+}
+
+export interface PrThreadReply {
+  user: string;
+  body: string;
+  commentId: number;
+}
+
+export interface PrReviewEntry {
+  id: number;
+  user: string;
+  state: string;
+  body: string;
+}
+
+export interface PrCommentEntry {
+  id: number;
+  user: string;
+  body: string;
+}
+
+export interface PrThreadSnapshot {
+  threads: PrThread[];
+  reviews: PrReviewEntry[];
+  topLevelComments: PrCommentEntry[];
+  fetchedAt: string;
+  pushedAt: string | null;
+  truncated: boolean;
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -838,6 +890,7 @@ export interface IpcMethodResult {
   listAutomation: ListAutomationResult;
   getAutomationLog: GetAutomationLogResult;
   getAgentSession: GetAgentSessionResult;
+  getPrThreadSnapshot: PrThreadSnapshot;
 }
 
 // -- Error codes --
