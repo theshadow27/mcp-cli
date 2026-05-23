@@ -51,10 +51,15 @@ export function parseEtime(etime: string): number | null {
 export function getProcessStartTime(pid: number): number | null {
   try {
     const result = Bun.spawnSync(["ps", "-o", "etime=", "-p", String(pid)]);
+    // Capture wall clock AFTER ps completes so the time reference is close to
+    // when ps actually sampled the elapsed time. Before this fix, Date.now()
+    // was called before spawnSync — under CI load ps can take 1-2s, shifting
+    // the computed start time enough to trip isOurProcess's tolerance (#2255).
+    const now = Date.now();
     if (result.exitCode !== 0) return null;
     const elapsedSeconds = parseEtime(result.stdout.toString());
     if (elapsedSeconds === null) return null;
-    return Date.now() - elapsedSeconds * 1000;
+    return now - elapsedSeconds * 1000;
   } catch {
     return null;
   }
@@ -74,6 +79,7 @@ export function getProcessStartTimesBatch(pids: number[]): Map<number, number> {
     const proc = Bun.spawnSync(["ps", "-o", "pid=,etime=", "-p", pidArgs]);
     // ps may exit non-zero if some PIDs are invalid — still parse stdout
 
+    // Capture wall clock AFTER ps completes (same reasoning as getProcessStartTime)
     const now = Date.now();
     const output = proc.stdout.toString().trim();
     if (!output) return result;
