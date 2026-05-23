@@ -225,4 +225,18 @@ This plan was originally written 2026-05-20 and sat un-run for 3 days; the
 
 ## Results
 
-(filled in at sprint review time)
+- **Released**: v1.11.0 (minor — two new top-level commands: `mcx pr`, `mcx sprint-stats`)
+- **PRs merged**: 19 (14 planned + 5 tech-debt pulls added mid-sprint per user request)
+- **Issues closed**: 19 — all planned + #1550, #1765, #1706, #1861, #1434
+- **Issues dropped**: 0 (full planned slate shipped)
+- **needs-attention**: 0
+- **New issues filed**: 4 — #2186 (impl phase auto-spawn never shipped; stale #1286 ref),
+  #2200 (meta: extend no-.js rule to `.claude/phases/` + clean imports),
+  #2208 (ci: setup-bun@v2 401 flake), #2211 (server-pool tests still hit bun
+  test-level 5000ms timeout under CI contention even after #2112's pollUntil fix)
+- **Investigation gate**: #2112 — flake root-caused (PR #2165 shipped the old manual
+  poll loop 2 min after #2163 converted the siblings), 1-line `pollUntil` fix,
+  adversarial-verified, merged. Residual contention timeout tracked in #2211.
+- **Goal anchor**: #1912 `mcx pr comments` + `wait-for-copilot` landed (PR #1 scope;
+  `--reply`/`--resolve` deferred to a follow-up per the scoping directive).
+- **Sprint cost**: ~$55 across ~45 sessions; quota stayed at 7d 21% (well under target).
