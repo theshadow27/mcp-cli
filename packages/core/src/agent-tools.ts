@@ -94,11 +94,16 @@ const requestIdProp: JsonSchemaProperty = {
  * - `extraProperties`: additional inputSchema properties merged on top of the
  *   common ones.
  * - `extraRequired`: additional required fields appended to the common ones.
+ * - `omitProperties`: common property names to drop from the inputSchema.
+ *   Use this when a provider does not implement a field that the shared base
+ *   includes, so the tool description does not promise behaviour the worker
+ *   cannot deliver.
  * - `description`: replaces the default description entirely.
  */
 export interface ToolOverride {
   extraProperties?: Record<string, JsonSchemaProperty>;
   extraRequired?: readonly string[];
+  omitProperties?: readonly string[];
   description?: string;
 }
 
@@ -112,6 +117,19 @@ export interface ExtraTool {
   basename: string;
   description: string;
   inputSchema: ToolInputSchema;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function applyOmit(
+  properties: Record<string, JsonSchemaProperty>,
+  omit: readonly string[] | undefined,
+): Record<string, JsonSchemaProperty> {
+  if (!omit || omit.length === 0) return properties;
+  const set = new Set(omit);
+  return Object.fromEntries(Object.entries(properties).filter(([k]) => !set.has(k)));
 }
 
 // ---------------------------------------------------------------------------
@@ -149,25 +167,31 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `Start a new ${label} session with a prompt, or send a follow-up prompt to an existing session. Returns the session ID immediately by default. Set wait=true to block until the next actionable event.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          prompt: { type: "string", description: `The message to send to ${label}` },
-          sessionId: {
-            type: "string",
-            description: "Existing session ID to continue (omit for new session)",
+        properties: applyOmit(
+          {
+            prompt: { type: "string", description: `The message to send to ${label}` },
+            sessionId: {
+              type: "string",
+              description: "Existing session ID to continue (omit for new session)",
+            },
+            cwd: { type: "string", description: "Working directory for the process" },
+            model: { type: "string", description: "Model to use" },
+            allowedTools: {
+              type: "array",
+              items: { type: "string" },
+              description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
+            },
+            worktree: { type: "string", description: "Git worktree name for isolation" },
+            name: {
+              type: "string",
+              description: "Human-readable session name (auto-generated if omitted)",
+            },
+            timeout: timeoutProp,
+            wait: { type: "boolean", description: "Block until result (default: false)" },
+            ...ov("prompt")?.extraProperties,
           },
-          cwd: { type: "string", description: "Working directory for the process" },
-          model: { type: "string", description: "Model to use" },
-          allowedTools: {
-            type: "array",
-            items: { type: "string" },
-            description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
-          },
-          worktree: { type: "string", description: "Git worktree name for isolation" },
-          name: { type: "string", description: "Human-readable session name (auto-generated if omitted)" },
-          timeout: timeoutProp,
-          wait: { type: "boolean", description: "Block until result (default: false)" },
-          ...ov("prompt")?.extraProperties,
-        },
+          ov("prompt")?.omitProperties,
+        ),
         required: ["prompt", ...(ov("prompt")?.extraRequired ?? [])] as const,
       },
     },
@@ -227,14 +251,18 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         `Gracefully end a ${label} session: close the connection, stop the process, clean up.`,
       inputSchema: {
         type: "object" as const,
-        properties: {
-          sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to end" },
-          message: {
-            type: "string",
-            description: "Closing message explaining why the session is being ended. Logged to the session transcript.",
+        properties: applyOmit(
+          {
+            sessionId: { ...sessionIdProp, description: "Session ID or unique prefix to end" },
+            message: {
+              type: "string",
+              description:
+                "Closing message explaining why the session is being ended. Logged to the session transcript.",
+            },
+            ...ov("bye")?.extraProperties,
           },
-          ...ov("bye")?.extraProperties,
-        },
+          ov("bye")?.omitProperties,
+        ),
         required: ["sessionId"] as const,
       },
     },
