@@ -20,8 +20,9 @@ export class AcpServer extends AbstractWorkerServer {
     logger?: Logger,
     handshakeTimeoutMs = 10_000,
     metricsCollector?: MetricsCollector,
+    workerFactory?: (path: string) => Worker,
   ) {
-    super(db, daemonId, clientFactory, logger, handshakeTimeoutMs, metricsCollector);
+    super(db, daemonId, clientFactory, logger, handshakeTimeoutMs, metricsCollector, workerFactory);
   }
 }
 
