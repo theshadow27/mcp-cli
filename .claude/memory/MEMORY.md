@@ -28,6 +28,7 @@
 - [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
 - [Worktree hooksPath inheritance](feedback_worktree_hookspath_inheritance.md) — mcp-cli base repo's local core.hooksPath is absolute; worktrees inherit it and pre-commit silently no-ops. Set `git config core.hooksPath .git-hooks` after creating any new worktree.
 - [QA label hygiene on flaky-CI merge](feedback_qa_label_hygiene.md) — when merging on a rerun-cleared qa:fail (impl was clean), flip the label to qa:pass with a comment first; sprint 58 #2143 #2177
+- [No rebase of sprint branch](feedback_no_rebase_sprint_branch.md) — sprint-{N} branch is meta-only and main is strict=false; commit on top, never rebase to "catch up" (sprint 59 startup fumble)
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
