@@ -5110,4 +5110,28 @@ describe("reviveSession", () => {
     // spawnClaude was called (ms.lastCmd is populated)
     expect(ms.lastCmd.length).toBeGreaterThan(0);
   });
+
+  test("reviveSession propagates state.cwd to config.cwd so spawnClaude uses correct directory (#2217)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "cwd-revive",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/my/project",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-cwd-abc",
+      },
+    ]);
+
+    server.reviveSession("cwd-revive", "continue");
+
+    expect(ms.lastOpts.cwd).toBe("/my/project");
+  });
 });

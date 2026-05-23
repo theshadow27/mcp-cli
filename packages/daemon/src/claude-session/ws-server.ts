@@ -702,6 +702,7 @@ export class ClaudeWsServer {
     // Set up config so handleOpen delivers the prompt and resumes conversation history
     session.config.prompt = prompt;
     session.config.resumeSessionId = session.claudeSessionId;
+    session.config.cwd = session.state.cwd ?? undefined;
 
     // Clear stale process references — the old process is dead
     session.proc = null;
