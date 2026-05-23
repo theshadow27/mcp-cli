@@ -633,6 +633,10 @@ export class EventStreamServer {
           lastWriteTime = Date.now();
         }
 
+        // Poll at 1/6 the silence threshold so the worst-case gap is ~1.17× the
+        // threshold, not 2× (which happens when an event lands 1ms after a timer
+        // fire and the next check is a full interval away — see #1528).
+        const heartbeatPollMs = Math.ceil(this.heartbeatIntervalMs / 6);
         heartbeatTimer = setInterval(() => {
           if (Date.now() - lastWriteTime >= this.heartbeatIntervalMs) {
             const hb = `${JSON.stringify({ category: "heartbeat", event: "heartbeat", seq: this.eventSeq, src: "daemon", ts: new Date().toISOString() })}\n`;
@@ -643,7 +647,7 @@ export class EventStreamServer {
               cleanup();
             }
           }
-        }, this.heartbeatIntervalMs);
+        }, heartbeatPollMs);
         heartbeatTimer.unref();
       },
       cancel: cleanup,
