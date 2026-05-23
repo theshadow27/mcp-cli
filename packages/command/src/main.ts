@@ -57,6 +57,7 @@ import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSite } from "./commands/site";
 import { cmdSpans } from "./commands/spans";
+import { cmdSprintStats } from "./commands/sprint-stats";
 import { cmdTelemetry } from "./commands/telemetry";
 import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
 import { cmdTty } from "./commands/tty";
@@ -376,6 +377,10 @@ async function main(): Promise<void> {
 
       case "tracked":
         await cmdTracked(cleanArgs.slice(1));
+        break;
+
+      case "sprint-stats":
+        await cmdSprintStats(cleanArgs.slice(1));
         break;
 
       case "typegen":
