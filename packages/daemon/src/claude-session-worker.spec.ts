@@ -122,9 +122,19 @@ describe("handlePrompt spawn failure (#1836)", () => {
 
 function makeRecordingSpawn(): { spawn: SpawnFn; lastCmd: () => string[] } {
   let lastCmd: string[] = [];
+  let exitResolve: (code: number) => void = () => {};
   const spawn: SpawnFn = (cmd) => {
     lastCmd = [...cmd];
-    return { pid: 42000, exited: new Promise<number>(() => {}), kill: () => {}, stderr: null };
+    return {
+      pid: 42000,
+      exited: new Promise<number>((r) => {
+        exitResolve = r;
+      }),
+      kill: () => {
+        exitResolve(143);
+      },
+      stderr: null,
+    };
   };
   return { spawn, lastCmd: () => lastCmd };
 }
