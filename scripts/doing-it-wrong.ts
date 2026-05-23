@@ -55,7 +55,11 @@ export async function runRules(
     return { violations: [], malformedTodos: [], unknownRule: true, durationMs: 0 };
   }
 
-  const files = await loadFiles({ repoRoot: REPO_ROOT, filter: opts.filter });
+  const files = await loadFiles({
+    repoRoot: REPO_ROOT,
+    roots: ["packages", "scripts", "test", ".claude/phases"],
+    filter: opts.filter,
+  });
   const violations: Violation[] = [];
   const malformedTodos: MalformedTodo[] = [];
   // Iterate rules at the outer level so violations[] (and the reporter's
