@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createMockProvider } from "./__tests__/mock-provider";
-import { ExportTransaction, type ExportTransactionOptions, type PathResolver } from "./export-transaction";
+import {
+  ExportTransaction,
+  type ExportTransactionOptions,
+  type PathResolver,
+  createExportHandler,
+} from "./export-transaction";
 import type { ParsedCommit } from "./fast-import-parser";
 
 function makeOpts(
@@ -98,10 +103,66 @@ describe("ExportTransaction", () => {
       expect(tx.refs).toContain("refs/heads/main");
       expect(tx.refs).toContain("refs/heads/feature");
     });
+
+    test("accepts empty content (zero-byte file)", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "README.md", content: new Uint8Array(0) }]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(1);
+    });
+
+    test("throws if stage() called after commit()", async () => {
+      const tx = new ExportTransaction(makeOpts());
+      tx.stage([commit("refs/heads/main", [])]);
+      await tx.commit();
+      expect(() => tx.stage([commit("refs/heads/main", [])])).toThrow("already committed");
+    });
+
+    test("throws if stage() called after rollback()", () => {
+      const tx = new ExportTransaction(makeOpts());
+      tx.rollback();
+      expect(() => tx.stage([commit("refs/heads/main", [])])).toThrow("already rolled back");
+    });
+
+    test("returns error when provider lacks push capability", () => {
+      const provider = createMockProvider({ entries: { "a.md": { content: "a", version: 1 } } });
+      (provider as unknown as Record<string, unknown>).push = undefined;
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "a", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+      const errors = tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("updated") }]),
+      ]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error).toContain("provider does not support push");
+    });
+
+    test("returns error when provider lacks create capability", () => {
+      const provider = createMockProvider({ entries: {} });
+      (provider as unknown as Record<string, unknown>).create = undefined;
+      const opts = makeOpts({ provider, entries: {} });
+      const tx = new ExportTransaction(opts);
+      const errors = tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "new.md", content: new TextEncoder().encode("new") }]),
+      ]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error).toContain("provider does not support create");
+    });
+
+    test("returns error when provider lacks delete capability", () => {
+      const provider = createMockProvider({ entries: { "a.md": { content: "a", version: 1 } } });
+      (provider as unknown as Record<string, unknown>).delete = undefined;
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "a", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+      const errors = tx.stage([commit("refs/heads/main", [{ type: "delete", path: "a.md" }])]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error).toContain("provider does not support delete");
+    });
   });
 
   describe("commit — success", () => {
-    test("applies all staged modifications atomically", async () => {
+    test("applies all staged modifications", async () => {
       const provider = createMockProvider({
         entries: { "README.md": { content: "# Hello", version: 1 } },
       });
@@ -159,14 +220,100 @@ describe("ExportTransaction", () => {
       expect(result.refs[0].ok).toBe(true);
       expect(result.response).toBe("ok refs/heads/main\n\n");
     });
+
+    test("calls toRemote() to convert content before push", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "old", version: 1 } },
+      });
+      let convertedContent: string | undefined;
+      (provider as unknown as Record<string, unknown>).toRemote = (md: string) => {
+        convertedContent = `<html>${md}</html>`;
+        return convertedContent;
+      };
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "old", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("# Hello") }]),
+      ]);
+
+      await tx.commit();
+      expect(provider.state.get("a.md")?.content).toBe("<html># Hello</html>");
+    });
+
+    test("passes frontmatter to provider.push()", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "old", version: 1 } },
+      });
+      let receivedFrontmatter: Record<string, unknown> | undefined;
+      const originalPush = provider.push?.bind(provider);
+      (provider as unknown as Record<string, unknown>).push = async (
+        scope: unknown,
+        id: string,
+        content: string,
+        baseVersion: number,
+        frontmatter?: Record<string, unknown>,
+      ) => {
+        receivedFrontmatter = frontmatter;
+        return originalPush(scope as never, id, content, baseVersion, frontmatter);
+      };
+
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "old", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      const contentWithFm = "---\ntitle: My Page\nid: a.md\n---\n\n# Hello";
+      tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode(contentWithFm) }]),
+      ]);
+
+      await tx.commit();
+      expect(receivedFrontmatter).toEqual({ title: "My Page", id: "a.md" });
+    });
+
+    test("same-path across multiple commits tracks version updates", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "v1", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "v1", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v2") }]),
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v3") }]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.state.get("a.md")?.content).toBe("v3");
+      expect(provider.state.get("a.md")?.version).toBe(3);
+    });
+
+    test("same-path modified across three commits tracks versions", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "v1", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "v1", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v2") }]),
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v3") }]),
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v4") }]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.state.get("a.md")?.content).toBe("v4");
+      expect(provider.state.get("a.md")?.version).toBe(4);
+      expect(provider.calls.push).toBe(3);
+    });
   });
 
   describe("commit — partial failure", () => {
-    test("version conflict fails entire transaction", async () => {
+    test("version conflict fails the ref", async () => {
       const provider = createMockProvider({
         entries: { "README.md": { content: "# Hello", version: 2 } },
       });
-      // resolvePath thinks version is 1, but provider has version 2
       const opts: ExportTransactionOptions = {
         provider,
         scope: { key: "test", cloudId: "mock-cloud", resolved: {} },
@@ -186,7 +333,7 @@ describe("ExportTransaction", () => {
       expect(result.response).toContain("error refs/heads/main");
     });
 
-    test("mid-stream failure aborts remaining operations", async () => {
+    test("mid-stream failure: succeeded refs reported ok, failed ref gets error", async () => {
       const provider = createMockProvider({
         entries: {
           "a.md": { content: "a", version: 1 },
@@ -194,14 +341,18 @@ describe("ExportTransaction", () => {
         },
       });
 
-      // Arm push failure after first successful push
       let pushCount = 0;
       const originalPush = provider.push?.bind(provider);
-      if (!originalPush) throw new Error("provider.push is undefined");
-      (provider as unknown as { push: typeof originalPush }).push = async (scope, id, content, baseVersion, fm) => {
+      (provider as unknown as Record<string, unknown>).push = async (
+        scope: unknown,
+        id: string,
+        content: string,
+        baseVersion: number,
+        fm?: Record<string, unknown>,
+      ) => {
         pushCount++;
         if (pushCount === 2) throw new Error("network timeout");
-        return originalPush(scope, id, content, baseVersion, fm);
+        return originalPush(scope as never, id, content, baseVersion, fm);
       };
 
       const opts: ExportTransactionOptions = {
@@ -216,19 +367,23 @@ describe("ExportTransaction", () => {
 
       const tx = new ExportTransaction(opts);
       tx.stage([
-        commit("refs/heads/main", [
+        commit("refs/heads/feature", [
           { type: "modify", path: "a.md", content: new TextEncoder().encode("a-updated") },
-          { type: "modify", path: "b.md", content: new TextEncoder().encode("b-updated") },
         ]),
+        commit("refs/heads/main", [{ type: "modify", path: "b.md", content: new TextEncoder().encode("b-updated") }]),
       ]);
 
       const result = await tx.commit();
-      expect(result.refs[0].ok).toBe(false);
-      expect(result.refs[0].error).toContain("network timeout");
-      expect(result.response).toContain("error refs/heads/main");
+      // First ref (feature) succeeded — all its ops were applied
+      const featureRef = result.refs.find((r) => r.ref === "refs/heads/feature");
+      expect(featureRef?.ok).toBe(true);
+      // Second ref (main) failed
+      const mainRef = result.refs.find((r) => r.ref === "refs/heads/main");
+      expect(mainRef?.ok).toBe(false);
+      expect(mainRef?.error).toContain("network timeout");
     });
 
-    test("multi-ref failure reports per-ref errors", async () => {
+    test("multi-ref failure reports per-ref errors with aborted for unattempted", async () => {
       const provider = createMockProvider({
         entries: { "a.md": { content: "a", version: 1 } },
       });
@@ -247,15 +402,12 @@ describe("ExportTransaction", () => {
       ]);
 
       const result = await tx.commit();
-      // First ref fails
       const mainRef = result.refs.find((r) => r.ref === "refs/heads/main");
       expect(mainRef?.ok).toBe(false);
       expect(mainRef?.error).toContain("provider down");
-      // Second ref is aborted
       const featureRef = result.refs.find((r) => r.ref === "refs/heads/feature");
       expect(featureRef?.ok).toBe(false);
       expect(featureRef?.error).toContain("aborted");
-      // Response contains both error lines
       expect(result.response).toContain("error refs/heads/main");
       expect(result.response).toContain("error refs/heads/feature");
     });
@@ -264,7 +416,6 @@ describe("ExportTransaction", () => {
       const provider = createMockProvider({
         entries: { "a.md": { content: "a", version: 1 } },
       });
-      // Override validate to reject content
       (
         provider as unknown as { validate: (c: string) => { valid: boolean; errors: string[]; warnings: string[] } }
       ).validate = (content: string) => ({
@@ -287,8 +438,13 @@ describe("ExportTransaction", () => {
       const result = await tx.commit();
       expect(result.refs[0].ok).toBe(false);
       expect(result.refs[0].error).toContain("validation failed");
-      // Provider was never called
       expect(provider.calls.push).toBe(0);
+    });
+
+    test("commit throws if stage had unresolved errors", async () => {
+      const tx = new ExportTransaction(makeOpts());
+      tx.stage([commit("refs/heads/main", [{ type: "deleteall" }])]);
+      await expect(tx.commit()).rejects.toThrow("unresolved stage errors");
     });
   });
 
@@ -379,6 +535,60 @@ describe("ExportTransaction", () => {
 
       const result = await tx.commit();
       expect(result.response).toMatch(/^error refs\/heads\/main .+\n\n$/);
+    });
+
+    test("error messages with newlines are sanitized", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "a", version: 1 } },
+      });
+      provider.armPushFailure(new Error("line1\nline2\rline3"));
+
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "a", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("updated") }]),
+      ]);
+
+      const result = await tx.commit();
+      const lines = result.response.split("\n");
+      // First line is the error, should be a single protocol line with no embedded newlines
+      expect(lines[0]).toMatch(/^error refs\/heads\/main line1 line2 line3$/);
+    });
+  });
+
+  describe("createExportHandler", () => {
+    test("parses fast-import stream and applies via transaction", async () => {
+      const provider = createMockProvider({
+        entries: { "README.md": { content: "old", version: 1 } },
+      });
+
+      const handler = createExportHandler({
+        provider,
+        scope: { key: "test", cloudId: "mock-cloud", resolved: {} },
+        resolvePath: (path) => (path === "README.md" ? { id: "README.md", version: 1 } : undefined),
+      });
+
+      // Minimal fast-import stream
+      const stream = `commit refs/heads/main
+committer Test <test@test.com> 1700000000 +0000
+data 11
+test commit
+M 100644 inline README.md
+data 9
+# Updated
+done
+`;
+      const stdin = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(stream));
+          controller.close();
+        },
+      });
+
+      const response = await handler(stdin);
+      expect(response).toContain("ok refs/heads/main");
+      expect(provider.state.get("README.md")?.content).toBe("# Updated");
     });
   });
 });

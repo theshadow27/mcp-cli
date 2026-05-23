@@ -1,17 +1,22 @@
 /**
- * Transactional export — stages parsed commits and applies them atomically.
+ * Export transaction — stages parsed fast-import commits, applies them
+ * sequentially to a RemoteProvider, and returns per-ref ok/error status.
  *
- * Solves #1312: if handleExport throws mid-stream after writing N commits,
- * the provider has N mutations applied but git's local refs show none advanced.
+ * Solves #1312: on partial failure, git refs are only advanced for
+ * operations that succeeded. Refs whose operations failed (or were never
+ * attempted) get error lines, so `git push` reports accurate per-ref
+ * status and the next push re-attempts only what failed.
  *
- * Strategy: parse all commits from the fast-import stream first, validate
- * them against the provider, then apply all-or-nothing. On partial failure,
- * no mutations are visible to the provider and per-ref error lines are
- * returned so git can report accurate status.
+ * NOT atomic: providers are remote REST APIs that don't support
+ * multi-mutation rollback. Successful mutations persist even when later
+ * operations fail. The invariant is ref-consistency: a ref is reported
+ * "ok" only if ALL its provider mutations succeeded.
  */
 
 import type { PushResult, RemoteProvider, ResolvedScope } from "../providers/provider";
 import type { ParsedChange, ParsedCommit } from "./fast-import-parser";
+import { parseFastImport } from "./fast-import-parser";
+import { stripFrontmatter } from "./frontmatter";
 
 export interface ExportOp {
   type: "modify" | "create" | "delete";
@@ -47,33 +52,47 @@ export interface ExportTransactionOptions {
 }
 
 type StagedOp =
-  | { type: "modify"; path: string; id: string; content: string; baseVersion: number; ref: string }
+  | {
+      type: "modify";
+      path: string;
+      id: string;
+      content: string;
+      baseVersion: number;
+      ref: string;
+      frontmatter: Record<string, unknown> | null;
+    }
   | { type: "create"; path: string; title: string; content: string; parentId?: string; ref: string }
   | { type: "delete"; path: string; id: string; ref: string };
 
 /**
- * ExportTransaction stages commits parsed from a fast-import stream
- * and applies them atomically to a RemoteProvider.
+ * Stages commits parsed from a fast-import stream and applies them
+ * sequentially to a RemoteProvider, returning per-ref ok/error status.
  *
  * Usage:
  *   const tx = new ExportTransaction(opts);
- *   tx.stage(commits);          // parse + validate
- *   const result = await tx.commit();  // apply all-or-nothing
- *   // or: tx.rollback();       // discard without side effects
+ *   tx.stage(commits);
+ *   const result = await tx.commit();
+ *   // or: tx.rollback();
  */
 export class ExportTransaction {
   private readonly opts: ExportTransactionOptions;
   private readonly staged: StagedOp[] = [];
   private readonly refSet = new Set<string>();
+  /** Tracks version updates from successful pushes/creates within this tx. */
+  private readonly versionOverrides = new Map<string, { id: string; version: number }>();
   private committed = false;
   private rolledBack = false;
+  private hasStageErrors = false;
 
   constructor(opts: ExportTransactionOptions) {
     this.opts = opts;
   }
 
-  /** Stage parsed commits for atomic application. Returns validation errors (if any). */
+  /** Stage parsed commits. Returns validation errors (if any). */
   stage(commits: ParsedCommit[]): RefStatus[] {
+    if (this.committed) throw new Error("ExportTransaction already committed");
+    if (this.rolledBack) throw new Error("ExportTransaction already rolled back");
+
     const errors: RefStatus[] = [];
 
     for (const commit of commits) {
@@ -81,20 +100,32 @@ export class ExportTransaction {
 
       for (const change of commit.changes) {
         const result = this.stageChange(change, commit.ref);
-        if (result) errors.push(result);
+        if (result) {
+          errors.push(result);
+          this.hasStageErrors = true;
+        }
       }
     }
 
     return errors;
   }
 
+  private resolvePath(path: string): { id: string; version: number } | undefined {
+    return this.versionOverrides.get(path) ?? this.opts.resolvePath(path);
+  }
+
   private stageChange(change: ParsedChange, ref: string): RefStatus | undefined {
+    const { provider } = this.opts;
+
     if (change.type === "deleteall") {
       return { ref, ok: false, error: "deleteall not supported in export transactions" };
     }
 
     if (change.type === "delete") {
-      const entry = this.opts.resolvePath(change.path);
+      if (!provider.delete) {
+        return { ref, ok: false, error: "provider does not support delete" };
+      }
+      const entry = this.resolvePath(change.path);
       if (!entry) {
         return { ref, ok: false, error: `cannot delete unknown path: ${change.path}` };
       }
@@ -103,24 +134,32 @@ export class ExportTransaction {
     }
 
     // type === "modify"
-    const content = change.content ? new TextDecoder().decode(change.content) : undefined;
-    if (!content) {
+    if (change.content === undefined) {
       return { ref, ok: false, error: `no content for path: ${change.path}` };
     }
 
-    const entry = this.opts.resolvePath(change.path);
+    const decoded = new TextDecoder().decode(change.content);
+    const entry = this.resolvePath(change.path);
     if (entry) {
+      if (!provider.push) {
+        return { ref, ok: false, error: "provider does not support push" };
+      }
+      const { content: body, fields } = stripFrontmatter(decoded);
       this.staged.push({
         type: "modify",
         path: change.path,
         id: entry.id,
-        content,
+        content: body,
         baseVersion: entry.version,
         ref,
+        frontmatter: fields,
       });
     } else {
+      if (!provider.create) {
+        return { ref, ok: false, error: "provider does not support create" };
+      }
       const title = titleFromPath(change.path);
-      this.staged.push({ type: "create", path: change.path, title, content, ref });
+      this.staged.push({ type: "create", path: change.path, title, content: decoded, ref });
     }
 
     return undefined;
@@ -137,31 +176,31 @@ export class ExportTransaction {
   }
 
   /**
-   * Apply all staged operations atomically.
+   * Apply all staged operations sequentially.
    *
-   * Validates all operations against the provider first. If any validation
-   * fails, none are applied. On success, all are applied in order. If an
-   * apply-time error occurs (network, conflict), the transaction halts and
-   * returns per-ref errors for the failed ref and "aborted" for remaining refs.
+   * Pre-validates content against the provider. If any validation fails,
+   * no operations are applied. On an apply-time error, the transaction
+   * halts: refs whose operations all succeeded are reported "ok", the
+   * failed ref gets the error, and remaining refs are "aborted".
    */
   async commit(): Promise<ExportTransactionResult> {
     if (this.committed) throw new Error("ExportTransaction already committed");
     if (this.rolledBack) throw new Error("ExportTransaction already rolled back");
+    if (this.hasStageErrors) throw new Error("ExportTransaction has unresolved stage errors");
     this.committed = true;
 
     if (this.staged.length === 0) {
-      return { refs: this.buildAllOk(), response: this.formatResponse(this.buildAllOk()) };
+      const ok = this.buildAllOk();
+      return { refs: ok, response: this.formatResponse(ok) };
     }
 
-    // Phase 1: pre-validate (provider.validate if available)
     const preErrors = this.preValidate();
     if (preErrors.length > 0) {
-      const refs = this.buildRefStatuses(preErrors);
+      const refs = this.buildRefStatuses(preErrors, 0);
       return { refs, response: this.formatResponse(refs) };
     }
 
-    // Phase 2: apply all operations
-    const applied: StagedOp[] = [];
+    let appliedCount = 0;
     const errors: Array<{ ref: string; error: string }> = [];
 
     for (const op of this.staged) {
@@ -170,17 +209,16 @@ export class ExportTransaction {
         errors.push({ ref: op.ref, error: result });
         break;
       }
-      applied.push(op);
+      appliedCount++;
     }
 
     if (errors.length > 0) {
-      // Rollback applied operations
-      await this.rollbackApplied(applied);
-      const refs = this.buildRefStatuses(errors);
+      const refs = this.buildRefStatuses(errors, appliedCount);
       return { refs, response: this.formatResponse(refs) };
     }
 
-    return { refs: this.buildAllOk(), response: this.formatResponse(this.buildAllOk()) };
+    const ok = this.buildAllOk();
+    return { refs: ok, response: this.formatResponse(ok) };
   }
 
   /** Discard all staged operations without applying. */
@@ -214,13 +252,26 @@ export class ExportTransaction {
       switch (op.type) {
         case "modify": {
           if (!provider.push) return "provider does not support push";
-          const result: PushResult = await provider.push(scope, op.id, op.content, op.baseVersion);
+          const content = provider.toRemote?.(op.content) ?? op.content;
+          const currentVersion = this.versionOverrides.get(op.path)?.version ?? op.baseVersion;
+          const result: PushResult = await provider.push(
+            scope,
+            op.id,
+            content,
+            currentVersion,
+            op.frontmatter ?? undefined,
+          );
           if (!result.ok) return result.error ?? "push failed";
+          if (result.newVersion != null) {
+            this.versionOverrides.set(op.path, { id: op.id, version: result.newVersion });
+          }
           return undefined;
         }
         case "create": {
           if (!provider.create) return "provider does not support create";
-          await provider.create(scope, op.parentId, op.title, op.content);
+          const content = provider.toRemote?.(op.content) ?? op.content;
+          const entry = await provider.create(scope, op.parentId, op.title, content);
+          this.versionOverrides.set(op.path, { id: entry.id, version: entry.version });
           return undefined;
         }
         case "delete": {
@@ -234,38 +285,39 @@ export class ExportTransaction {
     }
   }
 
-  /**
-   * Best-effort rollback of already-applied operations.
-   *
-   * This is a compensating transaction — it cannot guarantee atomicity at the
-   * provider level (the provider may not support undo). The caller should log
-   * rollback failures but not throw, since the primary error is more important.
-   */
-  private async rollbackApplied(_applied: StagedOp[]): Promise<void> {
-    // Rollback is best-effort. For providers that support versioning,
-    // a future enhancement could restore the previous version. For now,
-    // the key invariant is that we DON'T advance git refs on failure —
-    // the next push will re-attempt the same operations, which either
-    // succeed (idempotent) or surface the conflict for manual resolution.
-    //
-    // This satisfies the #1312 requirement: git refs are consistent with
-    // what the provider acknowledges, even if the provider has partial state.
-  }
-
   private buildAllOk(): RefStatus[] {
     return [...this.refSet].map((ref) => ({ ref, ok: true }));
   }
 
-  private buildRefStatuses(errors: Array<{ ref: string; error: string }>): RefStatus[] {
+  private buildRefStatuses(errors: Array<{ ref: string; error: string }>, appliedCount: number): RefStatus[] {
     const errorsByRef = new Map<string, string>();
     for (const { ref, error } of errors) {
       if (!errorsByRef.has(ref)) errorsByRef.set(ref, error);
     }
 
+    // Determine which refs had ALL their ops applied successfully
+    const refOpIndices = new Map<string, number[]>();
+    for (let i = 0; i < this.staged.length; i++) {
+      const ref = this.staged[i].ref;
+      const existing = refOpIndices.get(ref);
+      if (existing) {
+        existing.push(i);
+      } else {
+        refOpIndices.set(ref, [i]);
+      }
+    }
+
+    const completedRefs = new Set<string>();
+    for (const [ref, indices] of refOpIndices) {
+      if (!errorsByRef.has(ref) && indices.every((i) => i < appliedCount)) {
+        completedRefs.add(ref);
+      }
+    }
+
     return [...this.refSet].map((ref) => {
+      if (completedRefs.has(ref)) return { ref, ok: true };
       const error = errorsByRef.get(ref);
       if (error) return { ref, ok: false, error };
-      // Refs not yet processed when the error occurred are "aborted"
       return { ref, ok: false, error: "aborted: earlier operation failed" };
     });
   }
@@ -273,12 +325,64 @@ export class ExportTransaction {
   /** Format per-ref status into the git remote helper protocol response. */
   private formatResponse(refs: RefStatus[]): string {
     if (refs.length === 0) return "\n";
-    const lines = refs.map((r) => (r.ok ? `ok ${r.ref}` : `error ${r.ref} ${r.error ?? "unknown"}`));
+    const lines = refs.map((r) =>
+      r.ok ? `ok ${r.ref}` : `error ${r.ref} ${sanitizeProtocolError(r.error ?? "unknown")}`,
+    );
     return `${lines.join("\n")}\n\n`;
   }
+}
+
+function sanitizeProtocolError(msg: string): string {
+  return msg.replace(/[\r\n]+/g, " ").trim();
 }
 
 function titleFromPath(path: string): string {
   const base = path.split("/").pop() ?? path;
   return base.replace(/\.md$/, "");
+}
+
+/**
+ * Create a handleExport function suitable for RemoteHelperHandlers.
+ *
+ * Reads the full fast-import stream, parses it, stages all commits into
+ * an ExportTransaction, and applies them to the provider.
+ */
+export function createExportHandler(
+  opts: ExportTransactionOptions,
+): (stdin: ReadableStream<Uint8Array>) => Promise<string> {
+  return async (stdin: ReadableStream<Uint8Array>): Promise<string> => {
+    const chunks: Uint8Array[] = [];
+    const reader = stdin.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+
+    const raw = concatUint8Arrays(chunks);
+    const commits = parseFastImport(raw);
+
+    const tx = new ExportTransaction(opts);
+    const stageErrors = tx.stage(commits);
+    if (stageErrors.length > 0) {
+      tx.rollback();
+      const lines = stageErrors.map((s) => `error ${s.ref} ${sanitizeProtocolError(s.error ?? "staging failed")}`);
+      return `${lines.join("\n")}\n\n`;
+    }
+
+    const result = await tx.commit();
+    return result.response;
+  };
+}
+
+function concatUint8Arrays(arrays: Uint8Array[]): Uint8Array {
+  if (arrays.length === 1) return arrays[0];
+  const total = arrays.reduce((sum, a) => sum + a.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    result.set(a, offset);
+    offset += a.length;
+  }
+  return result;
 }
