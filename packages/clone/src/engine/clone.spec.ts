@@ -125,7 +125,7 @@ describe("clone", () => {
     const provider = makeProvider();
     const scope = makeScope();
 
-    await expect(clone({ targetDir, provider, scope, _gitInit: () => {} })).rejects.toThrow(
+    await expect(clone({ targetDir, provider, scope, onProgress: () => {}, _gitInit: () => {} })).rejects.toThrow(
       'git init did not create .git at "',
     );
   });

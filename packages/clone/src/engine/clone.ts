@@ -234,7 +234,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
   cleanEnv.GIT_CEILING_DIRECTORIES = dirname(absTarget);
   const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
-  const gitInitFn = opts._gitInit ?? ((cwd, env) => execSync("git init", { cwd, stdio: "pipe", env }));
+  const gitInitFn = opts._gitInit ?? ((_cwd, _env) => execSync("git init", gitOpts));
   gitInitFn(absTarget, cleanEnv);
   if (!existsSync(join(absTarget, ".git"))) {
     throw new Error(
