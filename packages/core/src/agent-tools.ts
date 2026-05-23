@@ -242,7 +242,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
     // -- interrupt --
     {
       name: p("interrupt"),
-      description: ov("interrupt")?.description ?? `Interrupt the current turn of a ${label} session.`,
+      description: ov("interrupt")?.description ?? `Interrupt the current turn of ${art} ${label} session.`,
       inputSchema: {
         type: "object" as const,
         ...schema(
@@ -266,7 +266,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       name: p("bye"),
       description:
         ov("bye")?.description ??
-        `Gracefully end a ${label} session: close the connection, stop the process, clean up.`,
+        `Gracefully end ${art} ${label} session: close the connection, stop the process, clean up.`,
       inputSchema: {
         type: "object" as const,
         ...schema(
@@ -308,7 +308,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       name: p("wait"),
       description:
         ov("wait")?.description ??
-        `Block until a ${label} session event occurs (result, error, or permission request). If sessionId is provided, waits for that session only. Otherwise waits for any session.`,
+        `Block until ${art} ${label} session event occurs (result, error, or permission request). If sessionId is provided, waits for that session only. Otherwise waits for any session.`,
       inputSchema: {
         type: "object" as const,
         ...schema("wait", {
