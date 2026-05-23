@@ -607,7 +607,10 @@ export async function validateFreeformTsc(
 
   const tscBin = tscBinOverride !== undefined ? tscBinOverride : Bun.which("tsc");
   if (!tscBin) {
-    return { warnings: ["tsc not found on PATH — skipping type-check"], timedOut: false };
+    return {
+      warnings: ["tsc not found on PATH — skipping type-check (install typescript: bun add -d typescript)"],
+      timedOut: false,
+    };
   }
 
   const tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-tsc-"));
