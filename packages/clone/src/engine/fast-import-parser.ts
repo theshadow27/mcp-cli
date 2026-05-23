@@ -101,6 +101,8 @@ function parseCommit(
     } else if (p.startsWith("committer ")) {
       readLine(bytes, state);
       commit.committer = p.slice("committer ".length);
+    } else if (p.startsWith("encoding ")) {
+      readLine(bytes, state);
     } else if (p === "data" || p.startsWith("data ")) {
       commit.message = readDataString(bytes, state);
     } else if (p.startsWith("from ")) {
