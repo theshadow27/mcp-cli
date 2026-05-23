@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,7 @@ import {
   getTrackableFields,
   isPhaseInCycle,
   loadManifest,
+  loadManifestFromPath,
   parseEnumValues,
   parseManifestText,
   resolveRunsOn,
@@ -315,6 +316,68 @@ describe("loadManifest", () => {
   test("wraps validation errors in ManifestError", () => {
     writeFileSync(join(dir, ".mcx.yaml"), "initial: a\nphases:\n  b:\n    source: ./b.ts\n");
     expect(() => loadManifest(dir)).toThrow(/not a declared phase/);
+  });
+});
+
+describe("loadManifestFromPath", () => {
+  test("returns null when path does not exist (lstat ENOENT race)", () => {
+    const gone = join(dir, ".mcx.yaml");
+    expect(loadManifestFromPath(gone)).toBeNull();
+  });
+
+  test("returns null when a previously-existing file is deleted (lstat ENOENT)", () => {
+    const p = join(dir, ".mcx.yaml");
+    writeFileSync(p, minimalYaml);
+    const result = loadManifestFromPath(p);
+    expect(result).not.toBeNull();
+    unlinkSync(p);
+    // Hits the lstat ENOENT branch (same as the test above). The readFileSync
+    // ENOENT branch (line 503 in manifest.ts) is genuinely untestable without
+    // mock.module() since we can't inject timing between lstat and readFileSync.
+    expect(loadManifestFromPath(p)).toBeNull();
+  });
+
+  test("returns manifest from a valid absolute path", () => {
+    const p = join(dir, ".mcx.yaml");
+    writeFileSync(p, minimalYaml);
+    const result = loadManifestFromPath(p);
+    expect(result).not.toBeNull();
+    expect(result?.path).toBe(p);
+    expect(result?.manifest.initial).toBe("implement");
+  });
+
+  test("throws ManifestError for non-regular file (symlink)", () => {
+    const target = join(dir, "target");
+    const link = join(dir, ".mcx.yaml");
+    mkdirSync(target);
+    symlinkSync(target, link);
+    expect(() => loadManifestFromPath(link)).toThrow(/not a regular file/);
+  });
+
+  test("throws ManifestError for stat errors other than ENOENT", () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const restricted = join(dir, "restricted");
+    mkdirSync(restricted);
+    writeFileSync(join(restricted, ".mcx.yaml"), minimalYaml);
+    chmodSync(restricted, 0o000);
+    try {
+      const p = join(restricted, ".mcx.yaml");
+      expect(() => loadManifestFromPath(p)).toThrow(ManifestError);
+    } finally {
+      chmodSync(restricted, 0o755);
+    }
+  });
+
+  test("throws ManifestError for parse errors", () => {
+    const p = join(dir, ".mcx.json");
+    writeFileSync(p, "{ not json");
+    expect(() => loadManifestFromPath(p)).toThrow(ManifestError);
+  });
+
+  test("throws ManifestError for validation errors", () => {
+    const p = join(dir, ".mcx.yaml");
+    writeFileSync(p, "initial: a\nphases:\n  b:\n    source: ./b.ts\n");
+    expect(() => loadManifestFromPath(p)).toThrow(/not a declared phase/);
   });
 });
 

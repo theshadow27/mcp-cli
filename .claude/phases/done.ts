@@ -46,22 +46,20 @@ defineAlias({
     }
 
     const result = await mergePr(work.prNumber, {
-      async gh(args) {
+      async gh(op) {
         try {
-          const prNum = Number(args[2]);
-          const jsonField = args[4];
-          if (jsonField === "labels") {
-            const pr = await ctx.gh.pr(prNum).body();
+          if (op.op === "pr:labels") {
+            const pr = await ctx.gh.pr(op.prNumber).body();
             return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
           }
-          if (jsonField === "statusCheckRollup") {
-            const checks = await ctx.gh.pr(prNum).checks();
+          if (op.op === "pr:checks") {
+            const checks = await ctx.gh.pr(op.prNumber).checks();
             // Merge check-runs and legacy commit statuses; null (pending) counts as non-SUCCESS.
             const all = [...checks.check_runs, ...checks.commit_statuses];
             const failing = all.filter((c) => c.conclusion !== "SUCCESS");
             return { stdout: String(failing.length), stderr: "", exitCode: 0 };
           }
-          return { stdout: "", stderr: `unsupported gh args: ${args.join(" ")}`, exitCode: 1 };
+          return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
         } catch (err) {
           return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
         }

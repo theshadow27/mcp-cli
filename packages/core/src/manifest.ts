@@ -474,13 +474,12 @@ export function isPhaseInCycle(manifest: Manifest, phase: string): boolean {
 }
 
 /**
- * Load and validate a manifest from `dir`. Returns null if no manifest file
- * exists. Throws ManifestError on parse, size, or validation failure.
+ * Load and validate a manifest from an absolute file path, bypassing
+ * `findManifest`. Returns null if the file doesn't exist (including the
+ * lstat ENOENT race: file disappears between discovery and stat).
+ * Throws ManifestError on size, parse, or validation failure.
  */
-export function loadManifest(dir: string): { path: string; manifest: Manifest } | null {
-  const path = findManifest(dir);
-  if (path === null) return null;
-
+export function loadManifestFromPath(path: string): { path: string; manifest: Manifest } | null {
   try {
     const st = lstatSync(path);
     if (!st.isFile()) {
@@ -514,4 +513,14 @@ export function loadManifest(dir: string): { path: string; manifest: Manifest } 
 
   const manifest = validateManifest(raw, path);
   return { path, manifest };
+}
+
+/**
+ * Load and validate a manifest from `dir`. Returns null if no manifest file
+ * exists. Throws ManifestError on parse, size, or validation failure.
+ */
+export function loadManifest(dir: string): { path: string; manifest: Manifest } | null {
+  const path = findManifest(dir);
+  if (path === null) return null;
+  return loadManifestFromPath(path);
 }
