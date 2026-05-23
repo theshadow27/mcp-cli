@@ -1818,16 +1818,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
       // killPid would never be called, leaving the process alive.
       await pool.disconnect("sleeper");
 
-      const deadline = Date.now() + 5_000;
-      let dead = false;
-      while (Date.now() < deadline) {
-        if (!isAlive(pid)) {
-          dead = true;
-          break;
-        }
-        await Bun.sleep(100);
-      }
-      expect(dead).toBe(true);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }
