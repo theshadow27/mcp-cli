@@ -1,7 +1,7 @@
 /**
  * Rule: no-js-extension-local-import
  *
- * Relative imports within packages/ must use
+ * Relative imports within packages/ and .claude/phases/ must use
  * extensionless specifiers (e.g. `./phase-types`, not `./phase-types.js`).
  * TypeScript resolves .ts source files without extensions at compile time,
  * and the .js suffix becomes a footgun when the import is later refactored
@@ -28,7 +28,7 @@ const rule: CheckRule = {
   documentation: "#2173",
   appliesToTests: true,
   check({ file, violated }) {
-    const inScope = file.relPath.startsWith("packages/");
+    const inScope = file.relPath.startsWith("packages/") || file.relPath.startsWith(".claude/phases/");
     if (!inScope) return;
 
     const lines = file.content.split("\n");
