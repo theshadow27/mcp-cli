@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhResult } from "../.claude/phases/qa-fn";
+import type { GhOp, GhResult } from "../.claude/phases/qa-fn";
 import { QA_FAIL_CAP, type QaDeps, type QaState, type QaWork, readQaLabels, runQa } from "../.claude/phases/qa-fn";
 
 function ok(stdout = ""): GhResult {
@@ -72,15 +72,15 @@ describe("readQaLabels — parsing", () => {
     expect(result).toEqual({ hasPass: true, hasFail: true });
   });
 
-  test("passes correct args to gh", async () => {
-    let captured: string[] | undefined;
+  test("passes correct op to gh", async () => {
+    let captured: GhOp | undefined;
     await readQaLabels(99, {
-      gh: async (args) => {
-        captured = args;
+      gh: async (op) => {
+        captured = op;
         return ok("");
       },
     });
-    expect(captured).toEqual(["pr", "view", "99", "--json", "labels", "-q", ".labels[].name"]);
+    expect(captured).toEqual({ op: "pr:labels", prNumber: 99 });
   });
 });
 

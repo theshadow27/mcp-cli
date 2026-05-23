@@ -2,7 +2,7 @@ import type { Plan, PlanMetrics, ServerStatus } from "@mcp-cli/core";
 import { CLAUDE_SERVER_NAME, GetPlanMetricsResultSchema, ListPlansResultSchema } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { extractToolText } from "./ipc-tool-helpers.js";
+import { extractToolText } from "./ipc-tool-helpers";
 
 /** Per-server IPC timeout to prevent a single hanging server from stalling the poll loop. */
 const IPC_TIMEOUT_MS = 8_000;

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
-import type { TranscriptEntry } from "../components/agent-session-detail.js";
-import { type UseTranscriptOptions, useTranscript } from "./use-transcript.js";
+import type { TranscriptEntry } from "../components/agent-session-detail";
+import { type UseTranscriptOptions, useTranscript } from "./use-transcript";
 
 interface HookState {
   entries: TranscriptEntry[];

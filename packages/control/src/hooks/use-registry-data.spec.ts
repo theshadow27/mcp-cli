@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
-import type { RegistryEntry } from "./registry-client.js";
-import { type UseRegistryDataDeps, type UseRegistryDataResult, useRegistryData } from "./use-registry-data.js";
+import type { RegistryEntry } from "./registry-client";
+import { type UseRegistryDataDeps, type UseRegistryDataResult, useRegistryData } from "./use-registry-data";
 
 /* ---------- helpers ---------- */
 

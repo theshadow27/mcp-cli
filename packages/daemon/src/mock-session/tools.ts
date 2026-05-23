@@ -17,6 +17,7 @@ export const MOCK_TOOLS = buildAgentTools({
         "Start a mock session with a task (JSON script file path), or send a follow-up prompt to an existing session. " +
         "The mock reads canned responses from the JSON file and emits them with configurable delays. " +
         "Returns the session ID immediately by default. Set wait=true to block until the script completes.",
+      omitProperties: ["name"],
     },
     session_list: {
       description: "List all active mock sessions with their status.",
@@ -29,6 +30,7 @@ export const MOCK_TOOLS = buildAgentTools({
     },
     bye: {
       description: "Terminate a mock session and clean up.",
+      omitProperties: ["message"],
     },
     transcript: {
       description: "Get transcript entries from a mock session.",

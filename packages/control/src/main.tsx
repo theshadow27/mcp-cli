@@ -10,7 +10,7 @@ import { render } from "ink";
 
 assertBunVersion();
 import React from "react";
-import { App } from "./app.js";
+import { App } from "./app";
 
 if (import.meta.main) {
   if (!process.stdout.isTTY) {
