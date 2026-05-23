@@ -205,6 +205,12 @@ export interface GhMergeOptions {
   deleteBranch?: boolean;
 }
 
+export interface GhReviewThread {
+  id: string;
+  isResolved: boolean;
+  comments: Array<{ author: string; body: string }>;
+}
+
 // ── Auth ──
 
 let tokenCache: string | null = null;
@@ -810,6 +816,80 @@ export class PrHandle {
       byAuthor,
       substantiveByAuthor,
     };
+  }
+
+  async reviewThreads(): Promise<GhReviewThread[]> {
+    type GqlResponse = {
+      data?: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                id: string;
+                isResolved: boolean;
+                comments: { nodes: Array<{ author: { login: string }; body: string }> };
+              }>;
+            };
+          };
+        };
+      };
+      errors?: Array<{ message: string }>;
+    };
+    const json = await ghJson<GqlResponse>(GITHUB_GRAPHQL_URL, {
+      ...this.reqOpts(),
+      method: "POST",
+      body: {
+        query: `query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    nodes {
+                      author { login }
+                      body
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+        variables: { owner: this.o, name: this.r, number: this.n },
+      },
+    });
+    if (json.errors?.length) {
+      throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
+    }
+    return (json.data?.repository.pullRequest.reviewThreads.nodes ?? []).map((t) => ({
+      id: t.id,
+      isResolved: t.isResolved,
+      comments: t.comments.nodes.map((c) => ({ author: c.author.login, body: c.body })),
+    }));
+  }
+
+  async resolveReviewThread(threadId: string): Promise<void> {
+    type GqlResponse = {
+      data?: unknown;
+      errors?: Array<{ message: string }>;
+    };
+    const json = await ghJson<GqlResponse>(GITHUB_GRAPHQL_URL, {
+      ...this.reqOpts(),
+      method: "POST",
+      body: {
+        query: `mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }`,
+        variables: { threadId },
+      },
+    });
+    if (json.errors?.length) {
+      throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
+    }
   }
 
   private async nodeId(): Promise<string> {

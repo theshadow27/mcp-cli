@@ -45,6 +45,18 @@ defineAlias({
       );
     }
 
+    // Best-effort: resolve any open review threads before merge so the PR is visually clean.
+    try {
+      const threads = await ctx.gh.pr(work.prNumber).reviewThreads();
+      await Promise.all(
+        threads
+          .filter((t) => !t.isResolved)
+          .map((t) => ctx.gh.pr(work.prNumber).resolveReviewThread(t.id).catch(() => {})),
+      );
+    } catch {
+      /* non-fatal — thread resolution is cosmetic; merge proceeds regardless */
+    }
+
     const result = await mergePr(work.prNumber, {
       async gh(args) {
         try {

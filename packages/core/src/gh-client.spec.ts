@@ -449,6 +449,95 @@ describe("PrHandle", () => {
     expect(result.byAuthor.alice).toHaveLength(2);
   });
 
+  test("reviewThreads() fetches and maps review threads via GraphQL", async () => {
+    const { fn, calls } = mockFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  nodes: [
+                    {
+                      id: "PRRT_aaa",
+                      isResolved: false,
+                      comments: { nodes: [{ author: { login: "copilot[bot]" }, body: "Fix this" }] },
+                    },
+                    {
+                      id: "PRRT_bbb",
+                      isResolved: true,
+                      comments: { nodes: [{ author: { login: "alice" }, body: "LGTM" }] },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    const threads = await client.pr(42).reviewThreads();
+
+    expect(threads).toHaveLength(2);
+    expect(threads[0].id).toBe("PRRT_aaa");
+    expect(threads[0].isResolved).toBe(false);
+    expect(threads[0].comments[0].author).toBe("copilot[bot]");
+    expect(threads[1].isResolved).toBe(true);
+    expect(calls[0].url).toBe("https://api.github.com/graphql");
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.variables).toEqual({ owner: "test-owner", name: "test-repo", number: 42 });
+  });
+
+  test("reviewThreads() throws GhValidationError on GraphQL errors", async () => {
+    const { fn } = mockFetch([
+      {
+        status: 200,
+        body: { errors: [{ message: "Could not resolve to a PullRequest" }] },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    await expect(client.pr(42).reviewThreads()).rejects.toMatchObject({
+      name: "GhValidationError",
+      message: expect.stringContaining("Could not resolve to a PullRequest"),
+    });
+  });
+
+  test("resolveReviewThread() sends resolveReviewThread mutation", async () => {
+    const { fn, calls } = mockFetch([
+      {
+        status: 200,
+        body: { data: { resolveReviewThread: { thread: { id: "PRRT_aaa", isResolved: true } } } },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    await client.pr(42).resolveReviewThread("PRRT_aaa");
+
+    expect(calls[0].url).toBe("https://api.github.com/graphql");
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.variables).toEqual({ threadId: "PRRT_aaa" });
+    expect(body.query).toContain("resolveReviewThread");
+  });
+
+  test("resolveReviewThread() throws GhValidationError on GraphQL errors", async () => {
+    const { fn } = mockFetch([
+      {
+        status: 200,
+        body: { errors: [{ message: "Thread not found" }] },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    await expect(client.pr(42).resolveReviewThread("PRRT_bad")).rejects.toMatchObject({
+      name: "GhValidationError",
+      message: expect.stringContaining("Thread not found"),
+    });
+  });
+
   test("allCommentSurfaces() filters bots from substantiveByAuthor", async () => {
     const { fn } = mockFetch([
       {
