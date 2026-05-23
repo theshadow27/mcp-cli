@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { MetricsCollector } from "./metrics";
 
+const TICK_MS = 10;
+
 describe("MetricsCollector", () => {
   // -- Counter --
 
@@ -109,7 +111,7 @@ describe("MetricsCollector", () => {
     const m = new MetricsCollector();
     const h = m.histogram("latency", undefined, [100, 500]);
     const stop = h.startTimer();
-    await Bun.sleep(10);
+    await Bun.sleep(TICK_MS);
     const elapsed = stop();
 
     expect(elapsed).toBeGreaterThan(5);

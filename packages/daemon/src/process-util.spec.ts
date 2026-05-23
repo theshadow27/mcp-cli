@@ -3,6 +3,8 @@ import { silentLogger } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import { killPid } from "./process-util";
 
+const POLL_MS = 10;
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -17,7 +19,7 @@ async function awaitDeath(pid: number, deadlineMs = 5_000): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
     if (!isAlive(pid)) return;
-    await Bun.sleep(10);
+    await Bun.sleep(POLL_MS);
   }
 }
 

@@ -8,6 +8,12 @@ import { makeConfig } from "../test-helpers";
 import { configHash, loadConfig } from "./loader";
 import { type ConfigChangeEvent, ConfigWatcher, type ConfigWatcherOptions } from "./watcher";
 
+const POLL_MS = 50;
+const SETTLE_MS = 200;
+const DEBOUNCE_POLL_MS = 20;
+const DEBOUNCE_SETTLE_MS = 100;
+const DEBOUNCE_WAIT_MS = 300;
+
 /** Build an McpConfigFile from server entries */
 function mcpConfig(servers: Record<string, ServerConfig>): McpConfigFile {
   return { mcpServers: servers };
@@ -23,7 +29,7 @@ function writeJson(path: string, data: unknown): void {
 async function waitForCalls(fn: ReturnType<typeof mock>, count: number, timeoutMs = 8000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (fn.mock.calls.length < count && Date.now() < deadline) {
-    await Bun.sleep(50);
+    await Bun.sleep(POLL_MS);
   }
 }
 
@@ -251,7 +257,7 @@ describe("ConfigWatcher FS integration", () => {
       // Stop, then write again — no new callbacks should fire
       watcher.stop();
       writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "post-stop" } }));
-      await Bun.sleep(200);
+      await Bun.sleep(SETTLE_MS);
       expect(cb.mock.calls.length).toBe(countAfterFirst);
     },
     { timeout: 10_000 },
@@ -305,7 +311,7 @@ describe("ConfigWatcher pollCheck", () => {
     // Wait for debounce + reload
     const deadline = Date.now() + 2000;
     while (cb.mock.calls.length === 0 && Date.now() < deadline) {
-      await Bun.sleep(20);
+      await Bun.sleep(DEBOUNCE_POLL_MS);
     }
     expect(cb.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(cb.mock.calls[0][0].changed).toContain("alpha");
@@ -329,7 +335,7 @@ describe("ConfigWatcher pollCheck", () => {
     const pollCheck = (watcher as unknown as { pollCheck: () => void }).pollCheck.bind(watcher);
     pollCheck();
 
-    await Bun.sleep(100);
+    await Bun.sleep(DEBOUNCE_SETTLE_MS);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -417,7 +423,7 @@ describe("ConfigWatcher error paths", () => {
     scheduleReload();
 
     // Wait for debounce to settle
-    await Bun.sleep(300);
+    await Bun.sleep(DEBOUNCE_WAIT_MS);
 
     // Should have loaded at most once despite double schedule
     expect(loadCount).toBe(1);

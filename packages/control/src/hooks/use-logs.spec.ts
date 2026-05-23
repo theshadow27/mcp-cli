@@ -5,6 +5,8 @@ import { render } from "ink-testing-library";
 import React, { type FC } from "react";
 import { type LogSource, type UseLogsOptions, buildLogSources, filterLogLines, useLogs } from "./use-logs";
 
+const SETTLE_MS = 30;
+
 /* ---------- helpers ---------- */
 
 function logEntry(line: string, ts?: number): LogEntry {
@@ -184,7 +186,7 @@ describe("useLogs", () => {
     const ipcCallFn = async () => {
       concurrency++;
       maxConcurrency = Math.max(maxConcurrency, concurrency);
-      await Bun.sleep(30);
+      await Bun.sleep(SETTLE_MS);
       concurrency--;
       return { lines: [logEntry("log", Date.now())] };
     };

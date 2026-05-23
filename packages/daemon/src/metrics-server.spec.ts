@@ -3,6 +3,8 @@ import { METRICS_SERVER_NAME } from "@mcp-cli/core";
 import { MetricsCollector } from "./metrics";
 import { MetricsServer } from "./metrics-server";
 
+const SETTLE_MS = 50;
+
 describe("METRICS_SERVER_NAME", () => {
   test("is _metrics", () => {
     expect(METRICS_SERVER_NAME).toBe("_metrics");
@@ -245,7 +247,7 @@ describe("MetricsServer", () => {
         }),
     });
     poller.start();
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
     poller.stop();
 
     const server = new MetricsServer(collector, poller);
@@ -276,7 +278,7 @@ describe("MetricsServer", () => {
       },
     });
     poller.start();
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
     poller.stop();
 
     const server = new MetricsServer(collector, poller);

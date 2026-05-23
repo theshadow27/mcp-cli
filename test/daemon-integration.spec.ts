@@ -8,6 +8,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 
 // CI runners are slower — give daemon spawn + test logic plenty of room
 setDefaultTimeout(30_000);
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { MockServer, TestDaemon } from "./harness";
@@ -47,7 +50,10 @@ describe("P1: Daemon lifecycle", () => {
     const res = await rpc(daemon.socketPath, "shutdown");
     expect(res.result).toEqual({ ok: true });
 
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    const exitCode = await Promise.race([
+      daemon.proc.exited,
+      Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
     expect(exitCode).toBe(0);
 
     // PID file should be cleaned up
@@ -59,7 +65,10 @@ describe("P1: Daemon lifecycle", () => {
   test("shutdown via IPC logs reason and timing in stderr", async () => {
     daemon = await startTestDaemon({});
     await rpc(daemon.socketPath, "shutdown");
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    const exitCode = await Promise.race([
+      daemon.proc.exited,
+      Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
     expect(exitCode).not.toBe("timeout");
 
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
@@ -74,7 +83,10 @@ describe("P1: Daemon lifecycle", () => {
   test("shutdown via SIGTERM logs reason in stderr", async () => {
     daemon = await startTestDaemon({});
     daemon.proc.kill("SIGTERM");
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    const exitCode = await Promise.race([
+      daemon.proc.exited,
+      Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
     expect(exitCode).not.toBe("timeout");
 
     const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
@@ -90,7 +102,10 @@ describe("P1: Daemon lifecycle", () => {
     // Margin-based workaround: 4s idle + 6s margin = 10s deadline.
     // Under CPU contention setTimeout can fire late — see #842 for root cause investigation.
     const t0 = Date.now();
-    const exitCode = await Promise.race([daemon.proc.exited, Bun.sleep(10_000).then(() => "timeout" as const)]);
+    const exitCode = await Promise.race([
+      daemon.proc.exited,
+      Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
     const elapsed = Date.now() - t0;
 
     if (exitCode === "timeout") {

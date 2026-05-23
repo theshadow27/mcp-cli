@@ -9,6 +9,9 @@ import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { MetricsCollector } from "./metrics";
 
+const POLL_MS = 50;
+const TICK_MS = 10;
+
 // ── WORKER_EVENT_TYPES exhaustiveness ──
 
 describe("WORKER_EVENT_TYPES", () => {
@@ -633,7 +636,7 @@ describe("ClaudeServer", () => {
     // Poll until the notification arrives (deadline-based, no fixed sleep)
     const deadline = Date.now() + 5000;
     while (!notificationReceived && Date.now() < deadline) {
-      await Bun.sleep(50);
+      await Bun.sleep(POLL_MS);
     }
 
     expect(notificationReceived).toBe(true);
@@ -1510,7 +1513,7 @@ describe("monitor event bridge: worker.onmessage demuxer via MessageChannel (#16
       // Poll until event arrives (no fixed delays — see test/CLAUDE.md)
       const deadline = Date.now() + 2_000;
       while (received.length === 0 && Date.now() < deadline) {
-        await Bun.sleep(10);
+        await Bun.sleep(TICK_MS);
       }
 
       expect(received).toHaveLength(1);
@@ -1545,7 +1548,7 @@ describe("monitor event bridge: worker.onmessage demuxer via MessageChannel (#16
 
     const deadline = Date.now() + 1_000;
     while (clonedData === undefined && Date.now() < deadline) {
-      await Bun.sleep(10);
+      await Bun.sleep(TICK_MS);
     }
 
     channel.port1.close();

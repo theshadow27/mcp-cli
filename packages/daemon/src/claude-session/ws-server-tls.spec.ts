@@ -7,6 +7,8 @@ import { ensureSelfSignedCert } from "../tls/self-signed";
 import type { SpawnFn } from "./ws-server";
 import { ClaudeWsServer } from "./ws-server";
 
+const WS_POLL_MS = 20;
+
 // ── Mock spawn (lifted from ws-server.spec.ts to keep this file standalone) ──
 
 function mockSpawn(): {
@@ -118,7 +120,7 @@ describe("ClaudeWsServer (TLS mode, #1808)", () => {
       `const ws = new WebSocket(${JSON.stringify(url)});
 const deadline = Date.now() + 4000;
 while (Date.now() < deadline && ws.readyState === WebSocket.CONNECTING) {
-  await Bun.sleep(20);
+  await Bun.sleep(${WS_POLL_MS});
 }
 if (ws.readyState !== WebSocket.OPEN) {
   process.stderr.write('readyState=' + ws.readyState + '\\n');
@@ -164,7 +166,7 @@ process.stdout.write('OK');
       `const ws = new WebSocket(${JSON.stringify(url)});
 const deadline = Date.now() + 2500;
 while (Date.now() < deadline && ws.readyState === WebSocket.CONNECTING) {
-  await Bun.sleep(20);
+  await Bun.sleep(${WS_POLL_MS});
 }
 process.stdout.write('readyState=' + ws.readyState);
 `,

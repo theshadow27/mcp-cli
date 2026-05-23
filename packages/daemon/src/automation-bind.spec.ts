@@ -4,6 +4,8 @@ import { createWorkItem } from "@mcp-cli/core";
 
 import bindModule from "../../../.claude/automation/bind";
 
+const TICK_MS = 2;
+
 function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
@@ -226,7 +228,7 @@ describe("bind automation module", () => {
 
       const start = performance.now();
       while (!published.some((e) => e.event === "automation.fired") && performance.now() - start < 2_000) {
-        await Bun.sleep(2);
+        await Bun.sleep(TICK_MS);
       }
 
       const fired = published.find((e) => e.event === "automation.fired");
@@ -278,7 +280,7 @@ describe("bind automation module", () => {
 
       const start = performance.now();
       while (!published.some((e) => e.event === "automation.fired") && performance.now() - start < 2_000) {
-        await Bun.sleep(2);
+        await Bun.sleep(TICK_MS);
       }
 
       expect(updates).toHaveLength(1);
@@ -323,7 +325,7 @@ describe("bind automation module", () => {
 
       const start = performance.now();
       while (!published.some((e) => e.event === "automation.skipped") && performance.now() - start < 2_000) {
-        await Bun.sleep(2);
+        await Bun.sleep(TICK_MS);
       }
 
       expect(executedModules).toHaveLength(0);

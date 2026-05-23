@@ -21,6 +21,9 @@ import type { DaemonHandle, PruneGitOps } from "./index";
 import { checkSqliteVersion, pruneOrphanedWorktrees, resolveHeadBranch, startDaemon, sweepCoreBare } from "./index";
 import { metrics } from "./metrics";
 
+const POLL_MS = 50;
+const TICK_MS = 100;
+
 setDefaultTimeout(15_000);
 
 /** Save and restore MCP_DAEMON_TIMEOUT env var around a callback. */
@@ -135,7 +138,7 @@ describe("daemon index.ts", () => {
         };
         process.on("uncaughtException", suppress);
         process.on("unhandledRejection", suppress);
-        await Bun.sleep(50);
+        await Bun.sleep(POLL_MS);
         process.removeListener("uncaughtException", suppress);
         process.removeListener("unhandledRejection", suppress);
       }
@@ -169,7 +172,7 @@ describe("daemon index.ts", () => {
         const check = await rpc(socketPath, "listServers");
         const svrs = check.result as Array<{ name: string }>;
         found = svrs.some((s) => s.name === ALIAS_SERVER_NAME) && svrs.some((s) => s.name === CLAUDE_SERVER_NAME);
-        if (!found) await Bun.sleep(50);
+        if (!found) await Bun.sleep(POLL_MS);
       }
       expect(found).toBe(true);
 
@@ -357,7 +360,7 @@ describe("daemon index.ts", () => {
 
         // Send pings to keep the daemon alive past the idle timeout
         for (let i = 0; i < 3; i++) {
-          await Bun.sleep(100);
+          await Bun.sleep(TICK_MS);
           await rpc(socketPath, "ping");
           expect(handle?.isShuttingDown).toBe(false);
         }

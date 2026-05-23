@@ -5,6 +5,7 @@ import { EventBus } from "./event-bus";
 
 const POLL_INTERVAL_MS = 2;
 const POLL_DEADLINE_MS = 2_000;
+const SETTLE_MS = 20;
 
 async function pollUntil(predicate: () => boolean, deadline = POLL_DEADLINE_MS): Promise<void> {
   const start = performance.now();
@@ -288,7 +289,7 @@ describe("AutomationDispatcher", () => {
 
     bus.publish(makeEvent());
     // Give enough time — no audit events should appear
-    await Bun.sleep(20);
+    await Bun.sleep(SETTLE_MS);
 
     expect(executedModules).toHaveLength(0);
     expect(published.filter((e) => e.event === "automation.fired")).toHaveLength(0);

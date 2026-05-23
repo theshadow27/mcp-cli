@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnHeadless } from "./headless";
 
+const POLL_MS = 10;
+
 describe("spawnHeadless with real spawn", () => {
   let testDir: string;
 
@@ -33,7 +35,7 @@ describe("spawnHeadless with real spawn", () => {
       } catch {
         // File may not exist yet
       }
-      await Bun.sleep(10);
+      await Bun.sleep(POLL_MS);
     }
     expect(logContent).toContain("headless-test-output");
   });

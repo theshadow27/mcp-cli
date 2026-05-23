@@ -8,6 +8,8 @@ import { StateDb } from "./db/state";
 import { ServerPool } from "./server-pool";
 import { makeConfig, makeMockTransport } from "./test-helpers";
 
+const SETTLE_MS = 50;
+
 function makeMockClient() {
   return {
     callTool: mock(() => Promise.resolve({ content: [{ text: "ok" }] })),
@@ -348,7 +350,7 @@ describe("AliasServer", () => {
     await server.refresh();
 
     // Give the worker a moment to process the refresh
-    await Bun.sleep(50);
+    await Bun.sleep(SETTLE_MS);
 
     const after = await client.listTools();
     expect(after.tools).toHaveLength(1);
