@@ -151,6 +151,45 @@ gh api repos/<owner>/<repo>/issues/comments/<sticky-comment-id> \
   -f body="## Adversarial Review (Delta) ..."
 ```
 
+### Step 6b: Resolve each thread you replied to
+
+After posting replies, resolve the corresponding review thread so GitHub's UI
+marks it as resolved. This requires the thread's GraphQL node ID, which you
+look up from the PR's review threads.
+
+```bash
+# Fetch all review threads and their node IDs
+gh api graphql -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100) {
+          nodes {
+            id
+            isResolved
+            comments(first: 1) { nodes { author { login } body } }
+          }
+        }
+      }
+    }
+  }
+' -F owner=<owner> -F name=<repo> -F number=<pr-number> \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id'
+
+# For each unresolved thread you addressed, resolve it:
+gh api graphql -f query='
+  mutation($threadId: ID!) {
+    resolveReviewThread(input: { threadId: $threadId }) {
+      thread { id isResolved }
+    }
+  }
+' -F threadId=<thread-node-id>
+```
+
+Resolution is best-effort: if `resolveReviewThread` fails (permissions,
+already resolved, etc.), log the error and continue — don't block the repair
+round on it.
+
 ### Step 7: Report
 
 Tell the orchestrator:
