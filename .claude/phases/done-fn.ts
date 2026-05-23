@@ -1,7 +1,7 @@
 /** Core done-phase logic, extracted for testability via dependency injection. */
 
-import type { GhResult } from "./phase-types.js";
-export type { GhResult };
+import type { GhOp, GhResult } from "./phase-types.js";
+export type { GhOp, GhResult };
 
 export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
@@ -18,7 +18,7 @@ export type MergeResult =
     };
 
 export interface MergePrDeps {
-  gh(args: string[]): Promise<GhResult>;
+  gh(op: GhOp): Promise<GhResult>;
   prMerge(prNumber: number, flags: string[]): Promise<GhResult>;
   prView(prNumber: number, fields: string, jqExpr?: string): Promise<string>;
   spawn(cmd: string[], opts?: { timeoutMs?: number }): Promise<GhResult>;
@@ -27,12 +27,8 @@ export interface MergePrDeps {
 export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<MergeResult> {
   // Guard 1 + Guard 2 in parallel: fetch labels and CI status concurrently.
   const [labelOut, ciOut] = await Promise.all([
-    deps.gh(["pr", "view", String(prNumber), "--json", "labels", "-q", ".labels[].name"]),
-    deps.gh([
-      "pr", "view", String(prNumber),
-      "--json", "statusCheckRollup",
-      "-q", '[.statusCheckRollup[] | select(.conclusion != "SUCCESS")] | length',
-    ]),
+    deps.gh({ op: "pr:labels", prNumber }),
+    deps.gh({ op: "pr:checks", prNumber }),
   ]);
 
   if (labelOut.exitCode !== 0) {

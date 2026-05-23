@@ -60,10 +60,9 @@ defineAlias({
       { id: work.id, prNumber: work.prNumber, branch: work.branch, issueNumber: work.issueNumber },
       ctx.state,
       {
-        async gh(args) {
+        async gh(op) {
           try {
-            const prNum = Number(args[2]);
-            const pr = await ctx.gh.pr(prNum).body();
+            const pr = await ctx.gh.pr(op.prNumber).body();
             const stdout = pr.labels.join("\n");
             return { stdout, stderr: "", exitCode: 0 };
           } catch (err) {
