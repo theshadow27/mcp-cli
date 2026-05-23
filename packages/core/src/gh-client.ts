@@ -59,7 +59,7 @@ export class GhPageCapError extends Error {
   override name = "GhPageCapError" as const;
   itemCount: number;
   path: string;
-  constructor(message: string, itemCount: number, path: string) {
+  constructor(message: string, itemCount: number, path = "") {
     super(message);
     this.itemCount = itemCount;
     this.path = path;
