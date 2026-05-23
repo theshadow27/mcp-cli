@@ -247,6 +247,10 @@ describe("parseFastImport", () => {
     expect(() => parseFastImport("commit refs/heads/main\nM 100644 inline x.md\nfoo\n")).toThrow(/expected "data"/);
   });
 
+  test("unterminated here-doc throws", () => {
+    expect(() => parseFastImport("commit refs/heads/main\ndata <<END\nhello\n")).toThrow(/unterminated/);
+  });
+
   test("comment lines are skipped", () => {
     const stream = "# a comment\ncommit refs/heads/main\ndata 1\nm\nD a.md\n\n";
     const [commit] = parseFastImport(stream);
