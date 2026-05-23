@@ -35,6 +35,7 @@ export const CODEX_TOOLS = buildAgentTools({
           description: 'Sandbox policy (default: "read-only")',
         },
       },
+      omitProperties: ["name"],
     },
     session_list: {
       description: "List all active Codex sessions with their status, model, and token usage.",
@@ -47,6 +48,7 @@ export const CODEX_TOOLS = buildAgentTools({
     },
     bye: {
       description: "Terminate a Codex session: kill the process and clean up.",
+      omitProperties: ["message"],
     },
     transcript: {
       description: "Get transcript entries from a Codex session.",
