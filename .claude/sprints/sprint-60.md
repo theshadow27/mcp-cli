@@ -63,3 +63,20 @@ Sprint 59 wrapped clean (only open PR is the permanent #1077 bun-segfault repro)
 Deferred this sprint: #2200 (meta — needs user review per Step 1a), #2208 + #2215 (external GitHub Actions transients, not fixable in our repo), #1639 (Bun stream-cancel limitation, code is already correct), and the fast-import/clone arc bugs (#1311/#1323/etc — entangled with the unbuilt #1211 writer, too risky to mix into a debt sprint).
 
 Risk: #2100 is the heaviest pick (131 Bun.sleep violations across ~15 spec files). It's gated behind the flaky fixes and lands last; if it balloons, it's a clean candidate to split file-by-file or carry to sprint 61.
+
+## Results
+
+> Started 2026-05-23 06:35 EDT. Ended 2026-05-23 07:37 EDT (~62 min run).
+
+- **Released**: v1.11.1 (patch — all changes are fixes/refactors/tests/lint; no new commands, no breaking changes)
+- **PRs merged**: 11 (#2219 #2220 #2221 #2222 #2223 #2224 #2225 #2226 #2227 #2230 #2231)
+- **Issues closed**: 12 — #2196 #2204 #1247 #1662 #1248 #2205 #2217 #2193 #1353 #2083 #2100 (merged) + #2211 (closed as duplicate of #2196, confirmed by nerd-snipe)
+- **Issues dropped**: 1 — #2186 pulled mid-run (modifies `.claude/phases/impl.ts`, an orchestrator/retro-only meta file the orchestrator reads live; planning bug — should not have been a worker task)
+- **Investigation gates**: #2083 → confirmed root cause (bunx CWD-resolution + tsc 94-lib startup vs internal 10s timeout under contention) → Fix 1 `Bun.which("tsc")` + Fix 2 timeout 30s; adversarial review APPROVED. #2211 → resolved-by-#2196 (no impl).
+- **New issues filed**: 0 substantive (Copilot inline threads on #1248/#1353/#2193/#2083/#2100 all addressed or dismissed inline before merge).
+
+### Run notes (for retro)
+- **Stale rule**: `run.md`/MEMORY claim sprint-`{N}` worktree commits need `SPRINT_OVERRIDE=1`. False — `.git-hooks/sprint-active.sh` explicitly allows worktree commits; only the *main checkout* is guarded. All sprint-meta + release commits this sprint were plain commits. Update run.md + memory.
+- **Stale id form**: `run.md` uses `--work-item issue:<n>`; actual tracked id is `#<n>`. `issue:<n>` errors with "work item not found".
+- **CI transient**: `setup-bun@v2` intermittently 401s ("Bad credentials") on the non-required `pty-test` check (hit #2225, #2230). Same external-Actions class as #2208/#2215; cleared on rerun.
+- **Pace**: 12 issues resolved + release in ~62 min via up-to-10 parallel sessions.
