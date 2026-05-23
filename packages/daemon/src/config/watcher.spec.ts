@@ -268,3 +268,158 @@ describe("ConfigWatcher FS integration", () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// pollCheck — internal polling fallback
+// ---------------------------------------------------------------------------
+
+describe("ConfigWatcher pollCheck", () => {
+  let watcher: ConfigWatcher | undefined;
+
+  afterEach(() => {
+    watcher?.stop();
+    watcher = undefined;
+  });
+
+  test("pollCheck triggers reload when mtime changes", async () => {
+    using opts = testOptions({
+      files: { "servers.json": mcpConfig({ alpha: { command: "echo" } }) },
+    });
+
+    const cb = mock((_e: ConfigChangeEvent) => {});
+    watcher = new ConfigWatcher(makeConfig({ alpha: { command: "echo" } }), cb, opts.dir, {
+      pollIntervalMs: 50,
+      debounceMs: 10,
+      loadConfig: (cwd: string) => loadConfig(cwd, silentLogger),
+      logger: silentLogger,
+    });
+    watcher.start();
+
+    // Write a changed config
+    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ alpha: { command: "updated" } }));
+
+    // Trigger pollCheck directly to avoid waiting for real setInterval
+    const pollCheck = (watcher as unknown as { pollCheck: () => void }).pollCheck.bind(watcher);
+    pollCheck();
+
+    // Wait for debounce + reload
+    const deadline = Date.now() + 2000;
+    while (cb.mock.calls.length === 0 && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(cb.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(cb.mock.calls[0][0].changed).toContain("alpha");
+  });
+
+  test("pollCheck is a no-op when mtime is unchanged", async () => {
+    using opts = testOptions({
+      files: { "servers.json": mcpConfig({ alpha: { command: "echo" } }) },
+    });
+
+    const cb = mock((_e: ConfigChangeEvent) => {});
+    watcher = new ConfigWatcher(makeConfig({ alpha: { command: "echo" } }), cb, opts.dir, {
+      pollIntervalMs: 50,
+      debounceMs: 10,
+      loadConfig: (cwd: string) => loadConfig(cwd, silentLogger),
+      logger: silentLogger,
+    });
+    watcher.start();
+
+    // Call pollCheck without writing any file — mtime unchanged
+    const pollCheck = (watcher as unknown as { pollCheck: () => void }).pollCheck.bind(watcher);
+    pollCheck();
+
+    await Bun.sleep(100);
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  test("pollCheck returns early after stop", () => {
+    using opts = testOptions({
+      files: { "servers.json": mcpConfig({ alpha: { command: "echo" } }) },
+    });
+
+    const cb = mock((_e: ConfigChangeEvent) => {});
+    watcher = new ConfigWatcher(makeConfig({ alpha: { command: "echo" } }), cb, opts.dir, testWatcherOpts());
+    watcher.start();
+    watcher.stop();
+
+    // pollCheck should bail early when stopped
+    const pollCheck = (watcher as unknown as { pollCheck: () => void }).pollCheck.bind(watcher);
+    expect(() => pollCheck()).not.toThrow();
+    expect(cb).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error-path tests — reload failure and scheduleReload cancellation
+// ---------------------------------------------------------------------------
+
+describe("ConfigWatcher error paths", () => {
+  let watcher: ConfigWatcher | undefined;
+
+  afterEach(() => {
+    watcher?.stop();
+    watcher = undefined;
+  });
+
+  test("reload() error is caught and logged, callback is not called", async () => {
+    using opts = testOptions({
+      files: { "servers.json": mcpConfig({ alpha: { command: "echo" } }) },
+    });
+
+    const cb = mock((_e: ConfigChangeEvent) => {});
+    let errorLogged = false;
+    const errorLogger = {
+      ...silentLogger,
+      error: (..._args: unknown[]) => {
+        errorLogged = true;
+      },
+    };
+
+    watcher = new ConfigWatcher(makeConfig({ alpha: { command: "echo" } }), cb, opts.dir, {
+      pollIntervalMs: 50,
+      debounceMs: 10,
+      loadConfig: async () => {
+        throw new Error("simulated load failure");
+      },
+      logger: errorLogger,
+    });
+
+    // forceReload triggers reload() which will catch and log the error
+    await watcher.forceReload();
+
+    expect(cb).not.toHaveBeenCalled();
+    expect(errorLogged).toBe(true);
+  });
+
+  test("scheduleReload() cancels existing debounce timer when called again", async () => {
+    using opts = testOptions({
+      files: { "servers.json": mcpConfig({ alpha: { command: "echo" } }) },
+    });
+
+    let loadCount = 0;
+    const cb = mock((_e: ConfigChangeEvent) => {});
+    watcher = new ConfigWatcher(makeConfig({ alpha: { command: "echo" } }), cb, opts.dir, {
+      pollIntervalMs: 50,
+      debounceMs: 100,
+      loadConfig: async (cwd: string) => {
+        loadCount++;
+        return loadConfig(cwd, silentLogger);
+      },
+      logger: silentLogger,
+    });
+    watcher.start();
+
+    // Write a change then call scheduleReload twice in quick succession
+    writeJson(opts.USER_SERVERS_PATH, mcpConfig({ beta: { command: "cat" } }));
+    const scheduleReload = (watcher as unknown as { scheduleReload: () => void }).scheduleReload.bind(watcher);
+    scheduleReload();
+    scheduleReload();
+
+    // Wait for debounce to settle
+    await Bun.sleep(300);
+
+    // Should have loaded at most once despite double schedule
+    expect(loadCount).toBe(1);
+  });
+});
