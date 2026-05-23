@@ -230,8 +230,14 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   for (const [k, v] of Object.entries(process.env)) {
     if (!k.startsWith("GIT_") && v !== undefined) cleanEnv[k] = v;
   }
+  cleanEnv.GIT_CEILING_DIRECTORIES = dirname(absTarget);
   const gitOpts = { cwd: absTarget, stdio: "pipe" as const, env: cleanEnv };
   execSync("git init", gitOpts);
+  if (!existsSync(join(absTarget, ".git"))) {
+    throw new Error(
+      `git init did not create .git at "${absTarget}". This usually means git resolved to a parent repository. Check GIT_DIR / GIT_WORK_TREE env vars.`,
+    );
+  }
   // Set user identity for this repo so commits work even in environments
   // without a global git config (e.g. CI runners, fresh machines).
   execSync("git config user.name mcx", gitOpts);
