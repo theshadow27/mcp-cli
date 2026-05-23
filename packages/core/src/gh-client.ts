@@ -58,9 +58,11 @@ export class GhServerError extends Error {
 export class GhPageCapError extends Error {
   override name = "GhPageCapError" as const;
   itemCount: number;
-  constructor(message: string, itemCount: number) {
+  path: string;
+  constructor(message: string, itemCount: number, path = "") {
     super(message);
     this.itemCount = itemCount;
+    this.path = path;
   }
 }
 
@@ -445,8 +447,9 @@ async function ghPaginated<T>(path: string, opts: RequestOptions & { page?: numb
     url = parseNextUrl(resp.headers.get("link"));
     if (page === MAX_PAGES - 1 && url !== null) {
       throw new GhPageCapError(
-        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
+        `ghPaginated: hit MAX_PAGES (${MAX_PAGES}) at ${path} but more pages remain — result is truncated. Increase MAX_PAGES or use a more specific query.`,
         allItems.length,
+        path,
       );
     }
   }
@@ -517,6 +520,12 @@ interface RawIssue {
   user: { login: string };
   created_at: string;
   updated_at: string;
+}
+
+// ── Helpers ──
+
+function normalizeConclusion(conclusion: string | null): string | null {
+  return conclusion !== null ? conclusion.toUpperCase() : null;
 }
 
 // ── Mappers ──
@@ -655,7 +664,7 @@ export class PrHandle {
 
     return {
       total_count: checkRunsRaw.total_count,
-      check_runs: checkRunsRaw.check_runs,
+      check_runs: checkRunsRaw.check_runs.map((cr) => ({ ...cr, conclusion: normalizeConclusion(cr.conclusion) })),
       commit_statuses: dedupedStatuses,
     };
   }
