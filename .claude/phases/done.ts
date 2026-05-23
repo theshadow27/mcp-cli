@@ -12,7 +12,7 @@
  * untrack directly.
  */
 import { defineAlias, z } from "mcp-cli";
-import { mergePr } from "./done-fn";
+import { mergePr, spawnWithTimeout } from "./done-fn";
 
 defineAlias({
   name: "phase-done",
@@ -84,22 +84,7 @@ defineAlias({
         return pr.state.toUpperCase();
       },
       async spawn(cmd, opts) {
-        const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
-        let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-        const timer = opts?.timeoutMs
-          ? setTimeout(() => {
-              try { proc.kill(); } catch {}
-              sigkillTimer = setTimeout(() => { try { proc.kill(9); } catch {} }, 5_000);
-            }, opts.timeoutMs)
-          : null;
-        const [stdout, stderr, exitCode] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
-          proc.exited,
-        ]);
-        if (timer) clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
-        return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+        return spawnWithTimeout(cmd, opts);
       },
     });
     if (!result.ok) {
