@@ -630,6 +630,7 @@ export class ClaudeWsServer {
       totalCost: number;
       totalTokens: number;
       spawnedAt?: string | null;
+      claudeSessionId?: string | null;
     }>,
   ): number {
     let restored = 0;
@@ -662,7 +663,7 @@ export class ClaudeWsServer {
         resultWaiters: [],
         keepAliveTimer: null,
         clearing: false,
-        claudeSessionId: null,
+        claudeSessionId: s.claudeSessionId ?? null,
         connectTimer: null,
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
@@ -675,6 +676,44 @@ export class ClaudeWsServer {
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
     }
     return restored;
+  }
+
+  /**
+   * Revive a disconnected session by spawning a new Claude process with `--resume <claudeSessionId>`.
+   * Use when `send` targets a session whose process died (e.g. after daemon restart or sprite shutdown).
+   *
+   * Transitions the session from "disconnected" → "connecting" so `handleOpen` uses the
+   * fresh-connection path, which delivers `session.config.prompt` as the first message.
+   * Returns the PID of the spawned process.
+   */
+  reviveSession(sessionId: string, prompt: string): number {
+    const session = this.getSession(sessionId);
+    if (session.state.state !== "disconnected") {
+      throw new Error(
+        `Cannot revive session in state "${session.state.state}" — only disconnected sessions can be revived`,
+      );
+    }
+    if (!session.claudeSessionId) {
+      throw new Error(
+        "Session has no claude session ID — cannot revive (conversation history unavailable; spawn a new session instead)",
+      );
+    }
+
+    // Set up config so handleOpen delivers the prompt and resumes conversation history
+    session.config.prompt = prompt;
+    session.config.resumeSessionId = session.claudeSessionId;
+
+    // Clear stale process references — the old process is dead
+    session.proc = null;
+    session.spawnAlive = false;
+    session.pid = null;
+    session.pidStartTime = null;
+
+    // Transition disconnected → connecting so handleOpen treats this as a fresh spawn
+    // (sends session.config.prompt) rather than a WS reconnect (which skips the initial message).
+    session.state.reconnect();
+
+    return this.spawnClaude(sessionId);
   }
 
   /**
