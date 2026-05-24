@@ -254,7 +254,8 @@ export function clearTokenCache(): void {
 async function execGhAuthToken(): Promise<string> {
   const result = await spawnCapture("gh", ["auth", "token"]);
   if (!result.ok) {
-    throw new Error(`gh auth token failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+    const exitInfo = result.exitCode === null ? "binary not found" : `exit ${result.exitCode}`;
+    throw new Error(`gh auth token failed (${exitInfo}): ${result.stderr.trim()}`);
   }
   return result.stdout.trim();
 }

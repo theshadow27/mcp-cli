@@ -55,8 +55,6 @@ export function valueNotCondition(err: unknown): void {
 }
 
 export function assignedInArrow(errors: Error[]): string[] {
-  // .message.includes inside an arrow function body used as a filter predicate.
-  // The predicate is an arrow function argument, not a bare control-flow condition.
-  // This fires in practice and is flagged — but pure "store then use" is clean.
+  // .message access inside a .map() callback — read for display, not a control-flow condition.
   return errors.filter((e) => e instanceof TimeoutError).map((e) => e.message);
 }

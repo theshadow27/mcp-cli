@@ -2,8 +2,9 @@
  * Rule: no-error-message-sniffing
  *
  * Flags `.message.startsWith(...)` / `.message.includes(...)` /
- * `.message.match(...)` when the call result directly drives control flow
- * (used as the condition of an `if`, `while`, `? :`, or `switch`).
+ * `.message.match(...)` / `.message.matchAll(...)` when the call result
+ * directly drives control flow (used as the condition of an `if`, `for`,
+ * `while`, `? :`, or `switch`).
  *
  * Why: error message text is prose, not a stable contract. The moment a
  * message is reworded the branch silently stops firing. The alternative is
