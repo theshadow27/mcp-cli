@@ -16,6 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { MOCK_TOOLS } from "./mock-session/tools";
+import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
 
@@ -132,8 +133,7 @@ export class MockServer {
         this.worker = null;
         return true;
       };
-      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; cleanup()/reject may throw — fix in #2323
-      const timeout = setTimeout(() => {
+      const timeout = safeSetTimeout(() => {
         if (cleanup()) reject(new Error("Mock session worker startup timeout"));
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
@@ -167,8 +167,7 @@ export class MockServer {
           return r;
         }),
         new Promise<never>((_, reject) => {
-          // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; reject may be stale — fix in #2323
-          handshakeTimer = setTimeout(() => {
+          handshakeTimer = safeSetTimeout(() => {
             if (connectResolved) return;
             reject(new Error("MCP handshake timeout (10s)"));
           }, this.handshakeTimeoutMs);

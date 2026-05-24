@@ -13,6 +13,7 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
 import type { WorkItemDb } from "../db/work-items";
+import { safeSetTimeout } from "../safe-timers";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
@@ -114,8 +115,7 @@ export class WorkItemPoller {
 
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
-    // dotw-todo timer-callback-error-boundary: async poll chain, poll() rejection propagates unhandled — fix in #2323
-    this.timer = setTimeout(async () => {
+    this.timer = safeSetTimeout(async () => {
       await this.poll();
       this.scheduleNext(this.currentIntervalMs);
     }, delayMs);

@@ -13,6 +13,7 @@ import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { buildEventFilter } from "./ipc-filter";
 import { metrics } from "./metrics";
+import { safeSetInterval } from "./safe-timers";
 import type { ServerPool } from "./server-pool";
 
 export class EventStreamServer {
@@ -472,8 +473,7 @@ export class EventStreamServer {
               }
             }
 
-            // dotw-todo timer-callback-error-boundary: try+2 extra statements outside try; bus.touch/pruneStale may throw — fix in #2323
-            heartbeatTimer = setInterval(() => {
+            heartbeatTimer = safeSetInterval(() => {
               try {
                 controller.enqueue(encoder.encode("\n"));
               } catch {
@@ -638,8 +638,7 @@ export class EventStreamServer {
         // threshold, not 2× (which happens when an event lands 1ms after a timer
         // fire and the next check is a full interval away — see #1528).
         const heartbeatPollMs = Math.ceil(this.heartbeatIntervalMs / 6);
-        // dotw-todo timer-callback-error-boundary: if-guard wrapping try is not a single top-level try — fix in #2323
-        heartbeatTimer = setInterval(() => {
+        heartbeatTimer = safeSetInterval(() => {
           if (Date.now() - lastWriteTime >= this.heartbeatIntervalMs) {
             const hb = `${JSON.stringify({ category: "heartbeat", event: "heartbeat", seq: this.eventSeq, src: "daemon", ts: new Date().toISOString() })}\n`;
             try {

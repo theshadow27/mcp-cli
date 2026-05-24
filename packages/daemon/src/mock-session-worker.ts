@@ -19,6 +19,7 @@ import { type AgentSessionEvent, DEFAULT_TIMEOUT_MS, MOCK_SERVER_NAME } from "@m
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { MOCK_TOOLS } from "./mock-session/tools";
+import { safeSetTimeout } from "./safe-timers";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -393,8 +394,7 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
     }
 
     const entry = await new Promise<BufferedEvent>((res, reject) => {
-      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; findIndex/splice/map may throw — fix in #2323
-      const timer = setTimeout(() => {
+      const timer = safeSetTimeout(() => {
         const idx = afterSeqWaiters.findIndex((w) => w.resolve === res);
         if (idx !== -1) afterSeqWaiters.splice(idx, 1);
         const list = [...sessions.values()].map((s) => ({ sessionId: s.sessionId, state: s.state }));

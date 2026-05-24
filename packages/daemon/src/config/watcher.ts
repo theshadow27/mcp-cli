@@ -9,7 +9,7 @@ import { type FSWatcher, existsSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Logger, ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { consoleLogger, options, projectConfigPath } from "@mcp-cli/core";
-import { safeSetInterval } from "../safe-timers";
+import { safeSetInterval, safeSetTimeout } from "../safe-timers";
 import { configHash, loadConfig as defaultLoadConfig } from "./loader";
 
 const DEBOUNCE_MS = 300;
@@ -210,8 +210,7 @@ export class ConfigWatcher {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    // dotw-todo timer-callback-error-boundary: multi-statement debounce; reload() is async-without-await — fix in #2323
-    this.debounceTimer = setTimeout(() => {
+    this.debounceTimer = safeSetTimeout(() => {
       this.debounceTimer = null;
       if (this.stopped) return;
       this.reload();

@@ -6,6 +6,7 @@ import type { DerivedRule } from "./derived-rules";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { metrics } from "./metrics";
+import { safeSetTimeout } from "./safe-timers";
 
 // Causal chain length beyond which derived events are dropped to prevent infinite loops.
 const MAX_DERIVED_DEPTH = 4;
@@ -140,8 +141,7 @@ export class DerivedEventPublisher {
     }
 
     const delay = this._retryBaseMs * 2 ** attempt;
-    // dotw-todo timer-callback-error-boundary: setup statements before try/catch; pendingTimers.delete may throw — fix in #2323
-    const timer = setTimeout(() => {
+    const timer = safeSetTimeout(() => {
       this.pendingTimers.delete(timer);
       if (this.disposed) return;
 
