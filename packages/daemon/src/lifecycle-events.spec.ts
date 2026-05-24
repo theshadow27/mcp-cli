@@ -16,7 +16,7 @@ afterEach(() => {
   for (const db of openDbs)
     try {
       db.close();
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       /* already closed */
     }

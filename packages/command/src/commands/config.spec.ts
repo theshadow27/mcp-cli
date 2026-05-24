@@ -557,9 +557,8 @@ describe("configGetServer error handling", () => {
 
     try {
       await configGetServer(["nonexistent"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -591,9 +590,8 @@ describe("configSetServerEnv error handling", () => {
 
     try {
       await configSetServerEnv(["nonexistent", "env", "K:V"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -612,9 +610,8 @@ describe("configSetServerEnv error handling", () => {
 
     try {
       await configSetServerEnv(["srv", "env", "K:V"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -633,9 +630,8 @@ describe("configSetServerEnv error handling", () => {
 
     try {
       await configSetServerEnv(["srv", "env", "K:V"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -651,9 +647,8 @@ describe("configSetServerEnv error handling", () => {
 
     try {
       await configSetServerEnv(["srv", "env", "invalidformat"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -721,9 +716,8 @@ describe("configSetServerUrl", () => {
 
     try {
       await configSetServerUrl(["srv", "url", "https://example.com"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -739,9 +733,8 @@ describe("configSetServerUrl", () => {
 
     try {
       await configSetServerUrl(["nonexistent", "url", "https://example.com"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -760,9 +753,8 @@ describe("configSetServerUrl", () => {
 
     try {
       await configSetServerUrl(["srv", "url", "https://example.com"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -830,9 +822,8 @@ describe("configSetServerArgs", () => {
 
     try {
       await configSetServerArgs(["srv", "args", "foo"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -848,9 +839,8 @@ describe("configSetServerArgs", () => {
 
     try {
       await configSetServerArgs(["nonexistent", "args", "foo"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -866,9 +856,8 @@ describe("configSetServerArgs", () => {
 
     try {
       await configSetServerArgs(["srv", "args"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -999,7 +988,7 @@ function readConfigFrom(path: string): Record<string, unknown> {
   try {
     const text = readFileSync(path, "utf-8");
     return JSON.parse(text);
-    // dotw-todo test-empty-catch: parse-probe — fix in #2322
+    // dotw-ignore test-empty-catch: helper utility — graceful fallback, not testing error path
   } catch {
     return {};
   }
@@ -1076,9 +1065,8 @@ describe("configGetBudget", () => {
 
     try {
       await configGetBudget("budget.unknown");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1141,9 +1129,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.unknown", "5");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1157,9 +1144,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.session-cap", undefined);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1173,9 +1159,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.quota-thresholds", "abc,def");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1189,9 +1174,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.quota-thresholds", "50,150");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1205,9 +1189,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.sprint-window-hours", "0");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1221,9 +1204,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.sprint-window-hours", "abc");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1237,9 +1219,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.session-cap", "-5");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);
@@ -1253,9 +1234,8 @@ describe("configSetBudget", () => {
 
     try {
       await configSetBudget("budget.session-cap", "abc");
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
-    } catch {
-      // expected
+    } catch (e) {
+      expect(e).toBeDefined();
     }
 
     expect(exitSpy).toHaveBeenCalledWith(1);

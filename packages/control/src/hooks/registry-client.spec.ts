@@ -179,7 +179,7 @@ describe("searchRegistry / listRegistry", () => {
     _setCacheDir(null);
     try {
       rmSync(tmpCacheDir, { recursive: true });
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {}
   });
 
