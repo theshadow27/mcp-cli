@@ -131,6 +131,54 @@ export function parsePrCommentsArgs(args: string[]): PrCommentsArgs {
   return { prNumber, json, includeResolved, error };
 }
 
+export interface PrResolveArgs {
+  prNumber: number | undefined;
+  threadId: string | undefined;
+  allAddressed: boolean;
+  replyText: string | undefined;
+  error: string | undefined;
+}
+
+const RESOLVE_USAGE =
+  "Usage: mcx pr comments <pr> resolve <thread-id> [reply text]\n       mcx pr comments <pr> resolve --all-addressed";
+
+export function parsePrResolveArgs(args: string[]): PrResolveArgs {
+  // args = [prNumber, "resolve", <thread-id | --all-addressed>, ...replyParts]
+  let prNumber: number | undefined;
+  let threadId: string | undefined;
+  let allAddressed = false;
+  let replyText: string | undefined;
+  let error: string | undefined;
+
+  if (!args[0]) {
+    return { prNumber, threadId, allAddressed, replyText, error: RESOLVE_USAGE };
+  }
+
+  prNumber = Number(args[0]);
+  if (Number.isNaN(prNumber)) {
+    return { prNumber: undefined, threadId, allAddressed, replyText, error: `Invalid PR number: ${args[0]}` };
+  }
+
+  // args[1] is "resolve" (the subcommand marker, already validated by caller)
+  const target = args[2];
+  if (!target) {
+    return { prNumber, threadId, allAddressed, replyText, error: RESOLVE_USAGE };
+  }
+
+  if (target === "--all-addressed") {
+    allAddressed = true;
+  } else if (target.startsWith("-")) {
+    return { prNumber, threadId, allAddressed, replyText, error: `Unknown flag: ${target}` };
+  } else {
+    threadId = target;
+    if (args.length > 3) {
+      replyText = args.slice(3).join(" ");
+    }
+  }
+
+  return { prNumber, threadId, allAddressed, replyText, error };
+}
+
 export interface PrWaitArgs {
   prNumber: number | undefined;
   maxWaitMs: number;
@@ -247,6 +295,11 @@ export async function prMerge(args: string[], deps: Partial<PrDeps> = {}): Promi
 
 export async function prComments(args: string[], deps: Partial<PrDeps> = {}): Promise<void> {
   const d: PrDeps = { ...defaultPrDeps, ...deps };
+
+  if (args[1] === "resolve") {
+    return prCommentsResolve(args, d);
+  }
+
   const parsed = parsePrCommentsArgs(args);
 
   if (parsed.error || parsed.prNumber === undefined) {
@@ -265,6 +318,94 @@ export async function prComments(args: string[], deps: Partial<PrDeps> = {}): Pr
   } else {
     console.log(formatSnapshotXml(snapshot));
   }
+}
+
+export async function prCommentsResolve(args: string[], deps: Partial<PrDeps> = {}): Promise<void> {
+  const d: PrDeps = { ...defaultPrDeps, ...deps };
+  const parsed = parsePrResolveArgs(args);
+
+  if (parsed.error || parsed.prNumber === undefined) {
+    d.printError(parsed.error ?? RESOLVE_USAGE);
+    d.exit(1);
+  }
+
+  const prNumber = parsed.prNumber as number;
+
+  if (parsed.allAddressed) {
+    const snapshot = await d.ipcCall("getPrThreadSnapshot", {
+      prNumber,
+      repoRoot: d.repoRoot(),
+      includeResolved: false,
+    });
+
+    const toResolve = snapshot.threads.filter((t) => !t.resolved && t.replies.length > 0);
+    if (toResolve.length === 0) {
+      console.error("No addressed threads to resolve.");
+      return;
+    }
+
+    let resolved = 0;
+    for (const thread of toResolve) {
+      const { exitCode, stderr } = d.exec(buildResolveCmd(thread.threadId));
+      if (exitCode !== 0) {
+        d.printError(`Failed to resolve thread ${thread.threadId}: ${stderr || `exit ${exitCode}`}`);
+      } else {
+        resolved++;
+      }
+    }
+    console.error(`Resolved ${resolved}/${toResolve.length} addressed thread(s).`);
+    return;
+  }
+
+  // Single-thread resolve
+  const threadId = parsed.threadId as string;
+
+  if (parsed.replyText) {
+    const snapshot = await d.ipcCall("getPrThreadSnapshot", {
+      prNumber,
+      repoRoot: d.repoRoot(),
+      includeResolved: true,
+    });
+
+    const thread = snapshot.threads.find((t) => t.threadId === threadId);
+    if (!thread) {
+      d.printError(`Thread ${threadId} not found in PR #${prNumber}`);
+      d.exit(1);
+    }
+
+    const { exitCode: replyExit, stderr: replyStderr } = d.exec([
+      "gh",
+      "api",
+      `/repos/{owner}/{repo}/pulls/${prNumber}/comments`,
+      "-X",
+      "POST",
+      "-f",
+      `body=${parsed.replyText}`,
+      "-F",
+      `in_reply_to=${thread.rootCommentId}`,
+    ]);
+    if (replyExit !== 0) {
+      d.printError(replyStderr || `Failed to post reply (exit ${replyExit})`);
+      d.exit(replyExit);
+    }
+  }
+
+  const { exitCode, stderr } = d.exec(buildResolveCmd(threadId));
+  if (exitCode !== 0) {
+    d.printError(stderr || `Failed to resolve thread (exit ${exitCode})`);
+    d.exit(exitCode);
+  }
+  console.error(`Resolved thread ${threadId}.`);
+}
+
+function buildResolveCmd(threadId: string): string[] {
+  return [
+    "gh",
+    "api",
+    "graphql",
+    "-f",
+    `query=mutation{resolveReviewThread(input:{threadId:"${threadId}"}){thread{isResolved}}}`,
+  ];
 }
 
 export async function prWaitForCopilot(args: string[], deps: Partial<PrDeps> = {}): Promise<void> {
@@ -415,24 +556,27 @@ function printPrUsage(): void {
   console.log(`mcx pr — worktree-aware GitHub PR helpers
 
 Usage:
-  mcx pr merge <pr>                       Merge PR without local-branch cleanup errors
-  mcx pr merge <pr> --auto                Enable auto-merge (merges when CI passes)
-  mcx pr merge <pr> --auto --wait         Enable auto-merge + block until merged
-  mcx pr comments <pr>                    Show PR threads (XML for LLM consumption)
-  mcx pr comments <pr> --json             Show PR threads as JSON
-  mcx pr comments <pr> --include-resolved Include resolved threads
-  mcx pr wait-for-copilot <pr>            Block until Copilot review is ready
-  mcx pr wait-for-copilot <pr> --max-wait 300  Custom timeout in seconds (default: 600)
+  mcx pr merge <pr>                               Merge PR without local-branch cleanup errors
+  mcx pr merge <pr> --auto                        Enable auto-merge (merges when CI passes)
+  mcx pr merge <pr> --auto --wait                 Enable auto-merge + block until merged
+  mcx pr comments <pr>                            Show PR threads (XML for LLM consumption)
+  mcx pr comments <pr> --json                     Show PR threads as JSON
+  mcx pr comments <pr> --include-resolved         Include resolved threads
+  mcx pr comments <pr> resolve <thread-id>        Resolve a single review thread
+  mcx pr comments <pr> resolve <thread-id> <text> Reply with text, then resolve
+  mcx pr comments <pr> resolve --all-addressed    Resolve all threads that have a reply
+  mcx pr wait-for-copilot <pr>                    Block until Copilot review is ready
+  mcx pr wait-for-copilot <pr> --max-wait 300     Custom timeout in seconds (default: 600)
 
 Merge strategy (default: --squash):
-  --squash                                Squash and merge
-  --rebase                                Rebase and merge
-  --merge                                 Create a merge commit
+  --squash                                        Squash and merge
+  --rebase                                        Rebase and merge
+  --merge                                         Create a merge commit
 
 Options:
-  --auto                                  Enable auto-merge (requires branch protection)
-  --wait                                  Block until the PR reaches MERGED state
-  --timeout, -t <ms>                      Max wait time (default: ${DEFAULT_TIMEOUT_MS})
+  --auto                                          Enable auto-merge (requires branch protection)
+  --wait                                          Block until the PR reaches MERGED state
+  --timeout, -t <ms>                              Max wait time (default: ${DEFAULT_TIMEOUT_MS})
 
 Unlike 'gh pr merge --delete-branch', 'mcx pr merge' never attempts local branch
 deletion. Use 'mcx claude bye' to clean up the worktree and local branch once

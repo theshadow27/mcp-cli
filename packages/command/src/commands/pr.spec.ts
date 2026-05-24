@@ -6,8 +6,10 @@ import {
   formatSnapshotXml,
   parsePrCommentsArgs,
   parsePrMergeArgs,
+  parsePrResolveArgs,
   parsePrWaitArgs,
   prComments,
+  prCommentsResolve,
   prMerge,
   prWaitForCopilot,
 } from "./pr";
@@ -687,6 +689,243 @@ describe("formatSnapshotXml", () => {
   });
 });
 
+// ── parsePrResolveArgs ──
+
+describe("parsePrResolveArgs", () => {
+  test("parses single-thread resolve", () => {
+    const r = parsePrResolveArgs(["42", "resolve", "PRRT_abc"]);
+    expect(r.prNumber).toBe(42);
+    expect(r.threadId).toBe("PRRT_abc");
+    expect(r.allAddressed).toBe(false);
+    expect(r.replyText).toBeUndefined();
+    expect(r.error).toBeUndefined();
+  });
+
+  test("parses single-thread resolve with reply text", () => {
+    const r = parsePrResolveArgs(["42", "resolve", "PRRT_abc", "Done, fixed now"]);
+    expect(r.threadId).toBe("PRRT_abc");
+    expect(r.replyText).toBe("Done, fixed now");
+    expect(r.error).toBeUndefined();
+  });
+
+  test("joins multi-word reply text", () => {
+    const r = parsePrResolveArgs(["1", "resolve", "T1", "Fixed", "in", "latest", "commit"]);
+    expect(r.replyText).toBe("Fixed in latest commit");
+  });
+
+  test("parses --all-addressed", () => {
+    const r = parsePrResolveArgs(["42", "resolve", "--all-addressed"]);
+    expect(r.prNumber).toBe(42);
+    expect(r.allAddressed).toBe(true);
+    expect(r.threadId).toBeUndefined();
+    expect(r.error).toBeUndefined();
+  });
+
+  test("errors when no PR number", () => {
+    const r = parsePrResolveArgs([]);
+    expect(r.error).toMatch(/Usage/);
+  });
+
+  test("errors on invalid PR number", () => {
+    const r = parsePrResolveArgs(["abc", "resolve", "T1"]);
+    expect(r.error).toMatch(/Invalid PR number/);
+  });
+
+  test("errors when target missing after resolve", () => {
+    const r = parsePrResolveArgs(["42", "resolve"]);
+    expect(r.error).toMatch(/Usage/);
+  });
+
+  test("errors on unknown flag as target", () => {
+    const r = parsePrResolveArgs(["42", "resolve", "--bogus"]);
+    expect(r.error).toMatch(/Unknown flag/);
+  });
+});
+
+// ── prCommentsResolve ──
+
+const threadWithReply = {
+  threadId: "PRRT_abc",
+  rootCommentId: 100,
+  user: "reviewer",
+  location: "src/index.ts:10",
+  body: "Please fix this",
+  resolved: false,
+  outdated: false,
+  replies: [{ user: "dev", body: "Fixed", commentId: 101 }],
+};
+
+const threadWithoutReply = {
+  threadId: "PRRT_xyz",
+  rootCommentId: 200,
+  user: "reviewer",
+  location: "src/other.ts:5",
+  body: "Another comment",
+  resolved: false,
+  outdated: false,
+  replies: [],
+};
+
+const resolvedThread = {
+  ...threadWithReply,
+  threadId: "PRRT_done",
+  rootCommentId: 300,
+  resolved: true,
+};
+
+function makeResolveSnapshot(threads = [threadWithReply, threadWithoutReply]): PrThreadSnapshot {
+  return { ...emptySnapshot, threads };
+}
+
+describe("prCommentsResolve", () => {
+  test("resolves a single thread via gh api graphql", async () => {
+    const execCalls: string[][] = [];
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: '{"data":{}}', stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(makeResolveSnapshot())) as PrDeps["ipcCall"],
+    });
+    await prCommentsResolve(["42", "resolve", "PRRT_abc"], deps);
+    expect(execCalls).toHaveLength(1);
+    const [cmd] = execCalls;
+    expect(cmd[0]).toBe("gh");
+    expect(cmd[1]).toBe("api");
+    expect(cmd[2]).toBe("graphql");
+    expect(cmd.join(" ")).toContain("resolveReviewThread");
+    expect(cmd.join(" ")).toContain("PRRT_abc");
+  });
+
+  test("posts reply then resolves when reply text given", async () => {
+    const execCalls: string[][] = [];
+    const snapshot = makeResolveSnapshot([threadWithReply]);
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+    });
+    await prCommentsResolve(["42", "resolve", "PRRT_abc", "Done, see latest commit"], deps);
+    expect(execCalls).toHaveLength(2);
+    // First call: reply
+    expect(execCalls[0].join(" ")).toContain("/pulls/42/comments");
+    expect(execCalls[0].join(" ")).toContain("Done, see latest commit");
+    expect(execCalls[0].join(" ")).toContain("in_reply_to=100");
+    // Second call: resolve
+    expect(execCalls[1].join(" ")).toContain("resolveReviewThread");
+  });
+
+  test("exits with error when thread not found for reply", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      ipcCall: (() => Promise.resolve(makeResolveSnapshot())) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+    });
+    await expect(prCommentsResolve(["42", "resolve", "PRRT_nonexistent", "reply text"], deps)).rejects.toBeInstanceOf(
+      ExitError,
+    );
+    expect(errors[0]).toContain("PRRT_nonexistent");
+  });
+
+  test("exits when gh api graphql fails", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({
+      exec: () => ({ stdout: "", stderr: "auth error", exitCode: 1 }),
+      ipcCall: (() => Promise.resolve(makeResolveSnapshot())) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+    });
+    await expect(prCommentsResolve(["42", "resolve", "PRRT_abc"], deps)).rejects.toBeInstanceOf(ExitError);
+    expect(errors[0]).toContain("auth error");
+  });
+
+  test("--all-addressed resolves threads with replies", async () => {
+    const execCalls: string[][] = [];
+    const snapshot = makeResolveSnapshot([threadWithReply, threadWithoutReply, resolvedThread]);
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+    });
+    await prCommentsResolve(["42", "resolve", "--all-addressed"], deps);
+    // Only threadWithReply is unresolved with a reply
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0].join(" ")).toContain("PRRT_abc");
+  });
+
+  test("--all-addressed skips threads without replies", async () => {
+    const execCalls: string[][] = [];
+    const snapshot = makeResolveSnapshot([threadWithoutReply]);
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+    });
+    await prCommentsResolve(["42", "resolve", "--all-addressed"], deps);
+    expect(execCalls).toHaveLength(0);
+  });
+
+  test("--all-addressed skips already-resolved threads", async () => {
+    const execCalls: string[][] = [];
+    const snapshot = makeResolveSnapshot([resolvedThread]);
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+    });
+    await prCommentsResolve(["42", "resolve", "--all-addressed"], deps);
+    expect(execCalls).toHaveLength(0);
+  });
+
+  test("--all-addressed continues resolving after a failure", async () => {
+    const errors: string[] = [];
+    const failThread = { ...threadWithReply, threadId: "PRRT_fail", rootCommentId: 999 };
+    const snapshot = makeResolveSnapshot([failThread, threadWithReply]);
+    let call = 0;
+    const deps = makeDeps({
+      exec: () => {
+        call++;
+        if (call === 1) return { stdout: "", stderr: "fail", exitCode: 1 };
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+      printError: (m: string) => errors.push(m),
+    });
+    await prCommentsResolve(["42", "resolve", "--all-addressed"], deps);
+    expect(errors.some((e) => e.includes("PRRT_fail"))).toBe(true);
+    expect(call).toBe(2);
+  });
+
+  test("exits with usage error when args missing", async () => {
+    const errors: string[] = [];
+    const deps = makeDeps({ printError: (m: string) => errors.push(m) });
+    await expect(prCommentsResolve([], deps)).rejects.toBeInstanceOf(ExitError);
+    expect(errors[0]).toMatch(/Usage/);
+  });
+
+  test("prComments routes to resolve when second arg is 'resolve'", async () => {
+    const execCalls: string[][] = [];
+    const snapshot = makeResolveSnapshot([threadWithReply]);
+    const deps = makeDeps({
+      exec: (cmd: string[]) => {
+        execCalls.push(cmd);
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
+    });
+    await prComments(["42", "resolve", "PRRT_abc"], deps);
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0].join(" ")).toContain("resolveReviewThread");
+  });
+});
+
 // ── cmdPr ──
 
 describe("cmdPr", () => {
@@ -750,6 +989,8 @@ describe("cmdPr", () => {
       const output = logs.join("");
       expect(output).toContain("comments");
       expect(output).toContain("wait-for-copilot");
+      expect(output).toContain("resolve");
+      expect(output).toContain("--all-addressed");
     } finally {
       console.log = origLog;
     }
