@@ -59,7 +59,19 @@ const rule: CheckRule = {
       if (!stmt.catchClause) continue;
 
       const sqlStrings = ast.stringLiterals(stmt.tryBlock);
-      if (!sqlStrings.some((s) => ALTER_ADD_COL.test(s))) continue;
+      // stringLiterals() covers StringLiteral + NoSubstitutionTemplateLiteral but not
+      // TemplateExpression (backtick strings with ${} interpolations). Collect their raw
+      // source text separately — ALTER_ADD_COL's \S+ matches ${varName} as non-whitespace.
+      const templateTexts: string[] = [];
+      const collectTemplates = (node: ts.Node): void => {
+        if (ts.isTemplateExpression(node)) {
+          templateTexts.push(node.getText(ast.sourceFile));
+          return;
+        }
+        ts.forEachChild(node, collectTemplates);
+      };
+      ts.forEachChild(stmt.tryBlock, collectTemplates);
+      if (![...sqlStrings, ...templateTexts].some((s) => ALTER_ADD_COL.test(s))) continue;
 
       if (!containsThrow(stmt.catchClause.block)) {
         const { line, column } = ast.positionOf(stmt.catchClause);
