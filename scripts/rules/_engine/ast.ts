@@ -23,10 +23,15 @@ export interface AstHelper {
 
 const sourceFileCache = new WeakMap<FileMeta, ts.SourceFile>();
 
+function scriptKindFor(path: string): ts.ScriptKind {
+  if (path.endsWith(".tsx") || path.endsWith(".jsx")) return ts.ScriptKind.TSX;
+  return ts.ScriptKind.TS;
+}
+
 function getSourceFile(file: FileMeta): ts.SourceFile {
   let sf = sourceFileCache.get(file);
   if (!sf) {
-    sf = ts.createSourceFile(file.path, file.content, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+    sf = ts.createSourceFile(file.path, file.content, ts.ScriptTarget.Latest, false, scriptKindFor(file.path));
     sourceFileCache.set(file, sf);
   }
   return sf;

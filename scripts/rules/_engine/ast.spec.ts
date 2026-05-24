@@ -112,13 +112,21 @@ describe("stringLiterals()", () => {
   });
 });
 
-describe("TSX handling", () => {
-  it("parses TSX content without errors", () => {
+describe("ScriptKind selection", () => {
+  it("parses TSX content without errors when path ends in .tsx", () => {
     const ast = createAstHelper(
-      makeMeta(`
+      makeMeta(
+        `
       const el = <div className="test">hello</div>;
-    `),
+    `,
+        "/fake/component.tsx",
+      ),
     );
+    expect(ast.sourceFile.parseDiagnostics.length).toBe(0);
+  });
+
+  it("parses plain .ts with generics correctly", () => {
+    const ast = createAstHelper(makeMeta("const fn = <T,>(x: T): T => x;"));
     expect(ast.sourceFile.parseDiagnostics.length).toBe(0);
   });
 });
