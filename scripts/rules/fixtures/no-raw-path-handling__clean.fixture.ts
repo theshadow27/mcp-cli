@@ -31,3 +31,18 @@ if (p.startsWith(`${root}/`)) doSomething();
 // must NOT be flagged (thread #3 false-positive shape)
 if (pathEq(process.cwd(), root) === true) doSomething();
 const same = canonicalCwd() === storedRoot;
+
+// Map lookup with canonicalCwd — correct, not flagged
+cache.get(canonicalCwd());
+cache.set(canonicalCwd(), value);
+
+// Variable bound to canonicalCwd used in comparison — not flagged
+const normalizedDir = canonicalCwd();
+if (normalizedDir === storedRoot) doSomething();
+
+// process.cwd() as fallback default (not a direct const binding) — not flagged
+const cwd = (args.cwd as string) ?? process.cwd();
+
+// const bound to process.cwd() but never compared — not flagged
+const myDir = process.cwd();
+console.log(myDir);

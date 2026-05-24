@@ -11,6 +11,14 @@
  * 2. (daemon only) `process.cwd()` compared with `===`/`!==` without
  *    going through `resolveRealpath`/`canonicalCwd` — symlinked CWDs
  *    silently fail the comparison.
+ *
+ * 3. (daemon only) `process.cwd()` passed to Map-like methods (`.get`,
+ *    `.set`, `.has`, `.delete`) — raw CWD as a lookup key silently
+ *    misses under symlinks.
+ *
+ * 4. (daemon only) `const` variable bound to `process.cwd()` then used
+ *    in `===`/`!==` comparison — same bug class as Detection 2 but one
+ *    step removed.
  */
 
 import ts from "typescript";
@@ -18,6 +26,7 @@ import type { CheckRule } from "./_engine/rule";
 
 const SLASH = "/";
 const UNC_PREFIX = "\\\\";
+const MAP_METHODS = new Set(["get", "set", "has", "delete"]);
 
 const rule: CheckRule = {
   id: "no-raw-path-handling",
@@ -27,6 +36,8 @@ const rule: CheckRule = {
     'replace `s.startsWith("/")` with `path.isAbsolute(s)` (handles both Unix and Windows paths)',
     "replace `a === process.cwd()` with `pathEq(a, canonicalCwd())`",
     'import { pathEq, canonicalCwd } from "@mcp-cli/core" for realpath-normalized comparisons',
+    "variable-bound form (`const dir = process.cwd(); dir === x`) is caught — use `canonicalCwd()` at the assignment site",
+    "Map lookups with raw CWD (`cache.get(process.cwd())`) are caught — normalize with `canonicalCwd()` first",
   ],
   documentation: "#2251",
   appliesToTests: false,
@@ -49,15 +60,47 @@ const rule: CheckRule = {
       violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
     }
 
-    // Detection 2: process.cwd() as direct operand of === / !== (daemon scope only)
+    // Detections 2–4 are daemon-scoped only.
     if (!file.relPath.startsWith("packages/daemon/src/")) return;
 
+    // Detection 2: process.cwd() as direct operand of === / !==
     for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
       const op = bin.operatorToken.kind;
       if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
       if (!isProcessCwd(bin.left) && !isProcessCwd(bin.right)) continue;
       const pos = ast.positionOf(bin);
       violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
+    }
+
+    // Detection 3: process.cwd() as argument to Map-like method calls
+    for (const call of ast.findByKind(ts.SyntaxKind.CallExpression) as ts.CallExpression[]) {
+      if (!ts.isPropertyAccessExpression(call.expression)) continue;
+      if (!MAP_METHODS.has(call.expression.name.text)) continue;
+      if (!call.arguments.some((arg) => isProcessCwd(arg))) continue;
+      const pos = ast.positionOf(call);
+      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
+    }
+
+    // Detection 4: const variable bound to process.cwd(), then used in === / !==
+    const cwdVarNames = new Set<string>();
+    for (const decl of ast.findByKind(ts.SyntaxKind.VariableDeclaration) as ts.VariableDeclaration[]) {
+      if (!decl.initializer || !isProcessCwd(decl.initializer)) continue;
+      if (!ts.isIdentifier(decl.name)) continue;
+      const declList = decl.parent;
+      if (ts.isVariableDeclarationList(declList) && declList.flags & ts.NodeFlags.Const) {
+        cwdVarNames.add(decl.name.text);
+      }
+    }
+    if (cwdVarNames.size > 0) {
+      for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
+        const op = bin.operatorToken.kind;
+        if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
+        const leftMatch = ts.isIdentifier(bin.left) && cwdVarNames.has(bin.left.text);
+        const rightMatch = ts.isIdentifier(bin.right) && cwdVarNames.has(bin.right.text);
+        if (!leftMatch && !rightMatch) continue;
+        const pos = ast.positionOf(bin);
+        violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
+      }
     }
   },
 };
