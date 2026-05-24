@@ -47,6 +47,7 @@ export * from "./pr-churn";
 export * from "./monitor-event";
 export * from "./event-filter";
 export * from "./gh-client";
+export * from "./errors";
 export * from "./telemetry";
 export * from "./phase-source";
 export * from "./mcp-proxy";

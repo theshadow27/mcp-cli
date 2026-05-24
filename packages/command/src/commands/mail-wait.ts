@@ -12,6 +12,7 @@ function isTransientError(err: unknown): boolean {
   if (typeof code === "string" && TRANSIENT_ERROR_CODES.has(code)) return true;
   // Some IPC paths surface the code only in the message string.
   for (const c of TRANSIENT_ERROR_CODES) {
+    // dotw-todo no-error-message-sniffing: fix IPC to expose structured code; use getErrorCode() — fix in #2264
     if (err.message.includes(c)) return true;
   }
   return false;
