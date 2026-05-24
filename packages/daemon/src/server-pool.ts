@@ -40,6 +40,7 @@ import { McpOAuthProvider } from "./auth/oauth-provider";
 import type { StateDb } from "./db/state";
 import { getProcessStartTime } from "./process-identity";
 import { killPid } from "./process-util";
+import { safeSetTimeout } from "./safe-timers";
 import { StderrRingBuffer } from "./stderr-buffer";
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
@@ -320,7 +321,7 @@ export class ServerPool {
           // which is critical for SSE (EventSource retries internally and never rejects).
           const ac = new AbortController();
           const timeoutMs = this.connectTimeoutMs;
-          const timer = setTimeout(() => ac.abort(), timeoutMs);
+          const timer = safeSetTimeout(() => ac.abort(), timeoutMs);
           // Register timeout rejection BEFORE connectFn so it wins the race
           // when both fire on the same abort event.
           const timeoutPromise = new Promise<never>((_, reject) => {

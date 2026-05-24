@@ -117,8 +117,14 @@ export class StuckDetector {
     this.stop();
     const delayMs = this.nextDelayMs(this.emissionCount);
     this.timer = this.clock.setTimeout(() => {
-      this.timer = null;
-      this.evaluate();
+      try {
+        this.timer = null;
+        this.evaluate();
+      } catch (e) {
+        console.error(
+          `[stuck-detector] unhandled error in timer callback: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+        );
+      }
     }, delayMs);
   }
 
