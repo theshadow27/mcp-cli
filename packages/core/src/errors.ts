@@ -40,9 +40,13 @@ export function getErrorMessage(err: unknown): string {
  * display/logging use `getErrorMessage` instead.
  */
 export function getErrorCode(err: unknown): string | number | undefined {
-  if (err !== null && typeof err === "object" && "code" in err) {
-    const code = (err as Record<string, unknown>).code;
-    if (typeof code === "string" || typeof code === "number") return code;
+  try {
+    if (err !== null && typeof err === "object" && "code" in err) {
+      const code = (err as Record<string, unknown>).code;
+      if (typeof code === "string" || typeof code === "number") return code;
+    }
+  } catch {
+    // Proxy has/get traps and throwing .code getters must not escape.
   }
   return undefined;
 }

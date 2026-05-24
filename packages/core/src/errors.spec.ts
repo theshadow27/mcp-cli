@@ -90,4 +90,30 @@ describe("getErrorCode", () => {
     expect(getErrorCode(null)).toBeUndefined();
     expect(getErrorCode(undefined)).toBeUndefined();
   });
+
+  it("does not throw when the code getter throws (Proxy / throwing getter)", () => {
+    const evil = Object.defineProperty({}, "code", {
+      get() {
+        throw new Error("getter boom");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    expect(() => getErrorCode(evil)).not.toThrow();
+    expect(getErrorCode(evil)).toBeUndefined();
+  });
+
+  it("does not throw when a Proxy has trap fires on 'code' in err", () => {
+    const proxy = new Proxy(
+      {},
+      {
+        has(_target, key) {
+          if (key === "code") throw new Error("has trap boom");
+          return false;
+        },
+      },
+    );
+    expect(() => getErrorCode(proxy)).not.toThrow();
+    expect(getErrorCode(proxy)).toBeUndefined();
+  });
 });
