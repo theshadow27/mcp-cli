@@ -553,6 +553,7 @@ describe("WorkItemPoller", () => {
 
     const evt = events.find((e) => e.type === "pr:merge_state_changed");
     expect(evt).toBeDefined();
+    expect(evt?.type).toBe("pr:merge_state_changed");
     if (evt?.type === "pr:merge_state_changed") {
       expect(evt.prNumber).toBe(31);
       expect(evt.from).toBe("BEHIND");
@@ -636,6 +637,7 @@ describe("WorkItemPoller", () => {
     const mergeEvents = events.filter((e) => e.type === "pr:merge_state_changed");
     expect(mergeEvents).toHaveLength(2);
     for (const evt of mergeEvents) {
+      expect(evt.type).toBe("pr:merge_state_changed");
       if (evt.type === "pr:merge_state_changed") {
         expect(evt.cascadeHead).toBe(41);
       }
@@ -792,6 +794,7 @@ describe("WorkItemPoller", () => {
 
     const opened = events.find((e) => e.type === "pr:opened");
     expect(opened).toBeDefined();
+    expect(opened?.type).toBe("pr:opened");
     if (opened?.type === "pr:opened") {
       expect(opened.prNumber).toBe(60);
       expect(opened.branch).toBe("feat/my-feature");
@@ -818,6 +821,7 @@ describe("WorkItemPoller", () => {
 
     const merged = events.find((e) => e.type === "pr:merged");
     expect(merged).toBeDefined();
+    expect(merged?.type).toBe("pr:merged");
     if (merged?.type === "pr:merged") {
       expect(merged.mergeSha).toBe("deadbeef123");
     }
@@ -851,12 +855,13 @@ describe("WorkItemPoller", () => {
 
     // First poll — establishes OID baseline, no push event
     await poller.poll();
-    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "pr:pushed" }));
 
     // Second poll — OID changed (sha-v1 → sha-v2), even with same commit count
     await poller.poll();
     const pushed = events.find((e) => e.type === "pr:pushed");
     expect(pushed).toBeDefined();
+    expect(pushed?.type).toBe("pr:pushed");
     if (pushed?.type === "pr:pushed") {
       expect(pushed.prNumber).toBe(62);
       expect(pushed.branch).toBe("feat/push-test");
@@ -889,7 +894,7 @@ describe("WorkItemPoller", () => {
     });
 
     await poller.poll();
-    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "pr:pushed" }));
 
     await poller.poll();
     expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(1);
@@ -909,7 +914,7 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
     await poller.poll();
-    expect(events.filter((e) => e.type === "pr:pushed")).toHaveLength(0);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "pr:pushed" }));
   });
 
   test("pr:pushed sets filesTruncated when files list was truncated", async () => {
@@ -1146,7 +1151,7 @@ describe("WorkItemPoller", () => {
     await poller2.poll();
 
     // No duplicate ci.started — state was loaded from DB
-    expect(ciEvents2.filter((e) => e.type === "ci.started")).toHaveLength(0);
+    expect(ciEvents2).not.toContainEqual(expect.objectContaining({ type: "ci.started" }));
 
     // ci.finished should have observedDurationMs reflecting original startedAt
     const finished = ciEvents2.find((e) => e.type === "ci.finished") as Extract<CiEvent, { type: "ci.finished" }>;

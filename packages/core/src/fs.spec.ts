@@ -211,7 +211,7 @@ describe("auditRuntimePermissions", () => {
 
     const { logger, texts } = capturingLogger();
     auditRuntimePermissions(logger);
-    expect(texts.filter((t) => t.includes("[security]"))).toHaveLength(0);
+    expect(texts).not.toContainEqual(expect.stringContaining("[security]"));
   });
 
   test("warns when directory has group/other bits set", () => {
@@ -251,6 +251,6 @@ describe("auditRuntimePermissions", () => {
 
     const { logger, texts } = capturingLogger();
     auditRuntimePermissions(logger);
-    expect(texts.filter((t) => t.includes("[security]"))).toHaveLength(0);
+    expect(texts).not.toContainEqual(expect.stringContaining("[security]"));
   });
 });

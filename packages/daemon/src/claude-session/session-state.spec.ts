@@ -759,6 +759,7 @@ describe("SessionState", () => {
       expect(session.model).toBe("unknown");
       expect(session.cwd).toBe("/");
       expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:init");
       if (events[0].type === "session:init") {
         expect(events[0].sessionId).toBe("test"); // falls back to SessionState.sessionId
         expect(events[0].model).toBe("unknown");

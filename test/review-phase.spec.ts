@@ -374,6 +374,7 @@ describe("runReview — goto repair (blockers present)", () => {
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") {
       expect(result.reason).toContain("round cap");
     }

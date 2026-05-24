@@ -1046,7 +1046,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      expect(events.filter((e) => e.event === ISSUE_COMMENT)).toHaveLength(0);
+      expect(events).not.toContainEqual(expect.objectContaining({ event: ISSUE_COMMENT }));
     });
 
     test("issue comments are not polled for PR-based work items", async () => {

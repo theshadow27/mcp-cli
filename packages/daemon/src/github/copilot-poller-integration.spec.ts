@@ -211,7 +211,7 @@ describe("CopilotPoller — review/sticky integration", () => {
 
       // Poll 1: review 10001 is new → emits review.commented, stored in seenIds
       await poller.poll();
-      expect(events.filter((e) => e.event === REVIEW_STICKY_UPDATED)).toHaveLength(0);
+      expect(events).not.toContainEqual(expect.objectContaining({ event: REVIEW_STICKY_UPDATED }));
       expect(events.filter((e) => e.event === REVIEW_COMMENTED)).toHaveLength(1);
 
       // Poll 2: same review ID, body changed → emits review.sticky_updated
@@ -234,7 +234,7 @@ describe("CopilotPoller — review/sticky integration", () => {
       await poller.poll();
       await poller.poll();
 
-      expect(events.filter((e) => e.event === REVIEW_STICKY_UPDATED)).toHaveLength(0);
+      expect(events).not.toContainEqual(expect.objectContaining({ event: REVIEW_STICKY_UPDATED }));
     });
   });
 
@@ -302,7 +302,7 @@ describe("CopilotPoller — review/sticky integration", () => {
 
       const allCommented = events.filter((e) => e.event === REVIEW_COMMENTED);
       expect(allCommented).toHaveLength(2); // one for 21001, one for 21002
-      expect(events.filter((e) => e.event === REVIEW_STICKY_UPDATED)).toHaveLength(0);
+      expect(events).not.toContainEqual(expect.objectContaining({ event: REVIEW_STICKY_UPDATED }));
     });
   });
 

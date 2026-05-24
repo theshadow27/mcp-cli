@@ -392,6 +392,7 @@ describe("ClaudeWsServer", () => {
 
       const initEvent = events.find((e) => e.type === "session:init");
       expect(initEvent).toBeDefined();
+      expect(initEvent?.type).toBe("session:init");
       if (initEvent?.type === "session:init") {
         expect(initEvent.model).toBe("claude-sonnet-4-6");
         expect(initEvent.cwd).toBe("/test");
@@ -2485,6 +2486,7 @@ describe("ClaudeWsServer", () => {
       // Should have emitted session:model_changed event
       const modelEvent = events.find((e) => e.type === "session:model_changed");
       expect(modelEvent).toBeDefined();
+      expect(modelEvent?.type).toBe("session:model_changed");
       if (modelEvent?.type === "session:model_changed") {
         expect(modelEvent.model).toBe("claude-opus-4-6");
       }
@@ -2853,7 +2855,10 @@ describe("ClaudeWsServer", () => {
     expect(sessions.filter((s) => predicate(s, "/repo/a")).map((s) => s.sessionId)).toEqual(["leaky-a", "healthy-a"]);
 
     // Session with null repoRoot AND null cwd is filtered out from every repo.
-    expect(sessions.filter((s) => predicate(s, "/repo/c")).map((s) => s.sessionId)).toEqual([]);
+    // No session matches /repo/c — assert each one explicitly.
+    for (const s of sessions) {
+      expect(predicate(s, "/repo/c")).toBe(false);
+    }
   });
 
   test("listSessions repoRoot filter: no filter returns all sessions", () => {

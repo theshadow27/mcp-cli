@@ -100,6 +100,7 @@ describe("runTriage — PR available", () => {
       target: "review",
       scrutiny: "high",
     });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") {
       expect(result.reason).toContain("label:flaky");
     }
@@ -135,6 +136,7 @@ describe("runTriage — PR available", () => {
         }),
       }),
     );
+    expect(result.action).toBe("goto");
     if (result.action === "goto") {
       expect(result.metrics).toEqual(metrics);
     }
@@ -206,6 +208,7 @@ describe("runTriage — waitForEvent", () => {
       }),
     );
     expect(result).toMatchObject({ action: "wait" });
+    expect(result.action).toBe("wait");
     if (result.action === "wait") {
       expect(result.reason).toContain("no PR found");
     }
@@ -225,6 +228,7 @@ describe("runTriage — timeout", () => {
       }),
     );
     expect(result).toMatchObject({ action: "wait" });
+    expect(result.action).toBe("wait");
     if (result.action === "wait") {
       expect(result.reason).toContain("waiting for pr.opened or session.result");
     }

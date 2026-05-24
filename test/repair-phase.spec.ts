@@ -107,6 +107,7 @@ describe("runRepair — cap exceeded", () => {
       makeDeps(),
     );
     expect(result).toMatchObject({ action: "goto", target: "needs-attention" });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") expect(result.reason).toContain("cap");
   });
 
@@ -118,6 +119,7 @@ describe("runRepair — cap exceeded", () => {
       makeDeps(),
     );
     expect(result).toMatchObject({ action: "goto", target: "needs-attention" });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") {
       expect(result.round).toBe(REPAIR_ROUND_CAP);
     }
