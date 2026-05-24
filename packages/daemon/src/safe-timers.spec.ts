@@ -130,6 +130,18 @@ describe("safeSetInterval", () => {
     expect(captured[0]).toContain("interval-boom");
   });
 
+  test("catches async rejection in interval callback", async () => {
+    let calls = 0;
+    timer = safeSetInterval(async () => {
+      calls++;
+      if (calls === 1) throw new Error("async-interval-boom");
+    }, 20);
+    await pollUntil(() => captured.length > 0);
+    expect(captured[0]).toContain("async-interval-boom");
+    expect(captured[0]).toContain("[safe-timer]");
+    await pollUntil(() => calls >= 2); // interval continues after async rejection
+  });
+
   test("returns a clearable interval", async () => {
     let calls = 0;
     timer = safeSetInterval(() => {

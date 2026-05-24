@@ -9,6 +9,7 @@
 import type { Logger } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
 import { type ClaudeOAuthToken, readClaudeOAuthToken } from "./auth/keychain";
+import { safeSetTimeout } from "./safe-timers";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
@@ -184,7 +185,7 @@ export class QuotaPoller {
     await this.poll();
     if (!this.running) return;
     const delay = this._backoffMs ?? this.intervalMs;
-    this.timer = setTimeout(() => this.tick(), delay);
+    this.timer = safeSetTimeout(() => this.tick(), delay);
   }
 
   private async poll(): Promise<void> {

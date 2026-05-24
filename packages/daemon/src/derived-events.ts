@@ -140,6 +140,7 @@ export class DerivedEventPublisher {
     }
 
     const delay = this._retryBaseMs * 2 ** attempt;
+    // dotw-todo timer-callback-error-boundary: setup statements before try/catch; pendingTimers.delete may throw — fix in #2323
     const timer = setTimeout(() => {
       this.pendingTimers.delete(timer);
       if (this.disposed) return;

@@ -581,6 +581,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // This ensures dead sessions are cleaned up promptly, not just at idle-timeout boundary.
   // Also sweep core.bare so external flips (e.g. from `gh pr merge`) self-heal
   // within 30s regardless of origin. See #1330.
+  // dotw-todo timer-callback-error-boundary: multi-call block, any pruneDeadSessions/sweepCoreBare may throw — fix in #2323
   const pruneInterval = setInterval(() => {
     claudeServer.pruneDeadSessions();
     codexServer?.pruneDeadSessions();
@@ -591,6 +592,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }, 30_000);
 
   // Update uptime and server gauges periodically
+  // dotw-todo timer-callback-error-boundary: multi-statement metrics block — fix in #2323
   const metricsInterval = setInterval(() => {
     uptimeGauge.set(Math.round(process.uptime()));
     const servers = pool.listServers();
@@ -612,6 +614,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     if (idleTimer) clearTimeout(idleTimer);
     idleTimerScheduledAt = performance.now();
     const scheduledAt = idleTimerScheduledAt;
+    // dotw-todo timer-callback-error-boundary: complex idle-timer block with many calls — fix in #2323
     idleTimer = setTimeout(() => {
       const firedAt = performance.now();
       const actualDelayMs = Math.round(firedAt - scheduledAt);

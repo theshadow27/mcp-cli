@@ -5,8 +5,12 @@
  *
  * Safe timer patterns: safeSetTimeout, safeSetInterval, callbacks
  * whose body is fully wrapped in try/catch, function references,
- * Promise-constructor reject/resolve timeouts, and expression-bodied
- * arrows inside Promise constructors.
+ * and expression-bodied arrows inside Promise constructors.
+ *
+ * Note: only expression-bodied arrows are exempt inside Promise constructors.
+ * Block-body callbacks are NOT exempt even inside new Promise() — the Promise
+ * constructor's try/catch only covers synchronous executor code, not callbacks
+ * scheduled by setTimeout/setInterval that fire after the constructor returns.
  */
 
 // safeSetTimeout — not setTimeout/setInterval, so not matched
@@ -40,17 +44,14 @@ setInterval(async () => {
 // Function reference (not inline callback) — clean (can't inspect body)
 setTimeout(handleStuckEvent, 5000);
 
-// Promise-race reject timeout — clean (inside new Promise constructor)
+// Promise-race reject timeout — expression-bodied arrow inside Promise constructor, clean
 const racePromise = new Promise<never>((_, reject) => {
   setTimeout(() => reject(new Error("timeout")), 3000);
 });
 
-// Promise-constructor with block-body callback — clean
-const anotherPromise = new Promise<string>((resolve, reject) => {
-  setTimeout(() => {
-    if (done) resolve("ok");
-    else reject(new Error("timed out"));
-  }, 5000);
+// Promise-constructor resolve — expression-bodied arrow, clean
+const resolvePromise = new Promise<void>((resolve) => {
+  setTimeout(() => resolve(), 500);
 });
 
 // Expression-bodied arrow inside Promise constructor — clean

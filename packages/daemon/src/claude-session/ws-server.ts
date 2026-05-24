@@ -865,6 +865,7 @@ export class ClaudeWsServer {
     // from being stuck in "connecting" forever when the Claude CLI fails to establish
     // a WebSocket connection (e.g., race after daemon auto-start, #837).
     if (session.connectTimer) clearTimeout(session.connectTimer);
+    // dotw-todo timer-callback-error-boundary: multi-statement connect-timeout callback with state transitions — fix in #2323
     session.connectTimer = setTimeout(() => {
       session.connectTimer = null;
       // Only act if still in connecting state with no WS
@@ -1619,6 +1620,7 @@ export class ClaudeWsServer {
     }
 
     // Start keep-alive
+    // dotw-todo timer-callback-error-boundary: if-guard wrapping try, not a single-try block — fix in #2323
     session.keepAliveTimer = setInterval(() => {
       if (session.ws?.readyState === WS_OPEN) {
         try {

@@ -386,6 +386,7 @@ async function handleWait(args: Record<string, unknown>): Promise<{
     }
 
     const entry = await new Promise<BufferedEvent>((resolve, reject) => {
+      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; findIndex/splice/map may throw — fix in #2323
       const timer = setTimeout(() => {
         const idx = afterSeqWaiters.findIndex((w) => w.resolve === resolve);
         if (idx !== -1) afterSeqWaiters.splice(idx, 1);

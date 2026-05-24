@@ -132,6 +132,7 @@ export class MockServer {
         this.worker = null;
         return true;
       };
+      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; cleanup()/reject may throw — fix in #2323
       const timeout = setTimeout(() => {
         if (cleanup()) reject(new Error("Mock session worker startup timeout"));
       }, 10_000);
@@ -166,6 +167,7 @@ export class MockServer {
           return r;
         }),
         new Promise<never>((_, reject) => {
+          // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; reject may be stale — fix in #2323
           handshakeTimer = setTimeout(() => {
             if (connectResolved) return;
             reject(new Error("MCP handshake timeout (10s)"));

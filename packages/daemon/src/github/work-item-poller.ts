@@ -114,6 +114,7 @@ export class WorkItemPoller {
 
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
+    // dotw-todo timer-callback-error-boundary: async poll chain, poll() rejection propagates unhandled — fix in #2323
     this.timer = setTimeout(async () => {
       await this.poll();
       this.scheduleNext(this.currentIntervalMs);
