@@ -363,6 +363,19 @@ consumes events through `ctx.waitForEvent` rather than its own polling.)
 - Spawn fresh sessions per phase — never reuse across impl/review/QA
 - Reuse worktrees across phases via `--cwd` (phase scripts prefer this)
 - Never `bye` + respawn to sidestep a stuck session — `send` instead
+- **Branch handoff between phases:** `mcx claude bye` deletes the session's
+  worktree-local branch. If you `bye` the impl/QA/repair session *before* the
+  next phase's fresh `--worktree` session has checked the PR branch out, that
+  session can't `git checkout <branch>` (it's gone locally) and stalls. The PR
+  branch always survives on the remote, so either (a) keep the prior session
+  alive until the successor confirms checkout, or (b) put `git fetch origin
+  <branch> && git checkout -B <branch> FETCH_HEAD` in the successor's spawn
+  prompt. Treat the PR branch as living on the remote, not in any worktree.
+- **Disarm auto-merge when new substantive inline threads land post-arm:** a
+  fresh Copilot/QA pass on a repaired high-scrutiny PR can surface real bugs
+  after you've armed `--auto`. Auto-merge fires on green CI regardless of open
+  threads — so re-check surfaces before it merges, and `gh pr merge
+  --disable-auto` + flip to `qa:fail` the moment a substantive thread appears.
 
 When a session fails to close an issue, ask the user. Don't silently move
 on — every failure must be explicit in the retro.
