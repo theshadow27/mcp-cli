@@ -240,7 +240,7 @@ export async function cmdImport(args: string[]): Promise<void> {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
       if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (arg === "--claude" || arg === "-c") {
       claude = true;
     } else if (arg === "--all") {
@@ -400,7 +400,7 @@ export async function cmdAddFromClaudeDesktop(
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
       if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (arg === "--help" || arg === "-h") {
       console.log(`mcx add-from-claude-desktop — import servers from Claude Desktop
 

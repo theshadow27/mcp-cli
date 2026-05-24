@@ -68,22 +68,23 @@ export function parseSharedSpawnArgs(
     }
 
     if (arg === "--task" || arg === "-t") {
-      task = args[++i];
+      task = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!task) error = "--task requires a value";
     } else if (arg === "--allow") {
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        allow.push(args[++i]);
+        // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+        allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";
     } else if (arg === "--cwd") {
-      const rawCwd = args[++i];
+      const rawCwd = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!rawCwd) {
         error = "--cwd requires a path";
       } else {
         cwd = resolve(rawCwd);
       }
     } else if (arg === "--timeout") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--timeout requires a value in ms";
       } else {
@@ -91,7 +92,7 @@ export function parseSharedSpawnArgs(
         if (Number.isNaN(timeout)) error = "--timeout must be a number";
       }
     } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val || val.startsWith("-")) {
         error = "--model requires a value";
       } else if (val.toLowerCase() === "null" || val.toLowerCase() === "none" || val.toLowerCase() === "undefined") {

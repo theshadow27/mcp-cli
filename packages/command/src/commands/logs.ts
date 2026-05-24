@@ -63,7 +63,7 @@ export function parseLogsArgs(args: string[]): LogsArgs {
     } else if (arg === "-f" || arg === "--follow") {
       follow = true;
     } else if (arg === "--lines" || arg === "-n") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next || Number.isNaN(Number(next))) {
         error = "--lines requires a number";
         break;

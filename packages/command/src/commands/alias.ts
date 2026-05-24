@@ -61,7 +61,7 @@ export function parseScopeFlag(
       if (i + 1 >= args.length) {
         throw new Error("--scope requires a value (null, legacy, global, or a path)");
       }
-      raw = args[++i];
+      raw = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       continue;
     }
     if (args[i].startsWith("--scope=")) {
@@ -428,7 +428,7 @@ export function parsePromoteArgs(args: string[]): { source: string | undefined; 
   let target: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name" && i + 1 < args.length) {
-      target = args[++i];
+      target = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (!source) {
       source = args[i];
     }

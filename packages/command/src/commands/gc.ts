@@ -52,7 +52,7 @@ export function parseGcArgs(args: string[]): GcOptions {
     else if (a === "--branches-only") opts.branchesOnly = true;
     else if (a === "--worktrees-only") opts.worktreesOnly = true;
     else if (a === "--older-than") {
-      const v = args[++i];
+      const v = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!v) throw new Error("--older-than requires a value (e.g. 1d, 3h)");
       opts.olderThanMs = parseDuration(v);
     } else if (a.startsWith("--older-than=")) {

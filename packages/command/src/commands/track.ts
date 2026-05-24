@@ -76,7 +76,7 @@ export function parseMetadataFlags(
       continue;
     }
 
-    const value = args[i + 1];
+    const value = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (value === undefined || value.startsWith("--")) {
       errors.push(`${arg} requires a value`);
       continue;

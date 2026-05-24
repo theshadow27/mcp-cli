@@ -113,7 +113,7 @@ export function parseRunArgs(args: string[]): { jsonInput: string | undefined; c
     const arg = args[i];
     if (arg.startsWith("--")) {
       if (i + 1 < args.length) {
-        cliArgs[arg.slice(2)] = args[++i];
+        cliArgs[arg.slice(2)] = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       }
       // Orphan flags (no following value) are silently ignored
     } else if (jsonInput === undefined) {

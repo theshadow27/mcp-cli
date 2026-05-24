@@ -34,9 +34,9 @@ export async function cmdExport(args: string[]): Promise<void> {
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
       if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL);
+      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (arg === "--server") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) throw new Error("--server requires a name");
       serverFilter.push(val);
     } else if (arg === "--all" || arg === "-a") {

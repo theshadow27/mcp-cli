@@ -122,7 +122,7 @@ export function parseMailArgs(args: string[]): MailArgs {
       break;
     }
     if (arg === "-s") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next) {
         error = "-s requires a subject";
         break;
@@ -131,14 +131,14 @@ export function parseMailArgs(args: string[]): MailArgs {
     } else if (arg === "-H") {
       headersOnly = true;
     } else if (arg === "-u") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next) {
         error = "-u requires a username";
         break;
       }
       user = next;
     } else if (arg === "-r") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next || Number.isNaN(Number(next))) {
         error = "-r requires a message number";
         break;
@@ -156,7 +156,7 @@ export function parseMailArgs(args: string[]): MailArgs {
       }
       timeout = val;
     } else if (arg === "--timeout") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next || Number.isNaN(Number(next)) || Number(next) <= 0) {
         error = "--timeout requires a positive number";
         break;
@@ -165,14 +165,14 @@ export function parseMailArgs(args: string[]): MailArgs {
     } else if (arg.startsWith("--for=")) {
       forRecipient = arg.slice("--for=".length);
     } else if (arg === "--for") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next) {
         error = "--for requires a recipient name";
         break;
       }
       forRecipient = next;
     } else if (arg === "--from") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next) {
         error = "--from requires a sender name";
         break;

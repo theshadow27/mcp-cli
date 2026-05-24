@@ -305,18 +305,18 @@ export function parsePhaseRunArgs(args: string[]): PhaseRunOptions {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--from") {
-      from = args[++i] ?? null;
+      from = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (from === null) throw new Error("--from requires a phase name");
     } else if (a.startsWith("--from=")) {
       from = a.slice("--from=".length);
     } else if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (workItemId === null) throw new Error("--work-item requires an id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
     } else if (a === "--force") {
       forceSeen = true;
-      const next = args[i + 1];
+      const next = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (next !== undefined && !next.startsWith("--")) {
         forceMessage = next;
         i++;
@@ -355,7 +355,7 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!workItemId) throw new Error("--work-item requires a non-empty id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
@@ -1492,7 +1492,7 @@ export function parsePhaseAdvanceArgs(args: string[]): { workItemId: string } {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!workItemId) throw new Error("--work-item requires an id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
