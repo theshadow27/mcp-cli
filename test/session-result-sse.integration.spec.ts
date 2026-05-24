@@ -89,6 +89,7 @@ describe("session.result via /events — cross-thread integration (#1681)", () =
           if (ev.event === "session.result" || ev.event === "session.idle") {
             received.push(ev);
           }
+        // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           // non-JSON line (heartbeat, etc.) — ignore
         }

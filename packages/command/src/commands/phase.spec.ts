@@ -2842,6 +2842,7 @@ phases:
     const jsonLog = logs.find((l) => {
       try {
         return JSON.parse(l).repoRoot !== undefined;
+        // dotw-todo test-empty-catch: parse-probe — fix in #2322
       } catch {
         return false;
       }

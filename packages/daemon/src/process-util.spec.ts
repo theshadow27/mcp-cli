@@ -9,6 +9,7 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  // dotw-todo test-empty-catch: parse-probe — fix in #2322
   } catch {
     return false;
   }
@@ -27,6 +28,7 @@ async function awaitDeath(pid: number, deadlineMs = 5_000): Promise<void> {
 function forceKill(pid: number): void {
   try {
     process.kill(pid, "SIGKILL");
+  // dotw-todo test-empty-catch: cleanup — fix in #2322
   } catch {
     // already dead
   }

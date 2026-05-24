@@ -16,6 +16,7 @@ describe("tryFlockExclusive", () => {
     if (fd1 !== null) {
       try {
         closeSync(fd1);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* already closed */
       }
@@ -23,6 +24,7 @@ describe("tryFlockExclusive", () => {
     if (fd2 !== null) {
       try {
         closeSync(fd2);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* already closed */
       }
@@ -31,6 +33,7 @@ describe("tryFlockExclusive", () => {
     fd2 = null;
     try {
       unlinkSync(file);
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already gone */
     }
@@ -88,6 +91,7 @@ describe("cross-process flock", () => {
   afterEach(() => {
     try {
       unlinkSync(file);
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already gone */
     }

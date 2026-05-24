@@ -128,6 +128,7 @@ describe("startCallbackServer", () => {
     try {
       await fetch(`http://localhost:${port}/callback?code=again`);
       // If we get here, the server is still running (unexpected but not fatal)
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       // Expected: connection refused
     }

@@ -113,6 +113,7 @@ describe("OpenCodeSse", () => {
               try {
                 controller.enqueue('event: ping\ndata: {"n":2}\n\n');
                 controller.close();
+              // dotw-todo test-empty-catch: cleanup — fix in #2322
               } catch {
                 // Controller may be closed by abort
               }

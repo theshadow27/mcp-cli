@@ -13,6 +13,7 @@ function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* ignore */
     }
@@ -739,6 +740,7 @@ describe("WorkItemDb", () => {
         try {
           wi.updateWorkItem(itemId, { ciSummary: `conn-${i}` });
           results.push(true);
+        // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           results.push(false);
         } finally {

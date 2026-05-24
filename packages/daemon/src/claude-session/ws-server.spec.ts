@@ -3161,6 +3161,7 @@ describe("readJsonlTranscript", () => {
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true });
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       // ignore
     }
@@ -3288,6 +3289,7 @@ describe("getTranscript JSONL fallback", () => {
     server?.stop();
     try {
       rmSync(testDir, { recursive: true });
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       // ignore
     }
