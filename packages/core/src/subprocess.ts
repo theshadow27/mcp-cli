@@ -20,13 +20,18 @@ async function drainStream(stream: ReadableStream, maxBytes: number): Promise<{ 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (total + value.byteLength > maxBytes) {
-        parts.push(value.subarray(0, maxBytes - total));
-        truncated = true;
-        break;
+      if (!truncated) {
+        if (total + value.byteLength > maxBytes) {
+          parts.push(value.subarray(0, maxBytes - total));
+          total = maxBytes;
+          truncated = true;
+        } else {
+          parts.push(value);
+          total += value.byteLength;
+        }
       }
-      parts.push(value);
-      total += value.byteLength;
+      // After truncation keep reading (discarding) so the child doesn't
+      // block on a full pipe and hang; reader.cancel() cleans up on exit.
     }
   } finally {
     reader.cancel().catch(() => {});

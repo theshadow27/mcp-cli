@@ -6,7 +6,7 @@ const rule: CheckRule = {
   kind: "check",
   scold: "raw Bun.spawn/spawnSync or exitCode null-coercion — use spawnCapture() from @mcp-cli/core",
   guidance: [
-    "use spawnCapture(cmd, args, opts) or spawnCaptureSync(cmd, args, opts) from packages/core/src/subprocess.ts",
+    "use spawnCapture(cmd, args, opts) or spawnCaptureSync(cmd, args, opts) from @mcp-cli/core",
     "branch on result.ok / result.timedOut — never coerce exitCode with ?? 0 or || 0",
     "the helper handles: try/catch (missing binary), stderr draining, timeout+SIGKILL, honest exit codes",
   ],
