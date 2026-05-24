@@ -12,6 +12,7 @@ import {
   maxAttempts,
   shouldRestart,
 } from "./restart-policy";
+import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
 
@@ -191,8 +192,7 @@ export abstract class AbstractWorkerServer {
         this.worker = null;
         return true;
       };
-      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; cleanup()/reject may throw — fix in #2323
-      const timeout = setTimeout(() => {
+      const timeout = safeSetTimeout(() => {
         if (cleanup()) reject(new Error(`${d.displayName} session worker startup timeout`));
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
@@ -227,8 +227,7 @@ export abstract class AbstractWorkerServer {
           return r;
         }),
         new Promise<never>((_, reject) => {
-          // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; metrics.counter/reject may throw — fix in #2323
-          handshakeTimer = setTimeout(() => {
+          handshakeTimer = safeSetTimeout(() => {
             if (connectResolved) return;
             this.metrics.counter("mcpd_connect_timeouts_total").inc();
             reject(new Error(`MCP handshake timeout (${this.handshakeTimeoutMs / 1000}s)`));

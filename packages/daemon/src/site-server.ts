@@ -18,6 +18,7 @@ import {
   maxAttempts,
   shouldRestart,
 } from "./restart-policy";
+import { safeSetTimeout } from "./safe-timers";
 import { SITE_TOOLS } from "./site/tools";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -103,8 +104,7 @@ export class SiteServer {
         this.worker = null;
         return true;
       };
-      // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; cleanup()/reject may throw — fix in #2323
-      const timeout = setTimeout(() => {
+      const timeout = safeSetTimeout(() => {
         if (cleanup()) reject(new Error(`Site worker startup timeout (${this.handshakeTimeoutMs}ms)`));
       }, this.handshakeTimeoutMs);
 
@@ -138,8 +138,7 @@ export class SiteServer {
           return r;
         }),
         new Promise<never>((_, reject) => {
-          // dotw-todo timer-callback-error-boundary: block-body in Promise constructor; reject may be stale — fix in #2323
-          handshakeTimer = setTimeout(() => {
+          handshakeTimer = safeSetTimeout(() => {
             if (connectResolved) return;
             reject(new Error(`Site MCP handshake timeout (${this.handshakeTimeoutMs}ms)`));
           }, this.handshakeTimeoutMs);

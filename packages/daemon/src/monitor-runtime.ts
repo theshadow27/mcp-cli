@@ -14,6 +14,7 @@ import type { AliasType, Logger, MonitorCategory, MonitorEventInput } from "@mcp
 import { bundleAlias } from "@mcp-cli/core";
 import type { Subprocess } from "bun";
 import type { EventBus } from "./event-bus";
+import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 
 export const MONITOR_RESTART_POLICY = {
@@ -339,8 +340,7 @@ export class MonitorRuntime {
         `[monitor-runtime] "${mon.name}" crashed (exit ${code}), restarting in ${delay}ms (attempt ${mon.attempt})`,
       );
 
-      // dotw-todo timer-callback-error-boundary: complex async restart callback, spawnMonitor may throw — fix in #2323
-      mon.restartTimer = setTimeout(async () => {
+      mon.restartTimer = safeSetTimeout(async () => {
         if (mon.stopped || this.stopped) return;
 
         const preservedAttempt = mon.attempt;

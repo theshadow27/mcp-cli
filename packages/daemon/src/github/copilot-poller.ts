@@ -24,6 +24,7 @@ import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
 import type { WorkItemDb } from "../db/work-items";
+import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
 
@@ -184,8 +185,7 @@ export class CopilotPoller {
 
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
-    // dotw-todo timer-callback-error-boundary: async poll chain, poll() rejection propagates unhandled — fix in #2323
-    this.timer = setTimeout(async () => {
+    this.timer = safeSetTimeout(async () => {
       await this.poll();
       this.scheduleNext(this.currentIntervalMs);
     }, delayMs);

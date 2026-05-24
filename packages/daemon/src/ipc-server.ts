@@ -361,8 +361,7 @@ export class IpcServer {
   }
 
   private startDrainTimeout(): void {
-    // dotw-todo timer-callback-error-boundary: multi-statement block with logger+onShutdown calls — fix in #2323
-    this.drainTimer = setTimeout(() => {
+    this.drainTimer = safeSetTimeout(() => {
       if (!this.shutdownScheduled) {
         this.logger.warn(
           `[ipc] Drain timeout (${this.drainTimeoutMs}ms) — forcing shutdown with ${this.inflightCount} request(s) still in-flight`,

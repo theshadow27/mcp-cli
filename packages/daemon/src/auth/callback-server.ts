@@ -5,6 +5,8 @@
  * from the OAuth redirect, then auto-stops.
  */
 
+import { safeSetTimeout } from "../safe-timers";
+
 export interface CallbackServer {
   /** The full callback URL (http://localhost:{port}/callback) */
   url: string;
@@ -69,8 +71,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
         if (code) {
           resolveCode(code);
           // Auto-stop after brief delay to ensure response is sent
-          // dotw-todo timer-callback-error-boundary: block-body with if-guard; server.stop may throw — fix in #2323
-          setTimeout(() => {
+          safeSetTimeout(() => {
             if (!stopped) {
               stopped = true;
               server.stop(true);
@@ -95,8 +96,7 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
   const url = `http://localhost:${port}/callback`;
 
   // Timeout: reject if no callback within 2 minutes
-  // dotw-todo timer-callback-error-boundary: block-body with if-guard; server.stop/rejectCode may throw — fix in #2323
-  const timeout = setTimeout(() => {
+  const timeout = safeSetTimeout(() => {
     if (!stopped) {
       stopped = true;
       server.stop(true);
