@@ -42,7 +42,7 @@ async function fetchClaudePlans(
     return JSON.parse(text) as Plan[];
   } catch (err) {
     // _claude server not available is expected — only log unexpected errors
-    // dotw-todo no-error-message-sniffing: replace with typed NotFoundError instanceof check — fix in #2264
+    // dotw-todo no-error-message-sniffing: replace with typed NotFoundError instanceof check — fix in #2354
     if (!(err instanceof Error && err.message.includes("not found"))) {
       console.error("[use-plans] fetchClaudePlans failed:", err);
     }

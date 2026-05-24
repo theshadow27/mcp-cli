@@ -100,6 +100,12 @@ describe("spawnCaptureSync", () => {
     expect(r.timedOut).toBe(false);
   });
 
+  it("passes input to stdin", () => {
+    const r = spawnCaptureSync("cat", [], { input: "piped-sync-data" });
+    expect(r.ok).toBe(true);
+    expect(r.stdout).toBe("piped-sync-data");
+  });
+
   it("respects cwd option", () => {
     const r = spawnCaptureSync("pwd", [], { cwd: "/tmp" });
     expect(r.ok).toBe(true);

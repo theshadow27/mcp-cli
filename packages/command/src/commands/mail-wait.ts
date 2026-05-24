@@ -15,7 +15,7 @@ function isTransientError(err: unknown): boolean {
   // so do NOT replace this loop with getErrorCode(). The right fix is to patch the
   // IPC transport to always emit a structured code field, then delete the loop.
   for (const c of TRANSIENT_ERROR_CODES) {
-    // dotw-todo no-error-message-sniffing: patch IPC transport to surface structured codes on all paths — fix in #2264
+    // dotw-todo no-error-message-sniffing: patch IPC transport to surface structured codes on all paths — fix in #2354
     if (err.message.includes(c)) return true;
   }
   return false;
