@@ -132,6 +132,11 @@ const rule: CheckRule = {
       const pollIdx = line.indexOf("pollUntil(");
       if (pollIdx === -1) continue;
 
+      // Skip commented-out calls: if "//" appears before pollUntil on the line,
+      // the call is dead code — not a live violation (#2293).
+      const commentStart = line.indexOf("//");
+      if (commentStart !== -1 && commentStart < pollIdx) continue;
+
       // parenOffset points to the '(' of the call
       const parenOffset = pollIdx + "pollUntil".length;
       const callText = collectCall(lines, i, parenOffset);
@@ -150,7 +155,9 @@ const rule: CheckRule = {
       // (intervalMs) doesn't defeat the numeric parse.
       const rest = inner.slice(commaIdx + 1);
       const nextComma = firstTopLevelComma(rest);
-      const secondArg = (nextComma === -1 ? rest : rest.slice(0, nextComma)).trim();
+      const secondArgRaw = (nextComma === -1 ? rest : rest.slice(0, nextComma)).trim();
+      // Strip inline comments so `10_000 // daemon startup` parses as 10000 (#2292).
+      const secondArg = secondArgRaw.replace(/\s*\/\/.*$/, "");
       const num = parseNumericLiteral(secondArg);
       if (num !== null && num >= watchdog) {
         violated(i + 1, pollIdx + 1, line.trim());

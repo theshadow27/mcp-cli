@@ -40,3 +40,8 @@ await pollUntil(
 
 // 10s deadline under the 30s file-level setDefaultTimeout — clean (has headroom)
 await pollUntil(() => events.some((e) => e.type === "ready"), 10_000);
+
+// commented-out calls are dead code — not violations (#2293)
+// await pollUntil(condition);
+// await pollUntil(condition, 10_000); — old approach
+// pollUntil(fn) — waits for the condition
