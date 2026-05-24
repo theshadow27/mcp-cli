@@ -9,6 +9,7 @@ describe("spawnCapture", () => {
     expect(r.stdout.trim()).toBe("hello");
     expect(r.stderr).toBe("");
     expect(r.timedOut).toBe(false);
+    expect(r.truncated).toBe(false);
     expect(r.signal).toBeNull();
   });
 
@@ -17,6 +18,7 @@ describe("spawnCapture", () => {
     expect(r.ok).toBe(false);
     expect(r.exitCode).not.toBe(0);
     expect(r.timedOut).toBe(false);
+    expect(r.truncated).toBe(false);
   });
 
   it("captures stderr from a failing command", async () => {
@@ -31,6 +33,7 @@ describe("spawnCapture", () => {
     expect(r.exitCode).toBeNull();
     expect(r.signal).toBeNull();
     expect(r.timedOut).toBe(false);
+    expect(r.truncated).toBe(false);
   });
 
   it("enforces timeout with SIGTERM escalation", async () => {
@@ -50,6 +53,13 @@ describe("spawnCapture", () => {
     expect(r.ok).toBe(true);
     expect(r.stdout.trim()).toMatch(/\/tmp/);
   });
+
+  it("truncates stdout when output exceeds maxBuffer", async () => {
+    const r = await spawnCapture("echo", ["x".repeat(200)], { maxBuffer: 50 });
+    expect(r.ok).toBe(true);
+    expect(r.truncated).toBe(true);
+    expect(r.stdout.length).toBeLessThanOrEqual(50);
+  });
 });
 
 describe("spawnCaptureSync", () => {
@@ -59,6 +69,7 @@ describe("spawnCaptureSync", () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe("hello");
     expect(r.timedOut).toBe(false);
+    expect(r.truncated).toBe(false);
   });
 
   it("reports failure with non-zero exit code", () => {
@@ -72,6 +83,7 @@ describe("spawnCaptureSync", () => {
     expect(r.ok).toBe(false);
     expect(r.exitCode).toBeNull();
     expect(r.timedOut).toBe(false);
+    expect(r.truncated).toBe(false);
   });
 
   it("enforces timeout via Bun.spawnSync", () => {
@@ -80,9 +92,24 @@ describe("spawnCaptureSync", () => {
     expect(r.timedOut).toBe(true);
   });
 
+  it("does not set timedOut when process fails without signal (timeoutMs=50 edge case)", () => {
+    // old elapsed-heuristic: elapsed≈1ms >= 50-50=0ms → incorrectly true
+    // new signalCode check: signalCode is undefined (not SIGTERM) → correctly false
+    const r = spawnCaptureSync("false", [], { timeoutMs: 50 });
+    expect(r.ok).toBe(false);
+    expect(r.timedOut).toBe(false);
+  });
+
   it("respects cwd option", () => {
     const r = spawnCaptureSync("pwd", [], { cwd: "/tmp" });
     expect(r.ok).toBe(true);
     expect(r.stdout.trim()).toMatch(/\/tmp/);
+  });
+
+  it("truncates stdout when output exceeds maxBuffer", () => {
+    const r = spawnCaptureSync("echo", ["x".repeat(200)], { maxBuffer: 50 });
+    expect(r.ok).toBe(true);
+    expect(r.truncated).toBe(true);
+    expect(r.stdout.length).toBeLessThanOrEqual(50);
   });
 });

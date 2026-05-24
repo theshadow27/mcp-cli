@@ -5,14 +5,39 @@ export interface SpawnResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  truncated: boolean;
 }
 
 const SIGKILL_GRACE_MS = 5_000;
+const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024; // 50 MB
+
+async function drainStream(stream: ReadableStream, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+  const reader = (stream as ReadableStream<Uint8Array>).getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.byteLength > maxBytes) {
+        parts.push(value.subarray(0, maxBytes - total));
+        truncated = true;
+        break;
+      }
+      parts.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return { text: Buffer.concat(parts).toString("utf8"), truncated };
+}
 
 export async function spawnCapture(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number; input?: string },
+  opts?: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number },
 ): Promise<SpawnResult> {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
@@ -23,13 +48,17 @@ export async function spawnCapture(
       stderr: "pipe",
     });
   } catch {
-    return { ok: false, exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false };
+    return { ok: false, exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, truncated: false };
   }
 
   if (opts?.input != null && proc.stdin && typeof proc.stdin !== "number") {
-    const sink = proc.stdin as import("bun").FileSink;
-    sink.write(opts.input);
-    sink.end();
+    try {
+      const sink = proc.stdin as import("bun").FileSink;
+      sink.write(opts.input);
+      await sink.end();
+    } catch {
+      // EPIPE: child closed stdin early; continue draining output
+    }
   }
 
   let timedOut = false;
@@ -44,9 +73,10 @@ export async function spawnCapture(
     }, opts.timeoutMs);
   }
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout as ReadableStream).text(),
-    new Response(proc.stderr as ReadableStream).text(),
+  const maxBytes = opts?.maxBuffer ?? DEFAULT_MAX_BUFFER;
+  const [out, err] = await Promise.all([
+    drainStream(proc.stdout as ReadableStream, maxBytes),
+    drainStream(proc.stderr as ReadableStream, maxBytes),
   ]);
 
   await proc.exited;
@@ -58,18 +88,18 @@ export async function spawnCapture(
     ok: proc.exitCode === 0,
     exitCode: proc.exitCode ?? null,
     signal: proc.signalCode ?? null,
-    stdout,
-    stderr,
+    stdout: out.text,
+    stderr: err.text,
     timedOut,
+    truncated: out.truncated || err.truncated,
   };
 }
 
 export function spawnCaptureSync(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number },
+  opts?: { cwd?: string; timeoutMs?: number; maxBuffer?: number },
 ): SpawnResult {
-  const start = performance.now();
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
     result = Bun.spawnSync([cmd, ...args], {
@@ -79,18 +109,25 @@ export function spawnCaptureSync(
       timeout: opts?.timeoutMs,
     });
   } catch {
-    return { ok: false, exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false };
+    return { ok: false, exitCode: null, signal: null, stdout: "", stderr: "", timedOut: false, truncated: false };
   }
 
-  const elapsed = performance.now() - start;
-  const hitTimeout = opts?.timeoutMs != null && !result.success && elapsed >= opts.timeoutMs - 50;
+  // Bun sends SIGTERM when the timeout elapses; elapsed-time heuristics are unreliable
+  const hitTimeout = opts?.timeoutMs != null && result.signalCode === "SIGTERM";
+
+  const maxBytes = opts?.maxBuffer ?? DEFAULT_MAX_BUFFER;
+  const stdoutBuf = result.stdout;
+  const stderrBuf = result.stderr;
+  const stdoutTrunc = stdoutBuf != null && stdoutBuf.byteLength > maxBytes;
+  const stderrTrunc = stderrBuf != null && stderrBuf.byteLength > maxBytes;
 
   return {
     ok: result.exitCode === 0,
     exitCode: result.exitCode,
     signal: result.signalCode ?? null,
-    stdout: result.stdout?.toString() ?? "",
-    stderr: result.stderr?.toString() ?? "",
+    stdout: stdoutTrunc ? (stdoutBuf?.slice(0, maxBytes).toString() ?? "") : (stdoutBuf?.toString() ?? ""),
+    stderr: stderrTrunc ? (stderrBuf?.slice(0, maxBytes).toString() ?? "") : (stderrBuf?.toString() ?? ""),
     timedOut: hitTimeout,
+    truncated: stdoutTrunc || stderrTrunc,
   };
 }
