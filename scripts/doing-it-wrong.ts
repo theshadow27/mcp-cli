@@ -19,7 +19,7 @@ import { loadFiles } from "./rules/_engine/file-loader";
 import { reportViolations } from "./rules/_engine/reporter";
 import { type Violation, evaluateRule } from "./rules/_engine/rule";
 import { checkSuppression } from "./rules/_engine/suppression";
-import { RULES } from "./rules/index";
+import { loadAllRules } from "./rules/index";
 
 import type { ScriptFunction } from "./_runner/types";
 
@@ -49,9 +49,10 @@ export async function runRules(
   logger: Pick<Console, "info" | "warn" | "error">,
 ): Promise<RunRulesResult> {
   const t0 = Date.now();
-  const rules = opts.ruleId ? RULES.filter((r) => r.id === opts.ruleId) : RULES;
+  const allRules = await loadAllRules();
+  const rules = opts.ruleId ? allRules.filter((r) => r.id === opts.ruleId) : allRules;
   if (opts.ruleId && rules.length === 0) {
-    logger.error(`rule '${opts.ruleId}' not registered. known: ${RULES.map((r) => r.id).join(", ")}`);
+    logger.error(`rule '${opts.ruleId}' not registered. known: ${allRules.map((r) => r.id).join(", ")}`);
     return { violations: [], malformedTodos: [], unknownRule: true, durationMs: 0 };
   }
 
@@ -101,8 +102,9 @@ export const doingItWrongStep: ScriptFunction = async ({ logger }) => {
 };
 
 async function main(argv: string[]): Promise<void> {
+  const allRules = await loadAllRules();
   if (argv.includes("--list")) {
-    process.stdout.write(`${RULES.map((r) => `${r.id}\t${r.scold}`).join("\n")}\n`);
+    process.stdout.write(`${allRules.map((r) => `${r.id}\t${r.scold}`).join("\n")}\n`);
     return;
   }
   const ruleIdx = argv.indexOf("--rule");
@@ -115,7 +117,7 @@ async function main(argv: string[]): Promise<void> {
   const result = await runRules(opts, console);
   reportViolations(result.violations, { logger: console, showAll: opts.showAll });
   reportMalformedTodos(result.malformedTodos, console);
-  console.info(`\nchecked ${RULES.length} rule${RULES.length === 1 ? "" : "s"} in ${result.durationMs}ms`);
+  console.info(`\nchecked ${allRules.length} rule${allRules.length === 1 ? "" : "s"} in ${result.durationMs}ms`);
   process.exit(result.unknownRule || result.violations.length > 0 ? 1 : 0);
 }
 

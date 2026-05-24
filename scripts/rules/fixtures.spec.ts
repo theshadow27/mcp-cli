@@ -21,22 +21,23 @@ import { join } from "node:path";
 import { loadAllFixtures } from "./_engine/fixture-loader";
 import { evaluateRule } from "./_engine/rule";
 import { checkSuppression } from "./_engine/suppression";
-import { RULES, findRule } from "./index";
+import { findRule, loadAllRules } from "./index";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures");
 
 describe("rule fixtures", async () => {
+  const rules = await loadAllRules();
   const fixtures = await loadAllFixtures(FIXTURE_DIR);
 
   it("every registered rule has at least one fixture", () => {
     const covered = new Set(fixtures.map((f) => f.frontmatter.rule));
-    const missing = RULES.filter((r) => !covered.has(r.id));
+    const missing = rules.filter((r) => !covered.has(r.id));
     expect(missing.map((r) => r.id)).toEqual([]);
   });
 
   for (const fix of fixtures) {
     it(`${fix.fileName} → @rule ${fix.frontmatter.rule} expects ${fix.frontmatter.expect} violation(s)`, () => {
-      const rule = findRule(fix.frontmatter.rule);
+      const rule = findRule(rules, fix.frontmatter.rule);
       expect(rule, `rule '${fix.frontmatter.rule}' is not registered`).toBeDefined();
       if (!rule) return;
 
