@@ -146,6 +146,7 @@ const rule: CheckRule = {
   appliesToTests: false,
   check({ ast, violated }) {
     const sf = ast.sourceFile;
+    const lines = sf.text.split("\n");
     const callToolCalls = ast.callsTo("callTool");
 
     for (const call of callToolCalls) {
@@ -162,7 +163,7 @@ const rule: CheckRule = {
         if (hasIsErrorCheckBefore(scope, bindingName, accessPos)) continue;
 
         const pos = ast.positionOf(access);
-        const line = sf.text.split("\n")[pos.line - 1] ?? "";
+        const line = lines[pos.line - 1] ?? "";
         violated(pos.line, pos.column, line.trim());
         break;
       }

@@ -49,12 +49,22 @@ describe("unwrapToolResult", () => {
   });
 
   it("ToolResultError has correct name", () => {
+    expect.assertions(2);
     try {
       unwrapToolResult({ content: [{ type: "text", text: "fail" }], isError: true });
     } catch (e) {
       expect(e).toBeInstanceOf(ToolResultError);
       expect((e as ToolResultError).name).toBe("ToolResultError");
     }
+  });
+
+  it("throws ToolResultError when content is not an array", () => {
+    expect(() => unwrapToolResult({ content: "bad" })).toThrow(ToolResultError);
+    expect(() => unwrapToolResult({ content: 42 })).toThrow(ToolResultError);
+  });
+
+  it("throws ToolResultError (not TypeError) when content is absent on error response", () => {
+    expect(() => unwrapToolResult({ isError: true })).toThrow(ToolResultError);
   });
 });
 

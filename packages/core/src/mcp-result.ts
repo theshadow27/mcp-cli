@@ -18,11 +18,12 @@ export class ToolResultError extends Error {
 
 /**
  * Check `isError`, then return all text content blocks joined by `\n`.
- * Throws {@link ToolResultError} if the result is an error response.
+ * Throws {@link ToolResultError} if the result is an error response or if
+ * the content array is absent/non-array/contains no text blocks.
  */
 export function unwrapToolResult(result: unknown): string {
   const r = result as McpToolResult;
-  const texts = r?.content?.filter((b) => b.type === "text").map((b) => b.text) ?? [];
+  const texts = Array.isArray(r?.content) ? r.content.filter((b) => b.type === "text").map((b) => b.text) : [];
   if (r?.isError) {
     throw new ToolResultError(texts.join("\n") || "Unknown MCP tool error");
   }
@@ -36,14 +37,15 @@ export function unwrapToolResult(result: unknown): string {
  * Like {@link unwrapToolResult} but parses the first text block as JSON.
  * Returns the parsed value typed as `T` (caller is responsible for the cast).
  * Uses the first text block only — joining multiple blocks would break JSON parsing.
+ * Throws {@link ToolResultError} on error responses, missing text content, or invalid JSON.
  */
 export function unwrapToolResultJson<T>(result: unknown): T {
   const r = result as McpToolResult;
   if (r?.isError) {
-    const text = r.content?.[0]?.text ?? "Unknown MCP tool error";
+    const text = Array.isArray(r.content) ? (r.content[0]?.text ?? "Unknown MCP tool error") : "Unknown MCP tool error";
     throw new ToolResultError(text);
   }
-  const block = r?.content?.find((b) => b.type === "text");
+  const block = Array.isArray(r?.content) ? r.content.find((b) => b.type === "text") : undefined;
   if (!block) {
     throw new ToolResultError("MCP tool result has no text content");
   }
