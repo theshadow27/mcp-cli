@@ -17,30 +17,39 @@ export class ToolResultError extends Error {
 }
 
 /**
- * Check `isError`, then return the first text content block's text.
+ * Check `isError`, then return all text content blocks joined by `\n`.
  * Throws {@link ToolResultError} if the result is an error response.
  */
 export function unwrapToolResult(result: unknown): string {
+  const r = result as McpToolResult;
+  const texts = r?.content?.filter((b) => b.type === "text").map((b) => b.text) ?? [];
+  if (r?.isError) {
+    throw new ToolResultError(texts.join("\n") || "Unknown MCP tool error");
+  }
+  if (texts.length === 0) {
+    throw new ToolResultError("MCP tool result has no text content");
+  }
+  return texts.join("\n");
+}
+
+/**
+ * Like {@link unwrapToolResult} but parses the first text block as JSON.
+ * Returns the parsed value typed as `T` (caller is responsible for the cast).
+ * Uses the first text block only — joining multiple blocks would break JSON parsing.
+ */
+export function unwrapToolResultJson<T>(result: unknown): T {
   const r = result as McpToolResult;
   if (r?.isError) {
     const text = r.content?.[0]?.text ?? "Unknown MCP tool error";
     throw new ToolResultError(text);
   }
-  if (r?.content?.[0]?.type === "text") {
-    return r.content[0].text;
+  const block = r?.content?.find((b) => b.type === "text");
+  if (!block) {
+    throw new ToolResultError("MCP tool result has no text content");
   }
-  throw new ToolResultError("MCP tool result has no text content");
-}
-
-/**
- * {@link unwrapToolResult} + `JSON.parse`. Returns the parsed value typed
- * as `T` (caller is responsible for the cast).
- */
-export function unwrapToolResultJson<T>(result: unknown): T {
-  const text = unwrapToolResult(result);
   try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new ToolResultError(`Failed to parse MCP tool result as JSON: ${text.slice(0, 200)}`);
+    return JSON.parse(block.text) as T;
+  } catch (e) {
+    throw new ToolResultError(`Failed to parse MCP tool result as JSON: ${block.text.slice(0, 200)}`, { cause: e });
   }
 }
