@@ -91,6 +91,24 @@ describe("buildAgentTools", () => {
     expect(prompt.description).toContain("Test Agent");
   });
 
+  test("art helper uses 'an' for vowel-initial labels in all default descriptions", () => {
+    const tools = buildAgentTools({ prefix: "test", label: "Agentic Provider" });
+    for (const basename of ["interrupt", "bye", "wait", "transcript", "approve", "deny"] as const) {
+      const tool = findTool(tools, `test_${basename}`);
+      expect(tool.description).toContain("an Agentic Provider");
+      expect(tool.description).not.toContain("a Agentic Provider");
+    }
+  });
+
+  test("art helper uses 'a' for consonant-initial labels in all default descriptions", () => {
+    const tools = buildAgentTools(minimal); // label: "Test Agent"
+    for (const basename of ["interrupt", "bye", "wait", "transcript", "approve", "deny"] as const) {
+      const tool = findTool(tools, `test_${basename}`);
+      expect(tool.description).toContain("a Test Agent");
+      expect(tool.description).not.toContain("an Test Agent");
+    }
+  });
+
   test("overrides replace description", () => {
     const tools = buildAgentTools({
       ...minimal,

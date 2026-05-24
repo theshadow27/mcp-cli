@@ -101,6 +101,8 @@ function parseCommit(
     } else if (p.startsWith("committer ")) {
       readLine(bytes, state);
       commit.committer = p.slice("committer ".length);
+    } else if (p.startsWith("encoding ")) {
+      readLine(bytes, state);
     } else if (p === "data" || p.startsWith("data ")) {
       commit.message = readDataString(bytes, state);
     } else if (p.startsWith("from ")) {
@@ -225,7 +227,8 @@ function readDataBytes(bytes: Uint8Array, state: { pos: number }): Uint8Array {
     while (true) {
       const lineStart = state.pos;
       const line = readLine(bytes, state);
-      if (line === null || line === delim) break;
+      if (line === null) throw new Error(`fast-import: unterminated data <<"${delim}" block`);
+      if (line === delim) break;
       const lineEnd = state.pos; // includes the LF if present
       parts.push(bytes.subarray(lineStart, lineEnd));
     }

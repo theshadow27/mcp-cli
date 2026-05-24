@@ -508,6 +508,49 @@ describe("cleanupWorktree", () => {
     expect(infoMsgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
     expect(errorMsgs.some((m) => m.includes("branch still exists"))).toBe(true);
   });
+
+  test("hook teardown: probes core.bare before/after and heals on flip", () => {
+    tmpDir = makeTmpDir();
+    writeFileSync(
+      join(tmpDir, WORKTREE_CONFIG_FILENAME),
+      JSON.stringify({ worktree: { setup: "true", teardown: "rm -rf $MCX_PATH" } }),
+    );
+    mkdirSync(join(tmpDir, ".git"), { recursive: true });
+
+    const execCalls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      execCalls.push(cmd);
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      // Teardown hook succeeds (worktree path won't exist on disk → existsSync false)
+      if (cmd[0] === "sh") return { stdout: "", stderr: "", exitCode: 0 };
+      // Simulate core.bare flipped to true by the hook
+      if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+        const hookIdx = execCalls.findIndex((c) => c[0] === "sh");
+        if (hookIdx >= 0 && execCalls.indexOf(cmd) > hookIdx) {
+          return { stdout: "true", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 1 };
+      }
+      if (cmd.includes("--unset") && cmd.includes("core.bare")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printErrors: string[] = [];
+    const printError = mock((msg: string) => printErrors.push(msg));
+    const printInfos: string[] = [];
+    const printInfo = mock((msg: string) => printInfos.push(msg));
+
+    cleanupWorktree("my-wt", join(tmpDir, ".claude", "worktrees", "my-wt"), { exec, printError, printInfo }, tmpDir);
+
+    expect(printErrors.some((m) => m.includes("[shim] core.bare flipped to true by: teardown hook"))).toBe(true);
+    expect(printInfos.some((m) => m.includes("Removed core.bare key after teardown hook"))).toBe(true);
+    // Verify probe ran before the hook
+    const hookIdx = execCalls.findIndex((c) => c[0] === "sh");
+    const isCoreBareRead = (c: string[]) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset");
+    expect(execCalls.slice(0, hookIdx).some(isCoreBareRead)).toBe(true);
+  });
 });
 
 // ── getDefaultBranch ──
@@ -748,6 +791,73 @@ describe("pruneWorktrees", () => {
       expect(unsetCalls.length).toBeGreaterThanOrEqual(1);
       // Verify the batch guard printed the fix (via printInfo, not printError)
       expect(printInfos.some((m) => m.includes("batch worktree prune"))).toBe(true);
+    } finally {
+      rmSync(repoRoot, { recursive: true });
+    }
+  });
+
+  test("hook teardown: probes core.bare before/after and heals on flip", async () => {
+    const repoRoot = makeTmpDir();
+    try {
+      writeFileSync(join(repoRoot, ".git"), "gitdir: /some/repo\n");
+      writeFileSync(
+        join(repoRoot, WORKTREE_CONFIG_FILENAME),
+        JSON.stringify({ worktree: { setup: "true", teardown: "rm -rf $MCX_PATH" } }),
+      );
+      const wt1 = join(repoRoot, ".claude", "worktrees", "feat-hook");
+
+      const porcelainOutput = [
+        `worktree ${repoRoot}`,
+        "HEAD abc123",
+        "branch refs/heads/main",
+        "",
+        `worktree ${wt1}`,
+        "HEAD def456",
+        "branch refs/heads/claude/feat-hook",
+        "",
+      ].join("\n");
+
+      const execCalls: string[][] = [];
+      const exec = mock((cmd: string[]) => {
+        execCalls.push(cmd);
+        if (cmd.includes("list") && cmd.includes("--porcelain"))
+          return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+        if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+        if (cmd.includes("--merged")) return { stdout: "  main\n  claude/feat-hook\n", stderr: "", exitCode: 0 };
+        if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+        // Hook succeeds (path won't exist on disk → existsSync false)
+        if (cmd[0] === "sh") return { stdout: "", stderr: "", exitCode: 0 };
+        if (cmd.includes("branch") && cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 0 };
+        if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
+        // Simulate core.bare flipped to true by the hook
+        if (cmd.includes("config") && cmd.includes("core.bare") && !cmd.includes("--unset")) {
+          const hookIdx = execCalls.findIndex((c) => c[0] === "sh");
+          if (hookIdx >= 0 && execCalls.indexOf(cmd) > hookIdx) {
+            return { stdout: "true", stderr: "", exitCode: 0 };
+          }
+          return { stdout: "", stderr: "", exitCode: 1 };
+        }
+        if (cmd.includes("--unset") && cmd.includes("core.bare")) return { stdout: "", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      const printErrors: string[] = [];
+      const printError = mock((msg: string) => printErrors.push(msg));
+      const printInfos: string[] = [];
+      const printInfo = mock((msg: string) => printInfos.push(msg));
+
+      const result = await pruneWorktrees({
+        repoRoot,
+        activeWorktrees: new Set(),
+        deps: { exec, printError, printInfo },
+      });
+
+      expect(result.pruned).toBe(1);
+      expect(printErrors.some((m) => m.includes("[shim] core.bare flipped to true by: teardown hook"))).toBe(true);
+      expect(printInfos.some((m) => m.includes("Removed core.bare key after teardown hook"))).toBe(true);
+      // Verify probe ran before the hook
+      const hookIdx = execCalls.findIndex((c) => c[0] === "sh");
+      const isCoreBareRead = (c: string[]) => c.includes("config") && c.includes("core.bare") && !c.includes("--unset");
+      expect(execCalls.slice(0, hookIdx).some(isCoreBareRead)).toBe(true);
     } finally {
       rmSync(repoRoot, { recursive: true });
     }

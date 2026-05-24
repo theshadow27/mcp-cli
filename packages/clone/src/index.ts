@@ -10,3 +10,4 @@ export * from "./engine/frontmatter";
 export * from "./engine/pull";
 export * from "./engine/push";
 export * from "./engine/remote-protocol";
+export * from "./engine/export-transaction";

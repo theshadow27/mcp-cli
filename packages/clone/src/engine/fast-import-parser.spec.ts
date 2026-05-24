@@ -182,6 +182,35 @@ describe("parseFastImport", () => {
     if (c?.type === "modify") expect(asText(c.content)).toBe("A");
   });
 
+  test("encoding header in commit is ignored without desync", () => {
+    const stream =
+      "blob\nmark :1\ndata 5\nhello\n" +
+      "commit refs/heads/main\nmark :2\ncommitter A <a@a> 0 +0000\nencoding UTF-8\ndata 6\nhello\n\n" +
+      "M 100644 :1 a.md\n\n";
+
+    const [commit] = parseFastImport(stream);
+    expect(commit?.message).toBe("hello\n");
+    expect(commit?.committer).toBe("A <a@a> 0 +0000");
+    expect(commit?.changes).toHaveLength(1);
+    expect(commit?.changes[0]?.type).toBe("modify");
+  });
+
+  test("encoding header does not desync subsequent commits", () => {
+    const stream =
+      "blob\nmark :1\ndata 1\nA\n" +
+      "commit refs/heads/main\nmark :2\ncommitter C <c@c> 0 +0000\nencoding UTF-8\ndata 5\nfirst\n" +
+      "M 100644 :1 a.md\n\n" +
+      "blob\nmark :3\ndata 1\nB\n" +
+      "commit refs/heads/main\nmark :4\ncommitter C <c@c> 0 +0000\nencoding ISO-8859-1\ndata 6\nsecond\n" +
+      "from :2\nM 100644 :3 b.md\n\n";
+
+    const commits = parseFastImport(stream);
+    expect(commits).toHaveLength(2);
+    expect(commits[0]?.message).toBe("first");
+    expect(commits[1]?.message).toBe("second");
+    expect(commits[1]?.from).toBe(":2");
+  });
+
   test("tag directives are swallowed, not treated as commits", () => {
     const stream =
       "tag v1\nfrom :2\noriginal-oid deadbeef\ntagger T <t@t> 0 +0000\ndata 8\nreleased\n" +
@@ -245,6 +274,10 @@ describe("parseFastImport", () => {
 
   test("missing data header throws", () => {
     expect(() => parseFastImport("commit refs/heads/main\nM 100644 inline x.md\nfoo\n")).toThrow(/expected "data"/);
+  });
+
+  test("unterminated here-doc throws with actual delimiter", () => {
+    expect(() => parseFastImport("commit refs/heads/main\ndata <<END\nhello\n")).toThrow(/unterminated data <<"END"/);
   });
 
   test("comment lines are skipped", () => {

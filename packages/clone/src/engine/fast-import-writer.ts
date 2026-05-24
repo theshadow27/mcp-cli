@@ -8,7 +8,7 @@
 
 export interface FastImportEntry {
   path: string;
-  content: string;
+  content: string | Uint8Array;
 }
 
 export interface GenerateFastImportOptions {
@@ -28,11 +28,18 @@ export interface GenerateFastImportOptions {
   committerEmail?: string;
   /** Commit timestamp (unix seconds). Defaults to 0 for deterministic output. */
   timestamp?: number;
+  /**
+   * When true, skip `deleteall` — entries are adds/updates only, preserving
+   * the rest of the parent tree. Use with `deletions` to remove specific paths.
+   */
+  incremental?: boolean;
+  /** Paths to emit `D` (fileDelete) lines for. Requires `parent` to be set. */
+  deletions?: string[];
 }
 
 export interface GenerateFastImportResult {
-  /** The fast-import stream as a string. */
-  stream: string;
+  /** The fast-import stream as raw bytes (safe for binary blobs). */
+  stream: Uint8Array;
   /** Map of path → mark used for its blob. */
   marks: Record<string, number>;
   /** The mark used for the commit itself. */
@@ -71,11 +78,17 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   const committerName = opts.committerName ?? "mcx";
   const committerEmail = opts.committerEmail ?? "mcx@local";
   const timestamp = opts.timestamp ?? 0;
+  const deletions = opts.deletions ?? [];
+  const incremental = opts.incremental ?? false;
   const encoder = new TextEncoder();
 
-  // Guard: empty entries + parent would emit `deleteall` with no M lines,
-  // silently replacing the branch tip with an empty tree.
-  if (opts.entries.length === 0 && opts.parent) {
+  if (deletions.length > 0 && !opts.parent) {
+    throw new Error("generateFastImport: deletions require a parent commit");
+  }
+
+  // Guard: non-incremental empty entries + parent would emit `deleteall` with
+  // no M lines, silently replacing the branch tip with an empty tree.
+  if (opts.entries.length === 0 && opts.parent && !incremental) {
     throw new Error("generateFastImport: refusing to emit branch-wiping commit (entries is empty but parent is set)");
   }
 
@@ -90,14 +103,16 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
     }
   }
 
-  const parts: string[] = [];
+  const parts: Uint8Array[] = [];
   const marks: Record<string, number> = {};
 
   opts.entries.forEach((entry, i) => {
     const mark = startMark + i;
     marks[entry.path] = mark;
-    const byteLen = encoder.encode(entry.content).length;
-    parts.push(`blob\nmark :${mark}\ndata ${byteLen}\n${entry.content}\n`);
+    const contentBytes = typeof entry.content === "string" ? encoder.encode(entry.content) : entry.content;
+    parts.push(encoder.encode(`blob\nmark :${mark}\ndata ${contentBytes.length}\n`));
+    parts.push(contentBytes);
+    parts.push(encoder.encode("\n"));
   });
 
   const messageBytes = encoder.encode(opts.message).length;
@@ -109,29 +124,45 @@ export function generateFastImport(opts: GenerateFastImportOptions): GenerateFas
   commit += `data ${messageBytes}\n${opts.message}\n`;
   if (opts.parent) {
     commit += `from ${opts.parent}\n`;
-    // Reset the tree so only the listed entries survive — callers that want
-    // incremental updates should pass their own M/D lines via a different API.
-    commit += "deleteall\n";
+    if (!incremental) {
+      commit += "deleteall\n";
+    }
+  }
+  for (const path of deletions) {
+    commit += `D ${quoteFastImportPath(path)}\n`;
   }
   for (const entry of opts.entries) {
     const mark = marks[entry.path];
     commit += `M 100644 :${mark} ${quoteFastImportPath(entry.path)}\n`;
   }
   commit += "\n";
-  parts.push(commit);
-  parts.push("done\n");
+  parts.push(encoder.encode(commit));
+  parts.push(encoder.encode("done\n"));
 
-  return { stream: parts.join(""), marks, commitMark: resolvedCommitMark };
+  return { stream: concatBytes(parts), marks, commitMark: resolvedCommitMark };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
 }
 
 /**
- * Parse a marks file (`:<mark> <sha1>` per line) into a Map.
- * Lines that don't match the format are ignored.
+ * Parse a marks file (`:<mark> <sha>` per line) into a Map.
+ * Accepts both SHA-1 (40-char) and SHA-256 (64-char) hashes.
  */
 export function parseMarksFile(text: string): Map<number, string> {
   const out = new Map<number, string>();
   for (const line of text.split("\n")) {
-    const m = line.match(/^:(\d+)\s+([0-9a-f]{40})$/);
+    const m = line.match(/^:(\d+)\s+([0-9a-f]{40}(?:[0-9a-f]{24})?)$/);
+
     if (m) out.set(Number.parseInt(m[1], 10), m[2]);
   }
   return out;

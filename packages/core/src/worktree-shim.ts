@@ -230,7 +230,19 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
 
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: worktree, path: worktreePath, cwd: effectiveRoot });
+      const bareBeforeHook = isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd));
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
+      if (!bareBeforeHook && isCoreBareSet(effectiveRoot, (cmd) => deps.exec(cmd))) {
+        deps.printError(
+          `[shim] core.bare flipped to true by: teardown hook for ${worktreePath} (repo=${effectiveRoot}) — see #1330`,
+        );
+      }
+      const hookBareResult = ensureCoreBareUnset(effectiveRoot, (cmd) => deps.exec(cmd));
+      if (hookBareResult === "removed") {
+        deps.printInfo("Removed core.bare key after teardown hook");
+      } else if (hookBareResult === "fallback") {
+        deps.printError("[shim] core.bare key could not be removed after teardown hook — set to false as fallback");
+      }
       if (hookExit === 0 && !existsSync(worktreePath)) {
         deps.printInfo(`Removed worktree via hook: ${worktreePath}`);
         deleteIfSafeToDelete(branch, effectiveRoot, deps);
@@ -523,7 +535,19 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     // Remove worktree
     if (hasWorktreeHooks(wtConfig) && wtConfig.teardown) {
       const hookEnv = buildHookEnv({ branch: wtName, path: wt.path, cwd: repoRoot });
+      const bareBeforePruneHook = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
       const { exitCode: hookExit, stderr: hookStderr } = deps.exec(["sh", "-c", wtConfig.teardown], { env: hookEnv });
+      if (!bareBeforePruneHook && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
+        deps.printError(
+          `[shim] core.bare flipped to true by: teardown hook for ${wt.path} (repo=${repoRoot}) — see #1330`,
+        );
+      }
+      const pruneHookBareResult = ensureCoreBareUnset(repoRoot, (cmd) => deps.exec(cmd));
+      if (pruneHookBareResult === "removed") {
+        deps.printInfo("Removed core.bare key after teardown hook");
+      } else if (pruneHookBareResult === "fallback") {
+        deps.printError("[shim] core.bare key could not be removed after teardown hook — set to false as fallback");
+      }
       if (hookExit === 0 && !existsSync(wt.path)) {
         deps.printInfo(`Removed worktree via hook: ${wt.path}`);
         pruned++;

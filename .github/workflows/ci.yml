@@ -71,7 +71,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - if: needs.detect.outputs.docs_only != 'true'
@@ -150,7 +150,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       # Enforces per-file + global coverage thresholds from scripts/check-coverage.ts.
@@ -217,7 +217,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - name: Install unbuffer (expect)
@@ -262,7 +262,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - if: needs.detect.outputs.docs_only != 'true'
