@@ -1,6 +1,6 @@
 /**
  * @rule poll-until-headroom
- * @expect 4
+ * @expect 5
  * @path packages/daemon/src/ipc-server.spec.ts
  *
  * An explicit deadline ≥ the 5000ms watchdog can never fire its own error —
@@ -25,4 +25,10 @@ await pollUntil(() => !condition(), 10_000);
 await pollUntil(
   () => events.some((e) => e.type === "session:init"),
   6000,
+);
+
+// inline comment after timeout — still a violation (#2292)
+await pollUntil(
+  () => condition(),
+  10_000 // needs time for daemon startup
 );
