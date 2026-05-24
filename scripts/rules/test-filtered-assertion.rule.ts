@@ -2,11 +2,17 @@
  * Rule: test-filtered-assertion
  *
  * Flag `expect(arr.filter(...)).toHaveLength(0)` and `.toEqual([])` in
- * tests. Filtering before asserting emptiness hides unexpected items in
- * the collection — the test passes while unrelated garbage accumulates.
+ * tests.
  *
- * The fix: assert the whole collection (`expect(warnings).toEqual([])`)
- * or assert a specific element's absence with a named reason.
+ * Why this is a trap: filtering is *subtractive*. You delete rows from the
+ * collection before you ever look at it, so anything the filter removed can
+ * no longer fail the assertion. A passing `filter(...).toHaveLength(0)` tells
+ * you "the specific bad thing I searched for is absent" — it can never tell
+ * you "the output is correct." The unexpected, the malformed, the entries you
+ * didn't think to filter for: all silently pass.
+ *
+ * The fix is to assert against the *whole* collection, so anything you didn't
+ * expect also fails.
  *
  * Sources: #2085, #2099.
  */
@@ -21,10 +27,8 @@ const rule: CheckRule = {
   kind: "check",
   scold: "expect(collection.filter(...)) hides unexpected items — assert the whole collection instead",
   guidance: [
-    "default — assert the whole collection is empty: expect(arr).toEqual([])",
-    "if the array legitimately holds other entries, don't deliberate: translate the filter predicate you already wrote into a negative matcher mechanically — .filter(e => e.field === V) → expect(arr).not.toContainEqual(expect.objectContaining({ field: V })); .filter(s => s.includes(V)) → expect(arr).not.toContainEqual(expect.stringContaining(V))",
-    "for filter(...).map(...).toEqual([]): assert the predicate is false per element — for (const e of arr) expect(pred(e)).toBe(false)",
-    "use the first form unless the collection is expected to contain unrelated items; the predicate is the answer, no judgment call needed",
+    "filtering is subtractive: whatever the filter removed can never fail the test, so .filter(...).toHaveLength(0) proves only that the bad thing you searched for is absent — never that the output is correct. Assert against the whole collection so unexpected items fail too.",
+    "examples of doing it right (not exhaustive): expect(arr).toEqual([]) when it should be empty; expect(arr).not.toContainEqual(expect.objectContaining({ field: V })) when it legitimately holds other items (the filter predicate you wrote is the matcher); for a filter(p).map(f).toEqual([]), assert per element — for (const e of arr) expect(p(e)).toBe(false).",
   ],
   documentation: "#2247",
   appliesToTests: true,
