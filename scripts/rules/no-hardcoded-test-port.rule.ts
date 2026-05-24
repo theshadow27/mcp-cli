@@ -45,8 +45,6 @@ const rule: CheckRule = {
   ],
   documentation: "#2272",
   check({ file, violated, ast }) {
-    if (!file.isTest) return;
-
     // Pattern 1: `port: <nonzero>` as a direct property of an object literal
     // passed to a known server-construction call/constructor.
     // Excludes: mock structs, return objects, assertion arguments.

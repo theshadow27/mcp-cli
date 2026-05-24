@@ -54,8 +54,6 @@ const rule: CheckRule = {
   documentation: "#2247",
   appliesToTests: true,
   check({ file, ast, violated }) {
-    if (!file.isTest) return;
-
     const lines = file.content.split("\n");
 
     for (const call of ast.callsTo("toHaveLength").concat(ast.callsTo("toEqual"))) {
