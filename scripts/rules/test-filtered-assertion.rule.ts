@@ -17,10 +17,31 @@
  * Sources: #2085, #2099.
  */
 
+import ts from "typescript";
 import type { CheckRule } from "./_engine/rule";
 
-const FILTERED_EMPTY =
-  /expect\(.+\.filter\s*\(.+\)\s*\)\s*\.\s*(?:toHaveLength\s*\(\s*0\s*\)|toEqual\s*\(\s*\[\s*\]\s*\))/;
+function containsFilterCall(node: ts.Node): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.name.text === "filter"
+  ) {
+    return true;
+  }
+  return ts.forEachChild(node, containsFilterCall) ?? false;
+}
+
+function isEmptyAssertion(name: string, args: ts.NodeArray<ts.Expression>): boolean {
+  if (name === "toHaveLength" && args.length === 1) {
+    const arg = args[0];
+    return arg !== undefined && ts.isNumericLiteral(arg) && arg.text === "0";
+  }
+  if (name === "toEqual" && args.length === 1) {
+    const arg = args[0];
+    return arg !== undefined && ts.isArrayLiteralExpression(arg) && arg.elements.length === 0;
+  }
+  return false;
+}
 
 const rule: CheckRule = {
   id: "test-filtered-assertion",
@@ -32,15 +53,40 @@ const rule: CheckRule = {
   ],
   documentation: "#2247",
   appliesToTests: true,
-  check({ file, violated }) {
+  check({ file, ast, violated }) {
     if (!file.isTest) return;
 
     const lines = file.content.split("\n");
-    for (const [i, line] of lines.entries()) {
-      const m = FILTERED_EMPTY.exec(line);
-      if (m) violated(i + 1, (m.index ?? 0) + 1, line.trim());
+
+    for (const call of ast.callsTo("toHaveLength").concat(ast.callsTo("toEqual"))) {
+      if (!ts.isPropertyAccessExpression(call.expression)) continue;
+      if (!isEmptyAssertion(call.expression.name.text, call.arguments)) continue;
+
+      const receiver = call.expression.expression;
+
+      const expectCall = findExpectAncestor(receiver);
+      if (!expectCall) continue;
+      if (expectCall.arguments.length !== 1) continue;
+
+      if (containsFilterCall(expectCall.arguments[0])) {
+        const pos = ast.positionOf(expectCall);
+        violated(pos.line, pos.column, lines[pos.line - 1]?.trim() ?? "");
+      }
     }
   },
 };
+
+function findExpectAncestor(node: ts.Node): ts.CallExpression | undefined {
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "expect") {
+    return node;
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    return findExpectAncestor(node.expression);
+  }
+  if (ts.isCallExpression(node)) {
+    return findExpectAncestor(node.expression);
+  }
+  return undefined;
+}
 
 export default rule;
