@@ -11,6 +11,21 @@ export interface ParseResult {
   help: boolean;
 }
 
+// Returns true when token looks like a CLI flag (--flag or -f) that cannot be a value.
+// Bare "-" (stdin sentinel) and negative numbers like "-5" are NOT flags.
+function looksLikeFlag(token: string): boolean {
+  if (token === "-") return false;
+  if (token.startsWith("--")) return true;
+  return /^-[A-Za-z]/.test(token);
+}
+
+// Validates a decimal number string (integer or float, optionally signed).
+// Rejects empty, hex ("0x…"), scientific notation ("1e3"), Infinity, and non-numeric strings.
+function parseDecimal(raw: string): number | null {
+  if (!/^-?\d+(\.\d+)?$/.test(raw)) return null;
+  return Number(raw);
+}
+
 export function parseFlags(argv: string[], specs: Record<string, FlagSpec>): ParseResult {
   const flags: Record<string, string | number | boolean | string[]> = {};
   const positionals: string[] = [];
@@ -63,8 +78,8 @@ export function parseFlags(argv: string[], specs: Record<string, FlagSpec>): Par
         continue;
       }
       if (entry.spec.type === "number") {
-        const n = Number(valuePart);
-        if (Number.isNaN(n)) {
+        const n = parseDecimal(valuePart);
+        if (n === null) {
           errors.push(`${flagPart} requires a numeric value, got "${valuePart}"`);
           continue;
         }
@@ -85,15 +100,15 @@ export function parseFlags(argv: string[], specs: Record<string, FlagSpec>): Par
       }
 
       const next = argv[i + 1];
-      if (next === undefined || next.startsWith("-")) {
+      if (next === undefined || looksLikeFlag(next)) {
         errors.push(`${token} requires a value`);
         continue;
       }
       i++;
 
       if (entry.spec.type === "number") {
-        const n = Number(next);
-        if (Number.isNaN(n)) {
+        const n = parseDecimal(next);
+        if (n === null) {
           errors.push(`${token} requires a numeric value, got "${next}"`);
           continue;
         }

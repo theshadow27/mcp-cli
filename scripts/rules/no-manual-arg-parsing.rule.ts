@@ -61,7 +61,7 @@ const rule: CheckRule = {
     for (const node of ast.callsTo("shift")) {
       if (!ts.isPropertyAccessExpression(node.expression)) continue;
       if (!ts.isIdentifier(node.expression.expression)) continue;
-      if (node.expression.expression.text !== "argv") continue;
+      if (!ARG_ARRAY_NAMES.has(node.expression.expression.text)) continue;
       const pos = ast.positionOf(node);
       violated(pos.line, pos.column, lines[pos.line - 1]?.trim() ?? "");
     }

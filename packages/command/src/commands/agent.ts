@@ -755,7 +755,6 @@ function extractFlag(args: string[], ...flags: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (flags.includes(args[i]) && args[i + 1] && !args[i + 1].startsWith("-")) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       return args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     }
   }
@@ -1242,9 +1241,8 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
         model = val;
       }
     } else if (arg === "--allow") {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      // dotw-todo no-manual-arg-parsing: greedy multi-value consume; migration to parseFlags requires CLI change (--allow A B → --allow A --allow B) — track in #2283
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
         allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";

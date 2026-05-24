@@ -171,4 +171,56 @@ describe("parseFlags", () => {
       'flag --count: repeatable is only supported for type "string"',
     );
   });
+
+  // Number coercion strictness
+  it("accepts negative number value", () => {
+    const r = parseFlags(["--count", "-5"], SPECS);
+    expect(r.flags.count).toBe(-5);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("accepts negative number with = syntax", () => {
+    const r = parseFlags(["--count=-5"], SPECS);
+    expect(r.flags.count).toBe(-5);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("accepts float number value", () => {
+    const r = parseFlags(["--count", "3"], SPECS);
+    expect(r.flags.count).toBe(3);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("rejects empty string as number value", () => {
+    const r = parseFlags(["--count="], SPECS);
+    expect(r.errors).toEqual(['--count requires a numeric value, got ""']);
+  });
+
+  it("rejects hex as number value", () => {
+    const r = parseFlags(["--count", "0x10"], SPECS);
+    expect(r.errors).toEqual(['--count requires a numeric value, got "0x10"']);
+  });
+
+  it("rejects scientific notation as number value", () => {
+    const r = parseFlags(["--count", "1e3"], SPECS);
+    expect(r.errors).toEqual(['--count requires a numeric value, got "1e3"']);
+  });
+
+  it("rejects Infinity as number value", () => {
+    const r = parseFlags(["--count", "Infinity"], SPECS);
+    expect(r.errors).toEqual(['--count requires a numeric value, got "Infinity"']);
+  });
+
+  // Stdin sentinel and flag-value disambiguation
+  it("accepts bare - as string value (stdin sentinel)", () => {
+    const r = parseFlags(["--output", "-"], SPECS);
+    expect(r.flags.output).toBe("-");
+    expect(r.errors).toEqual([]);
+  });
+
+  it("rejects -letter as string value (short flag)", () => {
+    const r = parseFlags(["--output", "-x"], SPECS);
+    // -x rejected as value for --output, then processed as unknown flag
+    expect(r.errors).toEqual(["--output requires a value", "unknown flag: -x"]);
+  });
 });
