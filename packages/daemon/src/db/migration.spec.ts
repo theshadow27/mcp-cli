@@ -57,4 +57,37 @@ describe("addColumnIfMissing", () => {
       /invalid table identifier/,
     );
   });
+
+  it("rejects invalid column identifiers synchronously", () => {
+    const db = freshDb();
+    expect(() => addColumnIfMissing(db, "t", "has space", "ALTER TABLE t ADD COLUMN col TEXT")).toThrow(
+      /invalid column identifier/,
+    );
+    expect(() => addColumnIfMissing(db, "t", "col; DROP TABLE t--", "ALTER TABLE t ADD COLUMN col TEXT")).toThrow(
+      /invalid column identifier/,
+    );
+  });
+
+  it("rejects ddl that does not add the named column to the named table", () => {
+    const db = freshDb();
+    // wrong column name in ddl
+    expect(() => addColumnIfMissing(db, "t", "col_a", "ALTER TABLE t ADD COLUMN col_b TEXT")).toThrow(
+      /must add column/,
+    );
+    // wrong table name in ddl
+    expect(() => addColumnIfMissing(db, "t", "col", "ALTER TABLE other ADD COLUMN col TEXT")).toThrow(
+      /must add column/,
+    );
+  });
+
+  it("is case-insensitive when checking whether a column already exists", () => {
+    // SQLite identifiers are case-insensitive; PRAGMA returns stored case.
+    // A column created as "Name" must be found when checked with "name".
+    const db = new Database(":memory:");
+    db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, "Name" TEXT)');
+    addColumnIfMissing(db, "t", "name", "ALTER TABLE t ADD COLUMN name TEXT");
+    // PRAGMA should still show exactly one column whose lowercased name is "name"
+    const cols = (db.prepare("PRAGMA table_info(t)").all() as Array<{ name: string }>).map((r) => r.name);
+    expect(cols.filter((c) => c.toLowerCase() === "name")).toHaveLength(1);
+  });
 });
