@@ -3,8 +3,10 @@
  * @expect 1
  * @path packages/daemon/src/github/example.ts
  *
- * A query with two connections where only one has pageInfo should be flagged.
- * The rule must check per-connection, not per-template.
+ * A query where the first first: connection has pageInfo but a deeper one does
+ * not. The rule must inspect each connection individually, not clear a template
+ * once any connection passes. files(first:100) passes; contexts(first:50) fires.
+ * The intervening commits(last:1) is ignored — the rule only checks `first:`.
  */
 
 declare function graphql(query: string, variables?: Record<string, unknown>): Promise<unknown>;

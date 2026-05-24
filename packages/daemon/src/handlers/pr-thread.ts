@@ -77,7 +77,7 @@ interface GqlThread {
   id: string;
   isResolved: boolean;
   isOutdated: boolean;
-  comments: { nodes: GqlThreadComment[] };
+  comments: { pageInfo: { hasNextPage: boolean }; nodes: GqlThreadComment[] };
 }
 
 interface GqlReview {
@@ -199,7 +199,10 @@ export class PrThreadHandlers {
     const topLevelComments = pr.comments.nodes.map(mapComment).filter((c) => !isBotNoise(c));
 
     const truncated =
-      pr.reviewThreads.pageInfo.hasNextPage || pr.reviews.pageInfo.hasNextPage || pr.comments.pageInfo.hasNextPage;
+      pr.reviewThreads.pageInfo.hasNextPage ||
+      pr.reviews.pageInfo.hasNextPage ||
+      pr.comments.pageInfo.hasNextPage ||
+      pr.reviewThreads.nodes.some((t) => t.comments.pageInfo.hasNextPage);
 
     return {
       threads,

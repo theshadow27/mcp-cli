@@ -854,6 +854,7 @@ export class PrHandle {
       ...this.reqOpts(),
       method: "POST",
       body: {
+        // dotw-ignore gql-query-paginates: comments(first:1) is intentionally root-only; per-thread reply truncation is not a concern for this summary — full threads are handled by getPrThreadSnapshot
         query: `query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
@@ -863,7 +864,6 @@ export class PrHandle {
                   id
                   isResolved
                   comments(first: 1) {
-                    pageInfo { hasNextPage }
                     nodes {
                       author { login }
                       body
@@ -1165,14 +1165,17 @@ export class GhClient {
 
   async paginateGql<T>(
     query: string,
-    variables: Record<string, unknown>,
+    variables: Omit<Record<string, unknown>, "after">,
     selectConnection: (data: unknown) => GqlConnection<T>,
   ): Promise<T[]> {
     const allNodes: T[] = [];
     let cursor: string | null = null;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const vars = { ...variables, ...(cursor ? { after: cursor } : {}) };
+      // Spread variables first so our cursor always wins; the type already
+      // forbids `after` in the caller, but the strip guards against runtime drift.
+      const { after: _ignored, ...baseVars } = variables as Record<string, unknown>;
+      const vars = { ...baseVars, ...(cursor ? { after: cursor } : {}) };
       const data = await this.graphql(query, vars);
       const connection = selectConnection(data);
       allNodes.push(...connection.nodes);

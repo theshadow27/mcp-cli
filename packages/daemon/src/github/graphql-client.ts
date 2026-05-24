@@ -80,7 +80,6 @@ export function buildQuery(prNumbers: readonly number[]): string {
       autoMergeRequest { enabledAt }
       updatedAt
       commits(last: 1) {
-        pageInfo { hasNextPage }
         totalCount
         nodes {
           commit {
@@ -102,7 +101,6 @@ export function buildQuery(prNumbers: readonly number[]): string {
         }
       }
       reviews(last: 5) {
-        pageInfo { hasNextPage }
         nodes {
           state
           author { login }
@@ -171,7 +169,7 @@ interface RawPR {
       commit?: {
         statusCheckRollup?: {
           state?: string;
-          contexts?: { nodes?: RawCheckRun[] };
+          contexts?: { pageInfo?: { hasNextPage?: boolean }; nodes?: RawCheckRun[] };
         } | null;
       };
     }>;
@@ -193,6 +191,10 @@ function parsePR(raw: RawPR): PRStatus {
       conclusion: n.conclusion ?? null,
       checkSuiteId: n.checkSuite?.databaseId ?? null,
     }));
+
+  if (rollup?.contexts?.pageInfo?.hasNextPage) {
+    console.warn(`parsePR(#${raw.number}): CI contexts truncated at 50 — more check runs exist`);
+  }
 
   const reviews: Review[] = (raw.reviews?.nodes ?? [])
     .filter((r): r is RawReview & { state: string } => !!r.state)
