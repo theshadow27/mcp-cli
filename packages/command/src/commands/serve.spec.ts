@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
+import { pollUntil } from "../../../../test/harness";
 import { _resetJqStateForTesting } from "../jq/index";
 import { SERVE_SIZE_OK, SERVE_SIZE_TRUNCATE } from "../jq/jq-support";
 import {
@@ -356,18 +357,6 @@ describe("computeToolsFingerprint", () => {
 });
 
 // -- startToolListPoller --
-
-/**
- * Poll condition until it returns true or deadline passes.
- * Never use a fixed sleep to wait for async side effects — poll instead.
- */
-async function pollUntil(condition: () => boolean | undefined | null | number, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(POLL_MS);
-  }
-  if (!condition()) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
-}
 
 describe("startToolListPoller", () => {
   test("sends notification when tool list changes", async () => {

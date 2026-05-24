@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { silentLogger } from "@mcp-cli/core";
 import type { MonitorEvent } from "@mcp-cli/core";
+import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { EventBus } from "./event-bus";
 import { MONITOR_RESTART_POLICY, type MonitorAlias, MonitorRuntime, getMonitorBackoff } from "./monitor-runtime";
@@ -15,16 +16,6 @@ function writeMonitorScript(dir: string, name: string, source: string): string {
   const path = join(dir, `${name}.ts`);
   writeFileSync(path, source);
   return path;
-}
-
-async function pollUntil(condition: () => boolean, timeoutMs = 5_000, intervalMs = 50): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition() && Date.now() < deadline) {
-    await Bun.sleep(intervalMs);
-  }
-  if (!condition()) {
-    throw new Error(`pollUntil timed out after ${timeoutMs}ms`);
-  }
 }
 
 // ── getMonitorBackoff ──
