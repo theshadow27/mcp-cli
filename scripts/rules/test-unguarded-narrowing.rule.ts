@@ -55,7 +55,7 @@ function isDiscAssertCall(
   // expect(obj.disc).toBe(lit) or .toEqual(lit)
   if (!ts.isPropertyAccessExpression(call.expression)) return false;
   const method = call.expression.name.text;
-  if (method !== "toBe" && method !== "toEqual") return false;
+  if (method !== "toBe" && method !== "toEqual" && method !== "toStrictEqual") return false;
 
   const receiver = call.expression.expression;
   if (!ts.isCallExpression(receiver)) return false;
