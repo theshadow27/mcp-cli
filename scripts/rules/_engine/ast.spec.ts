@@ -70,6 +70,30 @@ describe("callsTo()", () => {
     expect(ast.callsTo("doElse").length).toBe(1);
   });
 
+  it('finds element-access calls like obj["name"]()', () => {
+    const ast = createAstHelper(
+      makeMeta(`
+      obj["doIt"]();
+      obj["doIt"](1, 2);
+      obj["other"]();
+      obj.doIt();
+    `),
+    );
+    expect(ast.callsTo("doIt").length).toBe(3);
+    expect(ast.callsTo("other").length).toBe(1);
+  });
+
+  it("ignores element-access with non-string-literal keys", () => {
+    const ast = createAstHelper(
+      makeMeta(`
+      const key = "foo";
+      obj[key]();
+      obj[42]();
+    `),
+    );
+    expect(ast.callsTo("foo")).toEqual([]);
+  });
+
   it("returns empty for no matches", () => {
     const ast = createAstHelper(makeMeta("const x = 1;"));
     expect(ast.callsTo("nonexistent")).toEqual([]);
@@ -126,7 +150,7 @@ describe("parent pointers", () => {
 });
 
 describe("ScriptKind selection", () => {
-  it("parses TSX content without errors when path ends in .tsx", () => {
+  it("parses TSX content as JSX when path ends in .tsx", () => {
     const ast = createAstHelper(
       makeMeta(
         `
@@ -135,11 +159,14 @@ describe("ScriptKind selection", () => {
         "/fake/component.tsx",
       ),
     );
-    expect(ast.sourceFile.parseDiagnostics.length).toBe(0);
+    const jsxElements = ast.findByKind(ts.SyntaxKind.JsxElement);
+    expect(jsxElements.length).toBeGreaterThan(0);
   });
 
   it("parses plain .ts with generics correctly", () => {
     const ast = createAstHelper(makeMeta("const fn = <T,>(x: T): T => x;"));
-    expect(ast.sourceFile.parseDiagnostics.length).toBe(0);
+    const arrowFns = ast.find(ts.isArrowFunction);
+    expect(arrowFns.length).toBe(1);
+    expect(arrowFns[0].typeParameters?.length).toBe(1);
   });
 });
