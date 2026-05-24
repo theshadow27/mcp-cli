@@ -4,10 +4,30 @@ MCP CLI — Model Context Preservation - call MCP server tools from the command 
 
 ## Quick Reference
 
+### Validation: `bun run am-i-done`
+
+`bun run am-i-done` is the **single command** for checking whether work is done — run it
+before committing. It runs typecheck, lint, the standalone arch checks (args-bounds,
+timeouts, teardown, phase-drift), and the full `doing-it-wrong` rule sweep, then tests and
+the coverage ratchet — in the optimal order, silent-first with clear output on failure. It
+is the **same command the pre-commit hook and CI both run**, so a local pass means a green
+PR; running a subset is how violations slip through. In a Claude/agent context it captures
+step output to `build/am-i-done-<ts>.txt` and surfaces only the path on failure (protects
+context budget).
+
+```bash
+bun run am-i-done              # full check: typecheck → lint → rules → tests → coverage
+bun run am-i-done --pre-commit # fast static subset (no tests/coverage) — what the hook runs
+```
+
+Run the individual steps **only to diagnose a specific `am-i-done` failure** or iterate on
+one concern — not as a substitute for the full check:
+
 ```bash
 bun install                  # install deps
-bun typecheck                # TypeScript validation
-bun lint                     # lint + format
+bun typecheck                # tsc -b validation (don't call tsc directly)
+bun lint                     # biome check + format (may reformat files — re-read after)
+bun run doing-it-wrong       # architecture rule sweep only (see Rules below)
 bun test                     # run tests
 bun build                    # compile binaries to dist/
 
@@ -16,6 +36,8 @@ bun dev:daemon               # run daemon directly
 bun dev:mcx -- ls            # run CLI directly
 bun dev:mcx -- call atlassian search '{"query":"test"}'
 ```
+
+`bun <script>` is interchangeable with `bun run <script>` for scripts that don't clash with native bun verbs.
 
 ## Architecture
 
@@ -58,7 +80,7 @@ packages/
 - **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
 - **Flaky test prevention**: see `test/CLAUDE.md` for required patterns. Never use `setTimeout` for waiting, never hardcode ports, always poll with deadlines instead of fixed delays.
 - **No shell interpolation**: never pass template literals with `${}` to `execSync` or `execFileSync` — use `spawnSync("cmd", [...args])` instead.
-- **Architectural rules**: `scripts/rules/*.rule.ts` enforced by `bun run doing-it-wrong` (also via pre-commit). Permanent exception: `// dotw-ignore <rule-id>: <reason>`. Temporary: `// dotw-todo <rule-id>: <desc> — fix in #NNN`. Rule sources are the canonical "what the rule means" docs. See `scripts/ROADMAP.md` for migration status.
+- **Architectural rules**: `scripts/rules/*.rule.ts`, swept by `bun run doing-it-wrong` and run as part of `bun run am-i-done` — wired into both the pre-commit hook and CI. Permanent exception: `// dotw-ignore <rule-id>: <reason>`. Temporary: `// dotw-todo <rule-id>: <desc> — fix in #NNN`. Rule sources are the canonical "what the rule means" docs. See `scripts/ROADMAP.md` for migration status.
 - **Duplication & abstraction**: choose the seam that fits the maintainer — **abstract the nouns (shared data contracts), duplicate the verbs (behavior); abstract what changes together, duplicate what changes independently.** Independently-evolving copies are fine; the cost to watch is an invariant drifting across mirrors. Rules should mechanize a real invariant rather than de-duplication on its own. See `docs/architecture/duplication.md`.
 - **Test time budget**: no single test file should take >5s in isolation. If it does, extract pure logic into unit tests or split the file. `scripts/check-coverage.ts` profiles every test file and warns on overages (does not block commits — see #812 for the replacement plan).
 - **No implementation code in index files**: `index.ts` is for barrel exports only. Entry points go in `main.ts` (or `main.tsx`). This keeps testable code separate from untestable process boilerplate.
