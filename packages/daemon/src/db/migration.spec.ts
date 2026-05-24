@@ -27,9 +27,17 @@ describe("addColumnIfMissing", () => {
     expect(columnNames(db, "t").filter((c) => c === "name")).toHaveLength(1);
   });
 
-  it("propagates errors from invalid DDL", () => {
+  it("rejects ddl that does not match the column/table pattern", () => {
     const db = freshDb();
-    expect(() => addColumnIfMissing(db, "t", "bad", "THIS IS NOT VALID SQL")).toThrow();
+    expect(() => addColumnIfMissing(db, "t", "bad", "THIS IS NOT VALID SQL")).toThrow(/must add column/);
+  });
+
+  it("propagates SQLite execution errors from the ddl", () => {
+    const db = freshDb();
+    // PRIMARY KEY columns cannot be added via ALTER TABLE — SQLite always rejects this.
+    expect(() =>
+      addColumnIfMissing(db, "t", "bad", "ALTER TABLE t ADD COLUMN bad INTEGER PRIMARY KEY"),
+    ).toThrow();
   });
 
   it("can add multiple columns sequentially", () => {

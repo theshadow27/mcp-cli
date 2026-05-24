@@ -63,7 +63,8 @@ const rule: CheckRule = {
 
       if (!containsThrow(stmt.catchClause.block)) {
         const { line, column } = ast.positionOf(stmt.catchClause);
-        violated(line, column, "catch without re-throw around ALTER TABLE … ADD COLUMN");
+        const snippet = file.content.split("\n")[line - 1]?.trim() ?? "";
+        violated(line, column, snippet);
       }
     }
   },
