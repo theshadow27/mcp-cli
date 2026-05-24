@@ -40,11 +40,6 @@ export class AuthHandlers {
         try {
           text = unwrapToolResult(result);
         } catch (e) {
-          // Auth tools that return no content (empty or non-text result) are
-          // still considered successful — only isError responses should fail.
-          if (e instanceof ToolResultError && e.message === "MCP tool result has no text content") {
-            return { ok: true, message: "Authenticated via auth tool" };
-          }
           const msg = e instanceof ToolResultError ? e.message : "auth tool returned an error";
           throw Object.assign(new Error(msg), { code: IPC_ERROR.INTERNAL_ERROR });
         }

@@ -18,13 +18,13 @@ describe("unwrapToolResult", () => {
     expect(() => unwrapToolResult(result)).toThrow("Unknown MCP tool error");
   });
 
-  it("throws when result has no text content block", () => {
+  it("returns empty string when result has no text content block", () => {
     const result = { content: [{ type: "image", text: "" }] };
-    expect(() => unwrapToolResult(result)).toThrow("no text content");
+    expect(unwrapToolResult(result)).toBe("");
   });
 
-  it("throws when result is null", () => {
-    expect(() => unwrapToolResult(null)).toThrow("no text content");
+  it("returns empty string when result is null", () => {
+    expect(unwrapToolResult(null)).toBe("");
   });
 
   it("joins multiple text blocks with newline", () => {
@@ -58,13 +58,25 @@ describe("unwrapToolResult", () => {
     }
   });
 
-  it("throws ToolResultError when content is not an array", () => {
-    expect(() => unwrapToolResult({ content: "bad" })).toThrow(ToolResultError);
-    expect(() => unwrapToolResult({ content: 42 })).toThrow(ToolResultError);
+  it("returns empty string when content is not an array", () => {
+    expect(unwrapToolResult({ content: "bad" })).toBe("");
+    expect(unwrapToolResult({ content: 42 })).toBe("");
   });
 
-  it("throws ToolResultError (not TypeError) when content is absent on error response", () => {
+  it("throws ToolResultError when content is absent on error response", () => {
     expect(() => unwrapToolResult({ isError: true })).toThrow(ToolResultError);
+  });
+
+  it("skips null/undefined elements in content array", () => {
+    expect(unwrapToolResult({ content: [null, undefined, { type: "text", text: "ok" }] })).toBe("ok");
+  });
+
+  it("skips non-object elements in content array", () => {
+    expect(unwrapToolResult({ content: [42, "str", { type: "text", text: "ok" }] })).toBe("ok");
+  });
+
+  it("skips elements where text is not a string", () => {
+    expect(unwrapToolResult({ content: [{ type: "text", text: 123 }] })).toBe("");
   });
 });
 
@@ -101,13 +113,20 @@ describe("unwrapToolResultJson", () => {
   });
 
   it("throws ToolResultError with cause on invalid JSON", () => {
-    const result = { content: [{ type: "text", text: "not json" }] };
+    expect.assertions(2);
     try {
-      unwrapToolResultJson(result);
-      throw new Error("should not reach");
+      unwrapToolResultJson({ content: [{ type: "text", text: "not json" }] });
     } catch (e) {
       expect(e).toBeInstanceOf(ToolResultError);
       expect((e as ToolResultError).cause).toBeInstanceOf(SyntaxError);
     }
+  });
+
+  it("throws ToolResultError when result has no text content", () => {
+    expect(() => unwrapToolResultJson({ content: [] })).toThrow("no text content");
+  });
+
+  it("skips malformed content elements when looking for text", () => {
+    expect(() => unwrapToolResultJson({ content: [null, 42] })).toThrow("no text content");
   });
 });
