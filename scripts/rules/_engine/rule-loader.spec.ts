@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadAllRules } from "./rule-loader";
-
-const RULES_DIR = join(import.meta.dir, "..");
 
 describe("loadAllRules", () => {
   it("loads rules from the default directory", async () => {
@@ -40,7 +38,7 @@ describe("loadAllRules", () => {
         join(tmp, "dup-b.rule.ts"),
         `export default { id: "dup-test", kind: "pattern", scold: "b", guidance: [], pattern: /y/ };`,
       );
-      await expect(loadAllRules(tmp)).rejects.toThrow(/duplicate rule\.id 'dup-test'/);
+      await expect(loadAllRules(tmp)).rejects.toThrow(/duplicate rule\.id 'dup-test' in .+ \(already defined in .+\)/);
     } finally {
       await rm(tmp, { recursive: true });
     }
@@ -51,6 +49,45 @@ describe("loadAllRules", () => {
     try {
       await writeFile(join(tmp, "bad.rule.ts"), `export default "not a rule";`);
       await expect(loadAllRules(tmp)).rejects.toThrow(/not a Rule/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a pattern rule missing a RegExp", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "pattern", scold: "x", guidance: [] };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/missing a 'pattern' RegExp/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a check rule missing a check function", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "check", scold: "x", guidance: [] };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/missing a 'check' function/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a rule with unknown kind", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "banana", scold: "x", guidance: [] };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/unknown kind 'banana'/);
     } finally {
       await rm(tmp, { recursive: true });
     }

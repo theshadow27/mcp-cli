@@ -41,6 +41,7 @@ export interface RunRulesResult {
   violations: Violation[];
   malformedTodos: MalformedTodo[];
   unknownRule: boolean;
+  ruleCount: number;
   durationMs: number;
 }
 
@@ -53,7 +54,7 @@ export async function runRules(
   const rules = opts.ruleId ? allRules.filter((r) => r.id === opts.ruleId) : allRules;
   if (opts.ruleId && rules.length === 0) {
     logger.error(`rule '${opts.ruleId}' not registered. known: ${allRules.map((r) => r.id).join(", ")}`);
-    return { violations: [], malformedTodos: [], unknownRule: true, durationMs: 0 };
+    return { violations: [], malformedTodos: [], unknownRule: true, ruleCount: 0, durationMs: 0 };
   }
 
   const files = await loadFiles({ repoRoot: REPO_ROOT, filter: opts.filter });
@@ -79,7 +80,7 @@ export async function runRules(
     }
   }
 
-  return { violations, malformedTodos, unknownRule: false, durationMs: Date.now() - t0 };
+  return { violations, malformedTodos, unknownRule: false, ruleCount: allRules.length, durationMs: Date.now() - t0 };
 }
 
 function reportMalformedTodos(malformedTodos: MalformedTodo[], logger: Pick<Console, "warn">): void {
@@ -102,8 +103,8 @@ export const doingItWrongStep: ScriptFunction = async ({ logger }) => {
 };
 
 async function main(argv: string[]): Promise<void> {
-  const allRules = await loadAllRules();
   if (argv.includes("--list")) {
+    const allRules = await loadAllRules();
     process.stdout.write(`${allRules.map((r) => `${r.id}\t${r.scold}`).join("\n")}\n`);
     return;
   }
@@ -117,7 +118,7 @@ async function main(argv: string[]): Promise<void> {
   const result = await runRules(opts, console);
   reportViolations(result.violations, { logger: console, showAll: opts.showAll });
   reportMalformedTodos(result.malformedTodos, console);
-  console.info(`\nchecked ${allRules.length} rule${allRules.length === 1 ? "" : "s"} in ${result.durationMs}ms`);
+  console.info(`\nchecked ${result.ruleCount} rule${result.ruleCount === 1 ? "" : "s"} in ${result.durationMs}ms`);
   process.exit(result.unknownRule || result.violations.length > 0 ? 1 : 0);
 }
 
