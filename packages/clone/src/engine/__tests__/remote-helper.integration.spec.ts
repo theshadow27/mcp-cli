@@ -19,6 +19,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { createExportHandler } from "../export-transaction";
 import { type RemoteHelperHandlers, runProtocol } from "../remote-protocol";
 import { type MockProvider, createMockProvider } from "./mock-provider";
 
@@ -62,16 +63,25 @@ function makeHandlers(
   provider: MockProvider,
   counts: HandlerCounts = { listCalls: 0, importCalls: 0, exportCalls: 0, listForPushCalls: 0, importedRefs: [] },
 ): { handlers: RemoteHelperHandlers; counts: HandlerCounts } {
+  const scope = { key: "test", cloudId: "mock-cloud", resolved: {} };
+
+  const handleExport = createExportHandler({
+    provider,
+    scope,
+    resolvePath: (path) => {
+      const entry = provider.state.get(path);
+      if (!entry || entry.deleted) return undefined;
+      return { id: path, version: entry.version };
+    },
+  });
+
   const handlers: RemoteHelperHandlers = {
     list: async (forPush) => {
       counts.listCalls++;
       if (forPush) counts.listForPushCalls++;
-      // Emulate what the real list will look like: one ref per entry under
-      // refs/heads/main, with HEAD pointing at main. Deleted entries are
-      // omitted so the caller observes the deletion.
-      const scope = await provider.resolveScope({ key: "test" });
+      const resolvedScope = await provider.resolveScope({ key: "test" });
       const refs: string[] = [];
-      const iter = provider.list(scope);
+      const iter = provider.list(resolvedScope);
       let any = false;
       for await (const entry of iter) {
         if (!any) {
@@ -82,7 +92,6 @@ function makeHandlers(
         refs.push(`? refs/mcx/${entry.id}`);
       }
       if (!any) {
-        // Empty repo: just HEAD symref so git can clone into an empty repo.
         refs.push("@refs/heads/main HEAD");
       }
       return `${refs.join("\n")}\n`;
@@ -90,20 +99,11 @@ function makeHandlers(
     handleImport: async (refs) => {
       counts.importCalls++;
       counts.importedRefs = refs;
-      // Emit a minimal done marker; the real handler (PR #1257) emits a full
-      // fast-import stream. This stub exists so the protocol loop can be
-      // exercised end-to-end without depending on unmerged code.
       return "done\n";
     },
     handleExport: async (stdin) => {
       counts.exportCalls++;
-      // Drain the stream so the pipeline completes.
-      const reader = stdin.getReader();
-      while (true) {
-        const { done } = await reader.read();
-        if (done) break;
-      }
-      return "ok refs/heads/main\n\n";
+      return handleExport(stdin);
     },
   };
   return { handlers, counts };
@@ -206,16 +206,123 @@ describe("t5801 fetch", () => {
 // ── t5801: Push (10 tests) ────────────────────────────────────────
 
 describe("t5801 push", () => {
-  test.todo("t5801-14: push single commit (needs #1212 export handler)", () => {});
-  test.todo("t5801-15: push multiple commits (needs #1212)", () => {});
-  test.todo("t5801-16: push creates content on remote — provider.create called (needs #1212)", () => {});
-  test.todo("t5801-17: push deletes content on remote — provider.delete called (needs #1212)", () => {});
-  test.todo("t5801-18: push modified content — provider.push with version (needs #1212)", () => {});
-  test.todo("t5801-19: push rejected on non-fast-forward — version conflict (needs #1212)", () => {});
-  test.todo("t5801-20: force push (needs #1212)", () => {});
-  test.todo("t5801-21: push with tags (needs #1212)", () => {});
-  test.todo("t5801-22: push to new branch (needs #1212)", () => {});
-  test.todo("t5801-23: push deletion (`:refs/heads/branch`) (needs #1212)", () => {});
+  function fastImportStream(commits: Array<{ ref: string; changes: string }>): string {
+    const parts: string[] = [];
+    for (const c of commits) {
+      parts.push(`commit ${c.ref}`);
+      parts.push("committer Test <test@test.com> 1700000000 +0000");
+      parts.push("data 5");
+      parts.push("test\n");
+      parts.push(c.changes);
+      parts.push("");
+    }
+    parts.push("done\n");
+    return parts.join("\n");
+  }
+
+  function modifyChange(path: string, content: string): string {
+    const bytes = new TextEncoder().encode(content);
+    return `M 100644 inline ${path}\ndata ${bytes.length}\n${content}`;
+  }
+
+  test("t5801-14: push single commit updates remote content", async () => {
+    const provider = createMockProvider({
+      entries: { "README.md": { content: "# Hello", version: 1 } },
+    });
+
+    const stream = fastImportStream([{ ref: "refs/heads/main", changes: modifyChange("README.md", "# Updated") }]);
+
+    const { output, counts } = await runWith(`export\n${stream}`, provider);
+    expect(counts.exportCalls).toBe(1);
+    expect(output).toContain("ok refs/heads/main");
+    expect(provider.state.get("README.md")?.content).toBe("# Updated");
+  });
+
+  test("t5801-15: push multiple commits processes in order", async () => {
+    const provider = createMockProvider({
+      entries: { "a.md": { content: "v1", version: 1 } },
+    });
+
+    const stream = fastImportStream([
+      { ref: "refs/heads/main", changes: modifyChange("a.md", "v2") },
+      { ref: "refs/heads/main", changes: modifyChange("a.md", "v3") },
+    ]);
+
+    const { output } = await runWith(`export\n${stream}`, provider);
+    expect(output).toContain("ok refs/heads/main");
+    expect(provider.state.get("a.md")?.content).toBe("v3");
+    expect(provider.state.get("a.md")?.version).toBe(3);
+  });
+
+  test("t5801-16: push creates content on remote — provider.create called", async () => {
+    const provider = createMockProvider({ entries: {} });
+
+    const stream = fastImportStream([{ ref: "refs/heads/main", changes: modifyChange("new-page.md", "# Brand New") }]);
+
+    const { output } = await runWith(`export\n${stream}`, provider);
+    expect(output).toContain("ok refs/heads/main");
+    expect(provider.calls.create).toBe(1);
+    const created = [...provider.state.values()].find((e) => e.content === "# Brand New");
+    expect(created).toBeDefined();
+  });
+
+  test("t5801-17: push deletes content on remote — provider.delete called", async () => {
+    const provider = createMockProvider({
+      entries: { "page.md": { content: "doomed", version: 1 } },
+    });
+
+    const stream = fastImportStream([{ ref: "refs/heads/main", changes: "D page.md" }]);
+
+    const { output } = await runWith(`export\n${stream}`, provider);
+    expect(output).toContain("ok refs/heads/main");
+    expect(provider.calls.delete).toBe(1);
+  });
+
+  test("t5801-18: push modified content sends version for optimistic concurrency", async () => {
+    const provider = createMockProvider({
+      entries: { "doc.md": { content: "original", version: 3 } },
+    });
+
+    const stream = fastImportStream([{ ref: "refs/heads/main", changes: modifyChange("doc.md", "edited") }]);
+
+    const { output } = await runWith(`export\n${stream}`, provider);
+    expect(output).toContain("ok refs/heads/main");
+    expect(provider.state.get("doc.md")?.content).toBe("edited");
+    expect(provider.state.get("doc.md")?.version).toBe(4);
+  });
+
+  test("t5801-19: push rejected on version conflict — ref reports error", async () => {
+    const provider = createMockProvider({
+      entries: { "doc.md": { content: "v2", version: 2 } },
+    });
+
+    const { handlers, counts } = makeHandlers(provider);
+
+    const handleExportWithStaleVersion = createExportHandler({
+      provider,
+      scope: { key: "test", cloudId: "mock-cloud", resolved: {} },
+      resolvePath: (path) => (path === "doc.md" ? { id: "doc.md", version: 1 } : undefined),
+    });
+
+    handlers.handleExport = async (stdin) => {
+      counts.exportCalls++;
+      return handleExportWithStaleVersion(stdin);
+    };
+
+    const stream = fastImportStream([{ ref: "refs/heads/main", changes: modifyChange("doc.md", "conflicting edit") }]);
+
+    const stdin = streamFrom(`export\n${stream}`);
+    const { stream: outStream, result } = collectStream();
+    await runProtocol(stdin, outStream, handlers, { marksDir: MARKS_DIR });
+
+    expect(result()).toContain("error refs/heads/main");
+    expect(provider.state.get("doc.md")?.content).toBe("v2");
+  });
+
+  test.todo("t5801-20: force push (needs force-push semantics)", () => {});
+  test.todo("t5801-21: push with tags (tags not supported)", () => {});
+  test.todo("t5801-22: push to new branch (needs branch tracking)", () => {});
+  test.todo("t5801-23: push deletion (`:refs/heads/branch`) (needs ref deletion)", () => {});
 
   test("t5801 export command routes to handleExport", async () => {
     const provider = createMockProvider({ entries: { a: { content: "a", version: 1 } } });

@@ -87,6 +87,8 @@ export class ExportTransaction {
   private committed = false;
   private rolledBack = false;
   private hasStageErrors = false;
+  /** Refs that saw `deleteall` — external path resolution is bypassed only for these refs. */
+  private readonly treeClearedRefs = new Set<string>();
 
   constructor(opts: ExportTransactionOptions) {
     this.opts = opts;
@@ -114,7 +116,8 @@ export class ExportTransaction {
     return errors;
   }
 
-  private resolvePath(path: string): { id: string; version: number } | undefined {
+  private resolvePath(path: string, ref: string): { id: string; version: number } | undefined {
+    if (this.treeClearedRefs.has(ref)) return this.versionOverrides.get(path);
     return this.versionOverrides.get(path) ?? this.opts.resolvePath(path);
   }
 
@@ -122,7 +125,14 @@ export class ExportTransaction {
     const { provider } = this.opts;
 
     if (change.type === "deleteall") {
-      return { ref, ok: false, error: "deleteall not supported in export transactions" };
+      this.treeClearedRefs.add(ref);
+      for (const [path, idx] of this.pendingCreates) {
+        if (this.staged[idx].ref === ref) {
+          this.removedIndices.add(idx);
+          this.pendingCreates.delete(path);
+        }
+      }
+      return undefined;
     }
 
     if (change.type === "delete") {
@@ -135,7 +145,7 @@ export class ExportTransaction {
       if (!provider.delete) {
         return { ref, ok: false, error: "provider does not support delete" };
       }
-      const entry = this.resolvePath(change.path);
+      const entry = this.resolvePath(change.path, ref);
       if (!entry) {
         return { ref, ok: false, error: `cannot delete unknown path: ${change.path}` };
       }
@@ -151,15 +161,15 @@ export class ExportTransaction {
     const decoded = new TextDecoder().decode(change.content);
     const { content: body, fields } = stripFrontmatter(decoded);
 
-    // Coalesce with a pending create for the same path
+    // Coalesce with a pending create for the same path (same ref only)
     const pendingIdx = this.pendingCreates.get(change.path);
-    if (pendingIdx != null) {
+    if (pendingIdx != null && this.staged[pendingIdx].ref === ref) {
       const pending = this.staged[pendingIdx] as StagedOp & { type: "create" };
       pending.content = body;
       return undefined;
     }
 
-    const entry = this.resolvePath(change.path);
+    const entry = this.resolvePath(change.path, ref);
     if (entry) {
       if (!provider.push) {
         return { ref, ok: false, error: "provider does not support push" };
