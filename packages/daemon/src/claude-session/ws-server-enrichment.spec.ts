@@ -146,7 +146,7 @@ describe("session.result/session.idle enrichment (integration)", () => {
       ws.send(assistantMessage(sessionId)); // accumulates 150 tokens
       ws.send(resultMessage(sessionId, "task done", 0.042, 3));
 
-      await pollUntil(() => events.idle.length >= 1, 5000);
+      await pollUntil(() => events.idle.length >= 1);
     } finally {
       ws.close();
     }
@@ -197,7 +197,7 @@ describe("session.result/session.idle enrichment (integration)", () => {
       ws.send(systemInitMessage(sessionId));
       ws.send(resultMessage(sessionId, longResult, 0.001, 1));
 
-      await pollUntil(() => events.idle.length >= 1, 5000);
+      await pollUntil(() => events.idle.length >= 1);
     } finally {
       ws.close();
     }
@@ -243,7 +243,7 @@ describe("session.result/session.idle enrichment (integration)", () => {
       ws.send(systemInitMessage(sessionId));
       ws.send(resultMessage(sessionId, "line one\nline two\nline three", 0.001, 1));
 
-      await pollUntil(() => events.idle.length >= 1, 5000);
+      await pollUntil(() => events.idle.length >= 1);
     } finally {
       ws.close();
     }

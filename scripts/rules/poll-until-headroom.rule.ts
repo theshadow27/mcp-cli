@@ -1,22 +1,45 @@
 /**
  * Rule: poll-until-headroom
  *
- * `pollUntil` defaults to a 5000ms timeout — exactly Bun's per-test watchdog.
- * Under CI resource pressure, the watchdog fires before `pollUntil`'s own
- * descriptive error, producing a flake with a useless message.
+ * The invariant: a `pollUntil` deadline must sit safely *below* Bun's 5000ms
+ * per-test watchdog, so pollUntil's own descriptive error wins the race over
+ * the generic "test timed out". A deadline at or above the watchdog can never
+ * fire — the watchdog kills the test first, producing a flake with a useless
+ * message under CI pressure.
  *
- * Flag:
- *   (a) `pollUntil(fn)` — no explicit timeout, relying on the 5000ms default
- *   (b) `pollUntil(fn, N)` where N ≥ 5000 — at or above the watchdog limit
+ * Flag `pollUntil(fn, N)` where N ≥ the file's effective test watchdog — a
+ * deadline at or above it can never fire its own error. The watchdog is Bun's
+ * 5000ms default, or the file's `setDefaultTimeout(N)` when larger: a slow
+ * suite that raises the test timeout to 30s may legitimately poll for 10s.
  *
- * A condition should resolve in milliseconds, not seconds. Give the poll a
- * short deadline (hundreds of ms to ~1s), never one that flirts with the
- * test timeout.
+ * Calls with *no* explicit timeout are NOT flagged: the harness default is
+ * 1500ms (#2273), well under the watchdog, so the bare call is the correct,
+ * idiomatic form. Don't sprinkle per-test timeouts — fix the default once and
+ * rely on it (Bun's own discipline: a sane default + file-level
+ * `setDefaultTimeout` for genuinely-slow suites, never per-call deadlines).
+ * If a condition genuinely needs ≥5000ms, raise the file's `setDefaultTimeout`
+ * above it and pass the matching explicit deadline — a deadline ≥ the test
+ * timeout is otherwise a no-op.
  */
 
 import type { CheckRule } from "./_engine/rule";
 
-const BUN_DEFAULT_TIMEOUT = 5000;
+const BUN_TEST_WATCHDOG_MS = 5000;
+
+/**
+ * The effective per-test watchdog for a file: Bun's 5000ms default, raised to
+ * the largest `setDefaultTimeout(N)` literal the file declares. A pollUntil
+ * deadline must stay below this to surface its own error.
+ */
+function effectiveWatchdog(content: string): number {
+  let max = BUN_TEST_WATCHDOG_MS;
+  const re = /setDefaultTimeout\(\s*([0-9_.]+)\s*\)/g;
+  for (const m of content.matchAll(re)) {
+    const n = parseNumericLiteral(m[1]);
+    if (n !== null && n > max) max = n;
+  }
+  return max;
+}
 
 /**
  * Starting from the `(` at `lines[startLine][parenOffset]`, collect the
@@ -89,10 +112,11 @@ const rule: CheckRule = {
   id: "poll-until-headroom",
   kind: "check",
   scold:
-    "pollUntil() called with no explicit timeout or a timeout ≥ Bun's 5000ms test watchdog — flaky under CI pressure",
+    "pollUntil() called with a timeout ≥ Bun's 5000ms test watchdog — the watchdog fires first, so this deadline never surfaces its own error (flaky under CI pressure)",
   guidance: [
-    "pass a short explicit deadline: pollUntil(fn, 4000) — leave headroom so pollUntil's own error surfaces",
-    "a condition should resolve in milliseconds, not seconds; if you need 4+ seconds the test waits on time, not a condition",
+    "drop the explicit timeout and rely on the 1500ms harness default — it already has ample headroom under the watchdog",
+    "a condition should resolve in milliseconds, not seconds; if you need ≥5s the test waits on time, not a condition",
+    "if a suite is genuinely slow, raise the file's setDefaultTimeout above the deadline — a deadline ≥ the test timeout is a no-op",
     'quote from Bun\'s own test discipline: "You are not testing the TIME PASSING, you are testing the CONDITION"',
     "cross-reference test/CLAUDE.md flaky-prevention patterns",
   ],
@@ -100,6 +124,7 @@ const rule: CheckRule = {
   check({ file, violated }) {
     if (!file.isTest) return;
 
+    const watchdog = effectiveWatchdog(file.content);
     const lines = file.content.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
@@ -116,15 +141,19 @@ const rule: CheckRule = {
       const inner = callText.slice(1, -1);
       const commaIdx = firstTopLevelComma(inner);
 
-      if (commaIdx === -1) {
-        // No second argument — relying on default 5000ms
+      // No second argument → relies on the safe 1500ms harness default — clean.
+      if (commaIdx === -1) continue;
+
+      // Explicit numeric deadline at or above the watchdog can never fire its
+      // own error — the watchdog kills the test first. Bound the second arg at
+      // the next top-level comma so a trailing comma or a third argument
+      // (intervalMs) doesn't defeat the numeric parse.
+      const rest = inner.slice(commaIdx + 1);
+      const nextComma = firstTopLevelComma(rest);
+      const secondArg = (nextComma === -1 ? rest : rest.slice(0, nextComma)).trim();
+      const num = parseNumericLiteral(secondArg);
+      if (num !== null && num >= watchdog) {
         violated(i + 1, pollIdx + 1, line.trim());
-      } else {
-        const secondArg = inner.slice(commaIdx + 1).trim();
-        const num = parseNumericLiteral(secondArg);
-        if (num !== null && num >= BUN_DEFAULT_TIMEOUT) {
-          violated(i + 1, pollIdx + 1, line.trim());
-        }
       }
     }
   },

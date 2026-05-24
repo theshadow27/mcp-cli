@@ -1707,7 +1707,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid), 10_000);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }
@@ -1745,7 +1745,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.closeAll();
 
-      await pollUntil(() => !isAlive(pid), 10_000);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }
@@ -1821,7 +1821,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
       // killPid would never be called, leaving the process alive.
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid), 10_000);
+      await pollUntil(() => !isAlive(pid));
     } finally {
       forceKill(pid);
     }
