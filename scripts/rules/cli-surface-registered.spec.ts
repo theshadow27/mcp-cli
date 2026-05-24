@@ -52,12 +52,15 @@ describe("cli-surface-registered cross-file", () => {
   });
 
   it("skips nested switches (only outer dispatch checked)", () => {
+    // Inner switch uses the SAME discriminant (`command`) so the isNested
+    // guard — not just the expression filter — is what prevents "kill" from
+    // being checked against SUBCOMMANDS.
     const main = makeFile(
       "packages/command/src/main.ts",
       `const SUBCOMMANDS = ["serve"] as const;
       switch (command) {
         case "serve":
-          switch (sub) {
+          switch (command) {
             case "kill": break;
           }
           break;
