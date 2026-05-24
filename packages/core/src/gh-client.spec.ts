@@ -1031,6 +1031,110 @@ describe("graphql", () => {
   });
 });
 
+// ── paginateGql ──
+
+describe("paginateGql", () => {
+  const selectConnection = (data: unknown) =>
+    (
+      data as {
+        repository: {
+          items: { nodes: Array<{ id: number }>; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+        };
+      }
+    ).repository.items;
+
+  test("accumulates nodes across multiple pages", async () => {
+    let callIdx = 0;
+    const fn = async (): Promise<Response> => {
+      callIdx++;
+      if (callIdx === 1) {
+        return new Response(
+          JSON.stringify({
+            data: { repository: { items: { nodes: [{ id: 1 }], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: { repository: { items: { nodes: [{ id: 2 }], pageInfo: { hasNextPage: false, endCursor: "c2" } } } },
+        }),
+        { status: 200 },
+      );
+    };
+
+    const client = makeClient({ fetch: fn as unknown as typeof globalThis.fetch });
+    const result = await client.paginateGql<{ id: number }>("query { ... }", {}, selectConnection);
+
+    expect(result).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(callIdx).toBe(2);
+  });
+
+  test("returns single page when hasNextPage is false", async () => {
+    const { fn } = mockFetch([
+      {
+        status: 200,
+        body: {
+          data: { repository: { items: { nodes: [{ id: 1 }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+        },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+    const result = await client.paginateGql<{ id: number }>("query { ... }", {}, selectConnection);
+
+    expect(result).toEqual([{ id: 1 }]);
+  });
+
+  test("throws GhValidationError when hasNextPage is true but endCursor is null", async () => {
+    const { fn } = mockFetch([
+      {
+        status: 200,
+        body: {
+          data: { repository: { items: { nodes: [{ id: 1 }], pageInfo: { hasNextPage: true, endCursor: null } } } },
+        },
+      },
+    ]);
+
+    const client = makeClient({ fetch: fn });
+
+    try {
+      await client.paginateGql("query { ... }", {}, selectConnection);
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GhValidationError);
+      expect((err as GhValidationError).message).toContain("endCursor is null");
+    }
+  });
+
+  test("throws GhPageCapError when MAX_PAGES is exhausted", async () => {
+    let callCount = 0;
+    const alwaysNextFn = async (): Promise<Response> => {
+      callCount++;
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              items: { nodes: [{ id: callCount }], pageInfo: { hasNextPage: true, endCursor: `c${callCount}` } },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    };
+
+    const client = makeClient({ fetch: alwaysNextFn as unknown as typeof globalThis.fetch });
+
+    try {
+      await client.paginateGql("query { ... }", {}, selectConnection);
+      expect.unreachable("should have thrown GhPageCapError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GhPageCapError);
+      expect((err as GhPageCapError).message).toContain("MAX_PAGES");
+    }
+  });
+});
+
 // ── REST escape hatch ──
 
 describe("rest", () => {

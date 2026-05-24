@@ -28,6 +28,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
           isResolved
           isOutdated
           comments(first: 50) {
+            pageInfo { hasNextPage }
             nodes {
               databaseId
               body
