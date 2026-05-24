@@ -148,6 +148,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 
   for (let i = 2; i < args.length; i++) {
     const arg = args[i];
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (arg === "--cloud-id" && args[i + 1]) {
       // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       cloudId = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
@@ -211,6 +212,7 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   const filteredArgs: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--full") continue;
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (args[i] === "--depth" && args[i + 1]) {
       // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       depth = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283

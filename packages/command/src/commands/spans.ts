@@ -69,6 +69,7 @@ function printSpan(span: SpanRow): void {
 function extractNumericFlag(args: string[], flag: string): number | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1 || idx + 1 >= args.length) return undefined;
+  // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
   const val = Number(args[idx + 1]);
   return Number.isFinite(val) ? val : undefined;
 }

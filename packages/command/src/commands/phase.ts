@@ -930,6 +930,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--arg") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const pair = argv[++i];
       if (!pair) {
         d.logError("--arg requires a key=val argument");
@@ -1095,6 +1096,7 @@ export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--arg") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const pair = argv[++i];
       if (!pair) throw new Error("--arg requires a key=val argument");
       const eq = pair.indexOf("=");
@@ -1110,6 +1112,7 @@ export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
       if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
       cliArgs[key] = pair.slice(eq + 1);
     } else if (a === "--input") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       inputJson = argv[++i] ?? null;
       if (inputJson === null) throw new Error("--input requires a JSON argument");
     } else if (a.startsWith("--input=")) {

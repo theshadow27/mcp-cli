@@ -165,4 +165,10 @@ describe("parseFlags", () => {
     const r = parseFlags([], SPECS);
     expect(r.flags.env).toEqual([]);
   });
+
+  it("throws if repeatable is set on a non-string type", () => {
+    expect(() => parseFlags([], { count: { type: "number", repeatable: true } })).toThrow(
+      'flag --count: repeatable is only supported for type "string"',
+    );
+  });
 });

@@ -10,7 +10,7 @@
 export function legacyParser(args: string[]): void {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--name") {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2250
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const val = args[++i];
       console.log(val);
     }

@@ -134,6 +134,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   const automationIdx = args.indexOf("--automation");
   let automationOverrides: string | undefined;
   if (automationIdx >= 0) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     automationOverrides = args[automationIdx + 1];
     if (!automationOverrides || automationOverrides.startsWith("--")) {
       printError("--automation requires a value (e.g. merge=false,bind=true)");
@@ -149,6 +150,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
 
   const branchIdx = args.indexOf("--branch");
   if (branchIdx >= 0) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     const branch = args[branchIdx + 1];
     if (!branch || branch.startsWith("--")) {
       printError("Usage: mcx track --branch <name>");
@@ -329,6 +331,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   if (phaseIdx >= 0) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     const raw = args[phaseIdx + 1];
     if (!raw || raw.startsWith("--")) {
       const valid = declaredPhases ?? WORK_ITEM_PHASES;

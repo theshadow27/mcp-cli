@@ -689,6 +689,7 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
         model = resolveModelName(val);
       }
     } else if (arg === "--allow") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
         allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283

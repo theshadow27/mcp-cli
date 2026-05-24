@@ -21,9 +21,12 @@ export function parseFlags(argv: string[], specs: Record<string, FlagSpec>): Par
   const byShort = new Map<string, { key: string; spec: FlagSpec }>();
 
   for (const [key, spec] of Object.entries(specs)) {
+    if (spec.repeatable && spec.type !== "string") {
+      throw new Error(`flag --${key}: repeatable is only supported for type "string"`);
+    }
     byLong.set(`--${key}`, { key, spec });
     if (spec.alias) byShort.set(`-${spec.alias}`, { key, spec });
-    if (spec.repeatable && spec.type === "string") flags[key] = [];
+    if (spec.repeatable) flags[key] = [];
   }
 
   let stopFlags = false;

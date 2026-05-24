@@ -71,6 +71,7 @@ export function parseSharedSpawnArgs(
       task = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!task) error = "--task requires a value";
     } else if (arg === "--allow") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
         // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
         allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
