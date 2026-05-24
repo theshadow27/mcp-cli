@@ -57,6 +57,17 @@ classify_files <<< "$staged_files"
 # FULL doing-it-wrong rule sweep (all rules, not just shell-injection). CI runs
 # the identical command, so local and CI share one static definition of done
 # (#2344). Source changes additionally run the test + coverage gate.
+#
+# am-i-done shells out to tsc/biome directly (no `bun install` step), so a
+# fresh checkout (or a lockfile change) would hit "command not found". Mirror
+# CI by ensuring deps are installed before invoking it.
+if $has_source || $has_config; then
+  if [ ! -d node_modules ] || $has_config; then
+    echo "  bun install --frozen-lockfile..."
+    bun install --frozen-lockfile
+  fi
+fi
+
 if $has_source; then
   echo "Running pre-commit checks (source changes detected)..."
 

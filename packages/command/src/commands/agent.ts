@@ -174,7 +174,10 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
       return result.messages[0] ?? null;
     },
     exec: (cmd, opts) => {
-      const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env: opts?.env });
+      // spawnCaptureSync replaces the env when provided; merge with process.env
+      // here so callers that pass a few extra vars still inherit PATH etc.
+      const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
+      const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
       return {
         stdout: result.stdout.trim(),
         stderr: result.stderr.trim(),

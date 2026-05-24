@@ -134,13 +134,15 @@ export function clearFindGitRootCache(): void {
 export function findGitRoot(cwd: string = process.cwd()): string | null {
   if (gitRootCache.has(cwd)) return gitRootCache.get(cwd) as string | null;
 
-  // Note: gitDiscoverEnv() strips hook-injected GIT_DIR/GIT_WORK_TREE vars, but
-  // spawnCaptureSync does not accept a custom env. In practice this function is
-  // called outside of git hooks, so inheriting process.env is safe.
+  // gitDiscoverEnv() strips hook-injected GIT_DIR/GIT_WORK_TREE vars so that
+  // when findGitRoot runs from inside a git hook, filesystem-based discovery
+  // isn't overridden by the hook's environment.
+  const env = gitDiscoverEnv();
   let result: string | null = null;
   try {
     const top = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
       timeoutMs: 5000,
+      env,
     });
     if (top.exitCode === 0) {
       const toplevel = top.stdout.trim();
@@ -150,6 +152,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
       }
       const gitDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-dir"], {
         timeoutMs: 5000,
+        env,
       });
       if (gitDir.exitCode === 0) {
         const gitDirStr = gitDir.stdout.trim();
@@ -159,6 +162,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
         if (gitDirStr.includes("/worktrees/")) {
           const commonDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
             timeoutMs: 5000,
+            env,
           });
           if (commonDir.exitCode === 0) {
             const commonDirAbs = resolve(cwd, commonDir.stdout.trim());
@@ -177,6 +181,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
       // Bare repo fallback — no working tree, use the common dir directly.
       const common = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
         timeoutMs: 5000,
+        env,
       });
       if (common.exitCode === 0) {
         const commonDir = common.stdout.trim();

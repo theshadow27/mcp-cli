@@ -248,6 +248,9 @@ function clearTokenCache(): void {
 async function execGhAuthToken(): Promise<string> {
   const result = await spawnCapture("gh", ["auth", "token"]);
   if (!result.ok) {
+    if (result.exitCode === null) {
+      throw new GhAuthError("failed to spawn gh (not found on PATH?). Install GitHub CLI or set GH_TOKEN.");
+    }
     throw new GhAuthError(
       `gh auth token failed (exit ${result.exitCode}): ${result.stderr.trim()}. Run \`gh auth login\` or set GH_TOKEN.`,
     );

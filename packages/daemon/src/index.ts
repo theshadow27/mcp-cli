@@ -157,7 +157,7 @@ function defaultGitOps(): PruneGitOps {
   const run = (cmd: string[]) => {
     const first = cmd[0];
     if (!first) throw new Error("git cmd array must be non-empty");
-    const r = spawnCaptureSync(first, cmd.slice(1));
+    const r = spawnCaptureSync(first, cmd.slice(1), { env: cleanEnv });
     // exitCode null means the process was killed or failed to start — treat as failure (1)
     return { exitCode: r.exitCode !== null ? r.exitCode : 1, stdout: r.stdout.trim() };
   };

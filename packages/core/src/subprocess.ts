@@ -39,16 +39,24 @@ async function drainStream(stream: ReadableStream, maxBytes: number): Promise<{ 
   return { text: Buffer.concat(parts).toString("utf8"), truncated };
 }
 
+/**
+ * `env` is passed through to Bun.spawn unchanged: when provided, it REPLACES
+ * the child's environment (Bun's native semantics); when undefined, the child
+ * inherits process.env. Callers that want to inherit-and-add must merge
+ * themselves (e.g. `{ ...process.env, EXTRA: "1" }`); callers that need a
+ * *cleaned* env (stripping GIT_DIR etc. from a git hook context) pass the
+ * already-cleaned dict. Merging here would silently re-add stripped vars.
+ */
 export async function spawnCapture(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number; env?: Record<string, string> },
+  opts?: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number; env?: NodeJS.ProcessEnv },
 ): Promise<SpawnResult> {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn([cmd, ...args], {
       cwd: opts?.cwd,
-      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
+      env: opts?.env,
       stdin: opts?.input != null ? "pipe" : "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -101,16 +109,17 @@ export async function spawnCapture(
   };
 }
 
+/** Synchronous variant of {@link spawnCapture}; identical `env` semantics (pass-through, not merged). */
 export function spawnCaptureSync(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number; maxBuffer?: number; env?: Record<string, string>; input?: string },
+  opts?: { cwd?: string; timeoutMs?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv; input?: string },
 ): SpawnResult {
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
     result = Bun.spawnSync([cmd, ...args], {
       cwd: opts?.cwd,
-      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
+      env: opts?.env,
       stdout: "pipe",
       stderr: "pipe",
       stdin: opts?.input != null ? Buffer.from(opts.input) : undefined,

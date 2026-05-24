@@ -25,6 +25,9 @@ export type JqRunner = (expression: string, input: string) => Promise<string>;
 export const bunJqRunner: JqRunner = async (expression, inputStr) => {
   const result = await spawnCapture("jq", ["-c", expression], { input: inputStr });
   if (!result.ok) {
+    if (result.exitCode === null) {
+      throw new Error("failed to spawn jq (not found on PATH?)");
+    }
     throw new Error(`jq exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
   return result.stdout;
