@@ -86,6 +86,7 @@ export function buildQuery(prNumbers: readonly number[]): string {
             statusCheckRollup {
               state
               contexts(first: 50) {
+                pageInfo { hasNextPage }
                 nodes {
                   ... on CheckRun {
                     name
@@ -168,7 +169,7 @@ interface RawPR {
       commit?: {
         statusCheckRollup?: {
           state?: string;
-          contexts?: { nodes?: RawCheckRun[] };
+          contexts?: { pageInfo?: { hasNextPage?: boolean }; nodes?: RawCheckRun[] };
         } | null;
       };
     }>;
@@ -190,6 +191,10 @@ function parsePR(raw: RawPR): PRStatus {
       conclusion: n.conclusion ?? null,
       checkSuiteId: n.checkSuite?.databaseId ?? null,
     }));
+
+  if (rollup?.contexts?.pageInfo?.hasNextPage) {
+    console.warn(`parsePR(#${raw.number}): CI contexts truncated at 50 — more check runs exist`);
+  }
 
   const reviews: Review[] = (raw.reviews?.nodes ?? [])
     .filter((r): r is RawReview & { state: string } => !!r.state)
@@ -401,6 +406,7 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
       ... on PullRequest { number }
       ... on Issue {
         closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
+          pageInfo { hasNextPage }
           nodes {
             number
             state
@@ -409,6 +415,7 @@ const RESOLVE_QUERY = `query ResolveNumber($owner: String!, $repo: String!, $num
           }
         }
         timelineItems(itemTypes: [CONNECTED_EVENT], first: 50) {
+          pageInfo { hasNextPage }
           nodes {
             __typename
             ... on ConnectedEvent {
@@ -433,11 +440,15 @@ interface RawTimelineNode {
   subject?: { __typename?: string; number?: number; state?: string; title?: string; headRefName?: string };
 }
 
+interface RawPageInfo {
+  hasNextPage?: boolean;
+}
+
 interface RawIssueOrPR {
   __typename?: string;
   number?: number;
-  closedByPullRequestsReferences?: { nodes?: RawLinkedPR[] };
-  timelineItems?: { nodes?: RawTimelineNode[] };
+  closedByPullRequestsReferences?: { pageInfo?: RawPageInfo; nodes?: RawLinkedPR[] };
+  timelineItems?: { pageInfo?: RawPageInfo; nodes?: RawTimelineNode[] };
 }
 
 /**
@@ -492,6 +503,10 @@ export async function resolveNumber(repo: RepoInfo, number: number, opts?: Fetch
 
   if (node.__typename === "PullRequest") {
     return { isPR: true, prNumber: node.number ?? number };
+  }
+
+  if (node.closedByPullRequestsReferences?.pageInfo?.hasNextPage || node.timelineItems?.pageInfo?.hasNextPage) {
+    console.warn(`resolveNumber(#${number}): linked-PR results truncated — more than 50 items exist`);
   }
 
   // It's an issue. Collect linked PRs in priority order:

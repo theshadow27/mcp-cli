@@ -68,6 +68,11 @@ export class GhPageCapError extends Error {
 
 // ── Response types ──
 
+export interface GqlConnection<T> {
+  nodes: T[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
 export interface GhPrBody {
   number: number;
   title: string;
@@ -833,6 +838,7 @@ export class PrHandle {
         repository: {
           pullRequest: {
             reviewThreads: {
+              pageInfo: { hasNextPage: boolean };
               nodes: Array<{
                 id: string;
                 isResolved: boolean;
@@ -848,10 +854,12 @@ export class PrHandle {
       ...this.reqOpts(),
       method: "POST",
       body: {
+        // dotw-ignore gql-query-paginates: comments(first:1) is intentionally root-only; per-thread reply truncation is not a concern for this summary — full threads are handled by getPrThreadSnapshot
         query: `query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
               reviewThreads(first: 100) {
+                pageInfo { hasNextPage }
                 nodes {
                   id
                   isResolved
@@ -872,7 +880,13 @@ export class PrHandle {
     if (json.errors?.length) {
       throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
     }
-    return (json.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []).map((t) => ({
+    const threads = json.data?.repository?.pullRequest?.reviewThreads;
+    if (threads?.pageInfo?.hasNextPage) {
+      this.reqOpts().logger?.warn("reviewThreads: results truncated at 100 — more threads exist", {
+        pr: this.n,
+      });
+    }
+    return (threads?.nodes ?? []).map((t) => ({
       id: t.id,
       isResolved: t.isResolved,
       comments: t.comments?.nodes?.map((c) => ({ author: c.author?.login ?? "ghost", body: c.body })) ?? [],
@@ -1147,6 +1161,43 @@ export class GhClient {
       throw new GhValidationError(`GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`, json.errors);
     }
     return json.data as T;
+  }
+
+  async paginateGql<T>(
+    query: string,
+    variables: Omit<Record<string, unknown>, "after">,
+    selectConnection: (data: unknown) => GqlConnection<T>,
+  ): Promise<T[]> {
+    const allNodes: T[] = [];
+    let cursor: string | null = null;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      // Spread variables first so our cursor always wins; the type already
+      // forbids `after` in the caller, but the strip guards against runtime drift.
+      const { after: _ignored, ...baseVars } = variables as Record<string, unknown>;
+      const vars = { ...baseVars, ...(cursor ? { after: cursor } : {}) };
+      const data = await this.graphql(query, vars);
+      const connection = selectConnection(data);
+      allNodes.push(...connection.nodes);
+
+      if (!connection.pageInfo.hasNextPage) break;
+      cursor = connection.pageInfo.endCursor;
+      if (!cursor) {
+        throw new GhValidationError(
+          "paginateGql: hasNextPage is true but endCursor is null — cannot continue pagination",
+          [],
+        );
+      }
+
+      if (page === MAX_PAGES - 1) {
+        throw new GhPageCapError(
+          `paginateGql: hit MAX_PAGES (${MAX_PAGES}) but more pages remain — result is truncated`,
+          allNodes.length,
+          "graphql",
+        );
+      }
+    }
+    return allNodes;
   }
 
   async rest<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
