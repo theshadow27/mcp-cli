@@ -289,7 +289,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       // Clean up worktrees before removing the dir (git requires this order)
       try {
         execSync("git worktree prune", { cwd: gitDir, stdio: "pipe" });
-        // dotw-todo test-empty-catch: cleanup-exec — fix in #2322
+        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
       } catch {
         // best-effort
       }

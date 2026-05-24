@@ -17,7 +17,7 @@ function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       // ignore
     }

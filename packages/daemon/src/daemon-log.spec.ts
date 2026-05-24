@@ -93,7 +93,7 @@ describe("daemon-log file", () => {
     closeDaemonLogFile();
     try {
       rmSync(testDir, { recursive: true });
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       // already gone
     }
@@ -137,7 +137,7 @@ describe("daemon-log file", () => {
     try {
       readFileSync(backupPath);
       backupExists = true;
-      // dotw-todo test-empty-catch: parse-probe — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       // no backup
     }

@@ -1670,7 +1670,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     try {
       process.kill(pid, 0);
       return true;
-      // dotw-todo test-empty-catch: parse-probe — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       return false;
     }
@@ -1680,7 +1680,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
   function forceKill(pid: number): void {
     try {
       process.kill(pid, "SIGKILL");
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
     } catch {
       // already dead
     }

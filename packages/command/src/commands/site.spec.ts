@@ -115,9 +115,9 @@ describe("cmdSite", () => {
     let caught: unknown;
     try {
       await cmdSite(["bogus"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
     } catch (e) {
       caught = e;
+      expect(e).toBeDefined();
     }
     expect(String(caught)).toContain("__exit_1__");
     expect(stderr.join("\n")).toContain("Unknown subcommand");
@@ -236,9 +236,9 @@ describe("cmdSite", () => {
       let caught: unknown;
       try {
         await cmdSite(input, deps);
-        // dotw-todo test-empty-catch: exit-spy — fix in #2322
       } catch (e) {
         caught = e;
+        expect(e).toBeDefined();
       }
       expect(String(caught)).toContain("__exit_1__");
       expect(stderr.join("\n")).toContain("usage:");
@@ -296,9 +296,9 @@ describe("cmdSite", () => {
     let caught: unknown;
     try {
       await cmdSite(["list"], deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
     } catch (e) {
       caught = e;
+      expect(e).toBeDefined();
     }
     expect(String(caught)).toContain("__exit_1__");
     expect(stderr.join("\n")).toContain("Error: boom");

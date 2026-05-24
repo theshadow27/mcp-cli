@@ -57,7 +57,7 @@ function openEventStream(
         if (!trimmed) continue;
         try {
           yield JSON.parse(trimmed) as MonitorEvent;
-          // dotw-todo test-empty-catch: parse-probe — fix in #2322
+          // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
         } catch {
           // Skip malformed lines
         }
@@ -68,7 +68,7 @@ function openEventStream(
     if (trailing.trim()) {
       try {
         yield JSON.parse(trailing.trim()) as MonitorEvent;
-        // dotw-todo test-empty-catch: parse-probe — fix in #2322
+        // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
       } catch {
         // Ignore incomplete trailing data
       }
