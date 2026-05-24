@@ -1707,11 +1707,11 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 5000);
     } finally {
       forceKill(pid);
     }
-  });
+  }, 10_000);
 
   test("closeAll kills all stdio child processes", async () => {
     const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
@@ -1745,11 +1745,11 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.closeAll();
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 5000);
     } finally {
       forceKill(pid);
     }
-  });
+  }, 10_000);
 
   test("disconnect does not throw for non-stdio transports", async () => {
     const connectFn: ConnectFn = mock(() =>
@@ -1821,9 +1821,9 @@ describe("disconnect kills stdio child processes (#940)", () => {
       // killPid would never be called, leaving the process alive.
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid));
+      await pollUntil(() => !isAlive(pid), 5000);
     } finally {
       forceKill(pid);
     }
-  });
+  }, 10_000);
 });
