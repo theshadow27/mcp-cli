@@ -10,10 +10,10 @@ import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "./config";
 import { options, projectConfigPath } from "./constants";
 
-export type ConfigScope = "user" | "project" | "local";
-
 /** All valid config scopes. */
 export const CONFIG_SCOPES = ["user", "project", "local"] as const;
+
+export type ConfigScope = (typeof CONFIG_SCOPES)[number];
 
 /** Config scopes excluding "local" (for import/export which don't support it). */
 export const CONFIG_SCOPES_NO_LOCAL = ["user", "project"] as const;
