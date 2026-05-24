@@ -8,6 +8,7 @@ import { dirname, resolve } from "node:path";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
 import { readFileWithLimit } from "../file-read";
+import { parseFlags } from "../flags";
 import { printAliasDebug, printAliasList, printError } from "../output";
 import { readStdin } from "../parse";
 
@@ -49,27 +50,43 @@ const defaultDeps: AliasDeps = {
  *  - `null` or `legacy` → NULL scope (top-level `mcx <name>` dispatch enabled)
  *  - `global` (default) → hidden from top-level, callable via run/mcp
  *  - `.` or any path → resolved to absolute path; callable only when cwd is inside
+ *
+ * This function extracts only --scope and passes all other args (including unknown flags)
+ * through as `rest`, so callers can do further parsing on the remainder.
  */
 export function parseScopeFlag(
   args: string[],
   cwd: string = process.cwd(),
 ): { scope: string | null; scopeDefaulted: boolean; rest: string[] } {
-  const rest: string[] = [];
-  let raw: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--scope") {
-      if (i + 1 >= args.length) {
-        throw new Error("--scope requires a value (null, legacy, global, or a path)");
-      }
-      raw = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      continue;
-    }
-    if (args[i].startsWith("--scope=")) {
-      raw = args[i].slice("--scope=".length);
-      continue;
-    }
-    rest.push(args[i]);
+  // Find --scope or --scope=... and extract scope tokens for parseFlags.
+  // Everything else passes through as `rest` for the caller's further parsing.
+  const scopeIdx = args.findIndex((a) => a === "--scope" || a.startsWith("--scope="));
+
+  let scopeTokens: string[];
+  let rest: string[];
+  if (scopeIdx === -1) {
+    scopeTokens = [];
+    rest = args;
+  } else if (args[scopeIdx].startsWith("--scope=")) {
+    // --scope=value form: extract 1 token
+    scopeTokens = [args[scopeIdx]];
+    rest = [...args.slice(0, scopeIdx), ...args.slice(scopeIdx + 1)];
+  } else {
+    // --scope <value> form: extract 2 tokens (flag + value)
+    scopeTokens = args.slice(scopeIdx, scopeIdx + 2);
+    rest = [...args.slice(0, scopeIdx), ...args.slice(scopeIdx + 2)];
   }
+
+  const { flags, errors } = parseFlags(scopeTokens, {
+    scope: { type: "string" },
+  });
+
+  if (errors.length > 0) {
+    throw new Error("--scope requires a value (null, legacy, global, or a path)");
+  }
+
+  const raw = flags.scope as string | undefined;
+
   if (raw === undefined) return { scope: "global", scopeDefaulted: true, rest };
   if (raw === "null" || raw === "legacy") return { scope: null, scopeDefaulted: false, rest };
   if (raw === "global") return { scope: "global", scopeDefaulted: false, rest };
@@ -424,15 +441,12 @@ Examples:
 
 /** Parse `promote` subcommand args: source name and optional --name override */
 export function parsePromoteArgs(args: string[]): { source: string | undefined; target: string | undefined } {
-  let source: string | undefined;
-  let target: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--name" && i + 1 < args.length) {
-      target = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (!source) {
-      source = args[i];
-    }
-  }
+  const { flags, positionals } = parseFlags(args, {
+    name: { type: "string" },
+  });
+
+  const source = positionals[0];
+  const target = flags.name as string | undefined;
   return { source, target };
 }
 

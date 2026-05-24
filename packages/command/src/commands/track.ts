@@ -19,6 +19,7 @@ import {
   loadManifest,
   validateTrackValue,
 } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { c, printError } from "../output";
 
 /** Load a manifest from the given directory, swallowing parse errors so they don't break CLI commands. Rethrows ManifestVersionError so callers can report version mismatches explicitly. */
@@ -76,7 +77,7 @@ export function parseMetadataFlags(
       continue;
     }
 
-    const value = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+    const value = args[i + 1]; // dotw-ignore no-manual-arg-parsing: dynamic metadata flags from manifest, schema not statically known
     if (value === undefined || value.startsWith("--")) {
       errors.push(`${arg} requires a value`);
       continue;
@@ -131,31 +132,35 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
 
   const initialPhase = manifest?.initial;
 
-  const automationIdx = args.indexOf("--automation");
-  let automationOverrides: string | undefined;
-  if (automationIdx >= 0) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    automationOverrides = args[automationIdx + 1];
-    if (!automationOverrides || automationOverrides.startsWith("--")) {
-      printError("--automation requires a value (e.g. merge=false,bind=true)");
-      return deps.exit(1);
-    }
-  }
-
+  // Parse dynamic metadata flags first (they skip BUILTIN_FLAGS internally).
   const { metadata, consumed: metaConsumed, errors: metaErrors } = parseMetadataFlags(args, trackableFields);
   if (metaErrors.length > 0) {
     for (const err of metaErrors) printError(err);
     return deps.exit(1);
   }
 
-  const branchIdx = args.indexOf("--branch");
-  if (branchIdx >= 0) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    const branch = args[branchIdx + 1];
-    if (!branch || branch.startsWith("--")) {
-      printError("Usage: mcx track --branch <name>");
-      return deps.exit(1);
-    }
+  // Build the non-metadata args for static flag parsing.
+  const staticArgs = args.filter((_, i) => !metaConsumed.has(i));
+
+  const { flags, positionals, errors, help } = parseFlags(staticArgs, {
+    branch: { type: "string" },
+    automation: { type: "string" },
+  });
+
+  if (help) {
+    printTrackHelp(trackableFields);
+    return;
+  }
+
+  if (errors.length > 0) {
+    for (const err of errors) printError(err);
+    return deps.exit(1);
+  }
+
+  const automationOverrides = flags.automation as string | undefined;
+  const branch = flags.branch as string | undefined;
+
+  if (branch) {
     try {
       const item = await deps.ipcCall("trackWorkItem", {
         branch,
@@ -172,14 +177,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     return;
   }
 
-  const skipIndices = new Set<number>();
-  if (automationIdx >= 0) {
-    skipIndices.add(automationIdx);
-    skipIndices.add(automationIdx + 1);
-  }
-  for (const idx of metaConsumed) skipIndices.add(idx);
-
-  const firstPositional = args.find((_, i) => !skipIndices.has(i) && !args[i].startsWith("--"));
+  const firstPositional = positionals[0];
   const num = Number(firstPositional);
   if (!firstPositional || !Number.isInteger(num) || num <= 0) {
     printError(`Invalid number: ${firstPositional ?? args[0]}`);
@@ -317,39 +315,45 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
 // -- mcx tracked --
 
 export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
-  if (args[0] === "--help" || args[0] === "-h") {
+  const { flags, errors, help } = parseFlags(args, {
+    json: { type: "boolean" },
+    phase: { type: "string" },
+    "include-archived": { type: "boolean" },
+  });
+
+  if (help) {
     console.log("Usage: mcx tracked [--json] [--phase <phase>] [--include-archived]");
     return;
   }
 
-  const jsonFlag = args.includes("--json");
-  const includeArchived = args.includes("--include-archived");
-  const phaseIdx = args.indexOf("--phase");
+  if (errors.length > 0) {
+    for (const err of errors) printError(err);
+    return deps.exit(1);
+  }
+
+  const jsonFlag = !!flags.json;
+  const includeArchived = !!flags["include-archived"];
   let phase: string | undefined;
   const cwd = (deps.cwd ?? (() => process.cwd()))();
   const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
-  if (phaseIdx >= 0) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    const raw = args[phaseIdx + 1];
-    if (!raw || raw.startsWith("--")) {
-      const valid = declaredPhases ?? WORK_ITEM_PHASES;
-      printError(`--phase requires a value: ${valid.join(", ")}`);
-      return deps.exit(1);
-    }
+  const rawPhase = flags.phase as string | undefined;
+  if (rawPhase) {
     if (declaredPhases) {
-      if (!declaredPhases.includes(raw)) {
+      if (!declaredPhases.includes(rawPhase)) {
         // Warn (don't fail) — this matches #1298's contract for manifest mode.
-        console.error(`warning: phase "${raw}" is not declared in manifest (declared: ${declaredPhases.join(", ")})`);
+        console.error(
+          `warning: phase "${rawPhase}" is not declared in manifest (declared: ${declaredPhases.join(", ")})`,
+        );
       }
-      phase = raw;
+      phase = rawPhase;
     } else {
-      if (!WORK_ITEM_PHASES.includes(raw as WorkItemPhase)) {
-        printError(`Unknown phase "${raw}". Valid phases: ${WORK_ITEM_PHASES.join(", ")}`);
+      if (!WORK_ITEM_PHASES.includes(rawPhase as WorkItemPhase)) {
+        printError(`Unknown phase "${rawPhase}". Valid phases: ${WORK_ITEM_PHASES.join(", ")}`);
         return deps.exit(1);
       }
-      phase = raw;
+      phase = rawPhase;
     }
   }
 

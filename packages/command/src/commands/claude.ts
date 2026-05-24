@@ -32,6 +32,7 @@ import {
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
+import { parseFlags } from "../flags";
 import { applyJqFilter } from "../jq/index";
 import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -369,7 +370,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--worktree" || arg === "-w") {
-      const next = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
       if (next && !next.startsWith("-")) {
         worktree = next;
         return 1;
@@ -380,17 +381,17 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--resume") {
-      resume = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      resume = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
       if (!resume) extraError = "--resume requires a session ID";
       return 1;
     }
     if (arg === "--name" || arg === "-n") {
-      name = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      name = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
       if (!name) extraError = "--name requires a value";
       return 1;
     }
     if (arg === "--work-item") {
-      const next = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
       if (next && !next.startsWith("-")) {
         workItemId = next;
         return 1;
@@ -652,60 +653,68 @@ export interface ResumeArgs {
 }
 
 export function parseResumeArgs(args: string[]): ResumeArgs {
-  let all = false;
-  let fresh = false;
-  let force = false;
-  let model: string | undefined;
-  let wait = false;
-  let timeout: number | undefined;
-  let error: string | undefined;
   const allow: string[] = [];
-  const positionals: string[] = [];
+  let allowError: string | undefined;
+  let model: string | undefined;
+  let modelError: string | undefined;
+  const remaining: string[] = [];
 
+  // Phase 1: extract --allow (greedy, no heuristic) and --model (unconditional consume)
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--all") {
-      all = true;
-    } else if (arg === "--fresh") {
-      fresh = true;
-    } else if (arg === "--force") {
-      force = true;
+    if (arg === "--allow") {
+      // dotw-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags
+      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        allow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+      }
+      if (allow.length === 0) allowError = "--allow requires at least one tool pattern";
     } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+      const val = args[++i]; // dotw-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values
       if (!val) {
-        error = "--model requires a value";
+        modelError = "--model requires a value";
       } else {
         model = resolveModelName(val);
       }
-    } else if (arg === "--allow") {
-      // dotw-todo no-manual-arg-parsing: greedy multi-value consume; migration to parseFlags requires CLI change (--allow A B → --allow A --allow B) — track in #2283
-      while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      }
-      if (allow.length === 0) error = "--allow requires at least one tool pattern";
-    } else if (arg === "--wait") {
-      wait = true;
-    } else if (arg === "--timeout") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--timeout requires a value in ms";
-      } else {
-        timeout = Number(val);
-        if (Number.isNaN(timeout)) error = "--timeout must be a number";
-      }
-    } else if (!arg.startsWith("-")) {
-      positionals.push(arg);
+    } else {
+      remaining.push(arg);
     }
   }
 
-  // First positional is worktree target, second (if any) is session ID
+  // Phase 2: parseFlags for other flags
+  const { flags, positionals, errors } = parseFlags(remaining, {
+    all: { type: "boolean" },
+    fresh: { type: "boolean" },
+    force: { type: "boolean" },
+    wait: { type: "boolean" },
+    timeout: { type: "string" },
+  });
+
+  // Phase 3: post-process
+  let error = allowError ?? modelError;
+
+  let timeout: number | undefined;
+  if (flags.timeout !== undefined) {
+    timeout = Number(flags.timeout as string);
+    if (Number.isNaN(timeout)) error ??= "--timeout must be a number";
+  }
+
+  if (!error && errors.length > 0) {
+    const e = errors[0];
+    if (e === "--timeout requires a value") error = "--timeout requires a value in ms";
+    else error = e;
+  }
+
   const target = positionals[0];
   const sessionId = positionals[1];
+  const all = (flags.all as boolean) ?? false;
+  const fresh = (flags.fresh as boolean) ?? false;
+  const force = (flags.force as boolean) ?? false;
+  const wait = (flags.wait as boolean) ?? false;
 
   if (fresh && sessionId) {
-    error = "--fresh cannot be combined with an explicit session ID";
+    error ??= "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
-    error =
+    error ??=
       "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
@@ -1372,26 +1381,24 @@ export function parseByeResult(result: unknown): ByeResult {
 export { cleanupWorktree } from "@mcp-cli/core";
 
 async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
-  let sessionPrefix: string | undefined;
-  let rawReason: string | undefined;
+  const { flags, positionals, errors } = parseFlags(args, {
+    reason: { type: "string", alias: "r" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--reason" || args[i] === "-r") {
-      if (i + 1 >= args.length) {
-        d.printError(`${args[i]} requires a value`);
-        d.exit(1);
-      }
-      rawReason = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (args[i].startsWith("-")) {
-      d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
-      d.exit(1);
-    } else if (sessionPrefix !== undefined) {
-      d.printError(`Unexpected argument: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
-      d.exit(1);
-    } else {
-      sessionPrefix = args[i];
-    }
+  if (errors.length > 0) {
+    d.printError(`${errors[0]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
+    d.exit(1);
   }
+
+  if (positionals.length > 1) {
+    d.printError(
+      `Unexpected argument: ${positionals[1]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`,
+    );
+    d.exit(1);
+  }
+
+  const sessionPrefix = positionals[0];
+  const rawReason = flags.reason as string | undefined;
 
   if (!sessionPrefix) {
     d.printError("Usage: mcx claude interrupt <session-id> [--reason <text|@file>]");
@@ -1439,26 +1446,26 @@ export interface PatchUpdateArgs {
 }
 
 export function parsePatchUpdateArgs(args: string[], d: Pick<ClaudeDeps, "printError" | "exit">): PatchUpdateArgs {
-  let force = false;
-  let json = false;
-  let sourcePath: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--force") force = true;
-    else if (a === "--json") json = true;
-    else if (a === "--source") {
-      if (i + 1 >= args.length) {
-        d.printError("--source requires a value");
-        d.exit(1);
-      }
-      sourcePath = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (a.startsWith("--source=")) sourcePath = a.slice("--source=".length);
-    else {
-      d.printError(`Unknown argument: ${a}`);
-      d.exit(1);
-    }
+  const { flags, positionals, errors } = parseFlags(args, {
+    force: { type: "boolean" },
+    json: { type: "boolean" },
+    source: { type: "string" },
+  });
+
+  if (errors.length > 0) {
+    d.printError(errors[0]);
+    d.exit(1);
   }
-  return { force, json, sourcePath };
+  if (positionals.length > 0) {
+    d.printError(`Unknown argument: ${positionals[0]}`);
+    d.exit(1);
+  }
+
+  return {
+    force: (flags.force as boolean) ?? false,
+    json: (flags.json as boolean) ?? false,
+    sourcePath: flags.source as string | undefined,
+  };
 }
 
 /**
@@ -1521,28 +1528,23 @@ export function parseApproveArgs(
   args: string[],
   d: Pick<ClaudeDeps, "printError" | "exit">,
 ): { sessionPrefix: string; requestId: string | undefined } {
-  let requestId: string | undefined;
-  const positional: string[] = [];
+  const { flags, positionals, errors } = parseFlags(args, {
+    "request-id": { type: "string", alias: "r" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--request-id" || args[i] === "-r") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        d.printError("--request-id requires a value");
-        d.exit(1);
-      }
-      requestId = val;
-    } else if (!args[i].startsWith("-")) {
-      positional.push(args[i]);
-    }
+  if (errors.length > 0) {
+    d.printError(errors[0]);
+    d.exit(1);
   }
+
+  let requestId = flags["request-id"] as string | undefined;
 
   // Support legacy positional: approve <session> <request-id>
-  if (!requestId && positional.length >= 2) {
-    requestId = positional[1];
+  if (!requestId && positionals.length >= 2) {
+    requestId = positionals[1];
   }
 
-  const sessionPrefix = positional[0];
+  const sessionPrefix = positionals[0];
   if (!sessionPrefix) {
     d.printError("Usage: mcx claude approve <session-id> [--request-id <id>]");
     d.exit(1);
@@ -1555,36 +1557,25 @@ export function parseDenyArgs(
   args: string[],
   d: Pick<ClaudeDeps, "printError" | "exit">,
 ): { sessionPrefix: string; requestId: string | undefined; message: string | undefined } {
-  let requestId: string | undefined;
-  let message: string | undefined;
-  const positional: string[] = [];
+  const { flags, positionals, errors } = parseFlags(args, {
+    "request-id": { type: "string", alias: "r" },
+    message: { type: "string", alias: "m" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--request-id" || args[i] === "-r") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        d.printError("--request-id requires a value");
-        d.exit(1);
-      }
-      requestId = val;
-    } else if (args[i] === "--message" || args[i] === "-m") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        d.printError("--message requires a value");
-        d.exit(1);
-      }
-      message = val;
-    } else if (!args[i].startsWith("-")) {
-      positional.push(args[i]);
-    }
+  if (errors.length > 0) {
+    d.printError(errors[0]);
+    d.exit(1);
   }
+
+  let requestId = flags["request-id"] as string | undefined;
+  const message = flags.message as string | undefined;
 
   // Support legacy positional: deny <session> <request-id>
-  if (!requestId && positional.length >= 2) {
-    requestId = positional[1];
+  if (!requestId && positionals.length >= 2) {
+    requestId = positionals[1];
   }
 
-  const sessionPrefix = positional[0];
+  const sessionPrefix = positionals[0];
   if (!sessionPrefix) {
     d.printError("Usage: mcx claude deny <session-id> [--request-id <id>] [--message <reason>]");
     d.exit(1);
@@ -1752,73 +1743,59 @@ export interface WaitArgs {
 }
 
 export function parseWaitArgs(args: string[]): WaitArgs {
-  let sessionPrefix: string | undefined;
-  let timeout: number | undefined;
-  let afterSeq: number | undefined;
-  let short = false;
-  let all = false;
-  let any = false;
-  let pr: number | undefined;
-  let checks = false;
-  let mailTo: string | undefined;
+  const { flags, positionals, errors } = parseFlags(args, {
+    timeout: { type: "string", alias: "t" },
+    after: { type: "string" },
+    short: { type: "boolean" },
+    all: { type: "boolean", alias: "a" },
+    any: { type: "boolean" },
+    pr: { type: "string" },
+    checks: { type: "boolean" },
+    "mail-to": { type: "string" },
+  });
+
   let error: string | undefined;
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--timeout" || arg === "-t") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--timeout requires a value in ms";
-      } else {
-        timeout = Number(val);
-        if (Number.isNaN(timeout)) {
-          error = "--timeout must be a number";
-        } else if (timeout > MAX_TIMEOUT_MS) {
-          error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout ${DEFAULT_TIMEOUT_MS} (4:30) or loop with shorter waits.`;
-        }
-      }
-    } else if (arg === "--after") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--after requires a sequence number";
-      } else {
-        afterSeq = Number(val);
-        if (Number.isNaN(afterSeq)) error = "--after must be a number";
-      }
-    } else if (arg === "--short") {
-      short = true;
-    } else if (arg === "--all" || arg === "-a") {
-      all = true;
-    } else if (arg === "--any") {
-      any = true;
-    } else if (arg === "--pr") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--pr requires a PR number";
-      } else {
-        pr = Number(val);
-        if (Number.isNaN(pr)) error = "--pr must be a number";
-      }
-    } else if (arg === "--checks") {
-      checks = true;
-    } else if (arg === "--mail-to") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--mail-to requires a recipient name";
-      } else {
-        mailTo = val;
-      }
-    } else if (arg.startsWith("--mail-to=")) {
-      const val = arg.slice("--mail-to=".length);
-      if (!val) {
-        error = "--mail-to requires a recipient name";
-      } else {
-        mailTo = val;
-      }
-    } else if (!arg.startsWith("-")) {
-      sessionPrefix = arg;
+  // Post-process numeric flags using Number() semantics for compat
+  let timeout: number | undefined;
+  if (flags.timeout !== undefined) {
+    timeout = Number(flags.timeout as string);
+    if (Number.isNaN(timeout)) {
+      error = "--timeout must be a number";
+    } else if (timeout > MAX_TIMEOUT_MS) {
+      error = `--timeout ${timeout}ms exceeds 4:59 cache-safe limit.\nThe Claude Code prompt cache has a 5-minute TTL; waits >= 5 minutes cause the\nnext turn to re-process full context at full input-token price.\nUse --timeout ${DEFAULT_TIMEOUT_MS} (4:30) or loop with shorter waits.`;
     }
   }
+
+  let afterSeq: number | undefined;
+  if (flags.after !== undefined) {
+    afterSeq = Number(flags.after as string);
+    if (Number.isNaN(afterSeq)) error ??= "--after must be a number";
+  }
+
+  let pr: number | undefined;
+  if (flags.pr !== undefined) {
+    pr = Number(flags.pr as string);
+    if (Number.isNaN(pr)) error ??= "--pr must be a number";
+  }
+
+  const mailTo = flags["mail-to"] as string | undefined;
+  const short = (flags.short as boolean) ?? false;
+  const all = (flags.all as boolean) ?? false;
+  const any = (flags.any as boolean) ?? false;
+  const checks = (flags.checks as boolean) ?? false;
+
+  // Map parseFlags errors to compat error messages
+  if (!error && errors.length > 0) {
+    const e = errors[0];
+    if (e === "--timeout requires a value" || e === "-t requires a value") error = "--timeout requires a value in ms";
+    else if (e === "--after requires a value") error = "--after requires a sequence number";
+    else if (e === "--pr requires a value") error = "--pr requires a PR number";
+    else if (e === "--mail-to requires a value") error = "--mail-to requires a recipient name";
+    else error = e;
+  }
+
+  const sessionPrefix = positionals[0];
 
   return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, error };
 }

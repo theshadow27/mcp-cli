@@ -529,7 +529,7 @@ describe("mcx import", () => {
 
     test("cmdImport throws on unknown flag", async () => {
       using opts = testOptions();
-      await expect(cmdImport(["--bogus"])).rejects.toThrow("Unknown flag");
+      await expect(cmdImport(["--bogus"])).rejects.toThrow("unknown flag: --bogus");
     });
 
     test("cmdImport throws on invalid scope", async () => {
@@ -765,7 +765,9 @@ describe("mcx import", () => {
 
     test("throws on unknown flag", async () => {
       using opts = testOptions();
-      await expect(cmdAddFromClaudeDesktop(["--bogus"], join(opts.dir, "x.json"))).rejects.toThrow("Unknown flag");
+      await expect(cmdAddFromClaudeDesktop(["--bogus"], join(opts.dir, "x.json"))).rejects.toThrow(
+        "unknown flag: --bogus",
+      );
     });
 
     test("--help does not throw", async () => {

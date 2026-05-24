@@ -67,7 +67,7 @@ function parseKv(args: string[]): { kv: Record<string, unknown>; rest: string[] 
         kv[kebabToCamel(k)] = coerce(v);
       } else {
         const key = kebabToCamel(raw);
-        const next = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
+        const next = args[i + 1]; // dotw-ignore no-manual-arg-parsing: parseKv handles dynamic flag schemas not known at compile time
         if (next === undefined || next.startsWith("--")) {
           kv[key] = true;
         } else {

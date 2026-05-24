@@ -19,6 +19,7 @@ import {
   spawnCaptureSync,
 } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
+import { parseFlags } from "../flags";
 import { c, printError, printInfo } from "../output";
 import { getAllActiveSessionWorktrees } from "./worktree-commands";
 
@@ -41,30 +42,31 @@ export function parseDuration(s: string): number {
 }
 
 export function parseGcArgs(args: string[]): GcOptions {
-  const opts: GcOptions = {
-    dryRun: false,
-    olderThanMs: DEFAULT_OLDER_THAN_MS,
-    branchesOnly: false,
-    worktreesOnly: false,
-  };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--dry-run" || a === "-n") opts.dryRun = true;
-    else if (a === "--branches-only") opts.branchesOnly = true;
-    else if (a === "--worktrees-only") opts.worktreesOnly = true;
-    else if (a === "--older-than") {
-      const v = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!v) throw new Error("--older-than requires a value (e.g. 1d, 3h)");
-      opts.olderThanMs = parseDuration(v);
-    } else if (a.startsWith("--older-than=")) {
-      opts.olderThanMs = parseDuration(a.slice("--older-than=".length));
-    } else if (a === "--help" || a === "-h") {
-      printUsage();
-      process.exit(0);
-    } else {
-      throw new Error(`Unknown argument: ${a}`);
-    }
+  const { flags, errors, help } = parseFlags(args, {
+    "dry-run": { type: "boolean", alias: "n" },
+    "branches-only": { type: "boolean" },
+    "worktrees-only": { type: "boolean" },
+    "older-than": { type: "string" },
+  });
+
+  if (help) {
+    printUsage();
+    process.exit(0);
   }
+
+  if (errors.length > 0) {
+    throw new Error(errors[0]);
+  }
+
+  const olderThanRaw = flags["older-than"] as string | undefined;
+
+  const opts: GcOptions = {
+    dryRun: (flags["dry-run"] as boolean) ?? false,
+    olderThanMs: olderThanRaw ? parseDuration(olderThanRaw) : DEFAULT_OLDER_THAN_MS,
+    branchesOnly: (flags["branches-only"] as boolean) ?? false,
+    worktreesOnly: (flags["worktrees-only"] as boolean) ?? false,
+  };
+
   if (opts.branchesOnly && opts.worktreesOnly) {
     throw new Error("--branches-only and --worktrees-only are mutually exclusive");
   }

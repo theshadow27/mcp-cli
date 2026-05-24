@@ -13,6 +13,7 @@
 
 import type { IpcMethod, IpcMethodResult, SpanRow } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 
 export interface SpansDeps {
@@ -37,10 +38,17 @@ export async function cmdSpans(args: string[], deps?: Partial<SpansDeps>): Promi
     return;
   }
 
-  const json = args.includes("--json") || args.includes("-j");
-  const limit = extractNumericFlag(args, "--limit") ?? 100;
-  const since = extractNumericFlag(args, "--since");
-  const unexported = args.includes("--unexported");
+  const { flags } = parseFlags(args, {
+    json: { type: "boolean", alias: "j" },
+    limit: { type: "number" },
+    since: { type: "number" },
+    unexported: { type: "boolean" },
+  });
+
+  const json = flags.json === true;
+  const limit = (flags.limit as number | undefined) ?? 100;
+  const since = flags.since as number | undefined;
+  const unexported = flags.unexported === true;
 
   const result = await d.ipcCall("getSpans", { limit, since, unexported });
 
@@ -64,12 +72,4 @@ function printSpan(span: SpanRow): void {
   const trace = span.traceId.slice(0, 8);
   const exported = span.exportedAt ? "E" : " ";
   console.log(`${time} ${dur} ${status} ${exported} [${trace}] ${span.name}`);
-}
-
-function extractNumericFlag(args: string[], flag: string): number | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx + 1 >= args.length) return undefined;
-  // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-  const val = Number(args[idx + 1]);
-  return Number.isFinite(val) ? val : undefined;
 }

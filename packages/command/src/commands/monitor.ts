@@ -11,6 +11,7 @@
 import { resolve } from "node:path";
 import type { MonitorEvent } from "@mcp-cli/core";
 import { formatMonitorEvent, globToRegex, openEventStream, resolveRealpath } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 
 export interface MonitorArgs {
   json: boolean;
@@ -55,138 +56,51 @@ const defaultDeps: MonitorDeps = {
 };
 
 export function parseMonitorArgs(args: string[]): MonitorArgs {
-  let json = false;
-  let responseTail: string | undefined;
-  let subscribe: string | undefined;
-  let session: string | undefined;
-  let pr: number | undefined;
-  let workItem: string | undefined;
-  let type: string | undefined;
-  let src: string | undefined;
-  let phase: string | undefined;
-  let repo: string | undefined;
-  let allRepos = false;
-  let since: number | undefined;
-  let until: string | undefined;
-  let timeout: number | undefined;
-  let maxEvents: number | undefined;
+  const { flags, errors, help } = parseFlags(args, {
+    json: { type: "boolean", alias: "j" },
+    "response-tail": { type: "string" },
+    subscribe: { type: "string" },
+    session: { type: "string" },
+    pr: { type: "number" },
+    "work-item": { type: "string" },
+    type: { type: "string" },
+    src: { type: "string" },
+    phase: { type: "string" },
+    repo: { type: "string" },
+    "all-repos": { type: "boolean" },
+    since: { type: "number" },
+    until: { type: "string" },
+    timeout: { type: "number" },
+    "max-events": { type: "number" },
+  });
+
   let error: string | undefined;
+  if (help) {
+    error = "help";
+  } else if (errors.length > 0) {
+    error = errors[0];
+  }
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    if (arg === "--json" || arg === "-j") {
-      json = true;
-    } else if (arg === "--response-tail") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next || next.startsWith("-")) {
-        error = "--response-tail requires a session ID";
-        break;
-      }
-      responseTail = next;
-    } else if (arg === "--subscribe") {
-      subscribe = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!subscribe) {
-        error = "--subscribe requires a value";
-        break;
-      }
-    } else if (arg === "--session") {
-      session = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!session) {
-        error = "--session requires a value";
-        break;
-      }
-    } else if (arg === "--pr") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const n = Number(next);
-      if (!next || Number.isNaN(n)) {
-        error = "--pr requires a number";
-        break;
-      }
-      pr = n;
-    } else if (arg === "--work-item") {
-      workItem = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!workItem) {
-        error = "--work-item requires a value";
-        break;
-      }
-    } else if (arg === "--type") {
-      type = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!type) {
-        error = "--type requires a value";
-        break;
-      }
-    } else if (arg === "--src") {
-      src = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!src) {
-        error = "--src requires a value";
-        break;
-      }
-    } else if (arg === "--phase") {
-      phase = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!phase) {
-        error = "--phase requires a value";
-        break;
-      }
-    } else if (arg === "--repo") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next || next.startsWith("-")) {
-        error = "--repo requires a path";
-        break;
-      }
-      repo = next;
-    } else if (arg === "--all-repos") {
-      allRepos = true;
-    } else if (arg === "--since") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const n = Number(next);
-      if (!next || Number.isNaN(n)) {
-        error = "--since requires a number";
-        break;
-      }
-      since = n;
-    } else if (arg === "--until") {
-      until = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!until) {
-        error = "--until requires a pattern";
-        break;
-      }
-    } else if (arg === "--timeout") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const n = Number(next);
-      if (!next || Number.isNaN(n)) {
-        error = "--timeout requires seconds";
-        break;
-      }
-      timeout = n;
-    } else if (arg === "--max-events") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const n = Number(next);
-      if (!next || Number.isNaN(n) || n < 1) {
-        error = "--max-events requires a positive integer";
-        break;
-      }
-      maxEvents = n;
-    } else if (arg === "--help" || arg === "-h") {
-      error = "help";
-    }
+  const maxEvents = flags["max-events"] as number | undefined;
+  if (maxEvents !== undefined && maxEvents < 1) {
+    error = "--max-events requires a positive integer";
   }
 
   return {
-    json,
-    responseTail,
-    subscribe,
-    session,
-    pr,
-    workItem,
-    type,
-    src,
-    phase,
-    repo,
-    allRepos,
-    since,
-    until,
-    timeout,
+    json: (flags.json as boolean) ?? false,
+    responseTail: flags["response-tail"] as string | undefined,
+    subscribe: flags.subscribe as string | undefined,
+    session: flags.session as string | undefined,
+    pr: flags.pr as number | undefined,
+    workItem: flags["work-item"] as string | undefined,
+    type: flags.type as string | undefined,
+    src: flags.src as string | undefined,
+    phase: flags.phase as string | undefined,
+    repo: flags.repo as string | undefined,
+    allRepos: (flags["all-repos"] as boolean) ?? false,
+    since: flags.since as number | undefined,
+    until: flags.until as string | undefined,
+    timeout: flags.timeout as number | undefined,
     maxEvents,
     error,
   };

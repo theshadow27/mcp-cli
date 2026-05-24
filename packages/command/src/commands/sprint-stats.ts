@@ -16,6 +16,7 @@ import { join } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
 import { spawnCaptureSync } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
+import { parseFlags } from "../flags";
 import { printError, printInfo } from "../output";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -400,14 +401,20 @@ function totalsToJson(t: TokenTotals): object {
   };
 }
 
-// ── Flag parsing ──────────────────────────────────────────────────────────
+// ── Flag specs ────────────────────────────────────────────────────────────
 
-const KNOWN_FLAGS = new Set(["--sprint", "--since", "--project"]);
+const FLAG_SPECS = {
+  sprint: { type: "number" as const },
+  since: { type: "string" as const },
+  project: { type: "string" as const },
+};
 
 // ── Main command ───────────────────────────────────────────────────────────
 
 export async function cmdSprintStats(args: string[], deps?: Partial<SprintStatsDeps>): Promise<void> {
-  if (args.includes("--help") || args.includes("-h")) {
+  const { flags, errors, help } = parseFlags(args, FLAG_SPECS);
+
+  if (help) {
     console.log(`mcx sprint-stats — aggregate token counts and costs from Claude session transcripts.
 
 Usage:
@@ -426,61 +433,31 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
     return;
   }
 
-  const d = { ...defaultDeps, ...deps };
-  const nowMs = d.now();
-
-  // Locate known flag positions and their value indices
-  const sprintIdx = args.indexOf("--sprint");
-  const sinceIdx = args.indexOf("--since");
-  const projectIdx = args.indexOf("--project");
-
-  const valueIndices = new Set<number>();
-  if (sprintIdx !== -1) valueIndices.add(sprintIdx + 1);
-  if (sinceIdx !== -1) valueIndices.add(sinceIdx + 1);
-  if (projectIdx !== -1) valueIndices.add(projectIdx + 1);
-
-  // Reject unknown flags
-  for (let i = 0; i < args.length; i++) {
-    if (valueIndices.has(i)) continue;
-    if (args[i].startsWith("--") && !KNOWN_FLAGS.has(args[i])) {
-      printError(`sprint-stats: unknown flag '${args[i]}'`);
-      process.exitCode = 1;
-      return;
-    }
-  }
-
-  // Mutual exclusivity
-  if (sprintIdx !== -1 && sinceIdx !== -1) {
-    printError("sprint-stats: --sprint and --since are mutually exclusive");
+  if (errors.length > 0) {
+    printError(`sprint-stats: ${errors[0]}`);
     process.exitCode = 1;
     return;
   }
 
-  // Parse --project
-  let projectFilter: string | undefined;
-  if (projectIdx !== -1) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    projectFilter = args[projectIdx + 1];
-    if (!projectFilter || projectFilter.startsWith("--")) {
-      printError("sprint-stats: --project requires a project slug");
-      process.exitCode = 1;
-      return;
-    }
+  const d = { ...defaultDeps, ...deps };
+  const nowMs = d.now();
+
+  const sprintN = flags.sprint as number | undefined;
+  const sinceRef = flags.since as string | undefined;
+  const projectFilter = flags.project as string | undefined;
+
+  // Mutual exclusivity
+  if (sprintN !== undefined && sinceRef !== undefined) {
+    printError("sprint-stats: --sprint and --since are mutually exclusive");
+    process.exitCode = 1;
+    return;
   }
 
   // Parse time window flags
   let window: TimeWindow | null = null;
   let sprintWarnings: string[] = [];
 
-  if (sprintIdx !== -1) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    const raw = args[sprintIdx + 1];
-    const sprintN = raw ? Number.parseInt(raw, 10) : Number.NaN;
-    if (Number.isNaN(sprintN)) {
-      printError("sprint-stats: --sprint requires a sprint number");
-      process.exitCode = 1;
-      return;
-    }
+  if (sprintN !== undefined) {
     const content = d.readSprintPlan(sprintN);
     if (!content) {
       printError(`sprint-stats: sprint-${sprintN}.md not found`);
@@ -495,21 +472,14 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
     }
     sprintWarnings = parsed.warnings;
     window = { start: parsed.start, end: parsed.end, label: `sprint-${sprintN}` };
-  } else if (sinceIdx !== -1) {
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    const ref = args[sinceIdx + 1];
-    if (!ref) {
-      printError("sprint-stats: --since requires a tag or SHA");
-      process.exitCode = 1;
-      return;
-    }
-    const ts = d.resolveGitTimestamp(ref);
+  } else if (sinceRef !== undefined) {
+    const ts = d.resolveGitTimestamp(sinceRef);
     if (ts === null) {
-      printError(`sprint-stats: could not resolve git ref '${ref}'`);
+      printError(`sprint-stats: could not resolve git ref '${sinceRef}'`);
       process.exitCode = 1;
       return;
     }
-    window = { start: ts, end: nowMs, label: `since:${ref}` };
+    window = { start: ts, end: nowMs, label: `since:${sinceRef}` };
   }
 
   // Emit TZ warnings from plan parsing
