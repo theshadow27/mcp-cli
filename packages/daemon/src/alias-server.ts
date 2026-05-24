@@ -336,6 +336,7 @@ export class AliasServer {
   private async spawnExecutor(stdinPayload: string, timeoutMs: number): Promise<unknown> {
     await this.semaphore.acquire();
     try {
+      // dotw-ignore no-raw-spawn: retains live proc handle — uses proc.stdin.write, proc.kill via killTimeout, and proc.exited
       const proc = Bun.spawn([process.execPath, this.executorPath], {
         stdin: "pipe",
         stdout: "pipe",

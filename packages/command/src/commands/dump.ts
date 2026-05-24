@@ -20,7 +20,13 @@ import type {
   MetricsSnapshot,
   SessionInfo,
 } from "@mcp-cli/core";
-import { CLAUDE_SERVER_NAME, MCP_CLI_DIR, PING_TIMEOUT_MS, ProtocolMismatchError } from "@mcp-cli/core";
+import {
+  CLAUDE_SERVER_NAME,
+  MCP_CLI_DIR,
+  PING_TIMEOUT_MS,
+  ProtocolMismatchError,
+  spawnCaptureSync,
+} from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError as defaultPrintError } from "../output";
 
@@ -72,8 +78,8 @@ const defaultDeps: DumpDeps = {
   printError: defaultPrintError,
   exit: (code) => process.exit(code),
   exec: (cmd) => {
-    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-    return { stdout: result.stdout.toString(), exitCode: result.exitCode };
+    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1));
+    return { stdout: result.stdout, exitCode: result.exitCode ?? 1 };
   },
   checkPid: (pid) => {
     try {

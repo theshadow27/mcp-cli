@@ -42,12 +42,13 @@ async function drainStream(stream: ReadableStream, maxBytes: number): Promise<{ 
 export async function spawnCapture(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number },
+  opts?: { cwd?: string; timeoutMs?: number; input?: string; maxBuffer?: number; env?: Record<string, string> },
 ): Promise<SpawnResult> {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn([cmd, ...args], {
       cwd: opts?.cwd,
+      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
       stdin: opts?.input != null ? "pipe" : "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -103,14 +104,16 @@ export async function spawnCapture(
 export function spawnCaptureSync(
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number; maxBuffer?: number },
+  opts?: { cwd?: string; timeoutMs?: number; maxBuffer?: number; env?: Record<string, string>; input?: string },
 ): SpawnResult {
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
     result = Bun.spawnSync([cmd, ...args], {
       cwd: opts?.cwd,
+      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
       stdout: "pipe",
       stderr: "pipe",
+      stdin: opts?.input != null ? Buffer.from(opts.input) : undefined,
       timeout: opts?.timeoutMs,
     });
   } catch {

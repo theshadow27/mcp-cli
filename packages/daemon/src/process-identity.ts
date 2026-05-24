@@ -7,6 +7,8 @@
  * not depend on the system timezone or DST transitions.
  */
 
+import { spawnCaptureSync } from "@mcp-cli/core";
+
 /**
  * Parse `ps -o etime=` output format [[dd-]hh:]mm:ss into total seconds.
  */
@@ -50,14 +52,14 @@ export function parseEtime(etime: string): number | null {
  */
 export function getProcessStartTime(pid: number): number | null {
   try {
-    const result = Bun.spawnSync(["ps", "-o", "etime=", "-p", String(pid)]);
+    const result = spawnCaptureSync("ps", ["-o", "etime=", "-p", String(pid)]);
     // Capture wall clock AFTER ps completes so the time reference is close to
     // when ps actually sampled the elapsed time. Before this fix, Date.now()
     // was called before spawnSync — under CI load ps can take 1-2s, shifting
     // the computed start time enough to trip isOurProcess's tolerance (#2255).
     const now = Date.now();
-    if (result.exitCode !== 0) return null;
-    const elapsedSeconds = parseEtime(result.stdout.toString());
+    if (!result.ok) return null;
+    const elapsedSeconds = parseEtime(result.stdout);
     if (elapsedSeconds === null) return null;
     return now - elapsedSeconds * 1000;
   } catch {
@@ -76,12 +78,12 @@ export function getProcessStartTimesBatch(pids: number[]): Map<number, number> {
 
   try {
     const pidArgs = pids.join(",");
-    const proc = Bun.spawnSync(["ps", "-o", "pid=,etime=", "-p", pidArgs]);
+    const proc = spawnCaptureSync("ps", ["-o", "pid=,etime=", "-p", pidArgs]);
     // ps may exit non-zero if some PIDs are invalid — still parse stdout
 
     // Capture wall clock AFTER ps completes (same reasoning as getProcessStartTime)
     const now = Date.now();
-    const output = proc.stdout.toString().trim();
+    const output = proc.stdout.trim();
     if (!output) return result;
 
     for (const line of output.split("\n")) {

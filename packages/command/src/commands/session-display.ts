@@ -4,6 +4,7 @@
 
 import { dirname, resolve } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
+import { spawnCaptureSync } from "@mcp-cli/core";
 import { c } from "../output";
 
 // ── Transcript walker ──
@@ -412,13 +413,9 @@ export function compactTranscript(entries: TranscriptEntry[], maxResultLen = 100
  */
 export function getGitRepoRoot(): string | null {
   try {
-    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
-    });
-    if (result.exitCode !== 0) return null;
-    const commonDir = result.stdout.toString().trim();
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    if (!result.ok) return null;
+    const commonDir = result.stdout.trim();
     if (!commonDir) return null;
     const resolved = resolve(commonDir);
     return resolved.endsWith(".git") ? dirname(resolved) : resolved;

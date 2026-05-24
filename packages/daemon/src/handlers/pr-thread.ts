@@ -1,5 +1,5 @@
 import type { IpcMethod, PrCommentEntry, PrReviewEntry, PrThread, PrThreadSnapshot } from "@mcp-cli/core";
-import { GetPrThreadSnapshotParamsSchema, createGhClient, parseGitRemoteUrl } from "@mcp-cli/core";
+import { GetPrThreadSnapshotParamsSchema, createGhClient, parseGitRemoteUrl, spawnCapture } from "@mcp-cli/core";
 import type { RequestHandler } from "../handler-types";
 
 // ── Bot-noise filter ──
@@ -215,16 +215,10 @@ export class PrThreadHandlers {
   }
 
   private async resolveOwnerRepo(repoRoot: string): Promise<{ owner: string; repo: string }> {
-    const proc = Bun.spawn(["git", "remote", "get-url", "origin"], {
-      cwd: repoRoot,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
+    const result = await spawnCapture("git", ["remote", "get-url", "origin"], { cwd: repoRoot });
+    if (!result.ok) {
       throw new Error(`Failed to detect GitHub repo from git remote in ${repoRoot}`);
     }
-    const url = (await new Response(proc.stdout).text()).trim();
-    return parseGitRemoteUrl(url);
+    return parseGitRemoteUrl(result.stdout.trim());
   }
 }

@@ -206,11 +206,14 @@ describe("_defaultInstall", () => {
     rmSync(vendorDir, { recursive: true, force: true });
   });
 
-  test("wraps spawn ENOENT with Install manually message and preserves cause", async () => {
-    // Use a path that cannot be a valid executable so Bun.spawn throws ENOENT.
-    const err = await _defaultInstall(vendorDir, "/nonexistent/bun-binary").catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/Install manually/);
-    expect((err as Error & { cause: unknown }).cause).toBeInstanceOf(Error);
+  // Contract changed when this migrated to spawnCapture (#2344): a missing bun
+  // binary used to make Bun.spawn throw ENOENT, which _defaultInstall wrapped and
+  // re-threw. spawnCapture instead swallows ENOENT and returns exitCode null, so
+  // _defaultInstall now maps that to a non-zero exitCode (never throws), and the
+  // caller (resolvePlaywright) surfaces the actionable "Install manually" message
+  // via its exitCode !== 0 branch (covered by the install-mock tests above).
+  test("returns a non-zero exitCode (does not throw) when the bun binary cannot be spawned", async () => {
+    const result = await _defaultInstall(vendorDir, "/nonexistent/bun-binary");
+    expect(result.exitCode).not.toBe(0);
   });
 });

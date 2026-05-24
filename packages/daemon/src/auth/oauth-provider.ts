@@ -203,6 +203,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     }
     const urlStr = authorizationUrl.toString();
     console.error(`[auth] Opening browser for ${this.serverName}: ${urlStr}`);
+    // dotw-ignore no-raw-spawn: fire-and-forget browser open — no output to capture, process is not awaited
     Bun.spawn(getBrowserCommand(urlStr), { stdout: "ignore", stderr: "ignore" });
   }
 

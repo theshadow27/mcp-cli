@@ -13,6 +13,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawnCapture } from "@mcp-cli/core";
 import type { BrowserType } from "playwright";
 
 const VENDOR_DIR = join(homedir(), ".mcp-cli", "vendor", "playwright");
@@ -164,27 +165,12 @@ export async function _defaultInstall(
 
   const bin = bunBin ?? _resolveBunBinary(vendorDir);
 
-  // Bun.spawn() throws (ENOENT/EACCES) rather than returning a failed process
-  // when the binary doesn't exist. Catch and wrap so callers always see the
-  // actionable "Install manually" message instead of a raw spawn error.
-  try {
-    const proc = Bun.spawn([bin, "add", `playwright@${PLAYWRIGHT_VERSION}`], {
-      cwd: vendorDir,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    await proc.exited;
-    return {
-      exitCode: proc.exitCode ?? 1,
-      stderr: await new Response(proc.stderr).text(),
-    };
-  } catch (err) {
-    throw new Error(
-      `Failed to spawn bun to install playwright: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Install manually: cd ${vendorDir} && bun add playwright`,
-      { cause: err },
-    );
-  }
+  const result = await spawnCapture(bin, ["add", `playwright@${PLAYWRIGHT_VERSION}`], { cwd: vendorDir });
+  return {
+    // exitCode null means spawn failed (ENOENT/killed) — treat as failure (1)
+    exitCode: result.exitCode !== null ? result.exitCode : 1,
+    stderr: result.stderr,
+  };
 }
 
 /** Reset cached resolution — for testing only. */

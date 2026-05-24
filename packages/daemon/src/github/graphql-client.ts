@@ -8,6 +8,7 @@
  */
 
 import type { MergeStateStatus } from "@mcp-cli/core";
+import { spawnCapture } from "@mcp-cli/core";
 
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -251,17 +252,11 @@ export function clearTokenCache(): void {
 }
 
 async function execGhAuthToken(): Promise<string> {
-  const proc = Bun.spawn(["gh", "auth", "token"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr as ReadableStream).text();
-    throw new Error(`gh auth token failed (exit ${exitCode}): ${stderr.trim()}`);
+  const result = await spawnCapture("gh", ["auth", "token"]);
+  if (!result.ok) {
+    throw new Error(`gh auth token failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
   }
-  const stdout = await new Response(proc.stdout as ReadableStream).text();
-  return stdout.trim();
+  return result.stdout.trim();
 }
 
 // ---------- Repo detection ----------
@@ -277,16 +272,13 @@ export async function detectRepo(
 }
 
 async function execGitRemote(args: string[], cwd?: string): Promise<string> {
-  const proc = Bun.spawn(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    cwd,
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
+  const first = args[0];
+  if (!first) throw new Error("execGitRemote args must be non-empty");
+  const result = await spawnCapture(first, args.slice(1), { cwd });
+  if (!result.ok) {
     throw new Error("Failed to get git remote origin URL");
   }
-  return new Response(proc.stdout).text();
+  return result.stdout;
 }
 
 /** Parse a git remote URL into owner/repo. Supports HTTPS and SSH formats. */

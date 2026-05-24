@@ -148,6 +148,7 @@ export class MonitorRuntime {
     }
 
     const payload = JSON.stringify({ bundledJs, aliasName: alias.name });
+    // dotw-ignore no-raw-spawn: retains live proc handle for streaming stdout/stderr NDJSON and crash detection via watchExit
     const proc = Bun.spawn([process.execPath, this.executorPath], {
       stdin: "pipe",
       stdout: "pipe",

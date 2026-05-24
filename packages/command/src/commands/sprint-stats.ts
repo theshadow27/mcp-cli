@@ -14,6 +14,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
+import { spawnCaptureSync } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { printError, printInfo } from "../output";
 
@@ -181,8 +182,8 @@ export interface SprintStatsDeps {
 
 function gitRoot(): string {
   try {
-    const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0) return r.stdout.toString().trim();
+    const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
+    if (r.ok) return r.stdout.trim();
   } catch {}
   return process.cwd();
 }
@@ -212,13 +213,9 @@ const defaultDeps: SprintStatsDeps = {
   },
   resolveGitTimestamp(ref) {
     try {
-      const result = Bun.spawnSync(["git", "log", "-1", "--format=%cI", ref], {
-        cwd: process.cwd(),
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (result.exitCode !== 0) return null;
-      const iso = result.stdout.toString().trim();
+      const result = spawnCaptureSync("git", ["log", "-1", "--format=%cI", ref], { cwd: process.cwd() });
+      if (!result.ok) return null;
+      const iso = result.stdout.trim();
       const d = new Date(iso);
       return Number.isNaN(d.getTime()) ? null : d.getTime();
     } catch {
@@ -227,13 +224,10 @@ const defaultDeps: SprintStatsDeps = {
   },
   discoverWorktrees() {
     try {
-      const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (result.exitCode !== 0) return [];
+      const result = spawnCaptureSync("git", ["worktree", "list", "--porcelain"]);
+      if (!result.ok) return [];
       const paths: string[] = [];
-      for (const line of result.stdout.toString().split("\n")) {
+      for (const line of result.stdout.split("\n")) {
         if (line.startsWith("worktree ")) {
           paths.push(line.slice("worktree ".length));
         }

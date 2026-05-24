@@ -16,6 +16,7 @@ import type { AutomationDefinition } from "./automation";
 import { defineAutomation } from "./automation";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
+import { spawnCapture } from "./subprocess";
 
 /** Stub MCP proxy — returns undefined for any server.tool() call. */
 export const stubProxy: McpProxy = new Proxy({} as McpProxy, {
@@ -622,29 +623,14 @@ export async function validateFreeformTsc(
     writeFileSync(join(tmpDir, "mcp-cli.d.ts"), MCP_CLI_STUB_DTS);
     writeFileSync(join(tmpDir, "tsconfig.json"), TSC_TSCONFIG);
 
-    const proc = Bun.spawn([tscBin, "--noEmit"], {
-      cwd: tmpDir,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const result = await spawnCapture(tscBin, ["--noEmit"], { cwd: tmpDir, timeoutMs });
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-    }, timeoutMs);
-
-    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-    clearTimeout(timer);
-
-    await proc.exited;
-
-    if (timedOut) {
+    if (result.timedOut) {
       return { warnings: ["tsc validation timed out"], timedOut: true };
     }
 
     // Parse diagnostics from stdout (tsc writes diagnostics to stdout)
-    const output = stdout || stderr;
+    const output = result.stdout || result.stderr;
     const warnings = parseTscDiagnostics(output, scriptName);
 
     return { warnings, timedOut: false };

@@ -2648,6 +2648,7 @@ function defaultSpawn(
     env.PWD = opts.cwd;
   }
 
+  // dotw-ignore no-raw-spawn: retains live proc handle — exposes pid, kill, exited, and stderr stream to caller
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env,

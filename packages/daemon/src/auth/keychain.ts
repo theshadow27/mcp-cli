@@ -6,6 +6,7 @@
  * the server URL, tokens, client info, and discovery state.
  */
 
+import { spawnCapture } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 
 export interface KeychainTokens {
@@ -53,15 +54,10 @@ export async function readKeychainTokens(serverUrl: string): Promise<KeychainTok
   if (process.platform !== "darwin") return null;
 
   try {
-    const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const raw = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) return null;
+    const result = await spawnCapture("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
+    if (!result.ok) return null;
 
-    const data: KeychainData = JSON.parse(raw.trim());
+    const data: KeychainData = JSON.parse(result.stdout.trim());
     const mcpOAuth = data.mcpOAuth;
     if (!mcpOAuth) return null;
 
@@ -109,15 +105,10 @@ export async function readClaudeOAuthToken(): Promise<ClaudeOAuthToken | null> {
   if (process.platform !== "darwin") return null;
 
   try {
-    const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const raw = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) return null;
+    const result = await spawnCapture("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
+    if (!result.ok) return null;
 
-    const data: KeychainData = JSON.parse(raw.trim());
+    const data: KeychainData = JSON.parse(result.stdout.trim());
     const oauth = data.claudeAiOauth;
     if (!oauth?.accessToken) return null;
 

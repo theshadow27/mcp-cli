@@ -10,6 +10,7 @@
  */
 
 import type { Logger } from "./logger";
+import { spawnCapture } from "./subprocess";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
@@ -245,19 +246,13 @@ function clearTokenCache(): void {
 }
 
 async function execGhAuthToken(): Promise<string> {
-  const proc = Bun.spawn(["gh", "auth", "token"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr as ReadableStream).text();
+  const result = await spawnCapture("gh", ["auth", "token"]);
+  if (!result.ok) {
     throw new GhAuthError(
-      `gh auth token failed (exit ${exitCode}): ${stderr.trim()}. Run \`gh auth login\` or set GH_TOKEN.`,
+      `gh auth token failed (exit ${result.exitCode}): ${result.stderr.trim()}. Run \`gh auth login\` or set GH_TOKEN.`,
     );
   }
-  const stdout = await new Response(proc.stdout as ReadableStream).text();
-  return stdout.trim();
+  return result.stdout.trim();
 }
 
 // ── Repo detection ──
@@ -268,17 +263,11 @@ export interface GhRepoInfo {
 }
 
 async function detectRepoFromGit(repoRoot: string): Promise<GhRepoInfo> {
-  const proc = Bun.spawn(["git", "remote", "get-url", "origin"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    cwd: repoRoot,
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
+  const result = await spawnCapture("git", ["remote", "get-url", "origin"], { cwd: repoRoot });
+  if (!result.ok) {
     throw new Error(`Failed to detect GitHub repo from git remote in ${repoRoot}`);
   }
-  const url = (await new Response(proc.stdout).text()).trim();
-  return parseGitRemoteUrl(url);
+  return parseGitRemoteUrl(result.stdout.trim());
 }
 
 export function parseGitRemoteUrl(url: string): GhRepoInfo {

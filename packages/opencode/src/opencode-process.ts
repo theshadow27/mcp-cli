@@ -51,6 +51,7 @@ export class OpenCodeProcess {
 
   constructor(opts: OpenCodeProcessOptions) {
     this.opts = opts;
+    // dotw-ignore no-raw-spawn: long-lived agent subprocess; needs live handle for streaming stdout URL discovery + kill
     this.spawnFn = opts.spawnFn ?? ((cmd, o) => Bun.spawn(cmd, o));
   }
 

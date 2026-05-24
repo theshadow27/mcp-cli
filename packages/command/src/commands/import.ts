@@ -16,7 +16,7 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
-import { PROJECT_MCP_FILENAME, findFileUpward, options } from "@mcp-cli/core";
+import { PROJECT_MCP_FILENAME, findFileUpward, options, spawnCapture } from "@mcp-cli/core";
 import { printError } from "../output";
 import { parseScope } from "../parse";
 import {
@@ -115,14 +115,9 @@ export async function readKeychainOAuthEntries(
   } else {
     if (process.platform !== "darwin") return [];
     try {
-      const proc = Bun.spawn(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      raw = await new Response(proc.stdout).text();
-      const exitCode = await proc.exited;
-      if (exitCode !== 0) return [];
-      raw = raw.trim();
+      const result = await spawnCapture("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
+      if (!result.ok) return [];
+      raw = result.stdout.trim();
     } catch {
       return [];
     }

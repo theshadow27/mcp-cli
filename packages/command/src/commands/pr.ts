@@ -7,7 +7,7 @@
  */
 
 import type { IpcMethod, IpcMethodResult, MonitorEvent, PrThreadSnapshot } from "@mcp-cli/core";
-import { COPILOT_USERS, DEFAULT_TIMEOUT_MS, findGitRoot, openEventStream } from "@mcp-cli/core";
+import { COPILOT_USERS, DEFAULT_TIMEOUT_MS, findGitRoot, openEventStream, spawnCaptureSync } from "@mcp-cli/core";
 import { ipcCall as defaultIpcCall } from "../daemon-lifecycle";
 import { printError as defaultPrintError } from "../output";
 
@@ -25,10 +25,10 @@ export interface PrDeps {
 
 export const defaultPrDeps: PrDeps = {
   exec: (cmd) => {
-    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1));
     return {
-      stdout: result.stdout.toString().trim(),
-      stderr: result.stderr.toString().trim(),
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
       exitCode: result.exitCode ?? 1,
     };
   },

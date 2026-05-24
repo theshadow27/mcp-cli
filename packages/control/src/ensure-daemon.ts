@@ -24,6 +24,7 @@ export interface EnsureDaemonDeps {
 
 const defaultDeps: EnsureDaemonDeps = {
   ping: pingDaemon,
+  // dotw-ignore no-raw-spawn: launches the long-lived daemon and retains live handle for unref, kill, and streaming stdout/stderr
   spawn: (cmd) => Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" }),
   resolveCmd: () => coreResolveDaemonCommand(import.meta.dir),
   readySignal: DAEMON_READY_SIGNAL,
