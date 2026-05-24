@@ -30,7 +30,10 @@ function isTerminalElseBlock(node: ts.Node): node is ts.Block {
 
 /**
  * True when the branch body (DefaultClause or Block) contains a ThrowStatement
- * or a call to a known exhaustiveness helper at any nesting depth.
+ * or a call to a known exhaustiveness helper at the branch's own scope depth.
+ * Does not descend into nested function bodies — a throw inside an arrow or
+ * function expression only executes if that function is invoked, which the
+ * rule cannot verify, so it doesn't count as a branch-level guard.
  */
 function branchHasRuntimeGuard(branch: ts.Node): boolean {
   let found = false;
@@ -44,6 +47,9 @@ function branchHasRuntimeGuard(branch: ts.Node): boolean {
       found = true;
       return;
     }
+    // Mirror the parent-chain walk: stop at function boundaries so a throw
+    // inside a nested arrow/function expression doesn't satisfy the guard.
+    if (ts.isFunctionLike(n)) return;
     ts.forEachChild(n, visit);
   }
   ts.forEachChild(branch, visit);
