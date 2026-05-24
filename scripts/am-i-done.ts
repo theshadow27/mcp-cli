@@ -37,6 +37,13 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 // scripts (`bun scripts/check-*.ts`, etc.) are wrapped as string
 // commands. The rule engine runs in-process via doingItWrongStep.
 
+const INSTALL: Step = {
+  name: "install",
+  description: "bun install --frozen-lockfile (no-op when deps are current)",
+  command: "bun install --frozen-lockfile",
+  onFailure: ["lockfile may be out of date — run `bun install` manually and commit bun.lock"],
+};
+
 const TYPECHECK: Step = {
   name: "typecheck",
   description: "tsc --noEmit across all packages",
@@ -116,8 +123,19 @@ const COVERAGE: Step = {
 // Pre-push / default: comprehensive. Includes the full test suite and
 //   coverage ratchet. This is what CI also runs.
 
-const PRE_COMMIT: Step[] = [TYPECHECK, LINT_CHECK, ARGS_BOUNDS, TIMEOUTS, TEARDOWN, PHASE_DRIFT, RULES];
-const COMPREHENSIVE: Step[] = [TYPECHECK, LINT, ARGS_BOUNDS, TIMEOUTS, TEARDOWN, PHASE_DRIFT, RULES, TEST, COVERAGE];
+const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, ARGS_BOUNDS, TIMEOUTS, TEARDOWN, PHASE_DRIFT, RULES];
+const COMPREHENSIVE: Step[] = [
+  INSTALL,
+  TYPECHECK,
+  LINT,
+  ARGS_BOUNDS,
+  TIMEOUTS,
+  TEARDOWN,
+  PHASE_DRIFT,
+  RULES,
+  TEST,
+  COVERAGE,
+];
 
 function selectSteps(): { steps: Step[]; label: string } {
   if (isPreCommit) return { steps: PRE_COMMIT, label: "pre-commit" };
