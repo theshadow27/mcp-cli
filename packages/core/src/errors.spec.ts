@@ -43,6 +43,20 @@ describe("getErrorMessage", () => {
       },
     };
     expect(() => getErrorMessage(evil)).not.toThrow();
+    expect(getErrorMessage(evil)).toBe("[object Object]");
+  });
+
+  it("does not throw when the message getter throws (Proxy / throwing getter)", () => {
+    const evil = Object.defineProperty({}, "message", {
+      get() {
+        throw new Error("getter boom");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    expect(() => getErrorMessage(evil)).not.toThrow();
+    // Falls through to String() or Object.prototype.toString fallback
+    expect(typeof getErrorMessage(evil)).toBe("string");
   });
 });
 
@@ -61,9 +75,15 @@ describe("getErrorCode", () => {
     expect(getErrorCode({})).toBeUndefined();
   });
 
-  it("returns undefined when code is not a string", () => {
-    expect(getErrorCode({ code: 42 })).toBeUndefined();
+  it("returns a numeric code (e.g. IpcCallError uses number codes)", () => {
+    expect(getErrorCode({ code: 42 })).toBe(42);
+    expect(getErrorCode({ code: -1001 })).toBe(-1001);
+  });
+
+  it("returns undefined when code is neither string nor number", () => {
     expect(getErrorCode({ code: null })).toBeUndefined();
+    expect(getErrorCode({ code: true })).toBeUndefined();
+    expect(getErrorCode({ code: {} })).toBeUndefined();
   });
 
   it("handles null and undefined safely", () => {
