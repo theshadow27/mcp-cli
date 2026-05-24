@@ -7,6 +7,7 @@
  *   - port: 0  (dynamic — the correct pattern)
  *   - port: N  inside expect()/assertion — not a server bind
  *   - port: N  in a mock struct returned by a helper — not a server bind
+ *   - connect({ port: N }) — client dial, not a server bind
  *   - transport-named variable with numeric literal — "transport" ≠ "port" word
  *   - unrelated numeric literals (timeouts, counts)
  */
@@ -45,6 +46,13 @@ describe("dynamic-port server", () => {
     }
     const cb = makeCallback();
     expect(cb.port).toBe(9999);
+  });
+
+  it("connect() is a client dial — fixed port is correct", () => {
+    // Client connections dial a known port by definition; port: 0 is meaningless.
+    const connect = (_opts: { port: number }) => {};
+    connect({ port: 6379 });
+    connect({ port: 5432 });
   });
 
   it("transport-named variable with a numeric literal is not a port", () => {

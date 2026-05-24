@@ -10,7 +10,7 @@
  * Two patterns are flagged (test files only):
  *
  *   1. A `port:` property in an ObjectLiteralExpression that is a **direct
- *      argument** to a known server-construction call (serve/listen/connect/
+ *      argument** to a known server-construction call (serve/listen/
  *      createServer). Plain data objects, mock structs, and assertion arguments
  *      are excluded.
  *
@@ -30,7 +30,7 @@ import ts from "typescript";
 import type { CheckRule } from "./_engine/rule";
 
 // Call/constructor names whose first object-literal argument is a server config.
-const SERVER_CALL_NAMES = new Set(["serve", "listen", "connect", "createServer"]);
+const SERVER_CALL_NAMES = new Set(["serve", "listen", "createServer"]);
 
 const rule: CheckRule = {
   id: "no-hardcoded-test-port",
@@ -38,7 +38,7 @@ const rule: CheckRule = {
   appliesToTests: true,
   scold: "hardcoded port number in test — use port: 0 and read the OS-assigned port from the server handle",
   guidance: [
-    "pass port: 0 to serve()/listen()/connect() — the OS picks a free ephemeral port",
+    "pass port: 0 to serve()/listen() — the OS picks a free ephemeral port",
     "read the assigned port back: `server.port` (Bun), `server.address().port` (net.Server)",
     "never invent a random-port helper — they reintroduce collision risk (Bun's guide bans them)",
     "if a fixed port is truly required (e.g. OAuth redirect-URI), add: // dotw-ignore no-hardcoded-test-port: <reason>",
@@ -83,6 +83,9 @@ function isPortPropertyName(name: ts.PropertyName): boolean {
  * Requires parent nodes (setParentNodes=true, enabled since #2308).
  */
 function isDirectServerCallArg(node: ts.PropertyAssignment): boolean {
+  if (node.parent === undefined) {
+    throw new Error("no-hardcoded-test-port: parent nodes not set — ensure setParentNodes=true in createAstHelper");
+  }
   if (!ts.isObjectLiteralExpression(node.parent)) return false;
   const callOrNew = node.parent.parent;
   if (!ts.isCallExpression(callOrNew) && !ts.isNewExpression(callOrNew)) return false;
