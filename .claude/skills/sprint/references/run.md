@@ -21,6 +21,24 @@ mcx phase run <phase> --dry-run      # preview the handler's decision
 Round caps baked in: review ≤ 2, repair ≤ 3, qa:fail ≤ 2. Hitting a cap
 routes the work item to `needs-attention`.
 
+**Convergence-failure → simplify, don't keep patching.** The caps above
+bound *total* rounds; this bounds *the wrong kind* of rounds. If a PR keeps
+surfacing **new** review/QA findings each round (not re-flags of the same
+issue, not flaky-CI) — round 1 finds A, the fix exposes B, the fix for B
+exposes C — that is a signal the implementation is too complex or fighting
+the grain, and micro-repairing it is a treadmill (each push also re-triggers
+Copilot, widening the surface). After ~2 such rounds, STOP dispatching
+repairs and launch a **simplification pass** instead: `mcx claude spawn`
+(NOT the Agent tool — observability) with a "step back and simplify the
+whole change to the minimal correct design that preserves functionality;
+read the open threads as input but rethink, don't patch" prompt. Sprint 62
+#2271 churned 4 rounds (auth regression → 7 threads → rebase → 5 more)
+because the helper took `unknown` then `as`-cast it, laundering the type so
+every field access was a fresh unguarded landmine; one simplify pass
+(replace the cast with real runtime validation) collapsed the entire
+edge-case class and it passed first try. Distinguish from flaky-CI churn
+(same finding recurring → `gh run rerun` + flaky-label flip, not simplify).
+
 ## Input
 
 Determine what to run, in priority order:
