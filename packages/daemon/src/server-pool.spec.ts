@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -36,6 +36,11 @@ function errWithCode(message: string, code: string): Error {
 function sdkWrapped(message: string, cause: Error): Error {
   return new Error(message, { cause });
 }
+
+// Process-death tests (disconnect/closeAll) send SIGTERM and poll for the child
+// to exit. On a loaded CI runner that can take several seconds. Set a generous
+// file-level watchdog so individual tests don't need their own overrides.
+setDefaultTimeout(30_000);
 
 describe("isRetryableError", () => {
   test("returns false for non-Error values", () => {
@@ -1707,11 +1712,11 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid), 5000);
+      await pollUntil(() => !isAlive(pid), 10_000);
     } finally {
       forceKill(pid);
     }
-  }, 10_000);
+  });
 
   test("closeAll kills all stdio child processes", async () => {
     const transport = new StdioClientTransport({ command: "sleep", args: ["60"], stderr: "pipe" });
@@ -1745,11 +1750,11 @@ describe("disconnect kills stdio child processes (#940)", () => {
 
       await pool.closeAll();
 
-      await pollUntil(() => !isAlive(pid), 5000);
+      await pollUntil(() => !isAlive(pid), 10_000);
     } finally {
       forceKill(pid);
     }
-  }, 10_000);
+  });
 
   test("disconnect does not throw for non-stdio transports", async () => {
     const connectFn: ConnectFn = mock(() =>
@@ -1821,9 +1826,9 @@ describe("disconnect kills stdio child processes (#940)", () => {
       // killPid would never be called, leaving the process alive.
       await pool.disconnect("sleeper");
 
-      await pollUntil(() => !isAlive(pid), 5000);
+      await pollUntil(() => !isAlive(pid), 10_000);
     } finally {
       forceKill(pid);
     }
-  }, 10_000);
+  });
 });
