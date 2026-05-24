@@ -794,7 +794,8 @@ describe("prCommentsResolve", () => {
     expect(cmd[1]).toBe("api");
     expect(cmd[2]).toBe("graphql");
     expect(cmd.join(" ")).toContain("resolveReviewThread");
-    expect(cmd.join(" ")).toContain("PRRT_abc");
+    expect(cmd.join(" ")).toContain("$threadId");
+    expect(cmd.join(" ")).toContain("threadId=PRRT_abc");
   });
 
   test("posts reply then resolves when reply text given", async () => {
@@ -809,10 +810,11 @@ describe("prCommentsResolve", () => {
     });
     await prCommentsResolve(["42", "resolve", "PRRT_abc", "Done, see latest commit"], deps);
     expect(execCalls).toHaveLength(2);
-    // First call: reply
+    // First call: reply — must use -F (raw-field) to prevent @-file expansion
     expect(execCalls[0].join(" ")).toContain("/pulls/42/comments");
     expect(execCalls[0].join(" ")).toContain("Done, see latest commit");
     expect(execCalls[0].join(" ")).toContain("in_reply_to=100");
+    expect(execCalls[0]).toContain("-F");
     // Second call: resolve
     expect(execCalls[1].join(" ")).toContain("resolveReviewThread");
   });
@@ -898,7 +900,7 @@ describe("prCommentsResolve", () => {
       ipcCall: (() => Promise.resolve(snapshot)) as PrDeps["ipcCall"],
       printError: (m: string) => errors.push(m),
     });
-    await prCommentsResolve(["42", "resolve", "--all-addressed"], deps);
+    await expect(prCommentsResolve(["42", "resolve", "--all-addressed"], deps)).rejects.toBeInstanceOf(ExitError);
     expect(errors.some((e) => e.includes("PRRT_fail"))).toBe(true);
     expect(call).toBe(2);
   });

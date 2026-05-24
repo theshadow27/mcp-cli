@@ -31,9 +31,10 @@ export type RepairResult =
     };
 
 export function buildRepairPrompt(prNumber: number, previousPhase: "review" | "qa"): string {
+  const resolveStep = `After replying to each addressed thread, resolve it: mcx pr comments ${prNumber} resolve --all-addressed`;
   return previousPhase === "qa"
-    ? `Repair PR #${prNumber}. Read the qa:fail comment: gh pr view ${prNumber} --comments. Address every blocker. Push to existing branch.`
-    : `Repair PR #${prNumber}. Read the adversarial review sticky comment: gh pr view ${prNumber} --comments. Fix all 🔴 and 🟡. Push to existing branch.`;
+    ? `Repair PR #${prNumber}. Read the qa:fail comment: gh pr view ${prNumber} --comments. Address every blocker. ${resolveStep}. Push to existing branch.`
+    : `Repair PR #${prNumber}. Read the adversarial review sticky comment: gh pr view ${prNumber} --comments. Fix all 🔴 and 🟡. ${resolveStep}. Push to existing branch.`;
 }
 
 export async function runRepair(

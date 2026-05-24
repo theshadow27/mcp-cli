@@ -354,6 +354,10 @@ export async function prCommentsResolve(args: string[], deps: Partial<PrDeps> = 
       }
     }
     console.error(`Resolved ${resolved}/${toResolve.length} addressed thread(s).`);
+    if (resolved < toResolve.length) {
+      d.exit(1);
+      return;
+    }
     return;
   }
 
@@ -379,7 +383,7 @@ export async function prCommentsResolve(args: string[], deps: Partial<PrDeps> = 
       `/repos/{owner}/{repo}/pulls/${prNumber}/comments`,
       "-X",
       "POST",
-      "-f",
+      "-F",
       `body=${parsed.replyText}`,
       "-F",
       `in_reply_to=${thread.rootCommentId}`,
@@ -404,7 +408,9 @@ function buildResolveCmd(threadId: string): string[] {
     "api",
     "graphql",
     "-f",
-    `query=mutation{resolveReviewThread(input:{threadId:"${threadId}"}){thread{isResolved}}}`,
+    "query=mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }",
+    "-f",
+    `threadId=${threadId}`,
   ];
 }
 

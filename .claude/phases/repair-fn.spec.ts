@@ -44,6 +44,11 @@ describe("buildRepairPrompt", () => {
     expect(buildRepairPrompt(30, "qa")).toMatch(/push/i);
     expect(buildRepairPrompt(30, "review")).toMatch(/push/i);
   });
+
+  test("includes resolve instruction for both phases", () => {
+    expect(buildRepairPrompt(30, "qa")).toContain("mcx pr comments 30 resolve --all-addressed");
+    expect(buildRepairPrompt(30, "review")).toContain("mcx pr comments 30 resolve --all-addressed");
+  });
 });
 
 describe("runRepair — session already in flight", () => {
