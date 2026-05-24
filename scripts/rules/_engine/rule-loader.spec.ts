@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { loadAllRules } from "./rule-loader";
+
+const VALID_RULE = `export default { id: "test", kind: "pattern", scold: "bad", guidance: ["fix it"], pattern: /x/ };`;
 
 describe("loadAllRules", () => {
   it("loads rules from the default directory", async () => {
@@ -61,7 +63,7 @@ describe("loadAllRules", () => {
         join(tmp, "bad.rule.ts"),
         `export default { id: "bad", kind: "pattern", scold: "x", guidance: [] };`,
       );
-      await expect(loadAllRules(tmp)).rejects.toThrow(/missing a 'pattern' RegExp/);
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
     } finally {
       await rm(tmp, { recursive: true });
     }
@@ -74,7 +76,7 @@ describe("loadAllRules", () => {
         join(tmp, "bad.rule.ts"),
         `export default { id: "bad", kind: "check", scold: "x", guidance: [] };`,
       );
-      await expect(loadAllRules(tmp)).rejects.toThrow(/missing a 'check' function/);
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
     } finally {
       await rm(tmp, { recursive: true });
     }
@@ -87,7 +89,7 @@ describe("loadAllRules", () => {
         join(tmp, "bad.rule.ts"),
         `export default { id: "bad", kind: "banana", scold: "x", guidance: [] };`,
       );
-      await expect(loadAllRules(tmp)).rejects.toThrow(/unknown kind 'banana'/);
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
     } finally {
       await rm(tmp, { recursive: true });
     }
@@ -98,6 +100,93 @@ describe("loadAllRules", () => {
     try {
       const rules = await loadAllRules(tmp);
       expect(rules).toEqual([]);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("loads rules from nested subdirectories", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(join(tmp, "top.rule.ts"), VALID_RULE.replace('"test"', '"top"'));
+      const sub = join(tmp, "subdir");
+      await mkdir(sub, { recursive: true });
+      await writeFile(join(sub, "nested.rule.ts"), VALID_RULE.replace('"test"', '"nested"'));
+      const rules = await loadAllRules(tmp);
+      const ids = rules.map((r) => r.id);
+      expect(ids).toContain("top");
+      expect(ids).toContain("nested");
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("loads .rule.tsx files", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "tsx-rule.rule.tsx"),
+        `export default { id: "tsx-rule", kind: "pattern", scold: "bad", guidance: ["fix"], pattern: /x/ };`,
+      );
+      const rules = await loadAllRules(tmp);
+      expect(rules.map((r) => r.id)).toContain("tsx-rule");
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a rule missing scold", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "pattern", guidance: [], pattern: /x/ };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a rule missing guidance", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "pattern", scold: "x", pattern: /x/ };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("resolves a relative rulesDir to absolute before importing", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(join(tmp, "rel.rule.ts"), VALID_RULE.replace('"test"', '"rel"'));
+      const relPath = relative(process.cwd(), tmp);
+      const rules = await loadAllRules(relPath);
+      expect(rules.map((r) => r.id)).toContain("rel");
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("returns deeply frozen rule objects", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "frz.rule.ts"),
+        `export default { id: "frz", kind: "pattern", scold: "bad", guidance: ["fix it"], pattern: /x/, except: ["ok"] };`,
+      );
+      const rules = await loadAllRules(tmp);
+      expect(rules.length).toBe(1);
+      expect(Object.isFrozen(rules)).toBe(true);
+      expect(Object.isFrozen(rules[0])).toBe(true);
+      expect(Object.isFrozen(rules[0].guidance)).toBe(true);
+      const pr = rules[0] as { except?: readonly string[] };
+      expect(Object.isFrozen(pr.except)).toBe(true);
     } finally {
       await rm(tmp, { recursive: true });
     }
