@@ -30,7 +30,7 @@ function cleanupDbs(): void {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+        // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* ignore */
       }

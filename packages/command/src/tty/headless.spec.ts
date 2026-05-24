@@ -32,7 +32,7 @@ describe("spawnHeadless with real spawn", () => {
       try {
         logContent = readFileSync(result.logFile, "utf-8");
         if (logContent.includes("headless-test-output")) break;
-      // dotw-todo test-empty-catch: parse-probe — fix in #2322
+        // dotw-todo test-empty-catch: parse-probe — fix in #2322
       } catch {
         // File may not exist yet
       }

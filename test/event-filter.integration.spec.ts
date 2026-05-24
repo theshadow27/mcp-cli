@@ -122,7 +122,7 @@ function createOpenStream(socketPath: string) {
           if (!trimmed) continue;
           try {
             yield JSON.parse(trimmed) as MonitorEvent;
-          // dotw-todo test-empty-catch: parse-probe — fix in #2322
+            // dotw-todo test-empty-catch: parse-probe — fix in #2322
           } catch {
             // Skip malformed lines
           }
@@ -132,7 +132,7 @@ function createOpenStream(socketPath: string) {
       if (trailing.trim()) {
         try {
           yield JSON.parse(trailing.trim()) as MonitorEvent;
-        // dotw-todo test-empty-catch: parse-probe — fix in #2322
+          // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           // Ignore incomplete trailing data
         }

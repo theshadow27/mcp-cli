@@ -104,7 +104,7 @@ describe("openEventStream() client integration", () => {
     _restoreOptions();
     try {
       unlinkSync(socketPath);
-    // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already cleaned up */
     }
@@ -283,7 +283,7 @@ describe("openEventStream() client integration", () => {
       malformServer.stop(true);
       try {
         unlinkSync(malformSocket);
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+        // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* already cleaned up */
       }

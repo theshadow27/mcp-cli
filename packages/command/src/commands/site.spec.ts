@@ -115,7 +115,7 @@ describe("cmdSite", () => {
     let caught: unknown;
     try {
       await cmdSite(["bogus"], deps);
-    // dotw-todo test-empty-catch: exit-spy — fix in #2322
+      // dotw-todo test-empty-catch: exit-spy — fix in #2322
     } catch (e) {
       caught = e;
     }
@@ -236,7 +236,7 @@ describe("cmdSite", () => {
       let caught: unknown;
       try {
         await cmdSite(input, deps);
-      // dotw-todo test-empty-catch: exit-spy — fix in #2322
+        // dotw-todo test-empty-catch: exit-spy — fix in #2322
       } catch (e) {
         caught = e;
       }
@@ -296,7 +296,7 @@ describe("cmdSite", () => {
     let caught: unknown;
     try {
       await cmdSite(["list"], deps);
-    // dotw-todo test-empty-catch: exit-spy — fix in #2322
+      // dotw-todo test-empty-catch: exit-spy — fix in #2322
     } catch (e) {
       caught = e;
     }

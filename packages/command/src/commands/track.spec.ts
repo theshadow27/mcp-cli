@@ -31,7 +31,7 @@ function makeDeps(overrides: Partial<Record<IpcMethod, unknown>> = {}): TrackDep
 const realManifestLoader = (dir: string): Manifest | null => {
   try {
     return loadManifest(dir)?.manifest ?? null;
-  // dotw-todo test-empty-catch: parse-probe — fix in #2322
+    // dotw-todo test-empty-catch: parse-probe — fix in #2322
   } catch {
     return null;
   }

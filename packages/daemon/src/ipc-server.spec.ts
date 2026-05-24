@@ -103,7 +103,7 @@ describe("IpcServer HTTP transport", () => {
     server = undefined;
     try {
       unlinkSync(socketPath);
-    // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already cleaned up */
     }
@@ -161,7 +161,7 @@ describe("IpcServer HTTP transport", () => {
       sharedServer?.stop();
       try {
         unlinkSync(sharedSocket);
-      // dotw-todo test-empty-catch: cleanup — fix in #2322
+        // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* already cleaned up */
       }
@@ -3315,7 +3315,7 @@ describe("IpcServer HTTP transport", () => {
       for (const l of buffer.split("\n").filter((s) => s.startsWith("{"))) {
         try {
           parsed.push(JSON.parse(l) as Record<string, unknown>);
-        // dotw-todo test-empty-catch: parse-probe — fix in #2322
+          // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           /* partial chunk */
         }

@@ -13,19 +13,19 @@ function tmpDb(): string {
 function cleanup(path: string): void {
   try {
     unlinkSync(path);
-  // dotw-todo test-empty-catch: cleanup — fix in #2322
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
   } catch {
     // ignore
   }
   try {
     unlinkSync(`${path}-wal`);
-  // dotw-todo test-empty-catch: cleanup — fix in #2322
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
   } catch {
     // ignore
   }
   try {
     unlinkSync(`${path}-shm`);
-  // dotw-todo test-empty-catch: cleanup — fix in #2322
+    // dotw-todo test-empty-catch: cleanup — fix in #2322
   } catch {
     // ignore
   }
@@ -1936,7 +1936,7 @@ describe("StateDb", () => {
       } finally {
         try {
           unlinkSync(symlinkDir);
-        // dotw-todo test-empty-catch: cleanup — fix in #2322
+          // dotw-todo test-empty-catch: cleanup — fix in #2322
         } catch {
           // ignore
         }
@@ -1996,7 +1996,7 @@ describe("StateDb", () => {
       } finally {
         try {
           unlinkSync(symlinkDir);
-        // dotw-todo test-empty-catch: cleanup — fix in #2322
+          // dotw-todo test-empty-catch: cleanup — fix in #2322
         } catch {
           // ignore
         }

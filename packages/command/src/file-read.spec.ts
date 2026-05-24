@@ -75,7 +75,7 @@ describe("path containment guard", () => {
     const link = join(TMP, "escape-link");
     try {
       rmSync(link);
-    // dotw-todo test-empty-catch: cleanup — fix in #2322
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* may not exist */
     }
