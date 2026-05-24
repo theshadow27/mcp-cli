@@ -86,6 +86,7 @@ export function friendlyMessage(err: VfsError, context?: string): string {
       return `Network error${ctx}. Check your connection and that the MCP server is running:\n  mcx status`;
     case "not_found":
       // Preserve diagnostic content (e.g. alias discovery details) when present
+      // dotw-todo no-error-message-sniffing: add typed DiagnosticError with structured content field — fix in #2264
       if (err.message.includes("Tried aliases") || err.message.includes("mcx ls")) {
         return err.message;
       }
