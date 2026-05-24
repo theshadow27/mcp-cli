@@ -25,7 +25,7 @@ import {
   writeSync,
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -415,7 +415,7 @@ export async function resolveHeadBranch(cwd: string): Promise<string | null> {
       const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
       const target = match?.[1]?.trim();
       if (!target) return null;
-      gitDir = target.startsWith("/") ? target : `${cwd}/${target}`;
+      gitDir = isAbsolute(target) ? target : join(cwd, target);
     } else {
       gitDir = dotGitPath;
     }

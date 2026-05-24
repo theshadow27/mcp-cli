@@ -117,7 +117,7 @@ const defaultDeps: PhaseInstallDeps = {
 export function resolvePhaseSource(source: string, repoRoot: string): string {
   if (source.startsWith("file://")) {
     const rest = source.slice("file://".length);
-    const path = rest.startsWith("/") ? rest : `/${rest}`;
+    const path = isAbsolute(rest) ? rest : `/${rest}`;
     return resolvePath(path);
   }
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(source)) {

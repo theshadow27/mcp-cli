@@ -75,6 +75,21 @@ export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
 }
 
 /**
+ * Realpath-normalized equality: both paths are resolved + symlink-followed before comparison.
+ * Assumes both paths exist. For non-existent paths, the comparison is best-effort: the
+ * missing tail is re-joined from basename segments without case normalization, so results
+ * may be inconsistent on case-insensitive filesystems when paths don't exist yet.
+ */
+export function pathEq(a: string, b: string): boolean {
+  return resolveRealpath(resolve(a)) === resolveRealpath(resolve(b));
+}
+
+/** Canonical working directory: `resolve(process.cwd())` with symlinks followed. */
+export function canonicalCwd(): string {
+  return resolveRealpath(resolve(process.cwd()));
+}
+
+/**
  * Resolve the command to launch the daemon.
  *
  * 1. Compiled mode: look for `mcpd` binary next to the current executable.

@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { options } from "../constants";
 import { sha256Hex } from "../manifest-lock";
 import { type PatchStrategy, resolveStrategy } from "./strategies";
@@ -440,7 +440,7 @@ export function readCurrentPatchedMeta(storeDir?: string): PatchedMeta | null {
     const stat = lstatSync(link);
     if (stat.isSymbolicLink()) {
       target = readlinkSync(link);
-      if (!target.startsWith("/")) target = join(dirname(link), target);
+      if (!isAbsolute(target)) target = join(dirname(link), target);
     } else {
       // Pointer file fallback (see updateCurrentLink).
       target = readFileSync(link, "utf-8").trim();

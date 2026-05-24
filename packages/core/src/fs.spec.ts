@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
-import { auditRuntimePermissions, ensureStateDir, hardenFile, isPathContained, resolveRealpath } from "./fs";
+import {
+  auditRuntimePermissions,
+  canonicalCwd,
+  ensureStateDir,
+  hardenFile,
+  isPathContained,
+  pathEq,
+  resolveRealpath,
+} from "./fs";
 import { capturingLogger } from "./logger";
 
 describe("isPathContained", () => {
@@ -80,6 +88,70 @@ describe("resolveRealpath", () => {
       const result = resolveRealpath(missing);
       expect(result).toBe(join(realpathSync(real), "not-yet-created"));
     } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pathEq", () => {
+  test("returns true for identical paths", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const file = join(base, "a.txt");
+      writeFileSync(file, "x");
+      expect(pathEq(file, file)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("returns true when one path goes through a symlink", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const real = join(base, "real-dir");
+      mkdirSync(real);
+      const link = join(base, "link-dir");
+      symlinkSync(real, link);
+      expect(pathEq(real, link)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("returns false for different paths", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const a = join(base, "a");
+      const b = join(base, "b");
+      mkdirSync(a);
+      mkdirSync(b);
+      expect(pathEq(a, b)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("canonicalCwd", () => {
+  test("output is idempotent under realpathSync — not a raw symlink alias", () => {
+    // If canonicalCwd() returned an unresolved symlink path, a second
+    // realpathSync would differ. Idempotency proves the path is fully resolved.
+    const result = canonicalCwd();
+    expect(realpathSync(result)).toBe(result);
+  });
+
+  test("resolves symlinked cwd to the real directory, not the symlink path", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const real = join(base, "real-dir");
+    mkdirSync(real);
+    const link = join(base, "link-dir");
+    symlinkSync(real, link);
+    const orig = process.cwd();
+    process.chdir(link);
+    try {
+      expect(canonicalCwd()).toBe(realpathSync(real));
+    } finally {
+      process.chdir(orig);
       rmSync(base, { recursive: true, force: true });
     }
   });
