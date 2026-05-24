@@ -121,9 +121,8 @@ const rule: CheckRule = {
     "cross-reference test/CLAUDE.md flaky-prevention patterns",
   ],
   documentation: "#2248",
+  appliesToTests: true,
   check({ file, violated }) {
-    if (!file.isTest) return;
-
     const watchdog = effectiveWatchdog(file.content);
     const lines = file.content.split("\n");
 

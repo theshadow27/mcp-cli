@@ -64,8 +64,6 @@ const rule: CheckRule = {
   documentation: "#2249",
   appliesToTests: true,
   check({ file, ast, violated }) {
-    if (!file.isTest) return;
-
     const { sourceFile } = ast;
     const lines = sourceFile.text.split("\n");
 

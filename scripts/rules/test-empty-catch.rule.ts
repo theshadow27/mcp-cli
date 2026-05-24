@@ -39,8 +39,6 @@ const rule: CheckRule = {
   documentation: "#2247",
   appliesToTests: true,
   check({ file, violated, ast }) {
-    if (!file.isTest) return;
-
     const sf = ast.sourceFile;
     const catchClauses = ast.find(ts.isCatchClause);
 

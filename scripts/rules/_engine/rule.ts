@@ -45,7 +45,12 @@ interface RuleBase {
   guidance: string[];
   /** Optional pointer to CLAUDE.md anchor, issue, or PR. */
   documentation?: string;
-  /** When false, .spec.ts / .test.ts files are skipped for this rule. Default true. */
+  /**
+   * Controls whether the engine runs this rule against test files.
+   * - `false` → skip .spec.ts / .test.ts files (rule only runs on production code).
+   * - `true`  → skip non-test files (rule only runs on test code).
+   * - omitted → run on all files (default).
+   */
   appliesToTests?: boolean;
 }
 
@@ -78,6 +83,7 @@ export interface Violation {
  */
 export function evaluateRule(rule: Rule, file: FileMeta, files: Map<string, FileMeta>): Omit<Violation, "rule">[] {
   if (rule.appliesToTests === false && file.isTest) return [];
+  if (rule.appliesToTests === true && !file.isTest) return [];
 
   const collected: Omit<Violation, "rule">[] = [];
   const violated: Violated = (line, column, snippet) => {

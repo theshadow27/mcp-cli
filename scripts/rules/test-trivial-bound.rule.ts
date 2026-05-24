@@ -25,8 +25,6 @@ const rule: CheckRule = {
   documentation: "#2247",
   appliesToTests: true,
   check({ file, violated }) {
-    if (!file.isTest) return;
-
     const lines = file.content.split("\n");
     for (const [i, line] of lines.entries()) {
       const m = TRIVIAL_UPPER.exec(line);

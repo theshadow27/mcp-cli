@@ -26,7 +26,6 @@ const rule: CheckRule = {
     "exception: imports with 'with { type: ... }' (asset/text imports) are intentionally exempt",
   ],
   documentation: "#2173",
-  appliesToTests: true,
   check({ file, violated }) {
     const inScope = file.relPath.startsWith("packages/") || file.relPath.startsWith(".claude/phases/");
     if (!inScope) return;
