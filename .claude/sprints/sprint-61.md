@@ -64,3 +64,36 @@ wiring #1313, clone test #2228). Excluded: #2186 (meta — modifies a phase
 file, deferred to meta flow), #2210/#2215 (flaky/upstream, need repro),
 #2074 (needs-clarification), monitor (#1924/#1939) and sites (#1595/#1459)
 epics deferred to dedicated sprints.
+
+## Results
+
+> Ended 2026-05-23 20:30 EDT.
+
+- **Released**: v1.11.2 (patch — clone/git-remote-mcx hardening, no new top-level command)
+- **PRs merged**: 15 — #2238 (#1311), #2237 (#1280), #2240 (#1277), #2239 (#2229),
+  #2244 (#1279), #2243 (#1263), #2242 (#2208), #2256 (#1244), #2258 (#1365),
+  #2254 (#2228), #2257 (#1313), #2259 (#1262), #2241 (#1312), #2270 (#1281),
+  #2268 (#2255 — bonus, filed mid-sprint)
+- **Issues closed**: 16 — all 15 planned (14 via PR + #1323 closed-redundant as
+  #1311 already delivered the safe-truncation fix) + #2255
+- **Issues dropped**: 0
+- **New issues filed**: #2255 (flaky #940 daemon stdio-kill 4s-timeout suite —
+  root-caused to a `getProcessStartTime()` clock-ordering bug + tight deadline,
+  fixed same sprint via #2268), #2253 (flaky `useAgentSessions` polling under
+  load — open)
+
+### Notes
+- **The fast-import / git-remote-mcx export arc landed end-to-end**: error-path
+  truncation (#1311/#1323), parser fixes (#1280/#1279), writer binary+SHA-256+
+  incremental (#1277/#1263/#1262), and the export path — ExportTransaction with
+  honest per-ref error reporting (#1312) + ParsedCommit→provider routing with
+  per-ref `deleteall` scoping (#1281).
+- **#1312 took two repair rounds**: round 1 fixed 6 adversarial blockers (the
+  central one: `rollbackApplied()` was a no-op while the module claimed
+  atomicity — reframed to per-ref reporting since provider atomicity is
+  genuinely impossible); round 2 fixed 4 Copilot re-review bugs (frontmatter on
+  create, create→modify coalescing, per-ref error dedup, atomicity wording).
+  Holding auto-merge for the re-review caught real bugs.
+- **Flaky #940 daemon suite was the dominant friction**: its 4s deadline (and a
+  real kill-skip bug under load) blocked merges on #2243/#2254/#2257/#2241,
+  cleared by rerun/rebase, then fixed at the root by #2255/#2268.
