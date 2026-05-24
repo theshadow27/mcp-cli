@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
-import { auditRuntimePermissions, ensureStateDir, hardenFile, isPathContained, resolveRealpath } from "./fs";
+import {
+  auditRuntimePermissions,
+  canonicalCwd,
+  ensureStateDir,
+  hardenFile,
+  isPathContained,
+  pathEq,
+  resolveRealpath,
+} from "./fs";
 import { capturingLogger } from "./logger";
 
 describe("isPathContained", () => {
@@ -82,6 +90,54 @@ describe("resolveRealpath", () => {
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
+  });
+});
+
+describe("pathEq", () => {
+  test("returns true for identical paths", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const file = join(base, "a.txt");
+      writeFileSync(file, "x");
+      expect(pathEq(file, file)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("returns true when one path goes through a symlink", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const real = join(base, "real-dir");
+      mkdirSync(real);
+      const link = join(base, "link-dir");
+      symlinkSync(real, link);
+      expect(pathEq(real, link)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("returns false for different paths", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    try {
+      const a = join(base, "a");
+      const b = join(base, "b");
+      mkdirSync(a);
+      mkdirSync(b);
+      expect(pathEq(a, b)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("canonicalCwd", () => {
+  test("returns a string matching resolveRealpath of cwd", () => {
+    const result = canonicalCwd();
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(0);
+    expect(result).toBe(realpathSync(process.cwd()));
   });
 });
 

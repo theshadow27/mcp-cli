@@ -74,6 +74,16 @@ export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
   }
 }
 
+/** Realpath-normalized equality: both paths are resolved + symlink-followed before comparison. */
+export function pathEq(a: string, b: string): boolean {
+  return resolveRealpath(resolve(a)) === resolveRealpath(resolve(b));
+}
+
+/** Canonical working directory: `resolve(process.cwd())` with symlinks followed. */
+export function canonicalCwd(): string {
+  return resolveRealpath(resolve(process.cwd()));
+}
+
 /**
  * Resolve the command to launch the daemon.
  *

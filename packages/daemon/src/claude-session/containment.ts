@@ -1,6 +1,6 @@
 // Worktree containment enforcement — see #1441 for design.
 
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { isPathContained, resolveRealpath } from "@mcp-cli/core";
 
 // ── Types ──
@@ -197,7 +197,7 @@ function extractBashWriteTargets(command: string): string[] {
           for (let k = fileArgStart; k < tokens.length; k++) {
             const raw = tokens[k] ?? "";
             const t = unquote(raw);
-            if (t.startsWith("/")) {
+            if (isAbsolute(t)) {
               targets.push(t);
               break;
             }
@@ -214,12 +214,12 @@ function extractBashWriteTargets(command: string): string[] {
         for (const flag of outputFlags) {
           if (raw.startsWith(`${flag}=`)) {
             const val = unquote(raw.slice(flag.length + 1));
-            if (val.startsWith("/")) targets.push(val);
+            if (isAbsolute(val)) targets.push(val);
           }
         }
         if (outputFlags.includes(raw) && k + 1 < tokens.length) {
           const val = unquote(tokens[k + 1] ?? "");
-          if (val.startsWith("/")) targets.push(val);
+          if (isAbsolute(val)) targets.push(val);
           k++;
         }
       }
@@ -233,7 +233,7 @@ function extractBashWriteTargets(command: string): string[] {
       const raw = tokens[k] ?? "";
       if (raw.startsWith("-")) continue;
       const t = unquote(raw);
-      if (t.startsWith("/")) targets.push(t);
+      if (isAbsolute(t)) targets.push(t);
     }
   }
 
