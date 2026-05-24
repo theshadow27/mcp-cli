@@ -10,6 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { MonitorEvent } from "@mcp-cli/core";
+import { safeSetInterval } from "./safe-timers";
 
 const CONSUMER = "event_log";
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -115,7 +116,7 @@ export class EventLog {
 
   startPruning(): void {
     if (this.pruneTimer !== undefined) return;
-    this.pruneTimer = setInterval(() => {
+    this.pruneTimer = safeSetInterval(() => {
       this.prune(new Date(Date.now() - TTL_MS));
     }, PRUNE_INTERVAL_MS);
     this.pruneTimer.unref();

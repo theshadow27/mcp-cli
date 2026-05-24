@@ -472,6 +472,7 @@ export class EventStreamServer {
               }
             }
 
+            // dotw-todo timer-callback-error-boundary: try+2 extra statements outside try; bus.touch/pruneStale may throw — fix in #2323
             heartbeatTimer = setInterval(() => {
               try {
                 controller.enqueue(encoder.encode("\n"));
@@ -637,6 +638,7 @@ export class EventStreamServer {
         // threshold, not 2× (which happens when an event lands 1ms after a timer
         // fire and the next check is a full interval away — see #1528).
         const heartbeatPollMs = Math.ceil(this.heartbeatIntervalMs / 6);
+        // dotw-todo timer-callback-error-boundary: if-guard wrapping try is not a single top-level try — fix in #2323
         heartbeatTimer = setInterval(() => {
           if (Date.now() - lastWriteTime >= this.heartbeatIntervalMs) {
             const hb = `${JSON.stringify({ category: "heartbeat", event: "heartbeat", seq: this.eventSeq, src: "daemon", ts: new Date().toISOString() })}\n`;

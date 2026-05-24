@@ -11,6 +11,7 @@ import type { StateDb } from "./db/state";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import type { QuotaPoller } from "./quota";
+import { safeSetInterval } from "./safe-timers";
 
 interface SessionCostState {
   cost: number;
@@ -66,7 +67,7 @@ export class BudgetWatcher {
     this.subId = this.bus.subscribe((event) => this.handleEvent(event));
 
     const pollMs = opts.quotaPollIntervalMs ?? DEFAULT_QUOTA_POLL_MS;
-    this.quotaTimer = setInterval(() => this.checkQuota(), pollMs);
+    this.quotaTimer = safeSetInterval(() => this.checkQuota(), pollMs);
     this.quotaTimer.unref();
   }
 

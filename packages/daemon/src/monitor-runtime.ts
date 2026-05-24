@@ -338,6 +338,7 @@ export class MonitorRuntime {
         `[monitor-runtime] "${mon.name}" crashed (exit ${code}), restarting in ${delay}ms (attempt ${mon.attempt})`,
       );
 
+      // dotw-todo timer-callback-error-boundary: complex async restart callback, spawnMonitor may throw — fix in #2323
       mon.restartTimer = setTimeout(async () => {
         if (mon.stopped || this.stopped) return;
 

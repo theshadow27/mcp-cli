@@ -9,6 +9,7 @@ import { type FSWatcher, existsSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Logger, ResolvedConfig, ResolvedServer } from "@mcp-cli/core";
 import { consoleLogger, options, projectConfigPath } from "@mcp-cli/core";
+import { safeSetInterval } from "../safe-timers";
 import { configHash, loadConfig as defaultLoadConfig } from "./loader";
 
 const DEBOUNCE_MS = 300;
@@ -105,7 +106,7 @@ export class ConfigWatcher {
         this.lastMtimes.set(filePath, 0);
       }
     }
-    this.pollTimer = setInterval(() => this.pollCheck(), this.pollIntervalMs);
+    this.pollTimer = safeSetInterval(() => this.pollCheck(), this.pollIntervalMs);
 
     this.logger.info(`[config-watcher] Watching ${paths.length} config paths`);
   }
@@ -209,6 +210,7 @@ export class ConfigWatcher {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    // dotw-todo timer-callback-error-boundary: multi-statement debounce; reload() is async-without-await — fix in #2323
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       if (this.stopped) return;

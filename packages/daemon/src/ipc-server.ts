@@ -56,6 +56,7 @@ import { TelemetryHandlers } from "./handlers/telemetry";
 import { ToolHandlers } from "./handlers/tool";
 import { WorkItemHandlers } from "./handlers/work-item";
 import { metrics } from "./metrics";
+import { safeSetTimeout } from "./safe-timers";
 import type { ServerPool } from "./server-pool";
 
 // Re-export for backward compat with existing tests and external code.
@@ -355,11 +356,12 @@ export class IpcServer {
         clearTimeout(this.drainTimer);
         this.drainTimer = null;
       }
-      setTimeout(() => this.onShutdown(), 0);
+      safeSetTimeout(() => this.onShutdown(), 0);
     }
   }
 
   private startDrainTimeout(): void {
+    // dotw-todo timer-callback-error-boundary: multi-statement block with logger+onShutdown calls — fix in #2323
     this.drainTimer = setTimeout(() => {
       if (!this.shutdownScheduled) {
         this.logger.warn(

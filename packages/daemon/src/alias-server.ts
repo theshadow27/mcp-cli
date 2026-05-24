@@ -19,6 +19,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
+import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 
 /** Max concurrent subprocess executions to prevent fork-bomb scenarios. */
@@ -344,7 +345,7 @@ export class AliasServer {
       proc.stdin.write(stdinPayload);
       proc.stdin.end();
 
-      const killTimeout = setTimeout(() => {
+      const killTimeout = safeSetTimeout(() => {
         proc.kill("SIGKILL");
       }, timeoutMs);
 
