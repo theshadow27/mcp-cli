@@ -93,7 +93,7 @@ jobs:
         if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
-          bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions test/integration.spec.ts 2>&1 | tee /tmp/test_non_daemon.txt
+          bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions scripts/rules test/integration.spec.ts 2>&1 | tee /tmp/test_non_daemon.txt
           code=${PIPESTATUS[0]}
           if [ $code -eq 0 ]; then
             exit 0

@@ -209,7 +209,7 @@ const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
   .filter((f) => f.endsWith(".spec.ts") && RUN1_TEST_FILES.has(`test/${f}`))
   .map((f) => `test/${f}`);
 
-const nonDaemonPaths = [...packageDirs, ...topLevelTestFiles, ...RUN1_DAEMON_UNIT_TESTS];
+const nonDaemonPaths = [...packageDirs, "scripts/rules", ...topLevelTestFiles, ...RUN1_DAEMON_UNIT_TESTS];
 
 const testStart = Date.now();
 
