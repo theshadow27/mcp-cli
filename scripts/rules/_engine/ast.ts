@@ -31,7 +31,7 @@ function scriptKindFor(path: string): ts.ScriptKind {
 function getSourceFile(file: FileMeta): ts.SourceFile {
   let sf = sourceFileCache.get(file);
   if (!sf) {
-    sf = ts.createSourceFile(file.path, file.content, ts.ScriptTarget.Latest, false, scriptKindFor(file.path));
+    sf = ts.createSourceFile(file.path, file.content, ts.ScriptTarget.Latest, true, scriptKindFor(file.path));
     sourceFileCache.set(file, sf);
   }
   return sf;
