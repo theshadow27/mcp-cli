@@ -67,7 +67,7 @@ const rule: CheckRule = {
     "or inline: assertNever(action satisfies never) — the call site proves both compile-time and runtime exhaustiveness",
   ],
   documentation: "#2252",
-  check({ file, ast, violated }) {
+  check({ ast, violated }) {
     const { sourceFile } = ast;
     const lines = sourceFile.text.split("\n");
 
