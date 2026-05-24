@@ -11,7 +11,7 @@ export interface AstHelper {
   /** Walk all descendants, collecting nodes with the given SyntaxKind. */
   findByKind(kind: ts.SyntaxKind): ts.Node[];
 
-  /** Find CallExpression nodes where the callee identifier matches `name`. */
+  /** Find CallExpression nodes where the callee matches `name` — covers `name()`, `obj.name()`, and `obj["name"]()`. */
   callsTo(name: string): ts.CallExpression[];
 
   /** Convert a node's start position to 1-indexed { line, column }. */
@@ -74,6 +74,12 @@ export function createAstHelper(file: FileMeta): AstHelper {
         if (ts.isIdentifier(expr) && expr.text === name) {
           results.push(n);
         } else if (ts.isPropertyAccessExpression(expr) && expr.name.text === name) {
+          results.push(n);
+        } else if (
+          ts.isElementAccessExpression(expr) &&
+          ts.isStringLiteral(expr.argumentExpression) &&
+          expr.argumentExpression.text === name
+        ) {
           results.push(n);
         }
       });
