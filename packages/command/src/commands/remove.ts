@@ -21,7 +21,7 @@ export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigSc
     const arg = args[i];
     if (arg === "--scope" || arg === "-s") {
       if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES);
+      scope = parseScope(args[++i], CONFIG_SCOPES); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
     } else {

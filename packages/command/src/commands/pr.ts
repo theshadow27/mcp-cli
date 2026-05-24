@@ -76,7 +76,7 @@ export function parsePrMergeArgs(args: string[]): PrMergeArgs {
     } else if (arg === "--wait") {
       wait = true;
     } else if (arg === "--timeout" || arg === "-t") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--timeout requires a value in ms";
       } else {
@@ -193,7 +193,7 @@ export function parsePrWaitArgs(args: string[]): PrWaitArgs {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-wait") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--max-wait requires a value in seconds";
       } else {

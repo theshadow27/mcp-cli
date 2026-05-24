@@ -380,7 +380,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--worktree" || arg === "-w") {
-      const next = allArgs[i + 1];
+      const next = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (next && !next.startsWith("-")) {
         worktree = next;
         return 1;
@@ -391,17 +391,17 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--resume") {
-      resume = allArgs[i + 1];
+      resume = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!resume) extraError = "--resume requires a session ID";
       return 1;
     }
     if (arg === "--name" || arg === "-n") {
-      name = allArgs[i + 1];
+      name = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!name) extraError = "--name requires a value";
       return 1;
     }
     if (arg === "--work-item") {
-      const next = allArgs[i + 1];
+      const next = allArgs[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (next && !next.startsWith("-")) {
         workItemId = next;
         return 1;
@@ -682,21 +682,22 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     } else if (arg === "--force") {
       force = true;
     } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--model requires a value";
       } else {
         model = resolveModelName(val);
       }
     } else if (arg === "--allow") {
+      // dotw-todo no-manual-arg-parsing: greedy multi-value consume; migration to parseFlags requires CLI change (--allow A B → --allow A --allow B) — track in #2283
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]);
+        allow.push(args[++i]); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       }
       if (allow.length === 0) error = "--allow requires at least one tool pattern";
     } else if (arg === "--wait") {
       wait = true;
     } else if (arg === "--timeout") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--timeout requires a value in ms";
       } else {
@@ -1393,7 +1394,7 @@ async function claudeInterrupt(args: string[], d: ClaudeDeps): Promise<void> {
         d.printError(`${args[i]} requires a value`);
         d.exit(1);
       }
-      rawReason = args[++i];
+      rawReason = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (args[i].startsWith("-")) {
       d.printError(`Unknown flag: ${args[i]}\nUsage: mcx claude interrupt <session-id> [--reason <text|@file>]`);
       d.exit(1);
@@ -1463,7 +1464,7 @@ export function parsePatchUpdateArgs(args: string[], d: Pick<ClaudeDeps, "printE
         d.printError("--source requires a value");
         d.exit(1);
       }
-      sourcePath = args[++i];
+      sourcePath = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (a.startsWith("--source=")) sourcePath = a.slice("--source=".length);
     else {
       d.printError(`Unknown argument: ${a}`);
@@ -1538,7 +1539,7 @@ export function parseApproveArgs(
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--request-id" || args[i] === "-r") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         d.printError("--request-id requires a value");
         d.exit(1);
@@ -1573,14 +1574,14 @@ export function parseDenyArgs(
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--request-id" || args[i] === "-r") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         d.printError("--request-id requires a value");
         d.exit(1);
       }
       requestId = val;
     } else if (args[i] === "--message" || args[i] === "-m") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         d.printError("--message requires a value");
         d.exit(1);
@@ -1778,7 +1779,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--timeout" || arg === "-t") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--timeout requires a value in ms";
       } else {
@@ -1790,7 +1791,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
         }
       }
     } else if (arg === "--after") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--after requires a sequence number";
       } else {
@@ -1804,7 +1805,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
     } else if (arg === "--any") {
       any = true;
     } else if (arg === "--pr") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--pr requires a PR number";
       } else {
@@ -1814,7 +1815,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
     } else if (arg === "--checks") {
       checks = true;
     } else if (arg === "--mail-to") {
-      const val = args[++i];
+      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!val) {
         error = "--mail-to requires a recipient name";
       } else {

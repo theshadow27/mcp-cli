@@ -59,6 +59,7 @@ export async function cmdAutomation(args: string[], deps?: Partial<AutomationDep
     const limitIdx = args.indexOf("--limit");
     let limit: number | undefined;
     if (limitIdx >= 0) {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const raw = args[limitIdx + 1];
       const parsed = Number.parseInt(raw, 10);
       if (!raw || Number.isNaN(parsed) || parsed < 1) {

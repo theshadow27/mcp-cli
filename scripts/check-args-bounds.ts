@@ -129,6 +129,7 @@ async function scanDir(dir: string): Promise<Violation[]> {
     // Skip declaration files, node_modules, and this script + its tests
     if (relPath.endsWith(".d.ts") || relPath.includes("node_modules")) continue;
     if (relPath === "check-args-bounds.ts" || relPath === "check-args-bounds.spec.ts") continue;
+    if (relPath.startsWith("rules/")) continue;
 
     const absPath = `${dir}${relPath}`;
     const file = Bun.file(absPath);

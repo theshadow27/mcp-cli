@@ -305,18 +305,18 @@ export function parsePhaseRunArgs(args: string[]): PhaseRunOptions {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--from") {
-      from = args[++i] ?? null;
+      from = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (from === null) throw new Error("--from requires a phase name");
     } else if (a.startsWith("--from=")) {
       from = a.slice("--from=".length);
     } else if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (workItemId === null) throw new Error("--work-item requires an id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
     } else if (a === "--force") {
       forceSeen = true;
-      const next = args[i + 1];
+      const next = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (next !== undefined && !next.startsWith("--")) {
         forceMessage = next;
         i++;
@@ -355,7 +355,7 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!workItemId) throw new Error("--work-item requires a non-empty id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);
@@ -930,6 +930,7 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--arg") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const pair = argv[++i];
       if (!pair) {
         d.logError("--arg requires a key=val argument");
@@ -1095,6 +1096,7 @@ export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--arg") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const pair = argv[++i];
       if (!pair) throw new Error("--arg requires a key=val argument");
       const eq = pair.indexOf("=");
@@ -1110,6 +1112,7 @@ export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
       if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
       cliArgs[key] = pair.slice(eq + 1);
     } else if (a === "--input") {
+      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       inputJson = argv[++i] ?? null;
       if (inputJson === null) throw new Error("--input requires a JSON argument");
     } else if (a.startsWith("--input=")) {
@@ -1492,7 +1495,7 @@ export function parsePhaseAdvanceArgs(args: string[]): { workItemId: string } {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--work-item") {
-      workItemId = args[++i] ?? null;
+      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!workItemId) throw new Error("--work-item requires an id");
     } else if (a.startsWith("--work-item=")) {
       workItemId = a.slice("--work-item=".length);

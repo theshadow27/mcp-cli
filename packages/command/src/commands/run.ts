@@ -113,7 +113,7 @@ export function parseRunArgs(args: string[]): { jsonInput: string | undefined; c
     const arg = args[i];
     if (arg.startsWith("--")) {
       if (i + 1 < args.length) {
-        cliArgs[arg.slice(2)] = args[++i];
+        cliArgs[arg.slice(2)] = args[++i]; // dotw-ignore no-manual-arg-parsing: pass-through — alias flag schema is dynamic, not statically known at parse time
       }
       // Orphan flags (no following value) are silently ignored
     } else if (jsonInput === undefined) {

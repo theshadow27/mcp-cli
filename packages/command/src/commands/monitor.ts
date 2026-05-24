@@ -78,26 +78,26 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     if (arg === "--json" || arg === "-j") {
       json = true;
     } else if (arg === "--response-tail") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next || next.startsWith("-")) {
         error = "--response-tail requires a session ID";
         break;
       }
       responseTail = next;
     } else if (arg === "--subscribe") {
-      subscribe = args[++i];
+      subscribe = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!subscribe) {
         error = "--subscribe requires a value";
         break;
       }
     } else if (arg === "--session") {
-      session = args[++i];
+      session = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!session) {
         error = "--session requires a value";
         break;
       }
     } else if (arg === "--pr") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const n = Number(next);
       if (!next || Number.isNaN(n)) {
         error = "--pr requires a number";
@@ -105,31 +105,31 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
       }
       pr = n;
     } else if (arg === "--work-item") {
-      workItem = args[++i];
+      workItem = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!workItem) {
         error = "--work-item requires a value";
         break;
       }
     } else if (arg === "--type") {
-      type = args[++i];
+      type = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!type) {
         error = "--type requires a value";
         break;
       }
     } else if (arg === "--src") {
-      src = args[++i];
+      src = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!src) {
         error = "--src requires a value";
         break;
       }
     } else if (arg === "--phase") {
-      phase = args[++i];
+      phase = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!phase) {
         error = "--phase requires a value";
         break;
       }
     } else if (arg === "--repo") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!next || next.startsWith("-")) {
         error = "--repo requires a path";
         break;
@@ -138,7 +138,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     } else if (arg === "--all-repos") {
       allRepos = true;
     } else if (arg === "--since") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const n = Number(next);
       if (!next || Number.isNaN(n)) {
         error = "--since requires a number";
@@ -146,13 +146,13 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
       }
       since = n;
     } else if (arg === "--until") {
-      until = args[++i];
+      until = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       if (!until) {
         error = "--until requires a pattern";
         break;
       }
     } else if (arg === "--timeout") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const n = Number(next);
       if (!next || Number.isNaN(n)) {
         error = "--timeout requires seconds";
@@ -160,7 +160,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
       }
       timeout = n;
     } else if (arg === "--max-events") {
-      const next = args[++i];
+      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       const n = Number(next);
       if (!next || Number.isNaN(n) || n < 1) {
         error = "--max-events requires a positive integer";

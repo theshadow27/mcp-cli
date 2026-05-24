@@ -465,6 +465,7 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
   // Parse --project
   let projectFilter: string | undefined;
   if (projectIdx !== -1) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     projectFilter = args[projectIdx + 1];
     if (!projectFilter || projectFilter.startsWith("--")) {
       printError("sprint-stats: --project requires a project slug");
@@ -478,6 +479,7 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
   let sprintWarnings: string[] = [];
 
   if (sprintIdx !== -1) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     const raw = args[sprintIdx + 1];
     const sprintN = raw ? Number.parseInt(raw, 10) : Number.NaN;
     if (Number.isNaN(sprintN)) {
@@ -500,6 +502,7 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
     sprintWarnings = parsed.warnings;
     window = { start: parsed.start, end: parsed.end, label: `sprint-${sprintN}` };
   } else if (sinceIdx !== -1) {
+    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     const ref = args[sinceIdx + 1];
     if (!ref) {
       printError("sprint-stats: --since requires a tag or SHA");
