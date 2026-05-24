@@ -112,6 +112,19 @@ describe("stringLiterals()", () => {
   });
 });
 
+describe("parent pointers", () => {
+  it("sets node.parent so findAncestor works", () => {
+    const ast = createAstHelper(makeMeta("function f() { const x = 1; }"));
+    const decls = ast.find(ts.isVariableDeclaration);
+    expect(decls.length).toBe(1);
+    const decl = decls[0];
+    expect(decl.parent).toBeDefined();
+    const fn = ts.findAncestor(decl, ts.isFunctionDeclaration);
+    expect(fn).toBeDefined();
+    expect((fn as ts.FunctionDeclaration).name?.text).toBe("f");
+  });
+});
+
 describe("ScriptKind selection", () => {
   it("parses TSX content without errors when path ends in .tsx", () => {
     const ast = createAstHelper(
