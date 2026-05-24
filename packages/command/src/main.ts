@@ -407,10 +407,15 @@ async function main(): Promise<void> {
         await cmdPr(cleanArgs.slice(1));
         break;
 
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "codex":
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "acp":
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "copilot":
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "gemini":
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "opencode":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
