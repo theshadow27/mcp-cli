@@ -35,9 +35,7 @@ describe("addColumnIfMissing", () => {
   it("propagates SQLite execution errors from the ddl", () => {
     const db = freshDb();
     // PRIMARY KEY columns cannot be added via ALTER TABLE — SQLite always rejects this.
-    expect(() =>
-      addColumnIfMissing(db, "t", "bad", "ALTER TABLE t ADD COLUMN bad INTEGER PRIMARY KEY"),
-    ).toThrow();
+    expect(() => addColumnIfMissing(db, "t", "bad", "ALTER TABLE t ADD COLUMN bad INTEGER PRIMARY KEY")).toThrow();
   });
 
   it("can add multiple columns sequentially", () => {
