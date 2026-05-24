@@ -114,6 +114,34 @@ describe("ExportTransaction", () => {
       expect(tx.size).toBe(1);
     });
 
+    test("deleteall on ref A does not affect modify on ref B (B stages as push, not create)", async () => {
+      const provider = createMockProvider({
+        entries: { "README.md": { content: "# Hello", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "README.md": { content: "# Hello", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      const errors = tx.stage([
+        commit("refs/heads/feature", [
+          { type: "deleteall" },
+          { type: "modify", path: "README.md", content: new TextEncoder().encode("# Rebuilt on feature") },
+        ]),
+        commit("refs/heads/main", [
+          { type: "modify", path: "README.md", content: new TextEncoder().encode("# Updated on main") },
+        ]),
+      ]);
+      expect(errors).toHaveLength(0);
+
+      const result = await tx.commit();
+      expect(result.refs).toHaveLength(2);
+      expect(result.refs.find((r) => r.ref === "refs/heads/feature")?.ok).toBe(true);
+      expect(result.refs.find((r) => r.ref === "refs/heads/main")?.ok).toBe(true);
+      // feature's modify should be a create (deleteall cleared the tree)
+      expect(provider.calls.create).toBe(1);
+      // main's modify should be a push (not affected by feature's deleteall)
+      expect(provider.calls.push).toBe(1);
+    });
+
     test("stages multiple commits across refs", () => {
       const tx = new ExportTransaction(makeOpts());
       const errors = tx.stage([

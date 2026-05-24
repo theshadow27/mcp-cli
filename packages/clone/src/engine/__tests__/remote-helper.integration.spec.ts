@@ -214,6 +214,7 @@ describe("t5801 push", () => {
       parts.push("data 5");
       parts.push("test\n");
       parts.push(c.changes);
+      parts.push("");
     }
     parts.push("done\n");
     return parts.join("\n");
