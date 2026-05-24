@@ -19,8 +19,9 @@ function looksLikeFlag(token: string): boolean {
   return /^-[A-Za-z]/.test(token);
 }
 
-// Validates a decimal number string (integer or float, optionally signed).
-// Rejects empty, hex ("0x…"), scientific notation ("1e3"), Infinity, and non-numeric strings.
+// Validates a decimal number string (integer or float, with optional leading minus).
+// Rejects empty, positive-sign prefix ("+5"), hex ("0x…"), scientific notation ("1e3"),
+// Infinity, and non-numeric strings.
 function parseDecimal(raw: string): number | null {
   if (!/^-?\d+(\.\d+)?$/.test(raw)) return null;
   return Number(raw);
@@ -121,7 +122,7 @@ export function parseFlags(argv: string[], specs: Record<string, FlagSpec>): Par
       continue;
     }
 
-    if (token.startsWith("-")) {
+    if (looksLikeFlag(token)) {
       errors.push(`unknown flag: ${token}`);
       continue;
     }

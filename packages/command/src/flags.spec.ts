@@ -218,6 +218,18 @@ describe("parseFlags", () => {
     expect(r.errors).toEqual([]);
   });
 
+  it("collects bare - as positional (not unknown flag)", () => {
+    const r = parseFlags(["-"], SPECS);
+    expect(r.positionals).toEqual(["-"]);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("collects negative number as positional (not unknown flag)", () => {
+    const r = parseFlags(["-5"], SPECS);
+    expect(r.positionals).toEqual(["-5"]);
+    expect(r.errors).toEqual([]);
+  });
+
   it("rejects -letter as string value (short flag)", () => {
     const r = parseFlags(["--output", "-x"], SPECS);
     // -x rejected as value for --output, then processed as unknown flag

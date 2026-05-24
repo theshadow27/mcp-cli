@@ -150,13 +150,10 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
     const arg = args[i];
     // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (arg === "--cloud-id" && args[i + 1]) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       cloudId = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (arg === "--limit" && args[i + 1]) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       limit = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (arg === "--depth" && args[i + 1]) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       depth = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     } else if (!arg.startsWith("-") && !targetDir) {
       targetDir = arg;
@@ -214,7 +211,6 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
     if (args[i] === "--full") continue;
     // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
     if (args[i] === "--depth" && args[i + 1]) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       depth = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
       continue;
     }
