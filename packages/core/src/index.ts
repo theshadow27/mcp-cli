@@ -54,3 +54,4 @@ export * from "./bun-version";
 export * from "./sprint-plan";
 export * from "./claude-patch";
 export * from "./automation";
+export * from "./subprocess";
