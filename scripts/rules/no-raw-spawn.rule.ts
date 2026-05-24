@@ -39,6 +39,9 @@ const rule: CheckRule = {
         (ts.isPropertyAccessExpression(left) && left.name.text === "exitCode");
       if (!isExitCode) continue;
 
+      if (ts.isPropertyAccessExpression(left) && ts.isIdentifier(left.expression) && left.expression.text === "process")
+        continue;
+
       const right = bin.right;
       const isZero = ts.isNumericLiteral(right) && right.text === "0";
       if (!isZero) continue;

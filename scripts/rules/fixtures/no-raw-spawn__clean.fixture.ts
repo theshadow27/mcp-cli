@@ -4,10 +4,11 @@
  * @path packages/daemon/src/example.ts
  *
  * Uses spawnCapture — the safe subprocess wrapper — and accesses exitCode
- * without null-coercing it.
+ * without null-coercing it. Also demonstrates false-positive guards:
+ * process.exitCode is unrelated to subprocess exit codes.
  */
 
-import { spawnCapture, spawnCaptureSync } from "./subprocess";
+import { spawnCapture, spawnCaptureSync } from "@mcp-cli/core";
 
 async function run() {
   const result = await spawnCapture("git", ["status"]);
@@ -23,6 +24,9 @@ async function run() {
   if (sync.timedOut) {
     console.error("timed out");
   }
+
+  const code = process.exitCode ?? 0;
+  const fallback = process.exitCode || 0;
 
   return sync.stdout.trim();
 }
