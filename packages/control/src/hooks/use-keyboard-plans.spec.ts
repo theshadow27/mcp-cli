@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Plan, ServerStatus } from "@mcp-cli/core";
 import type { Key } from "ink";
+import { pollUntil } from "../../../../test/harness";
 import {
   type ExpandedPlanKey,
   type PlansNav,
@@ -12,8 +13,6 @@ import {
   hasCapability,
   isPlanReadOnly,
 } from "./use-keyboard-plans";
-
-const TICK_MS = 1;
 
 function makePlan(overrides: Partial<Plan> & { id: string }): Plan {
   return {
@@ -108,15 +107,6 @@ function makeNav(overrides: Partial<PlansNav> = {}): PlansNav & { state: Record<
     state,
     ...overrides,
   };
-}
-
-/** Poll for a condition with a deadline instead of fixed delay. */
-async function pollUntil(fn: () => boolean, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fn()) return;
-    await Bun.sleep(TICK_MS);
-  }
 }
 
 describe("handlePlansInput", () => {

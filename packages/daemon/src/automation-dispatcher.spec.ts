@@ -1,21 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AutomationAction, AutomationConfig, LockedAutomation, MonitorEvent } from "@mcp-cli/core";
+import { pollUntil } from "../../../test/harness";
 import { AutomationDispatcher } from "./automation-dispatcher";
 import { EventBus } from "./event-bus";
 
-const POLL_INTERVAL_MS = 2;
-const POLL_DEADLINE_MS = 2_000;
 const SETTLE_MS = 20;
-
-async function pollUntil(predicate: () => boolean, deadline = POLL_DEADLINE_MS): Promise<void> {
-  const start = performance.now();
-  while (!predicate()) {
-    if (performance.now() - start > deadline) {
-      throw new Error(`pollUntil timed out after ${deadline}ms`);
-    }
-    await Bun.sleep(POLL_INTERVAL_MS);
-  }
-}
 
 function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {

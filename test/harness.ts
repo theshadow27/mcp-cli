@@ -140,14 +140,22 @@ export async function startTestDaemon(
  * Poll condition until it returns truthy or deadline passes.
  * Never use a fixed sleep to wait for async side effects — poll instead.
  * Throws with a descriptive message on timeout so test failures are visible.
+ *
+ * The default deadline (1500ms) sits well under Bun's 5000ms per-test
+ * watchdog so this helper's descriptive error always wins the race over the
+ * generic "test timed out". Measured: across the full suite no condition takes
+ * longer than ~400ms to resolve (#2273), so 1500ms is an ample backstop. For a
+ * genuinely-slow condition, pass an explicit deadline AND raise the file's
+ * `setDefaultTimeout` above it — a deadline >= the test timeout is a no-op.
  */
 export async function pollUntil(
   condition: () => Promise<boolean | undefined | null | number> | boolean | undefined | null | number,
-  timeoutMs = 5000,
+  timeoutMs = 1500,
+  intervalMs = 10,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition()) && Date.now() < deadline) {
-    await Bun.sleep(10);
+    await Bun.sleep(intervalMs);
   }
   if (!(await condition())) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
 }
