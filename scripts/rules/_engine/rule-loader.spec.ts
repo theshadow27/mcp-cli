@@ -173,14 +173,20 @@ describe("loadAllRules", () => {
     }
   });
 
-  it("returns frozen rule objects", async () => {
+  it("returns deeply frozen rule objects", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
     try {
-      await writeFile(join(tmp, "frz.rule.ts"), VALID_RULE.replace('"test"', '"frz"'));
+      await writeFile(
+        join(tmp, "frz.rule.ts"),
+        `export default { id: "frz", kind: "pattern", scold: "bad", guidance: ["fix it"], pattern: /x/, except: ["ok"] };`,
+      );
       const rules = await loadAllRules(tmp);
       expect(rules.length).toBe(1);
-      expect(Object.isFrozen(rules[0])).toBe(true);
       expect(Object.isFrozen(rules)).toBe(true);
+      expect(Object.isFrozen(rules[0])).toBe(true);
+      expect(Object.isFrozen(rules[0].guidance)).toBe(true);
+      const pr = rules[0] as { except?: readonly string[] };
+      expect(Object.isFrozen(pr.except)).toBe(true);
     } finally {
       await rm(tmp, { recursive: true });
     }

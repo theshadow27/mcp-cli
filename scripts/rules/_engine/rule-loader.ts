@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { Glob } from "bun";
 import { z } from "zod";
 
-import type { Rule } from "./rule";
+import type { PatternRule, Rule } from "./rule";
 
 const RULES_DIR = resolve(import.meta.dir, "..");
 
@@ -41,6 +41,14 @@ function validateRule(rel: string, rule: unknown): asserts rule is Rule {
   }
 }
 
+function deepFreezeRule(rule: Rule): Rule {
+  Object.freeze(rule.guidance);
+  if (rule.kind === "pattern" && (rule as PatternRule).except) {
+    Object.freeze((rule as PatternRule).except);
+  }
+  return Object.freeze(rule);
+}
+
 export async function loadAllRules(rulesDir: string = RULES_DIR): Promise<readonly Rule[]> {
   const absRulesDir = resolve(rulesDir);
   const glob = new Glob("**/*.rule.{ts,tsx}");
@@ -51,7 +59,7 @@ export async function loadAllRules(rulesDir: string = RULES_DIR): Promise<readon
     const mod: unknown = await import(absPath);
     const rule = (mod as { default?: unknown }).default;
     validateRule(rel, rule);
-    entries.push({ rule: Object.freeze({ ...rule } as Rule), file: rel });
+    entries.push({ rule: deepFreezeRule({ ...rule } as Rule), file: rel });
   }
 
   entries.sort((a, b) => a.rule.id.localeCompare(b.rule.id));
