@@ -43,9 +43,19 @@ function branchHasRuntimeGuard(branch: ts.Node): boolean {
       found = true;
       return;
     }
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && EXHAUSTIVENESS_HELPERS.has(n.expression.text)) {
-      found = true;
-      return;
+    if (ts.isCallExpression(n)) {
+      // Match bare `assertNever(x)` and namespaced `expect.unreachable(x)` /
+      // `invariant.assertNever(x)` — check the name leaf regardless of namespace.
+      const expr = n.expression;
+      const calleeName = ts.isIdentifier(expr)
+        ? expr.text
+        : ts.isPropertyAccessExpression(expr)
+          ? expr.name.text
+          : undefined;
+      if (calleeName !== undefined && EXHAUSTIVENESS_HELPERS.has(calleeName)) {
+        found = true;
+        return;
+      }
     }
     // Mirror the parent-chain walk: stop at function boundaries so a throw
     // inside a nested arrow/function expression doesn't satisfy the guard.

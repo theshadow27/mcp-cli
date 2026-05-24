@@ -13,6 +13,8 @@
  *      not the substring `throw`, so this shape is NOT a false clean
  *   7. satisfies never inside a nested arrow function — crosses function
  *      boundary; parent-chain walk stops at the arrow, no DefaultClause found
+ *   8. property-access exhaustiveness helpers: expect.unreachable(x satisfies never),
+ *      invariant.assertNever(x satisfies never) — .name leaf is in EXHAUSTIVENESS_HELPERS
  */
 
 type Action = { type: "merge" } | { type: "skip" };
@@ -128,5 +130,33 @@ function handleWithNestedArrow(action: Action): void {
       void debug;
       throw new Error(`unhandled: ${(action as { type: string }).type}`);
     }
+  }
+}
+
+// Shape 8: property-access exhaustiveness helpers — expect.unreachable(x) and
+// invariant.assertNever(x). The rule checks the .name leaf of the
+// PropertyAccessExpression, so namespaced calls are recognised as guards.
+declare const expect: { unreachable: (x: never) => never };
+declare const invariant: { assertNever: (x: never) => never };
+
+function handleWithExpectUnreachable(action: Action): void {
+  switch (action.type) {
+    case "merge":
+      doMerge(action);
+      break;
+    case "skip":
+      break;
+    default:
+      expect.unreachable(action satisfies never);
+  }
+}
+
+function handleWithInvariantAssertNever(action: Action): void {
+  if (action.type === "merge") {
+    doMerge(action);
+  } else if (action.type === "skip") {
+    // nothing
+  } else {
+    invariant.assertNever(action satisfies never);
   }
 }
