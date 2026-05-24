@@ -74,13 +74,22 @@ jobs:
           bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
-      - if: needs.detect.outputs.docs_only != 'true'
-        run: bun run typecheck
-      - if: needs.detect.outputs.docs_only != 'true'
-        run: bun run lint:check
-      - name: Phase drift guard
+      # Single source of truth for the static gate: the same command the
+      # pre-commit hook runs. `--pre-commit` = typecheck, lint:check,
+      # args-bounds, timeouts, teardown, phase-drift, and the FULL
+      # doing-it-wrong rule sweep. CI is the unforgettable backstop since the
+      # hook is bypassable (--no-verify, web edits, force-push). Running it
+      # here means a violation surfaces locally, not for the first time in CI.
+      #
+      # Test + coverage are NOT routed through am-i-done's --pre-push: CI's
+      # tuned test/coverage jobs carry #1004 segfault + #1419 coverage-crash
+      # retry handling that am-i-done's plain `bun test` / `check-coverage`
+      # lack. Folding those in is tracked in #2345.
+      #
+      # See #2344: sprint 62 added rules whose sweep ran nowhere.
+      - name: am-i-done (static gate — typecheck, lint, rules, phase-drift)
         if: needs.detect.outputs.docs_only != 'true'
-        run: bun run check:phase-drift
+        run: bun run am-i-done --pre-commit --verbose
       # Split daemon tests into a separate invocation to avoid a non-deterministic
       # Bun v1.3.11 segfault that triggers when daemon worker-thread tests run in
       # the same process as all other tests. See #1004 for upstream tracking.
