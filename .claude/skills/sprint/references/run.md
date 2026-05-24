@@ -363,6 +363,20 @@ consumes events through `ctx.waitForEvent` rather than its own polling.)
 - Spawn fresh sessions per phase — never reuse across impl/review/QA
 - Reuse worktrees across phases via `--cwd` (phase scripts prefer this)
 - Never `bye` + respawn to sidestep a stuck session — `send` instead
+- **Branch handoff between phases:** plain `mcx claude bye` removes the
+  session's worktree and deletes its local branch. Don't `bye` a session and
+  then spawn the next phase with a fresh `--worktree` — the new worktree can't
+  check out a branch you just deleted (and if you'd kept it, a second worktree
+  can't check out a branch already checked out in the first). Instead **`mcx
+  claude bye <id> --keep-worktree`** and point the successor at that worktree
+  with **`--cwd <worktree-path>`** (the phase scripts prefer `--cwd` reuse
+  anyway). One worktree carries the branch impl→review→repair→QA; only `bye`
+  without `--keep-worktree` once the PR has merged.
+- **Disarm auto-merge when new substantive inline threads land post-arm:** a
+  fresh Copilot/QA pass on a repaired high-scrutiny PR can surface real bugs
+  after you've armed `--auto`. Auto-merge fires on green CI regardless of open
+  threads — so re-check surfaces before it merges, and `gh pr merge
+  --disable-auto` + flip to `qa:fail` the moment a substantive thread appears.
 
 When a session fails to close an issue, ask the user. Don't silently move
 on — every failure must be explicit in the retro.
