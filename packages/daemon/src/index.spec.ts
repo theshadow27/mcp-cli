@@ -420,6 +420,7 @@ describe("daemon index.ts", () => {
         try {
           const pidAfter = JSON.parse(readFileSync(pidFile, "utf-8"));
           return pidAfter.configHash !== hashBefore;
+          // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           return false;
         }

@@ -64,6 +64,7 @@ describe("S1: Concurrent auto-start", () => {
       const pidFile = join(dir, "mcpd.pid");
       const data = JSON.parse(readFileSync(pidFile, "utf-8"));
       process.kill(data.pid, "SIGTERM");
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       // no daemon running, fine
     }

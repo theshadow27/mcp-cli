@@ -246,6 +246,7 @@ describe("device-id persistence", () => {
         const deviceIdPath = join(_opts.MCP_CLI_DIR, "device-id");
         try {
           return readFileSync(deviceIdPath, "utf-8").trim();
+          // dotw-todo test-empty-catch: parse-probe — fix in #2322
         } catch {
           return "fallback-id";
         }

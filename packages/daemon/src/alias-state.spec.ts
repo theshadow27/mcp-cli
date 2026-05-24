@@ -22,6 +22,7 @@ function cleanupDb(p: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(p + suffix);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* ignore */
     }
@@ -67,6 +68,7 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
     server = undefined;
     try {
       unlinkSync(socketPath);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* ignore */
     }

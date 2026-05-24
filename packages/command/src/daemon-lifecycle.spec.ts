@@ -280,6 +280,7 @@ describe("startup lock file", () => {
   afterEach(() => {
     try {
       unlinkSync(LOCK_FILE);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already gone */
     }
@@ -318,6 +319,7 @@ describe("startup lock file", () => {
     expect(() => {
       try {
         unlinkSync(LOCK_FILE);
+        // dotw-todo test-empty-catch: cleanup — fix in #2322
       } catch {
         /* already gone — this is the expected path */
       }
@@ -329,6 +331,7 @@ describe("concurrent daemon startup simulation", () => {
   afterEach(() => {
     try {
       unlinkSync(LOCK_FILE);
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* already gone */
     }
@@ -344,6 +347,7 @@ describe("concurrent daemon startup simulation", () => {
           new Promise<number>((resolve, reject) => {
             try {
               resolve(openSync(LOCK_FILE, "wx"));
+              // dotw-todo test-empty-catch: exit-spy — fix in #2322
             } catch (e) {
               reject(e);
             }
@@ -495,6 +499,7 @@ describe("getSourceStalenessWarning", () => {
     // Clean up
     try {
       unlinkSync(join(srcDir, "test.ts"));
+      // dotw-todo test-empty-catch: cleanup — fix in #2322
     } catch {
       /* ignore */
     }
