@@ -13,6 +13,7 @@
  * The jq runner is injectable so tests don't need the external `jq` binary.
  */
 
+import { spawnCapture } from "@mcp-cli/core";
 import type { NamedCall } from "./catalog";
 import type { ProxyCallResult } from "./proxy";
 import type { ResolvedCall } from "./resolver";
@@ -20,25 +21,16 @@ import type { ResolvedCall } from "./resolver";
 /** Injection point for the jq binary so tests don't require it. */
 export type JqRunner = (expression: string, input: string) => Promise<string>;
 
-/** Default runner: shells out to the external `jq` binary via Bun.spawn. */
-export const bunJqRunner: JqRunner = async (expression, input) => {
-  const proc = Bun.spawn(["jq", "-c", expression], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (!proc.stdin) throw new Error("jq spawn did not expose stdin");
-  proc.stdin.write(input);
-  await proc.stdin.end();
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`jq exited ${exitCode}: ${stderr.trim()}`);
+/** Default runner: shells out to the external `jq` binary via spawnCapture. */
+export const bunJqRunner: JqRunner = async (expression, inputStr) => {
+  const result = await spawnCapture("jq", ["-c", expression], { input: inputStr });
+  if (!result.ok) {
+    if (result.exitCode === null) {
+      throw new Error("failed to spawn jq (not found on PATH?)");
+    }
+    throw new Error(`jq exited ${result.exitCode}: ${result.stderr.trim()}`);
   }
-  return stdout;
+  return result.stdout;
 };
 
 /**

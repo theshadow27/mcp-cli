@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveModelName, resolveSourceClaudePath } from "@mcp-cli/core";
+import { resolveModelName, resolveSourceClaudePath, spawnCaptureSync } from "@mcp-cli/core";
 import { printError } from "../output";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -274,24 +274,17 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
 export function defaultDeps(): MemoryDeps {
   return {
     getGitRoot: () => {
-      const r = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (r.exitCode !== 0) return null;
-      return r.stdout.toString().trim() || null;
+      const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
+      if (!r.ok) return null;
+      return r.stdout.trim() || null;
     },
     cwd: () => process.cwd(),
     dirExists: (path) => existsSync(path),
     spawnCapture: (cmd, opts) => {
-      const r = Bun.spawnSync(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: opts?.input ? Buffer.from(opts.input) : undefined,
-      });
+      const r = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { input: opts?.input });
       return {
-        stdout: r.stdout.toString(),
-        stderr: r.stderr.toString(),
+        stdout: r.stdout,
+        stderr: r.stderr,
         exitCode: r.exitCode ?? 1,
       };
     },

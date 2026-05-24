@@ -64,6 +64,7 @@ import {
   resolveRealpath,
   resolveWorktreePath,
   sha256Hex,
+  spawnCaptureSync,
   tryFlockExclusive,
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
@@ -147,16 +148,18 @@ export interface PruneGitOps {
   exec(cmd: string[]): { stdout: string; exitCode: number };
 }
 
-/** Default git ops using Bun.spawnSync with cleaned environment. */
+/** Default git ops using spawnCaptureSync with cleaned environment. */
 function defaultGitOps(): PruneGitOps {
   const cleanEnv = { ...process.env };
   for (const k of ["GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_PREFIX"]) {
     delete cleanEnv[k];
   }
-  const gitOpts = { stdout: "pipe" as const, stderr: "pipe" as const, env: cleanEnv };
   const run = (cmd: string[]) => {
-    const r = Bun.spawnSync(cmd, gitOpts);
-    return { exitCode: r.exitCode, stdout: r.stdout.toString().trim() };
+    const first = cmd[0];
+    if (!first) throw new Error("git cmd array must be non-empty");
+    const r = spawnCaptureSync(first, cmd.slice(1), { env: cleanEnv });
+    // exitCode null means the process was killed or failed to start — treat as failure (1)
+    return { exitCode: r.exitCode !== null ? r.exitCode : 1, stdout: r.stdout.trim() };
   };
   return {
     pathExists: (p) => existsSync(p),

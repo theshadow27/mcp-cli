@@ -29,6 +29,7 @@ import {
   options,
   pingDaemon,
   rawFetch,
+  spawnCaptureSync,
   tryFlockExclusive,
 } from "@mcp-cli/core";
 
@@ -268,8 +269,8 @@ let verifiedMcpdPid: number | null = null;
 export function isProcessMcpd(pid: number): boolean {
   if (pid === verifiedMcpdPid) return true;
   try {
-    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
-    const output = result.stdout.toString().trim();
+    const result = spawnCaptureSync("ps", ["-p", String(pid), "-o", "command="]);
+    const output = result.stdout.trim();
     // Match compiled binary (mcpd) or dev script (daemon/src/main)
     const match = output.includes(DAEMON_BINARY_NAME) || output.includes(DAEMON_DEV_SCRIPT);
     if (match) verifiedMcpdPid = pid;
@@ -419,6 +420,7 @@ export function resolveDaemonCommand(): string[] {
 async function startDaemon(): Promise<void> {
   const cmd = resolveDaemonCommand();
 
+  // dotw-ignore no-raw-spawn: long-running daemon process; retains proc handle for incremental stdout reads, proc.kill(), and proc.unref()
   const proc = Bun.spawn(cmd, {
     stdout: "pipe",
     stderr: "pipe",

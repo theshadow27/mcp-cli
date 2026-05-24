@@ -26,6 +26,8 @@ import {
   resolveModelName,
   resolveRealpath,
   resolveWorktreePath,
+  spawnCapture,
+  spawnCaptureSync,
   updatePatchedClaude,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
@@ -119,14 +121,8 @@ export function parseDiffShortstat(output: string): string | null {
 
 async function defaultGetDiffStats(worktreePath: string): Promise<string | null> {
   try {
-    const proc = Bun.spawn(["git", "diff", "--shortstat"], {
-      cwd: worktreePath,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const output = await new Response(proc.stdout).text();
-    await proc.exited;
-    return parseDiffShortstat(output);
+    const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
+    return parseDiffShortstat(result.stdout);
   } catch {
     return null;
   }
@@ -134,23 +130,21 @@ async function defaultGetDiffStats(worktreePath: string): Promise<string | null>
 
 export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus | null> {
   try {
-    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
-      cwd: worktreePath,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const branch = (await new Response(branchProc.stdout).text()).trim();
-    await branchProc.exited;
+    const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
+    const branch = branchResult.stdout.trim();
     if (!branch) return null;
 
-    const prProc = Bun.spawn(["gh", "pr", "list", "--head", branch, "--json", "number,state", "--limit", "1"], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const prOutput = (await new Response(prProc.stdout).text()).trim();
-    await prProc.exited;
-
-    const prs = JSON.parse(prOutput) as Array<{ number: number; state: string }>;
+    const prResult = await spawnCapture("gh", [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--json",
+      "number,state",
+      "--limit",
+      "1",
+    ]);
+    const prs = JSON.parse(prResult.stdout.trim()) as Array<{ number: number; state: string }>;
     if (!Array.isArray(prs) || prs.length === 0) return null;
     const pr = prs[0];
     return { number: pr.number, state: pr.state.toLowerCase() };
@@ -166,13 +160,9 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus
  */
 function getGitRoot(): string | null {
   try {
-    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
-    });
-    if (result.exitCode !== 0) return null;
-    const commonDir = result.stdout.toString().trim();
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    if (!result.ok) return null;
+    const commonDir = result.stdout.trim();
     if (!commonDir) return null;
     // --git-common-dir returns the .git dir (e.g. /repo/.git or /repo/.git/worktrees/foo/../../)
     // Resolve to the parent to get the repo root
@@ -198,15 +188,14 @@ export const defaultDeps: ClaudeDeps = {
   getDiffStats: defaultGetDiffStats,
   getPrStatus: defaultGetPrStatus,
   exec: (cmd, opts) => {
-    const result = Bun.spawnSync(cmd, {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-    });
+    // spawnCaptureSync replaces the env when provided; merge with process.env
+    // here so callers that pass a few extra vars still inherit PATH etc.
+    const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
+    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
     return {
-      stdout: result.stdout.toString().trim(),
-      stderr: result.stderr.toString().trim(),
-      exitCode: result.exitCode,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
+      exitCode: result.exitCode ?? 1,
     };
   },
   ttyOpen: (args) => ttyOpen(args),
@@ -1146,13 +1135,11 @@ function formatPrStatus(pr: PrStatus | null): string {
 /** Get the current git branch for a worktree path. Returns null on failure. */
 function getWorktreeBranch(worktreePath: string): string | null {
   try {
-    const result = Bun.spawnSync(["git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 3000,
+    const result = spawnCaptureSync("git", ["-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"], {
+      timeoutMs: 3000,
     });
-    if (result.exitCode !== 0) return null;
-    const branch = result.stdout.toString().trim();
+    if (!result.ok) return null;
+    const branch = result.stdout.trim();
     return branch && branch !== "HEAD" ? branch : null;
   } catch {
     return null;

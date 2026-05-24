@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { options } from "./constants";
+import { spawnCapture } from "./subprocess";
 
 const REPO = "theshadow27/mcp-cli";
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -157,10 +158,8 @@ export async function fetchLatestRelease(deps?: Partial<FetchReleaseDeps>, retri
 
 async function getGhToken(): Promise<string | null> {
   try {
-    const proc = Bun.spawn(["gh", "auth", "token"], { stdout: "pipe", stderr: "ignore" });
-    const text = await new Response(proc.stdout).text();
-    const code = await proc.exited;
-    if (code === 0 && text.trim()) return text.trim();
+    const result = await spawnCapture("gh", ["auth", "token"]);
+    if (result.ok && result.stdout.trim()) return result.stdout.trim();
   } catch {
     /* gh not installed */
   }

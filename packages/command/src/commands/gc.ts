@@ -16,6 +16,7 @@ import {
   listMcxWorktrees,
   pruneWorktrees,
   readWorktreeConfig,
+  spawnCaptureSync,
 } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { c, printError, printInfo } from "../output";
@@ -117,15 +118,14 @@ export function defaultGcDeps(): GcDeps {
       return ipcCall("callTool", { server, tool, arguments: args });
     },
     exec: (cmd, opts) => {
-      const result = Bun.spawnSync(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-      });
+      // spawnCaptureSync replaces the env when provided; merge with process.env
+      // here so callers that pass a few extra vars still inherit PATH etc.
+      const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
+      const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
       return {
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode ?? 1,
       };
     },
     getMtime: (path) => {
@@ -140,13 +140,14 @@ export function defaultGcDeps(): GcDeps {
       }
     },
     queryMergedPrBranches: (cwd) => {
-      const result = Bun.spawnSync(
-        ["gh", "pr", "list", "--state", "merged", "--json", "headRefName", "--limit", "500"],
-        { stdout: "pipe", stderr: "pipe", cwd },
+      const result = spawnCaptureSync(
+        "gh",
+        ["pr", "list", "--state", "merged", "--json", "headRefName", "--limit", "500"],
+        { cwd },
       );
-      if (result.exitCode !== 0) return null;
+      if (!result.ok) return null;
       try {
-        const prs = JSON.parse(result.stdout.toString()) as Array<{ headRefName: string }>;
+        const prs = JSON.parse(result.stdout) as Array<{ headRefName: string }>;
         return new Set(prs.map((pr) => pr.headRefName));
       } catch {
         return null;

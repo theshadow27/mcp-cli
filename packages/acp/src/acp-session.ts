@@ -15,6 +15,7 @@
 
 import { resolve } from "node:path";
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
+import { spawnCapture } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { type AcpEventMapState, buildTurnResult, createAcpEventMapState, mapSessionUpdate } from "./acp-event-map";
 import { buildRules, evaluatePermission, findOptionId, mapPermissionRequest } from "./acp-permission-adapter";
@@ -533,28 +534,17 @@ export class AcpSession {
     const cmdArgs = (params.args as string[]) ?? [];
     const cmdCwd = (params.cwd as string) ?? this.config.cwd;
     try {
-      const proc = Bun.spawn([cmd, ...cmdArgs], {
+      const result = await spawnCapture(cmd, cmdArgs, {
         cwd: cmdCwd,
-        stdout: "pipe",
-        stderr: "pipe",
+        timeoutMs: AcpSession.TERMINAL_TIMEOUT_MS,
       });
-
-      const timeout = setTimeout(() => {
-        proc.kill("SIGTERM");
-      }, AcpSession.TERMINAL_TIMEOUT_MS);
-
-      const [exitCode, stdoutBuf, stderrBuf] = await Promise.all([
-        proc.exited,
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      clearTimeout(timeout);
 
       const termId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.terminalResults.set(termId, {
-        stdout: stdoutBuf,
-        stderr: stderrBuf,
-        exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        // null exitCode means killed/timed out — treat as non-zero (failure)
+        exitCode: result.exitCode !== null ? result.exitCode : -1,
       });
       this.rpc?.respondToServerRequest(id, { terminalId: termId });
     } catch (err) {
@@ -567,7 +557,7 @@ export class AcpSession {
     const result = this.terminalResults.get(termId);
     this.rpc?.respondToServerRequest(id, {
       output: result ? result.stdout + result.stderr : "",
-      exitCode: result?.exitCode ?? 0,
+      exitCode: result !== undefined ? result.exitCode : -1,
       isComplete: true,
     });
   }
@@ -575,7 +565,7 @@ export class AcpSession {
   private handleTerminalWaitForExit(id: number | string, params: Record<string, unknown>): void {
     const termId = params.terminalId as string;
     const result = this.terminalResults.get(termId);
-    this.rpc?.respondToServerRequest(id, { exitCode: result?.exitCode ?? 0 });
+    this.rpc?.respondToServerRequest(id, { exitCode: result !== undefined ? result.exitCode : -1 });
   }
 
   private handleTerminalRelease(id: number | string, params: Record<string, unknown>): void {

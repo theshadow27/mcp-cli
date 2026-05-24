@@ -193,6 +193,7 @@ export function useKeyboard({
       }
       process.stdout.write("\x1b[?1049l"); // exit alt screen
       try {
+        // dotw-ignore no-raw-spawn: interactive pager needs inherited stdin/stdout/stderr — cannot use spawnCapture
         Bun.spawnSync([...pagerArgs, tmpFile], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       } finally {
         process.stdout.write("\x1b[?1049h"); // re-enter alt screen

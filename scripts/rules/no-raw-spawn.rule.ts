@@ -6,9 +6,9 @@ const rule: CheckRule = {
   kind: "check",
   scold: "raw Bun.spawn/spawnSync or exitCode null-coercion — use spawnCapture() from @mcp-cli/core",
   guidance: [
-    "use spawnCapture(cmd, args, opts) or spawnCaptureSync(cmd, args, opts) from @mcp-cli/core",
-    "branch on result.ok / result.timedOut — never coerce exitCode with ?? 0 or || 0",
-    "the helper handles: try/catch (missing binary), stderr draining, timeout+SIGKILL, honest exit codes",
+    "use spawnCapture / spawnCaptureSync from @mcp-cli/core. The point is to NOT relitigate the spawn corner cases at every call site: raw Bun.spawn THROWS on a missing binary instead of returning, a full stderr pipe can deadlock the child unless drained, a hung child needs timeout → SIGTERM → SIGKILL escalation, output needs a maxBuffer cap, and exitCode is null when the process never ran (so ?? 0 / || 0 silently reports failure as success). The helper solves all of these once; branch on result.ok / result.timedOut.",
+    "if the helper lacks an option you need (env, stdin, cwd, …), EXTEND THE HELPER — adding it once fixes every call site. Re-implementing raw spawn to get one missing option means re-owning every corner case above, for everyone. A missing option is NOT a reason to suppress.",
+    'suppress with // dotw-ignore no-raw-spawn: <reason> ONLY when the spawn is fundamentally not capture-and-wait: a long-lived process whose handle you retain (pid / kill / streaming stdin / incremental stdout), interactive stdio:"inherit" (pager/editor), or fire-and-forget. Capture-and-wait that just needs another option does not qualify.',
   ],
   documentation: "#2269",
   appliesToTests: false,

@@ -4,6 +4,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { spawnCaptureSync } from "./subprocess";
 
 export interface ExecResult {
   stdout: string;
@@ -133,41 +134,38 @@ export function clearFindGitRootCache(): void {
 export function findGitRoot(cwd: string = process.cwd()): string | null {
   if (gitRootCache.has(cwd)) return gitRootCache.get(cwd) as string | null;
 
+  // gitDiscoverEnv() strips hook-injected GIT_DIR/GIT_WORK_TREE vars so that
+  // when findGitRoot runs from inside a git hook, filesystem-based discovery
+  // isn't overridden by the hook's environment.
   const env = gitDiscoverEnv();
   let result: string | null = null;
   try {
-    const top = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--show-toplevel"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
+    const top = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      timeoutMs: 5000,
       env,
     });
     if (top.exitCode === 0) {
-      const toplevel = top.stdout.toString().trim();
+      const toplevel = top.stdout.trim();
       if (!toplevel) {
         gitRootCache.set(cwd, null);
         return null;
       }
-      const gitDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], {
-        stdout: "pipe",
-        stderr: "ignore",
-        timeout: 5000,
+      const gitDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-dir"], {
+        timeoutMs: 5000,
         env,
       });
       if (gitDir.exitCode === 0) {
-        const gitDirStr = gitDir.stdout.toString().trim();
+        const gitDirStr = gitDir.stdout.trim();
         // Linked worktrees store their git-dir under .git/worktrees/<name>/,
         // so /worktrees/ in the path is the cheapest worktree signal.
         // Only fetch --git-common-dir when we're in a linked worktree.
         if (gitDirStr.includes("/worktrees/")) {
-          const commonDir = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
-            stdout: "pipe",
-            stderr: "ignore",
-            timeout: 5000,
+          const commonDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
+            timeoutMs: 5000,
             env,
           });
           if (commonDir.exitCode === 0) {
-            const commonDirAbs = resolve(cwd, commonDir.stdout.toString().trim());
+            const commonDirAbs = resolve(cwd, commonDir.stdout.trim());
             result =
               commonDirAbs.endsWith("/.git") || commonDirAbs.endsWith(".git") ? dirname(commonDirAbs) : commonDirAbs;
           } else {
@@ -181,14 +179,12 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
       }
     } else {
       // Bare repo fallback — no working tree, use the common dir directly.
-      const common = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], {
-        stdout: "pipe",
-        stderr: "ignore",
-        timeout: 5000,
+      const common = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
+        timeoutMs: 5000,
         env,
       });
       if (common.exitCode === 0) {
-        const commonDir = common.stdout.toString().trim();
+        const commonDir = common.stdout.trim();
         if (commonDir) result = resolve(cwd, commonDir);
       }
     }

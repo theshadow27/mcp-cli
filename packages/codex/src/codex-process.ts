@@ -41,6 +41,7 @@ export class CodexProcess {
     if (this.proc) throw new Error("CodexProcess already spawned");
 
     const cmd = this.opts.command ?? ["codex", "app-server"];
+    // dotw-ignore no-raw-spawn: long-lived agent subprocess; retains the handle for streaming stdin/stdout (NDJSON line reader), stderr, and exit monitoring
     this.proc = Bun.spawn(cmd, {
       cwd: this.opts.cwd,
       stdin: "pipe",

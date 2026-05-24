@@ -69,6 +69,7 @@ import {
   resolveRunsOn,
   serializeLockfile,
   sha256Hex,
+  spawnCaptureSync,
   suggestPhases,
   validateTransition,
   wrapDryRunContext,
@@ -1055,16 +1056,14 @@ export interface PhaseExecuteDeps {
 }
 
 export function spawnExec(cmd: string[]): ExecResult {
-  const [bin, ...rest] = cmd;
-  try {
-    const r = Bun.spawnSync([bin, ...rest], { stdout: "pipe", stderr: "pipe" });
-    // `exitCode` is null when the child was terminated by a signal (e.g. SIGKILL).
-    // Surface that as a failure — `?? 0` previously masked signal-killed processes
-    // as success and let the branch guard wave through a git that never ran.
-    return { stdout: new TextDecoder().decode(r.stdout), exitCode: r.exitCode ?? 1 };
-  } catch (error) {
-    return { stdout: error instanceof Error ? error.message : String(error), exitCode: 1 };
-  }
+  const [bin = "", ...rest] = cmd;
+  const r = spawnCaptureSync(bin, rest);
+  // `exitCode` is null when the child was terminated by a signal (e.g. SIGKILL) or
+  // the binary was not found. Surface that as a failure — `?? 0` previously masked
+  // signal-killed processes as success and let the branch guard wave through a git
+  // that never ran.
+  const stdout = r.exitCode === null && !r.stdout ? `spawn failed: ${bin}` : r.stdout;
+  return { stdout, exitCode: r.exitCode ?? 1 };
 }
 
 const defaultExecuteDeps: PhaseExecuteDeps = {

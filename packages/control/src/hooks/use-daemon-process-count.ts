@@ -1,3 +1,4 @@
+import { spawnCapture } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
 
 export interface UseDaemonProcessCountOptions {
@@ -10,14 +11,9 @@ export interface UseDaemonProcessCountOptions {
 /** Count running mcpd processes via pgrep. */
 export async function countDaemonProcesses(): Promise<number> {
   try {
-    const proc = Bun.spawn(["pgrep", "-x", "mcpd"], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const text = await new Response(proc.stdout).text();
-    await proc.exited;
+    const result = await spawnCapture("pgrep", ["-x", "mcpd"]);
     // Each line is a PID; empty output = 0 processes
-    const lines = text.trim().split("\n").filter(Boolean);
+    const lines = result.stdout.trim().split("\n").filter(Boolean);
     return lines.length;
   } catch {
     return 0;

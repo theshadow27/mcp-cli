@@ -54,6 +54,7 @@ import {
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
+import { safeSetTimeout } from "../safe-timers";
 import { ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
@@ -1295,7 +1296,7 @@ export class ClaudeWsServer {
           clearTimeout(waiter.timer);
           reject(e);
         },
-        timer: setTimeout(() => {
+        timer: safeSetTimeout(() => {
           const idx = session.resultWaiters.indexOf(waiter);
           if (idx >= 0) session.resultWaiters.splice(idx, 1);
           reject(new Error(`Timeout waiting for session ${sessionId} result after ${timeoutMs}ms`));
@@ -1332,7 +1333,7 @@ export class ClaudeWsServer {
           clearTimeout(waiter.timer);
           reject(e);
         },
-        timer: setTimeout(() => {
+        timer: safeSetTimeout(() => {
           const idx = this.eventWaiters.indexOf(waiter);
           if (idx >= 0) this.eventWaiters.splice(idx, 1);
           reject(new WaitTimeoutError(`Timeout waiting for session event after ${timeoutMs}ms`));
@@ -1396,7 +1397,7 @@ export class ClaudeWsServer {
           clearTimeout(waiter.timer);
           reject(e);
         },
-        timer: setTimeout(() => {
+        timer: safeSetTimeout(() => {
           const idx = this.eventWaiters.indexOf(waiter);
           if (idx >= 0) this.eventWaiters.splice(idx, 1);
           // On timeout with cursor, return empty events (not an error)
@@ -1449,7 +1450,7 @@ export class ClaudeWsServer {
           clearTimeout(waiter.timer);
           reject(e);
         },
-        timer: setTimeout(() => {
+        timer: safeSetTimeout(() => {
           const idx = this.workItemWaiters.indexOf(waiter);
           if (idx >= 0) this.workItemWaiters.splice(idx, 1);
           reject(new WaitTimeoutError(`Timeout waiting for work item event after ${timeoutMs}ms`));
@@ -2647,6 +2648,7 @@ function defaultSpawn(
     env.PWD = opts.cwd;
   }
 
+  // dotw-ignore no-raw-spawn: retains live proc handle — exposes pid, kill, exited, and stderr stream to caller
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env,

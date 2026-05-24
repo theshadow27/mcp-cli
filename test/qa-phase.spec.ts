@@ -224,6 +224,7 @@ describe("runQa — qa:fail verdict", () => {
       makeDeps({ gh: async () => ok("qa:fail") }),
     );
     expect(result).toMatchObject({ action: "goto", target: "needs-attention" });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") expect(result.reason).toContain("cap");
   });
 
@@ -251,6 +252,7 @@ describe("runQa — qa:fail verdict", () => {
       makeDeps({ gh: async () => ok("qa:fail") }),
     );
     expect(result).toMatchObject({ action: "goto", target: "repair" });
+    expect(result.action).toBe("goto");
     if (result.action === "goto") {
       expect(result.round).toBe(2);
     }

@@ -28,6 +28,8 @@ import {
   pruneWorktrees,
   readWorktreeConfig,
   resolveWorktreePath,
+  spawnCapture,
+  spawnCaptureSync,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
@@ -98,13 +100,9 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
 
 function getGitRoot(): string | null {
   try {
-    const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: 5000,
-    });
-    if (result.exitCode !== 0) return null;
-    const commonDir = result.stdout.toString().trim();
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    if (!result.ok) return null;
+    const commonDir = result.stdout.trim();
     if (!commonDir) return null;
     const resolved = resolve(commonDir);
     return resolved.endsWith(".git") ? dirname(resolved) : resolved;
@@ -115,14 +113,8 @@ function getGitRoot(): string | null {
 
 async function defaultGetDiffStats(worktreePath: string): Promise<string | null> {
   try {
-    const proc = Bun.spawn(["git", "diff", "--shortstat"], {
-      cwd: worktreePath,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const output = await new Response(proc.stdout).text();
-    await proc.exited;
-    const trimmed = output.trim();
+    const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
+    const trimmed = result.stdout.trim();
     if (!trimmed) return null;
     const filesMatch = trimmed.match(/(\d+)\s+file/);
     const insertMatch = trimmed.match(/(\d+)\s+insertion/);
@@ -139,21 +131,20 @@ async function defaultGetDiffStats(worktreePath: string): Promise<string | null>
 
 async function defaultGetPrStatus(worktreePath: string): Promise<{ number: number; state: string } | null> {
   try {
-    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
-      cwd: worktreePath,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const branch = (await new Response(branchProc.stdout).text()).trim();
-    await branchProc.exited;
+    const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
+    const branch = branchResult.stdout.trim();
     if (!branch) return null;
-    const prProc = Bun.spawn(["gh", "pr", "list", "--head", branch, "--json", "number,state", "--limit", "1"], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const prOutput = (await new Response(prProc.stdout).text()).trim();
-    await prProc.exited;
-    const prs = JSON.parse(prOutput) as Array<{ number: number; state: string }>;
+    const prResult = await spawnCapture("gh", [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--json",
+      "number,state",
+      "--limit",
+      "1",
+    ]);
+    const prs = JSON.parse(prResult.stdout.trim()) as Array<{ number: number; state: string }>;
     if (!Array.isArray(prs) || prs.length === 0) return null;
     const pr = prs[0];
     return { number: pr.number, state: pr.state.toLowerCase() };
@@ -183,15 +174,14 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
       return result.messages[0] ?? null;
     },
     exec: (cmd, opts) => {
-      const result = Bun.spawnSync(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-      });
+      // spawnCaptureSync replaces the env when provided; merge with process.env
+      // here so callers that pass a few extra vars still inherit PATH etc.
+      const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
+      const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
       return {
-        stdout: result.stdout.toString().trim(),
-        stderr: result.stderr.toString().trim(),
-        exitCode: result.exitCode,
+        stdout: result.stdout.trim(),
+        stderr: result.stderr.trim(),
+        exitCode: result.exitCode ?? 1,
       };
     },
     readFileWithLimit,

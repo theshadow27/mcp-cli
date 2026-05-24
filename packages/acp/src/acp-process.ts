@@ -40,6 +40,7 @@ export class AcpProcess {
   spawn(): void {
     if (this.proc) throw new Error("AcpProcess already spawned");
 
+    // dotw-ignore no-raw-spawn: long-lived agent subprocess; needs live handle for streaming stdio + kill
     this.proc = Bun.spawn(this.opts.command, {
       cwd: this.opts.cwd,
       stdin: "pipe",

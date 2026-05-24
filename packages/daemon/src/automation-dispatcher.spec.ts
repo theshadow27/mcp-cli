@@ -281,7 +281,7 @@ describe("AutomationDispatcher", () => {
     await Bun.sleep(SETTLE_MS);
 
     expect(executedModules).toHaveLength(0);
-    expect(published.filter((e) => e.event === "automation.fired")).toHaveLength(0);
+    expect(published).not.toContainEqual(expect.objectContaining({ event: "automation.fired" }));
   });
 
   test("moduleCount reflects loaded modules", () => {
