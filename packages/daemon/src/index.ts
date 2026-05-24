@@ -415,7 +415,7 @@ export async function resolveHeadBranch(cwd: string): Promise<string | null> {
       const match = gitdirLine.match(/^gitdir:\s*(.+)$/);
       const target = match?.[1]?.trim();
       if (!target) return null;
-      gitDir = isAbsolute(target) ? target : `${cwd}/${target}`;
+      gitDir = isAbsolute(target) ? target : join(cwd, target);
     } else {
       gitDir = dotGitPath;
     }

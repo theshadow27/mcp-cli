@@ -4,6 +4,8 @@
  * @path packages/daemon/src/example-clean.ts
  *
  * Correct patterns: path.isAbsolute, pathEq, canonicalCwd.
+ * Also validates that process.cwd() nested inside helper calls
+ * (not a direct === operand) does NOT trigger false positives.
  */
 
 import { isAbsolute } from "node:path";
@@ -24,3 +26,8 @@ if (name.startsWith("-")) doSomething();
 
 // Template-literal arg to startsWith — not flagged
 if (p.startsWith(`${root}/`)) doSomething();
+
+// process.cwd() nested inside a helper call, not a direct === operand —
+// must NOT be flagged (thread #3 false-positive shape)
+if (pathEq(process.cwd(), root) === true) doSomething();
+const same = canonicalCwd() === storedRoot;
