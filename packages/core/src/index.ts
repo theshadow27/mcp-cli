@@ -56,3 +56,4 @@ export * from "./sprint-plan";
 export * from "./claude-patch";
 export * from "./automation";
 export * from "./subprocess";
+export * from "./mcp-result";
