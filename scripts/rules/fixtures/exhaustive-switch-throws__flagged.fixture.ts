@@ -1,18 +1,19 @@
 /**
  * @rule exhaustive-switch-throws
- * @expect 1
+ * @expect 2
  * @path packages/daemon/src/example-exhaustive-flagged.ts
  *
- * A default branch with `satisfies never` but no runtime throw should be
- * flagged. The assertion is compile-time only; an unexpected value at
- * runtime will silently fall through.
+ * Two shapes that MUST be flagged:
+ *   1. default branch with `satisfies never` but no runtime throw
+ *   2. terminal else with `satisfies never` but no runtime throw
  */
 
 type Action = { type: "merge" } | { type: "skip" };
 
 declare function doMerge(a: { type: "merge" }): void;
 
-function handle(action: Action): void {
+// Shape 1: default branch — satisfies never, no throw.
+function handleSwitch(action: Action): void {
   switch (action.type) {
     case "merge":
       doMerge(action);
@@ -21,5 +22,16 @@ function handle(action: Action): void {
       break;
     default:
       action satisfies never; // compile-time only — no runtime guard
+  }
+}
+
+// Shape 2: terminal else — satisfies never, no throw.
+function handleIfElse(action: Action): void {
+  if (action.type === "merge") {
+    doMerge(action);
+  } else if (action.type === "skip") {
+    // nothing
+  } else {
+    action satisfies never; // compile-time only — no runtime guard
   }
 }

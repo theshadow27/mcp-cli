@@ -5,25 +5,49 @@
  * compile time, but does nothing at runtime. A default branch that
  * only uses `satisfies never` silently no-ops when an unexpected value
  * arrives from a dynamic source (a JSON config, an IPC payload, a loaded
- * module). The fix is to pair it with a runtime `throw`.
+ * module). The fix is to pair it with a runtime `throw` or an
+ * `assertNever()` helper that itself throws.
  *
  * Harvested from review comments on PRs #2192 and #2080.
+ *
+ * Uses the TypeScript AST (ctx.ast) so structural scope — object-literal
+ * `default:` keys, `throw` inside string literals, block boundaries,
+ * nested-function isolation — is handled correctly without regex windows.
  */
+
+import ts from "typescript";
 
 import type { CheckRule } from "./_engine/rule";
 
-// Matches the start of a default: case or a terminal else branch.
-// "terminal" here means else NOT followed by if — we skip else-if chains.
-const BRANCH_OPENER = /\bdefault\s*:|(?:^|\})\s*else\s*(?!if\b)\s*(?:\{|$)/;
+/** Helper names whose call sites are treated as runtime exhaustiveness guards. */
+const EXHAUSTIVENESS_HELPERS = new Set(["assertNever", "exhaustive", "unreachable", "exhaust"]);
 
-/** Strip inline // comments and /* ... *\/ block comments from a single line. */
-function stripComments(line: string): string {
-  // Remove /* ... */ spans (non-greedy, single-line only).
-  let s = line.replace(/\/\*.*?\*\//g, "");
-  // Remove trailing // comment.
-  const slashIdx = s.indexOf("//");
-  if (slashIdx !== -1) s = s.slice(0, slashIdx);
-  return s;
+/** True when the Block is the terminal (non-else-if) else branch of an IfStatement. */
+function isTerminalElseBlock(node: ts.Node): node is ts.Block {
+  if (!ts.isBlock(node)) return false;
+  return ts.isIfStatement(node.parent) && node.parent.elseStatement === node;
+}
+
+/**
+ * True when the branch body (DefaultClause or Block) contains a ThrowStatement
+ * or a call to a known exhaustiveness helper at any nesting depth.
+ */
+function branchHasRuntimeGuard(branch: ts.Node): boolean {
+  let found = false;
+  function visit(n: ts.Node): void {
+    if (found) return;
+    if (ts.isThrowStatement(n)) {
+      found = true;
+      return;
+    }
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && EXHAUSTIVENESS_HELPERS.has(n.expression.text)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  }
+  ts.forEachChild(branch, visit);
+  return found;
 }
 
 const rule: CheckRule = {
@@ -31,45 +55,36 @@ const rule: CheckRule = {
   kind: "check",
   scold: "`satisfies never` in a default/else branch has no runtime throw — silently no-ops on unexpected values",
   guidance: [
-    "pair the compile-time check with a runtime throw in the same branch:",
+    "pair the compile-time check with a runtime throw:",
     "  default: { action satisfies never; throw new Error(`unhandled: ${JSON.stringify(action)}`); }",
-    "or replace with an assertNever(x) helper that both narrows the type and throws",
+    "or use assertNever(action) — a helper that narrows the type AND throws",
+    "or inline: assertNever(action satisfies never) — the call site proves both compile-time and runtime exhaustiveness",
   ],
   documentation: "#2252",
-  check({ file, violated }) {
-    const lines = file.content.split("\n");
+  check({ file, ast, violated }) {
+    const { sourceFile } = ast;
+    const lines = sourceFile.text.split("\n");
 
-    for (const [i, line] of lines.entries()) {
-      const stripped = stripComments(line);
-      if (!stripped.includes("satisfies never")) continue;
+    for (const node of ast.find(ts.isSatisfiesExpression)) {
+      // Only care about `x satisfies never` (type argument is `never`).
+      if (node.type.kind !== ts.SyntaxKind.NeverKeyword) continue;
 
-      // Look backward (up to 40 lines) for a default: or terminal else opener,
-      // matching only on comment-stripped content so comment lines are ignored.
-      const lookbackStart = Math.max(0, i - 40);
-      let branchStart = -1;
-      for (let j = i; j >= lookbackStart; j--) {
-        if (BRANCH_OPENER.test(stripComments(lines[j] ?? ""))) {
-          branchStart = j;
-          break;
-        }
-      }
-      if (branchStart === -1) continue;
+      // Walk up the parent chain to find the nearest DefaultClause or
+      // terminal-else Block. Stop at function boundaries to avoid crossing
+      // into a separate scope (e.g. a satisfies-never inside an inline
+      // helper defined within the default branch).
+      const branch = ts.findAncestor(node.parent, (ancestor) => {
+        if (ts.isFunctionLike(ancestor)) return "quit";
+        if (ts.isDefaultClause(ancestor)) return true;
+        if (isTerminalElseBlock(ancestor)) return true;
+        return false;
+      });
 
-      // Search the branch body for a throw statement (from opener to a small
-      // lookahead beyond the satisfies-never line). Strip comments so `throw`
-      // inside a string or comment doesn't count.
-      const lookForwardEnd = Math.min(lines.length - 1, i + 10);
-      let hasThrow = false;
-      for (let j = branchStart; j <= lookForwardEnd; j++) {
-        if (/\bthrow\b/.test(stripComments(lines[j] ?? ""))) {
-          hasThrow = true;
-          break;
-        }
-      }
+      if (!branch) continue;
+      if (branchHasRuntimeGuard(branch)) continue;
 
-      if (!hasThrow) {
-        violated(i + 1, line.indexOf("satisfies never") + 1, line.trim());
-      }
+      const { line, column } = ast.positionOf(node);
+      violated(line, column, (lines[line - 1] ?? "").trim());
     }
   },
 };
