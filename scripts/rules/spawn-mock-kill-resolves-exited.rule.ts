@@ -9,22 +9,48 @@
  * `exited`, teardown blocks for the full SIGTERM→SIGKILL escalation window
  * (~5–7 s) or until the Bun hook timeout — every test in the suite pays it.
  *
- * The `new Promise(() => {})` + no-op `kill` co-occurrence is unambiguous and
- * only meaningful in test files, so this rule is scoped to *.spec.ts / *.test.ts.
+ * Uses the TypeScript AST so that only object literals containing BOTH
+ * properties are flagged — two separate objects within proximity don't
+ * false-positive (see #2284).
  */
+
+import ts from "typescript";
 
 import type { CheckRule } from "./_engine/rule";
 
-// Matches: exited: new Promise(() => {}) or exited: new Promise(() => undefined)
-const NEVER_RESOLVING_EXITED = /exited\s*:\s*new\s+Promise\s*\(\s*\(\s*\)\s*=>\s*(?:\{\s*\}|undefined)\s*\)/;
+/**
+ * True when a PropertyAssignment's initializer is `new Promise(() => {})` or
+ * `new Promise(() => undefined)` — i.e. a promise that never resolves.
+ */
+function isNeverResolvingPromise(init: ts.Expression): boolean {
+  if (!ts.isNewExpression(init)) return false;
+  if (!ts.isIdentifier(init.expression) || init.expression.text !== "Promise") return false;
+  const args = init.arguments;
+  if (!args || args.length !== 1) return false;
+  const arg = args[0];
+  if (!ts.isArrowFunction(arg)) return false;
+  if (arg.parameters.length !== 0) return false;
+  const body = arg.body;
+  if (ts.isBlock(body)) {
+    return body.statements.length === 0;
+  }
+  // () => undefined
+  return ts.isIdentifier(body) && body.text === "undefined";
+}
 
-// Matches: kill: () => {} or kill: () => undefined (no-op variants)
-const NOOP_KILL = /kill\s*:\s*\(\s*\)\s*=>\s*(?:\{\s*\}|undefined)/;
-
-// Number of lines either side to search for the kill co-occurrence.
-// Large enough for any realistic object literal, small enough to avoid
-// cross-object false positives.
-const WINDOW = 20;
+/**
+ * True when a PropertyAssignment's initializer is `() => {}` or
+ * `() => undefined` — i.e. a no-op arrow function.
+ */
+function isNoopArrow(init: ts.Expression): boolean {
+  if (!ts.isArrowFunction(init)) return false;
+  if (init.parameters.length !== 0) return false;
+  const body = init.body;
+  if (ts.isBlock(body)) {
+    return body.statements.length === 0;
+  }
+  return ts.isIdentifier(body) && body.text === "undefined";
+}
 
 const rule: CheckRule = {
   id: "spawn-mock-kill-resolves-exited",
@@ -37,19 +63,31 @@ const rule: CheckRule = {
   ],
   documentation: "#2249",
   appliesToTests: true,
-  check({ file, violated }) {
+  check({ file, ast, violated }) {
     if (!file.isTest) return;
 
-    const lines = file.content.split("\n");
-    for (const [i, line] of lines.entries()) {
-      if (!NEVER_RESOLVING_EXITED.test(line)) continue;
-      const start = Math.max(0, i - WINDOW);
-      const end = Math.min(lines.length - 1, i + WINDOW);
-      for (let j = start; j <= end; j++) {
-        if (NOOP_KILL.test(lines[j] ?? "")) {
-          violated(i + 1, 1, line.trim());
-          break;
+    const { sourceFile } = ast;
+    const lines = sourceFile.text.split("\n");
+
+    for (const obj of ast.find(ts.isObjectLiteralExpression)) {
+      let exitedProp: ts.PropertyAssignment | undefined;
+      let hasNoopKill = false;
+
+      for (const prop of obj.properties) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        const name = prop.name;
+        if (!ts.isIdentifier(name)) continue;
+
+        if (name.text === "exited" && isNeverResolvingPromise(prop.initializer)) {
+          exitedProp = prop;
+        } else if (name.text === "kill" && isNoopArrow(prop.initializer)) {
+          hasNoopKill = true;
         }
+      }
+
+      if (exitedProp && hasNoopKill) {
+        const { line, column } = ast.positionOf(exitedProp);
+        violated(line, column, (lines[line - 1] ?? "").trim());
       }
     }
   },
