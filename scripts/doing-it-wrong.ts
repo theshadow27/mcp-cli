@@ -54,7 +54,13 @@ export async function runRules(
   const rules = opts.ruleId ? allRules.filter((r) => r.id === opts.ruleId) : allRules;
   if (opts.ruleId && rules.length === 0) {
     logger.error(`rule '${opts.ruleId}' not registered. known: ${allRules.map((r) => r.id).join(", ")}`);
-    return { violations: [], malformedTodos: [], unknownRule: true, ruleCount: 0, durationMs: 0 };
+    return {
+      violations: [],
+      malformedTodos: [],
+      unknownRule: true,
+      ruleCount: allRules.length,
+      durationMs: Date.now() - t0,
+    };
   }
 
   const files = await loadFiles({ repoRoot: REPO_ROOT, filter: opts.filter });
