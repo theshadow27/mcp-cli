@@ -196,12 +196,10 @@ describe("handlePrompt: auto-revive disconnected session (#1765)", () => {
   });
 
   test("returns error when disconnected session has no claudeSessionId", async () => {
-    const noopSpawn: SpawnFn = (_cmd) => ({
-      pid: 1,
-      exited: new Promise<number>(() => {}),
-      kill: () => {},
-      stderr: null,
-    });
+    const noopSpawn: SpawnFn = (_cmd) => {
+      const { promise: exited, resolve } = Promise.withResolvers<number>();
+      return { pid: 1, exited, kill: () => resolve(0), stderr: null };
+    };
     server = new ClaudeWsServer({ spawn: noopSpawn, logger: silentLogger });
     await server.start();
 
