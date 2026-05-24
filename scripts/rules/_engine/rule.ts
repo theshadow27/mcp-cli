@@ -21,6 +21,8 @@
  * rule id and emits the guidance once per group, not once per violation.
  */
 
+import type { AstHelper } from "./ast";
+import { createAstHelper } from "./ast";
 import type { FileMeta } from "./file-loader";
 
 export type Violated = (line: number, column: number, snippet: string) => void;
@@ -30,6 +32,8 @@ export interface RuleContext {
   /** All loaded files, keyed by absolute path. Use for cross-file checks. */
   files: Map<string, FileMeta>;
   violated: Violated;
+  /** Lazy-parsed TypeScript AST. Only parsed on first access. */
+  readonly ast: AstHelper;
 }
 
 interface RuleBase {
@@ -83,7 +87,16 @@ export function evaluateRule(rule: Rule, file: FileMeta, files: Map<string, File
   if (rule.kind === "pattern") {
     runPatternRule(rule, file, violated);
   } else {
-    rule.check({ file, files, violated });
+    let cachedAst: AstHelper | undefined;
+    rule.check({
+      file,
+      files,
+      violated,
+      get ast(): AstHelper {
+        cachedAst ??= createAstHelper(file);
+        return cachedAst;
+      },
+    });
   }
   return collected;
 }

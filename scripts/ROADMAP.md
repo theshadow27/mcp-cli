@@ -238,10 +238,12 @@ e2e in interactive runs"). Don't add the machinery speculatively.
    `// lint-allow-args-bounds` brevity. The parser is a single file so
    the choice can be revisited cheaply.
 
-2. **Should `check` rules get a shared TypeScript AST helper?** Two of
-   the four migrations (session-teardown, phase-drift) want light AST
-   awareness. Three would justify a `scripts/rules/_engine/ast.ts`
-   utility. Until then, each `check` rule can roll its own.
+2. ~~Should `check` rules get a shared TypeScript AST helper?~~ **Resolved
+   (#2267).** `scripts/rules/_engine/ast.ts` provides an `AstHelper`
+   interface accessible as `ctx.ast` in check rules (lazy, WeakMap-cached
+   per FileMeta). AST is now the preferred substrate for structural rules.
+   First consumer: `derive-union-from-const` (#2261). Planned consumers:
+   #2263, #2264, #2265, #2266.
 
 3. **Does the file-loader need workspace metadata (e.g. `pkg`)?**
    Currently populated but unused. Leave it until a rule needs
