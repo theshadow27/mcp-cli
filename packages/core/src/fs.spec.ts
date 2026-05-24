@@ -133,11 +133,27 @@ describe("pathEq", () => {
 });
 
 describe("canonicalCwd", () => {
-  test("returns a string matching resolveRealpath of cwd", () => {
+  test("output is idempotent under realpathSync — not a raw symlink alias", () => {
+    // If canonicalCwd() returned an unresolved symlink path, a second
+    // realpathSync would differ. Idempotency proves the path is fully resolved.
     const result = canonicalCwd();
-    expect(typeof result).toBe("string");
-    expect(result.length).toBeGreaterThan(0);
-    expect(result).toBe(realpathSync(process.cwd()));
+    expect(realpathSync(result)).toBe(result);
+  });
+
+  test("resolves symlinked cwd to the real directory, not the symlink path", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const real = join(base, "real-dir");
+    mkdirSync(real);
+    const link = join(base, "link-dir");
+    symlinkSync(real, link);
+    const orig = process.cwd();
+    process.chdir(link);
+    try {
+      expect(canonicalCwd()).toBe(realpathSync(real));
+    } finally {
+      process.chdir(orig);
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

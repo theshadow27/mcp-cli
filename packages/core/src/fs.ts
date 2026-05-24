@@ -74,7 +74,12 @@ export function auditRuntimePermissions(logger: Logger = consoleLogger): void {
   }
 }
 
-/** Realpath-normalized equality: both paths are resolved + symlink-followed before comparison. */
+/**
+ * Realpath-normalized equality: both paths are resolved + symlink-followed before comparison.
+ * Assumes both paths exist. For non-existent paths, the comparison is best-effort: the
+ * missing tail is re-joined from basename segments without case normalization, so results
+ * may be inconsistent on case-insensitive filesystems when paths don't exist yet.
+ */
 export function pathEq(a: string, b: string): boolean {
   return resolveRealpath(resolve(a)) === resolveRealpath(resolve(b));
 }

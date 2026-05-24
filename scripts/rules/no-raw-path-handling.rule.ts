@@ -35,7 +35,11 @@ const rule: CheckRule = {
 
     const lines = file.content.split("\n");
 
-    // Detection 1: .startsWith("/") or .startsWith("\\\\") as abs-path check
+    // Detection 1: .startsWith("/") or .startsWith("\\\\") as abs-path check.
+    // callsTo("startsWith") matches by method name only, not receiver type — any
+    // object method named startsWith with a "/" arg will be flagged. In practice
+    // all such calls in this codebase are string operations, but use dotw-ignore
+    // with a reason if you have a legitimate non-path startsWith("/") call.
     for (const call of ast.callsTo("startsWith")) {
       if (call.arguments.length < 1) continue;
       const arg = call.arguments[0];
