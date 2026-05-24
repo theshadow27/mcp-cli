@@ -74,4 +74,39 @@ describe("cli-surface-registered cross-file", () => {
     const violations = evaluateRule(rule, other, files);
     expect(violations).toHaveLength(0);
   });
+
+  it("hard-errors when SUBCOMMANDS anchor is not found in any loaded file", () => {
+    // No inline SUBCOMMANDS, no completions.ts in the file set.
+    // The rule must fail loudly rather than silently pass.
+    const main = makeFile(
+      "packages/command/src/main.ts",
+      `switch (command) {
+        case "ls": break;
+      }`,
+    );
+    const files = new Map([[main.path, main]]);
+    const violations = evaluateRule(rule, main, files);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("anchor not found");
+  });
+
+  it("does not flag switch inside a helper function (only switch (command) is the dispatch)", () => {
+    // A helper function with its own switch must not produce false positives.
+    const main = makeFile(
+      "packages/command/src/main.ts",
+      `const SUBCOMMANDS = ["ls"] as const;
+      switch (command) {
+        case "ls": break;
+      }
+      function resolveTransport(t: string) {
+        switch (t) {
+          case "stdio": break;
+          case "http": break;
+        }
+      }`,
+    );
+    const files = new Map([[main.path, main]]);
+    const violations = evaluateRule(rule, main, files);
+    expect(violations).toHaveLength(0);
+  });
 });

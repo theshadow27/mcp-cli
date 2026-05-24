@@ -1,13 +1,20 @@
 import ts from "typescript";
 
+import type { AstHelper } from "./_engine/ast";
+import { createAstHelper } from "./_engine/ast";
 import type { CheckRule, RuleContext } from "./_engine/rule";
 
 const MAIN_REL = "packages/command/src/main.ts";
+const COMPLETIONS_REL = "packages/command/src/commands/completions.ts";
 
 function collectSwitchCases(ctx: RuleContext): Array<{ name: string; line: number; col: number }> {
   const results: Array<{ name: string; line: number; col: number }> = [];
   const switches = ctx.ast.find(ts.isSwitchStatement);
   for (const sw of switches) {
+    // Only the top-level `switch (command)` dispatch — skip helper-function switches
+    // that happen to use a different variable (e.g. `switch (transport)`).
+    if (!ts.isIdentifier(sw.expression) || sw.expression.text !== "command") continue;
+    // Defense-in-depth: also skip any switch nested inside another switch.
     const isNested = ts.findAncestor(sw.parent, ts.isSwitchStatement) !== undefined;
     if (isNested) continue;
     for (const clause of sw.caseBlock.clauses) {
@@ -20,22 +27,31 @@ function collectSwitchCases(ctx: RuleContext): Array<{ name: string; line: numbe
   return results;
 }
 
-function extractSubcommands(content: string): Set<string> | null {
-  const m = content.match(/\bSUBCOMMANDS\s*=\s*\[([\s\S]*?)\]/);
-  if (!m) return null;
-  const result = new Set<string>();
-  const re = /["']([^"']+)["']/g;
-  for (const hit of m[1].matchAll(re)) result.add(hit[1]);
-  return result;
+function extractSubcommandsFromAst(ast: AstHelper): Set<string> | null {
+  const decls = ast.find(ts.isVariableDeclaration);
+  for (const decl of decls) {
+    if (!ts.isIdentifier(decl.name) || decl.name.text !== "SUBCOMMANDS") continue;
+    if (!decl.initializer) continue;
+    // Unwrap `as const` — the initializer is an AsExpression wrapping the real array.
+    const init = ts.isAsExpression(decl.initializer) ? decl.initializer.expression : decl.initializer;
+    if (!ts.isArrayLiteralExpression(init)) continue;
+    const result = new Set<string>();
+    for (const elem of init.elements) {
+      if (ts.isStringLiteral(elem)) result.add(elem.text);
+    }
+    return result;
+  }
+  return null;
 }
 
 function findSubcommands(ctx: RuleContext): Set<string> | null {
-  const local = extractSubcommands(ctx.file.content);
-  if (local) return local;
+  // Fixtures inline SUBCOMMANDS in the same file — check the local AST first.
+  const local = extractSubcommandsFromAst(ctx.ast);
+  if (local !== null) return local;
+  // Cross-file: exact path match to avoid colliding with test fixtures.
   for (const meta of ctx.files.values()) {
-    if (meta.relPath.includes("commands/completions.ts")) {
-      const remote = extractSubcommands(meta.content);
-      if (remote) return remote;
+    if (meta.relPath === COMPLETIONS_REL) {
+      return extractSubcommandsFromAst(createAstHelper(meta));
     }
   }
   return null;
@@ -59,7 +75,12 @@ const rule: CheckRule = {
     if (cases.length === 0) return;
 
     const subcommands = findSubcommands(ctx);
-    if (!subcommands) return;
+    if (!subcommands) {
+      // Hard-error: completions.ts is missing from the file set (renamed? moved?).
+      // Silently skipping here would give false confidence that the invariant is enforced.
+      ctx.violated(1, 1, `SUBCOMMANDS anchor not found — is ${COMPLETIONS_REL} missing or renamed?`);
+      return;
+    }
 
     for (const { name, line, col } of cases) {
       if (!subcommands.has(name)) {
