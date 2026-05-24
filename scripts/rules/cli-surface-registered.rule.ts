@@ -8,6 +8,8 @@ function collectSwitchCases(ctx: RuleContext): Array<{ name: string; line: numbe
   const results: Array<{ name: string; line: number; col: number }> = [];
   const switches = ctx.ast.find(ts.isSwitchStatement);
   for (const sw of switches) {
+    const isNested = ts.findAncestor(sw.parent, ts.isSwitchStatement) !== undefined;
+    if (isNested) continue;
     for (const clause of sw.caseBlock.clauses) {
       if (!ts.isCaseClause(clause)) continue;
       if (!ts.isStringLiteral(clause.expression)) continue;
@@ -21,10 +23,10 @@ function collectSwitchCases(ctx: RuleContext): Array<{ name: string; line: numbe
 function extractSubcommands(content: string): Set<string> | null {
   const m = content.match(/\bSUBCOMMANDS\s*=\s*\[([\s\S]*?)\]/);
   if (!m) return null;
-  const literals: string[] = [];
+  const result = new Set<string>();
   const re = /["']([^"']+)["']/g;
-  for (const hit of m[1].matchAll(re)) literals.push(hit[1]);
-  return literals.length > 0 ? new Set(literals) : null;
+  for (const hit of m[1].matchAll(re)) result.add(hit[1]);
+  return result;
 }
 
 function findSubcommands(ctx: RuleContext): Set<string> | null {
