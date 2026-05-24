@@ -377,3 +377,22 @@ graph itself is the executable contract. Round caps, scratchpad keys,
 spawn commands, model selection — all live in typed code, not prose.
 mcp-cli's phase-graph migration was sprint 36; every sprint since has
 been an order of magnitude easier to reason about during incidents.
+
+**37. Don't cargo-cult DRY — the maintainer changed.** DRY optimizes for
+human constraints (can't hold N call sites in working memory; editing N
+sites by hand is error-prone) that mostly don't bind a Claude maintainer,
+who can grep and edit all mirrors in one pass and even regenerate a file
+wholesale from spec + tests. Meanwhile abstraction's cost — lost locality,
+cross-file traversal to reassemble behavior — is exactly what burns a
+context window. The robust seam is **abstract the nouns (shared data
+contracts), duplicate the verbs (behavior)**, and the decision rule is
+**abstract what changes together, duplicate what changes independently** —
+which you can mine straight from git history (does a commit touch all
+mirror-siblings together, or one at a time?). The one thing duplication
+lacks vs. abstraction is enforcement of the invariant, so add that at the
+*process* layer: a review check that asks "this fix has mirror-siblings —
+did you replay it?" (the failure mode is a security/correctness fix landing
+in 7 of 8 siblings), not a type-layer abstraction that re-introduces
+coupling. Crucially, this constrains your lint rules: a rule must mechanize
+an invariant, never enforce DRY for its own sake. (mcp-cli writeup:
+`docs/architecture/duplication.md`.)

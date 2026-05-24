@@ -75,7 +75,8 @@ If any new findings could be a lint rule or test pattern, note them here.
 - **Applicability**: Does this PR solve the right problem? Is the approach appropriate for this codebase?
 - **Evidence**: How do you know it works? Are there tests? Do the tests verify behavior or just check that code exists?
 - **Gaps**: What's NOT tested that should be? What failure modes aren't handled?
-- **Future-proofing**: If you spot a class of mistake that could be caught automatically (lint rule, test pattern), suggest creating an issue for it
+- **Mirror-replay**: This codebase duplicates verbs on purpose (see `docs/architecture/duplication.md`). If the diff fixes a bug in a file that has mirror-siblings (e.g. one of the `*-session-worker.ts` / per-provider transports, or one `parse*Args` among several), ask explicitly: **was this fix replayed across all siblings?** A correctness/security fix landing in some-but-not-all mirrors is the drift failure mode this style is exposed to — flag any sibling that wasn't updated.
+- **Future-proofing**: If you spot a class of mistake that could be caught automatically (lint rule, test pattern), suggest creating an issue for it. Note: a rule should mechanize an invariant, not enforce DRY — don't suggest rules that force de-duplication of independently-changing verbs.
 
 ## Full Review Output Format
 
