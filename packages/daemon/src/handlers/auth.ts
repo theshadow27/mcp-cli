@@ -1,4 +1,10 @@
-import { AuthStatusParamsSchema, IPC_ERROR, TriggerAuthParamsSchema } from "@mcp-cli/core";
+import {
+  AuthStatusParamsSchema,
+  IPC_ERROR,
+  ToolResultError,
+  TriggerAuthParamsSchema,
+  unwrapToolResult,
+} from "@mcp-cli/core";
 import type { IpcMethod, ServerAuthStatus } from "@mcp-cli/core";
 import { McpOAuthProvider } from "../auth/oauth-provider";
 import { runOAuthFlowWithDcrRetry } from "../auth/oauth-retry";
@@ -29,19 +35,13 @@ export class AuthHandlers {
           );
         }
 
-        const result = (await this.pool.callTool(server, "auth", {})) as {
-          content?: Array<{ type?: string; text?: string }>;
-          isError?: boolean;
-        };
-        const text =
-          result.content
-            ?.filter((c) => c.type === "text")
-            .map((c) => c.text)
-            .join("\n") ?? "";
-        if (result.isError) {
-          throw Object.assign(new Error(text || "auth tool returned an error"), {
-            code: IPC_ERROR.INTERNAL_ERROR,
-          });
+        const result = await this.pool.callTool(server, "auth", {});
+        let text: string;
+        try {
+          text = unwrapToolResult(result);
+        } catch (e) {
+          const msg = e instanceof ToolResultError ? e.message : "auth tool returned an error";
+          throw Object.assign(new Error(msg), { code: IPC_ERROR.INTERNAL_ERROR });
         }
         return { ok: true, message: text || "Authenticated via auth tool" };
       }

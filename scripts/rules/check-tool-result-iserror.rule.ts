@@ -8,14 +8,14 @@
  *
  * Detection strategy (AST):
  *   1. Find all `callTool(...)` call expressions.
- *   2. Walk up to the enclosing variable declaration (if any) to get the
- *      result binding name.
- *   3. Scan the enclosing function/block for `.content` property accesses
- *      on that binding.
- *   4. For each `.content` access, check whether the same scope contains
- *      an `isError` property access on the same binding OR a call to
- *      `unwrapToolResult`/`unwrapToolResultJson` with the binding as arg.
- *   5. Report violations where `.content` is accessed without a guard.
+ *   2. Walk up through expression wrappers (await, as, parens, !)
+ *      to the enclosing VariableDeclaration to get the result binding.
+ *   3. Scan the enclosing block for `.content` property accesses on
+ *      that binding (excluding nested function bodies).
+ *   4. For each `.content` access, require a *preceding* `isError`
+ *      property access (by source position) or an `unwrapToolResult`
+ *      call. "Same scope but after" does not count as a guard.
+ *   5. Report the first unguarded `.content` access as a violation.
  */
 
 import ts from "typescript";
@@ -39,52 +39,51 @@ function getEnclosingBlock(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-function walk(node: ts.Node, visit: (n: ts.Node) => void): void {
-  visit(node);
-  ts.forEachChild(node, (child) => walk(child, visit));
+function isNestedFunction(node: ts.Node): boolean {
+  return (
+    ts.isArrowFunction(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isMethodDeclaration(node)
+  );
 }
 
-function getBindingName(callExpr: ts.CallExpression): string | undefined {
-  const parent = callExpr.parent;
-  if (ts.isAwaitExpression(parent)) {
-    return getBindingName(parent as unknown as ts.CallExpression);
-  }
-  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
-    return parent.name.text;
+function walkSkippingNestedFunctions(node: ts.Node, visit: (n: ts.Node) => void): void {
+  visit(node);
+  ts.forEachChild(node, (child) => {
+    if (isNestedFunction(child)) return;
+    walkSkippingNestedFunctions(child, visit);
+  });
+}
+
+function getBindingName(node: ts.Node): string | undefined {
+  let current = node.parent;
+  while (current) {
+    if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
+      return current.name.text;
+    }
+    if (
+      ts.isAwaitExpression(current) ||
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.parent;
+      continue;
+    }
+    break;
   }
   return undefined;
 }
 
-function hasPropertyAccessInScope(scope: ts.Node, bindingName: string, propertyName: string): boolean {
+function hasUnwrapCallBefore(scope: ts.Node, bindingName: string, beforePos: number): boolean {
   let found = false;
-  walk(scope, (n) => {
-    if (found) return;
-    if (
-      ts.isPropertyAccessExpression(n) &&
-      ts.isIdentifier(n.expression) &&
-      n.expression.text === bindingName &&
-      n.name.text === propertyName
-    ) {
-      found = true;
-    }
-    if (
-      ts.isElementAccessExpression(n) &&
-      ts.isPropertyAccessExpression(n.expression) &&
-      ts.isIdentifier(n.expression.expression) &&
-      n.expression.expression.text === bindingName &&
-      n.expression.name.text === propertyName
-    ) {
-      found = true;
-    }
-  });
-  return found;
-}
-
-function hasUnwrapCall(scope: ts.Node, bindingName: string): boolean {
-  let found = false;
-  walk(scope, (n) => {
+  walkSkippingNestedFunctions(scope, (n) => {
     if (found) return;
     if (!ts.isCallExpression(n)) return;
+    if (n.getStart() >= beforePos) return;
     const callee = n.expression;
     const name = ts.isIdentifier(callee)
       ? callee.text
@@ -101,9 +100,26 @@ function hasUnwrapCall(scope: ts.Node, bindingName: string): boolean {
   return found;
 }
 
+function hasIsErrorCheckBefore(scope: ts.Node, bindingName: string, beforePos: number): boolean {
+  let found = false;
+  walkSkippingNestedFunctions(scope, (n) => {
+    if (found) return;
+    if (n.getStart() >= beforePos) return;
+    if (
+      ts.isPropertyAccessExpression(n) &&
+      ts.isIdentifier(n.expression) &&
+      n.expression.text === bindingName &&
+      n.name.text === "isError"
+    ) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 function findContentAccesses(scope: ts.Node, bindingName: string): ts.PropertyAccessExpression[] {
   const accesses: ts.PropertyAccessExpression[] = [];
-  walk(scope, (n) => {
+  walkSkippingNestedFunctions(scope, (n) => {
     if (
       ts.isPropertyAccessExpression(n) &&
       ts.isIdentifier(n.expression) &&
@@ -130,15 +146,6 @@ const rule: CheckRule = {
   appliesToTests: false,
   check({ ast, violated }) {
     const sf = ast.sourceFile;
-
-    ts.forEachChild(sf, function bindParents(node: ts.Node) {
-      node.parent = node.parent ?? sf;
-      ts.forEachChild(node, (child) => {
-        (child as { parent: ts.Node }).parent = node;
-        bindParents(child);
-      });
-    });
-
     const callToolCalls = ast.callsTo("callTool");
 
     for (const call of callToolCalls) {
@@ -146,18 +153,18 @@ const rule: CheckRule = {
       if (!bindingName) continue;
 
       const scope = getEnclosingBlock(call);
-
-      if (hasUnwrapCall(scope, bindingName)) continue;
-
-      if (!hasPropertyAccessInScope(scope, bindingName, "content")) continue;
-
-      if (hasPropertyAccessInScope(scope, bindingName, "isError")) continue;
-
       const contentAccesses = findContentAccesses(scope, bindingName);
-      if (contentAccesses.length > 0) {
-        const pos = ast.positionOf(contentAccesses[0]);
+
+      for (const access of contentAccesses) {
+        const accessPos = access.getStart();
+
+        if (hasUnwrapCallBefore(scope, bindingName, accessPos)) continue;
+        if (hasIsErrorCheckBefore(scope, bindingName, accessPos)) continue;
+
+        const pos = ast.positionOf(access);
         const line = sf.text.split("\n")[pos.line - 1] ?? "";
         violated(pos.line, pos.column, line.trim());
+        break;
       }
     }
   },
