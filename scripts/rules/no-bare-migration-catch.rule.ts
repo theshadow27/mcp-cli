@@ -24,6 +24,16 @@ function containsThrow(block: ts.Block): boolean {
       found = true;
       return;
     }
+    // Stop at function/class boundaries — a throw inside a nested function does
+    // not synchronously re-throw the catch variable (false negative otherwise).
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
+    )
+      return;
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(block, visit);

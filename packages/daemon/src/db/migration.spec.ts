@@ -9,6 +9,8 @@ function freshDb(): Database {
 }
 
 function columnNames(db: Database, table: string): string[] {
+  // Mirror the production identifier check so tests don't introduce the unsafe pattern
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error(`invalid table: ${table}`);
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((r) => r.name);
 }
 
@@ -44,5 +46,15 @@ describe("addColumnIfMissing", () => {
     addColumnIfMissing(db, "t", "extra", "ALTER TABLE t ADD COLUMN extra TEXT");
     addColumnIfMissing(db, "t", "extra", "ALTER TABLE t ADD COLUMN extra TEXT");
     expect(columnNames(db, "t").filter((c) => c === "extra")).toHaveLength(1);
+  });
+
+  it("rejects invalid table identifiers synchronously", () => {
+    const db = freshDb();
+    expect(() => addColumnIfMissing(db, "t; DROP TABLE t--", "col", "ALTER TABLE t ADD COLUMN col TEXT")).toThrow(
+      /invalid table identifier/,
+    );
+    expect(() => addColumnIfMissing(db, "has space", "col", "ALTER TABLE t ADD COLUMN col TEXT")).toThrow(
+      /invalid table identifier/,
+    );
   });
 });
