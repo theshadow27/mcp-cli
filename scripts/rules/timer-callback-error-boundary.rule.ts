@@ -20,29 +20,38 @@ const TIMER_NAMES = new Set(["setTimeout", "setInterval"]);
 
 /**
  * A callback body is "fully wrapped" if every statement is a try/catch.
- * This is intentionally conservative: any statement outside a try can
- * propagate an unhandled throw. Use safeSetTimeout/safeSetInterval instead
- * of relying on this shape check for callbacks with setup code.
+ * `try-finally` without a catch clause is NOT sufficient — the exception
+ * still propagates after the finally block runs. Any statement outside a
+ * try/catch can propagate an unhandled throw; use safeSetTimeout/safeSetInterval
+ * instead of relying on this shape check for callbacks with setup code.
  */
 function isCallbackFullyWrapped(body: ts.Block): boolean {
   const stmts = body.statements;
   if (stmts.length === 0) return true;
-  return stmts.every((s) => s !== undefined && ts.isTryStatement(s));
+  return stmts.every((s) => s !== undefined && ts.isTryStatement(s) && s.catchClause !== undefined);
 }
 
 /**
- * Only expression-bodied arrows inside `new Promise()` are exempt.
- * The Promise constructor's synchronous try/catch does NOT protect timer
- * callbacks that fire after the constructor has returned — only
- * `() => reject(...)` / `() => resolve(...)` style expressions are safe
- * there (reject/resolve themselves cannot throw). Block-body callbacks
- * inside Promise constructors are NOT exempt.
+ * Only expression-bodied arrows whose body is a direct identifier call are
+ * exempt inside `new Promise()`. This matches the `() => reject(...)` /
+ * `() => resolve(...)` pattern where the callee is a plain identifier (not
+ * a method call or other expression). `reject`/`resolve` themselves cannot
+ * throw, so the callback is safe. Any other expression (method calls,
+ * binary ops, etc.) can throw and is NOT exempt.
+ *
+ * Block-body callbacks are never exempt regardless of Promise constructor
+ * context — the constructor's synchronous try/catch does not protect
+ * callbacks scheduled by setTimeout/setInterval.
  */
 function isExpressionBodyInsidePromiseConstructor(
   call: ts.Node,
   callback: ts.ArrowFunction | ts.FunctionExpression,
 ): boolean {
-  if (ts.isBlock(callback.body)) return false; // block bodies are not exempt
+  if (ts.isBlock(callback.body)) return false;
+  // Only a direct identifier call is safe: () => reject(...) / () => resolve(...)
+  if (!ts.isCallExpression(callback.body) || !ts.isIdentifier(callback.body.expression)) {
+    return false;
+  }
   return (
     ts.findAncestor(call, (n) => {
       if (!ts.isNewExpression(n)) return false;
