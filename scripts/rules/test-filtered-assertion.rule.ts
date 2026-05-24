@@ -21,8 +21,10 @@ const rule: CheckRule = {
   kind: "check",
   scold: "expect(collection.filter(...)) hides unexpected items — assert the whole collection instead",
   guidance: [
-    "assert the whole collection: expect(warnings).toEqual([])",
-    "or assert the specific element's absence with a named reason: expect(arr).not.toContainEqual(expect.objectContaining(...))",
+    "default — assert the whole collection is empty: expect(arr).toEqual([])",
+    "if the array legitimately holds other entries, don't deliberate: translate the filter predicate you already wrote into a negative matcher mechanically — .filter(e => e.field === V) → expect(arr).not.toContainEqual(expect.objectContaining({ field: V })); .filter(s => s.includes(V)) → expect(arr).not.toContainEqual(expect.stringContaining(V))",
+    "for filter(...).map(...).toEqual([]): assert the predicate is false per element — for (const e of arr) expect(pred(e)).toBe(false)",
+    "use the first form unless the collection is expected to contain unrelated items; the predicate is the answer, no judgment call needed",
   ],
   documentation: "#2247",
   appliesToTests: true,
