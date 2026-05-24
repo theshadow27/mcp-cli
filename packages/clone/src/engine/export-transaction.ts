@@ -87,6 +87,8 @@ export class ExportTransaction {
   private committed = false;
   private rolledBack = false;
   private hasStageErrors = false;
+  /** After a `deleteall`, external path resolution is bypassed — all modifies become creates. */
+  private treeCleared = false;
 
   constructor(opts: ExportTransactionOptions) {
     this.opts = opts;
@@ -115,6 +117,7 @@ export class ExportTransaction {
   }
 
   private resolvePath(path: string): { id: string; version: number } | undefined {
+    if (this.treeCleared) return this.versionOverrides.get(path);
     return this.versionOverrides.get(path) ?? this.opts.resolvePath(path);
   }
 
@@ -122,7 +125,13 @@ export class ExportTransaction {
     const { provider } = this.opts;
 
     if (change.type === "deleteall") {
-      return { ref, ok: false, error: "deleteall not supported in export transactions" };
+      this.treeCleared = true;
+      this.versionOverrides.clear();
+      for (const idx of this.pendingCreates.values()) {
+        this.removedIndices.add(idx);
+      }
+      this.pendingCreates.clear();
+      return undefined;
     }
 
     if (change.type === "delete") {

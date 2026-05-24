@@ -83,11 +83,35 @@ describe("ExportTransaction", () => {
       expect(errors[0].error).toContain("no content");
     });
 
-    test("returns error for deleteall", () => {
+    test("deleteall stages without error", () => {
       const tx = new ExportTransaction(makeOpts());
       const errors = tx.stage([commit("refs/heads/main", [{ type: "deleteall" }])]);
-      expect(errors).toHaveLength(1);
-      expect(errors[0].error).toContain("deleteall not supported");
+      expect(errors).toHaveLength(0);
+    });
+
+    test("deleteall causes subsequent modifies to become creates", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([
+        commit("refs/heads/main", [
+          { type: "deleteall" },
+          { type: "modify", path: "README.md", content: new TextEncoder().encode("# Rebuilt") },
+        ]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(1);
+    });
+
+    test("deleteall clears pending creates from earlier changes", () => {
+      const tx = new ExportTransaction(makeOpts());
+      const errors = tx.stage([
+        commit("refs/heads/main", [
+          { type: "modify", path: "new.md", content: new TextEncoder().encode("first") },
+          { type: "deleteall" },
+          { type: "modify", path: "new.md", content: new TextEncoder().encode("rebuilt") },
+        ]),
+      ]);
+      expect(errors).toHaveLength(0);
+      expect(tx.size).toBe(1);
     });
 
     test("stages multiple commits across refs", () => {
@@ -396,6 +420,65 @@ describe("ExportTransaction", () => {
       expect(result.refs[0].ok).toBe(true);
       expect(provider.state.get("a.md")?.content).toBe("");
     });
+
+    test("deleteall followed by modifies creates new entries instead of pushing", async () => {
+      const provider = createMockProvider({
+        entries: { "README.md": { content: "# Hello", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "README.md": { content: "# Hello", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [
+          { type: "deleteall" },
+          { type: "modify", path: "README.md", content: new TextEncoder().encode("# Rebuilt") },
+        ]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.calls.push).toBe(0);
+      expect(provider.calls.create).toBe(1);
+    });
+
+    test("deleteall with no subsequent modifies commits as no-op", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "old", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "old", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([commit("refs/heads/main", [{ type: "deleteall" }])]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.calls.push).toBe(0);
+      expect(provider.calls.create).toBe(0);
+      expect(result.response).toBe("ok refs/heads/main\n\n");
+    });
+
+    test("deleteall then modify across commits coalesces into single create with final content", async () => {
+      const provider = createMockProvider({
+        entries: { "a.md": { content: "old", version: 1 } },
+      });
+      const opts = makeOpts({ provider, entries: { "a.md": { content: "old", version: 1 } } });
+      const tx = new ExportTransaction(opts);
+
+      tx.stage([
+        commit("refs/heads/main", [
+          { type: "deleteall" },
+          { type: "modify", path: "a.md", content: new TextEncoder().encode("v1-rebuilt") },
+        ]),
+        commit("refs/heads/main", [{ type: "modify", path: "a.md", content: new TextEncoder().encode("v2-updated") }]),
+      ]);
+
+      const result = await tx.commit();
+      expect(result.refs[0].ok).toBe(true);
+      expect(provider.calls.create).toBe(1);
+      expect(provider.calls.push).toBe(0);
+      const created = [...provider.state.values()].find((e) => e.content === "v2-updated");
+      expect(created).toBeDefined();
+    });
   });
 
   describe("commit — partial failure", () => {
@@ -532,7 +615,7 @@ describe("ExportTransaction", () => {
 
     test("commit throws if stage had unresolved errors", async () => {
       const tx = new ExportTransaction(makeOpts());
-      tx.stage([commit("refs/heads/main", [{ type: "deleteall" }])]);
+      tx.stage([commit("refs/heads/main", [{ type: "delete", path: "nonexistent.md" }])]);
       await expect(tx.commit()).rejects.toThrow("unresolved stage errors");
     });
   });
@@ -682,7 +765,12 @@ done
 
     test("deduplicates staging errors per ref (one error line per ref)", () => {
       const tx = new ExportTransaction(makeOpts());
-      const errors = tx.stage([commit("refs/heads/main", [{ type: "deleteall" }, { type: "deleteall" }])]);
+      const errors = tx.stage([
+        commit("refs/heads/main", [
+          { type: "delete", path: "nonexistent-1.md" },
+          { type: "delete", path: "nonexistent-2.md" },
+        ]),
+      ]);
       expect(errors).toHaveLength(2);
       tx.rollback();
 
