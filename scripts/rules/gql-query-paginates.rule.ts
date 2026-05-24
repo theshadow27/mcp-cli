@@ -22,20 +22,39 @@ function findSelectionSetStart(text: string, fromIndex: number): number {
   return fromIndex;
 }
 
+/**
+ * Return true iff the GQL connection whose arg list contains `fromIndex`
+ * has `pageInfo { hasNextPage }` as a **direct child** of its selection set.
+ *
+ * Critically, a `pageInfo { hasNextPage }` belonging to an *inner* nested
+ * connection (depth > 1) must not satisfy this check — the invariant is
+ * that the *queried* connection itself selects pageInfo, not some descendant.
+ */
 function hasPageInfoInBlock(text: string, fromIndex: number): boolean {
   const start = findSelectionSetStart(text, fromIndex);
   let depth = 0;
-  let foundOpen = false;
+
   for (let i = start; i < text.length; i++) {
     if (text[i] === "{") {
       depth++;
-      foundOpen = true;
     } else if (text[i] === "}") {
       depth--;
-      if (foundOpen && depth === 0) {
-        const block = text.slice(start, i + 1);
-        return /pageInfo\s*\{[^}]*hasNextPage/s.test(block);
+      if (depth <= 0) return false; // exited the connection's selection set
+    } else if (depth === 1 && text[i] === "p" && text.slice(i, i + 8) === "pageInfo" && !/\w/.test(text[i + 8] ?? "")) {
+      // `pageInfo` found as a direct child — check it's followed by { hasNextPage }
+      let j = i + 8;
+      while (j < text.length && /[ \t\r\n]/.test(text[j] ?? "")) j++;
+      if ((text[j] ?? "") !== "{") continue; // no block follows — keep scanning
+      // Scan the pageInfo block body for `hasNextPage`
+      let innerDepth = 1;
+      const bodyStart = j + 1;
+      j++;
+      while (j < text.length && innerDepth > 0) {
+        if (text[j] === "{") innerDepth++;
+        else if (text[j] === "}") innerDepth--;
+        j++;
       }
+      if (/\bhasNextPage\b/.test(text.slice(bodyStart, j - 1))) return true;
     }
   }
   return false;
