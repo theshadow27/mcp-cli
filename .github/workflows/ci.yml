@@ -88,9 +88,12 @@ jobs:
       # (--no-verify, web edits, force-push). The static-only equivalent
       # is `am-i-done --pre-commit` (also shared with the pre-commit
       # hook). See #2344 for the static gate and #2345 for test/coverage.
+      # `--skip install` because the explicit `bun install --frozen-lockfile`
+      # step above already installed deps — without this we'd reinstall twice
+      # per check run for zero behaviour change (#2389 review).
       - name: am-i-done --ci (typecheck, lint, rules, non-daemon + daemon tests)
         if: needs.detect.outputs.docs_only != 'true'
-        run: bun run am-i-done --ci --skip coverage --verbose
+        run: bun run am-i-done --ci --skip install --skip coverage --verbose
       # ci-steps.ts persists captured stdout+stderr to /tmp/test_*.txt for
       # this artefact upload (test_non_daemon.txt, test_daemon.txt,
       # test_daemon_retry.txt on retry).

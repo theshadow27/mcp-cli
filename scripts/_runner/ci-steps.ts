@@ -41,9 +41,17 @@ interface RunOutcome {
   output: string;
 }
 
-async function runBun(args: string[], logger: Logger): Promise<RunOutcome> {
+async function runBun(
+  args: string[],
+  logger: Logger,
+  env: Record<string, string | undefined> = process.env,
+): Promise<RunOutcome> {
+  // spawn() rejects undefined env values — drop them so explicit `unset`
+  // semantics aren't required upstream. Matches runShell() in runner.ts.
+  const cleanEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) cleanEnv[k] = v;
   const buf: string[] = [];
-  const child = spawn("bun", args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("bun", args, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (d: string) => {
@@ -85,10 +93,10 @@ interface TestOpts {
 }
 
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
-  return async ({ logger }) => {
+  return async ({ logger, env }) => {
     const args = ["test", ...opts.paths];
 
-    const first = await runBun(args, logger);
+    const first = await runBun(args, logger, env);
     persistLog(opts.logName, first.output);
     if (first.code === 0) return { success: true };
     if (ZERO_FAIL_RE.test(first.output)) {
@@ -100,7 +108,7 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
     }
 
     logger.warn("bun segfault (exit 132) — retrying once (#1004)");
-    const second = await runBun(args, logger);
+    const second = await runBun(args, logger, env);
     persistLog(`${opts.logName}_retry`, second.output);
     if (second.code === 0) return { success: true };
     if (ZERO_FAIL_RE.test(second.output)) {
@@ -121,10 +129,10 @@ interface CoverageOpts {
 }
 
 export function coverageWithCrashTolerance(opts: CoverageOpts): ScriptFunction {
-  return async ({ logger }) => {
+  return async ({ logger, env }) => {
     const args = ["scripts/check-coverage.ts", "--ci"];
 
-    const first = await runBun(args, logger);
+    const first = await runBun(args, logger, env);
     persistLog(opts.logName, first.output);
     const firstVerdict = classifyCoverage(first, logger);
     if (firstVerdict.success) return firstVerdict;
@@ -133,7 +141,7 @@ export function coverageWithCrashTolerance(opts: CoverageOpts): ScriptFunction {
     }
 
     logger.warn(`bun panic (exit ${first.code}) — retrying once`);
-    const second = await runBun(args, logger);
+    const second = await runBun(args, logger, env);
     persistLog(`${opts.logName}_retry`, second.output);
     const secondVerdict = classifyCoverage(second, logger);
     if (secondVerdict.success) return secondVerdict;

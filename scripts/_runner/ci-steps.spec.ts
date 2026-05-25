@@ -9,7 +9,7 @@ import { createCaptureLogger } from "./logger";
 // `bun` binary whose exit code and stdout/stderr we control via env vars,
 // then assert the returned StepResult matches the documented contract.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,22 @@ function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string }): 
 printf '%s' '${stdout}'
 printf '%s' '${stderr}' >&2
 exit ${opts.code}
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
+// Echoes the value of a named env var into stdout — used to prove that
+// StepOptions.env is reaching the spawned subprocess, not silently dropped.
+function makeFakeBunEchoEnv(varName: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  const path = join(dir, "bun");
+  writeFileSync(
+    path,
+    `#!/usr/bin/env bash
+echo "PROBE=\${${varName}}"
+exit 0
 `,
     { mode: 0o755 },
   );
@@ -102,6 +118,29 @@ describe("bunTestWithCrashTolerance", () => {
       }),
     );
     expect(result).toMatchObject({ success: false });
+  });
+
+  it("forwards StepOptions.env to the spawned subprocess (#2389 review)", async () => {
+    // Regression for the env-forwarding gap: the wrapper must thread
+    // StepOptions.env through runBun() into spawn(), or PATH/env overrides
+    // from the runner/step never reach the bun subprocess.
+    const dir = makeFakeBunEchoEnv("MCP_CLI_PROBE");
+    const env = {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH ?? ""}`,
+      MCP_CLI_PROBE: "hello-from-step-env",
+    };
+    const step = bunTestWithCrashTolerance({ paths: ["x"], logName: "test_env_probe" });
+    const result = await (
+      step as (o: {
+        logger: ReturnType<typeof createCaptureLogger>;
+        env: Record<string, string | undefined>;
+        args: string[];
+      }) => Promise<unknown>
+    )({ logger: createCaptureLogger(), env, args: [] });
+    expect(result).toEqual({ success: true });
+    const persisted = readFileSync("/tmp/test_env_probe.txt", "utf8");
+    expect(persisted).toContain("PROBE=hello-from-step-env");
   });
 });
 
