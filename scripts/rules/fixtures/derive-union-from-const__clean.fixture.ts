@@ -9,6 +9,8 @@
  *   3. union with non-string members (mixed)
  *   4. single-member union (below the 2-member threshold)
  *   5. as-const array with no matching union at all
+ *   6. union duplicates a NON-EXPORTED const array — non-exported arrays are
+ *      local helpers, not the canonical source the rule guards
  */
 
 // Shape 1: correctly derived — canonical pattern
@@ -29,3 +31,9 @@ export type Single = "only";
 
 // Shape 5: const array with no type alias duplication
 export const STATUSES = ["pending", "active", "done"] as const;
+
+// Shape 6: NON-EXPORTED const array — must NOT be considered the source.
+// Local helpers are intentionally allowed to coexist with hand-written types
+// without triggering the "derive from array" guidance.
+const internalKinds = ["a", "b", "c"] as const;
+export type LocalKind = "a" | "b" | "c";

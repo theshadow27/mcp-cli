@@ -41,8 +41,44 @@ const normalizedDir = canonicalCwd();
 if (normalizedDir === storedRoot) doSomething();
 
 // process.cwd() as fallback default (not a direct const binding) — not flagged
-const cwd = (args.cwd as string) ?? process.cwd();
+const effectiveCwd = (args.cwd as string) ?? process.cwd();
 
 // const bound to process.cwd() but never compared — not flagged
 const myDir = process.cwd();
 console.log(myDir);
+
+// Detection 3 FP guard: process.cwd() in VALUE position of .set must NOT flag.
+// Only argument 0 (the key) is checked.
+cache.set("some-key", process.cwd());
+indexByName.set(name, process.cwd());
+
+// Detection 4 FP guard: a parameter named `cwd` that shadows the outer
+// `const cwd = canonicalCwd()` (line 21 above) must NOT be flagged when
+// compared. Scope-aware lookup resolves to the parameter, not the outer
+// binding, so the result of the resolution is "not bound to process.cwd()".
+function compareCwd(cwd: string, other: string): boolean {
+  return cwd === other;
+}
+
+// Detection 4 FP guard: a local `const dir` bound to something else, even
+// when the SAME file also has `const dir = process.cwd()` in another scope,
+// must resolve to the local in the inner scope.
+function localShadow(other: string): boolean {
+  const dir = canonicalCwd();
+  return dir === other;
+}
+
+// Detection 4 FP guard: a `const x = process.cwd()` declared inside a nested
+// `if`/`for` block must NOT leak out to outer-scope name lookups. A naive
+// descendant walk of the outer block would find the inner const and falsely
+// flag the outer `dir === other` (the outer `dir` doesn't actually refer to
+// that inner binding by JS lexical scope rules).
+function nestedBlockScopeLeak(other: string): boolean {
+  if (other) {
+    const dir = process.cwd();
+    void dir;
+  }
+  // @ts-expect-error fixture is excluded from typecheck — `dir` is intentionally
+  // a free identifier here to exercise scope-resolution correctness.
+  return dir === other;
+}

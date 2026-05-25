@@ -12,13 +12,16 @@
  *    going through `resolveRealpath`/`canonicalCwd` — symlinked CWDs
  *    silently fail the comparison.
  *
- * 3. (daemon only) `process.cwd()` passed to Map-like methods (`.get`,
- *    `.set`, `.has`, `.delete`) — raw CWD as a lookup key silently
- *    misses under symlinks.
+ * 3. (daemon only) `process.cwd()` passed as the *key* (first argument)
+ *    to Map-like methods (`.get`, `.set`, `.has`, `.delete`) — raw CWD
+ *    as a lookup key silently misses under symlinks. Only argument 0
+ *    is checked; `.set(key, process.cwd())` (value position) is fine.
  *
  * 4. (daemon only) `const` variable bound to `process.cwd()` then used
  *    in `===`/`!==` comparison — same bug class as Detection 2 but one
- *    step removed.
+ *    step removed. Resolution uses scope-aware name lookup, not raw
+ *    identifier text matching, so parameters/locals that shadow an
+ *    outer const are not falsely flagged.
  */
 
 import ts from "typescript";
@@ -37,7 +40,7 @@ const rule: CheckRule = {
     "replace `a === process.cwd()` with `pathEq(a, canonicalCwd())`",
     'import { pathEq, canonicalCwd } from "@mcp-cli/core" for realpath-normalized comparisons',
     "variable-bound form (`const dir = process.cwd(); dir === x`) is caught — use `canonicalCwd()` at the assignment site",
-    "Map lookups with raw CWD (`cache.get(process.cwd())`) are caught — normalize with `canonicalCwd()` first",
+    "Map lookups with raw CWD as key (`cache.get(process.cwd())`) are caught — normalize with `canonicalCwd()` first",
   ],
   documentation: "#2251",
   appliesToTests: false,
@@ -72,35 +75,30 @@ const rule: CheckRule = {
       violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
     }
 
-    // Detection 3: process.cwd() as argument to Map-like method calls
+    // Detection 3: process.cwd() as the *key* argument (position 0) to Map-like
+    // method calls. Only position 0 matters — `.set(key, process.cwd())` puts
+    // the cwd in the value position and is not a lookup-key normalization bug.
     for (const call of ast.findByKind(ts.SyntaxKind.CallExpression) as ts.CallExpression[]) {
       if (!ts.isPropertyAccessExpression(call.expression)) continue;
       if (!MAP_METHODS.has(call.expression.name.text)) continue;
-      if (!call.arguments.some((arg) => isProcessCwd(arg))) continue;
+      if (call.arguments.length === 0) continue;
+      if (!isProcessCwd(call.arguments[0])) continue;
       const pos = ast.positionOf(call);
       violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
     }
 
-    // Detection 4: const variable bound to process.cwd(), then used in === / !==
-    const cwdVarNames = new Set<string>();
-    for (const decl of ast.findByKind(ts.SyntaxKind.VariableDeclaration) as ts.VariableDeclaration[]) {
-      if (!decl.initializer || !isProcessCwd(decl.initializer)) continue;
-      if (!ts.isIdentifier(decl.name)) continue;
-      const declList = decl.parent;
-      if (ts.isVariableDeclarationList(declList) && declList.flags & ts.NodeFlags.Const) {
-        cwdVarNames.add(decl.name.text);
-      }
-    }
-    if (cwdVarNames.size > 0) {
-      for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
-        const op = bin.operatorToken.kind;
-        if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
-        const leftMatch = ts.isIdentifier(bin.left) && cwdVarNames.has(bin.left.text);
-        const rightMatch = ts.isIdentifier(bin.right) && cwdVarNames.has(bin.right.text);
-        if (!leftMatch && !rightMatch) continue;
-        const pos = ast.positionOf(bin);
-        violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
-      }
+    // Detection 4: identifier compared with === / !== that resolves (by JS
+    // scope rules) to a `const` declaration bound to `process.cwd()`. Walks
+    // up from each comparison identifier through enclosing scopes so a
+    // shadowing parameter or local of the same name is *not* falsely flagged.
+    for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
+      const op = bin.operatorToken.kind;
+      if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
+      const leftHit = ts.isIdentifier(bin.left) && resolvesToCwdConst(bin.left);
+      const rightHit = ts.isIdentifier(bin.right) && resolvesToCwdConst(bin.right);
+      if (!leftHit && !rightHit) continue;
+      const pos = ast.positionOf(bin);
+      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
     }
   },
 };
@@ -117,6 +115,80 @@ function isProcessCwd(node: ts.Node): boolean {
     n.expression.expression.text === "process" &&
     n.expression.name.text === "cwd"
   );
+}
+
+/**
+ * Resolve an identifier to the nearest enclosing declaration (parameter or
+ * const variable) using JS scope rules, then report whether it's a `const`
+ * bound to `process.cwd()`. Parameters and shadowing inner locals correctly
+ * short-circuit the walk — they're the binding the identifier refers to, so
+ * the outer `const cwd = process.cwd()` is not consulted.
+ */
+function resolvesToCwdConst(id: ts.Identifier): boolean {
+  const decl = lookupName(id.text, id);
+  if (!decl || !ts.isVariableDeclaration(decl)) return false;
+  const declList = decl.parent;
+  if (!ts.isVariableDeclarationList(declList)) return false;
+  if (!(declList.flags & ts.NodeFlags.Const)) return false;
+  return !!decl.initializer && isProcessCwd(decl.initializer);
+}
+
+function lookupName(name: string, from: ts.Node): ts.Declaration | undefined {
+  let current: ts.Node = from;
+  while (current.parent) {
+    const parent: ts.Node = current.parent;
+
+    if (
+      ts.isFunctionDeclaration(parent) ||
+      ts.isFunctionExpression(parent) ||
+      ts.isArrowFunction(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isConstructorDeclaration(parent)
+    ) {
+      for (const p of parent.parameters) {
+        if (ts.isIdentifier(p.name) && p.name.text === name) return p;
+      }
+    }
+
+    // for-loop bindings (`for (const x = ...; ...)`, `for (const x of ...)`) are
+    // block-scoped to the loop including its body, so check them when ascending
+    // out of the body but before the enclosing function/block scope.
+    if (ts.isForStatement(parent) || ts.isForInStatement(parent) || ts.isForOfStatement(parent)) {
+      const init = parent.initializer;
+      if (init && ts.isVariableDeclarationList(init)) {
+        for (const decl of init.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
+        }
+      }
+    }
+
+    if (ts.isBlock(parent) || ts.isSourceFile(parent) || ts.isModuleBlock(parent)) {
+      const found = findConstDeclInScope(parent, name);
+      if (found) return found;
+    }
+
+    current = parent;
+  }
+  return undefined;
+}
+
+/**
+ * Look up a `const`/`let`/`var` declaration of `name` in the *direct* statement
+ * list of `scope`. Walking all descendants would leak nested-block bindings
+ * (e.g. `if (cond) { const x = ... }`) into outer scopes, violating JS lexical
+ * scope and producing both false positives and false negatives.
+ */
+function findConstDeclInScope(
+  scope: ts.Block | ts.SourceFile | ts.ModuleBlock,
+  name: string,
+): ts.VariableDeclaration | undefined {
+  for (const stmt of scope.statements) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const decl of stmt.declarationList.declarations) {
+      if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
+    }
+  }
+  return undefined;
 }
 
 export default rule;
