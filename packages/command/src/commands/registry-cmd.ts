@@ -81,7 +81,7 @@ export function extractRegistryFlags(args: string[]): {
   }
 
   const limit = flags.limit as number | undefined;
-  if (limit !== undefined && limit <= 0) {
+  if (limit !== undefined && (limit <= 0 || !Number.isInteger(limit))) {
     throw new Error(`Invalid --limit "${limit}": must be a positive integer`);
   }
 

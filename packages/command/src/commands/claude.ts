@@ -1779,7 +1779,11 @@ export function parseWaitArgs(args: string[]): WaitArgs {
     if (Number.isNaN(pr)) error ??= "--pr must be a number";
   }
 
-  const mailTo = flags["mail-to"] as string | undefined;
+  const mailToRaw = flags["mail-to"] as string | undefined;
+  if (mailToRaw !== undefined && mailToRaw === "") {
+    error ??= "--mail-to requires a recipient name";
+  }
+  const mailTo = mailToRaw === "" ? undefined : mailToRaw;
   const short = (flags.short as boolean) ?? false;
   const all = (flags.all as boolean) ?? false;
   const any = (flags.any as boolean) ?? false;

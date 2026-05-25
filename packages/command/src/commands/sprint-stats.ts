@@ -446,6 +446,12 @@ Output: JSON to stdout with token counts, cost estimates, and optional phase gro
   const sinceRef = flags.since as string | undefined;
   const projectFilter = flags.project as string | undefined;
 
+  if (sprintN !== undefined && !Number.isInteger(sprintN)) {
+    printError("sprint-stats: --sprint requires a sprint number");
+    process.exitCode = 1;
+    return;
+  }
+
   // Mutual exclusivity
   if (sprintN !== undefined && sinceRef !== undefined) {
     printError("sprint-stats: --sprint and --since are mutually exclusive");

@@ -143,15 +143,29 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   const providerName = args[0];
   const scopeKey = args[1];
 
-  const { flags, positionals } = parseFlags(args.slice(2), {
+  const { flags, positionals, errors } = parseFlags(args.slice(2), {
     "cloud-id": { type: "string" },
     limit: { type: "number" },
     depth: { type: "number" },
   });
+  if (errors.length > 0) {
+    printError(errors[0]);
+    deps.exit(1);
+  }
 
   const cloudId = flags["cloud-id"] as string | undefined;
-  const limit = (flags.limit as number) ?? 0;
-  const depth = (flags.depth as number) ?? 0;
+  const limitRaw = flags.limit as number | undefined;
+  const depthRaw = flags.depth as number | undefined;
+  if (limitRaw !== undefined && !Number.isInteger(limitRaw)) {
+    printError(`--limit requires an integer, got: ${limitRaw}`);
+    deps.exit(1);
+  }
+  if (depthRaw !== undefined && !Number.isInteger(depthRaw)) {
+    printError(`--depth requires an integer, got: ${depthRaw}`);
+    deps.exit(1);
+  }
+  const limit = limitRaw ?? 0;
+  const depth = depthRaw ?? 0;
   const targetDir = positionals[0] ?? `./${scopeKey}`;
 
   await deps.preflightCheck(providerName);
@@ -196,13 +210,22 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   log(
     'Warning: "mcx vfs pull" is deprecated. Use "git pull" instead.\n         The command will be removed in a future release.',
   );
-  const { flags, positionals } = parseFlags(args, {
+  const { flags, positionals, errors } = parseFlags(args, {
     full: { type: "boolean" },
     depth: { type: "number" },
   });
+  if (errors.length > 0) {
+    printError(errors[0]);
+    deps.exit(1);
+  }
 
   const full = (flags.full as boolean) ?? false;
-  const depth = (flags.depth as number) ?? 0;
+  const depthRaw = flags.depth as number | undefined;
+  if (depthRaw !== undefined && !Number.isInteger(depthRaw)) {
+    printError(`--depth requires an integer, got: ${depthRaw}`);
+    deps.exit(1);
+  }
+  const depth = depthRaw ?? 0;
   const repoDir = resolve(positionals[0] ?? ".");
   const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
 

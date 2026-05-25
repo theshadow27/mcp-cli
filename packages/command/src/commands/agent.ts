@@ -1020,7 +1020,9 @@ async function agentWait(
 
   // Post-process mail-to (flag form, if not already set by = form)
   if (!mailTo && flags["mail-to"] !== undefined) {
-    mailTo = flags["mail-to"] as string;
+    const val = flags["mail-to"] as string;
+    if (!val) error ??= "--mail-to requires a recipient name";
+    else mailTo = val;
   }
 
   const short = (flags.short as boolean) ?? false;

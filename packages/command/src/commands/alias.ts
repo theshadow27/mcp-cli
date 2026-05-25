@@ -58,23 +58,22 @@ export function parseScopeFlag(
   args: string[],
   cwd: string = process.cwd(),
 ): { scope: string | null; scopeDefaulted: boolean; rest: string[] } {
-  // Find --scope or --scope=... and extract scope tokens for parseFlags.
-  // Everything else passes through as `rest` for the caller's further parsing.
-  const scopeIdx = args.findIndex((a) => a === "--scope" || a.startsWith("--scope="));
-
-  let scopeTokens: string[];
-  let rest: string[];
-  if (scopeIdx === -1) {
-    scopeTokens = [];
-    rest = args;
-  } else if (args[scopeIdx].startsWith("--scope=")) {
-    // --scope=value form: extract 1 token
-    scopeTokens = [args[scopeIdx]];
-    rest = [...args.slice(0, scopeIdx), ...args.slice(scopeIdx + 1)];
-  } else {
-    // --scope <value> form: extract 2 tokens (flag + value)
-    scopeTokens = args.slice(scopeIdx, scopeIdx + 2);
-    rest = [...args.slice(0, scopeIdx), ...args.slice(scopeIdx + 2)];
+  // Strip ALL --scope and --scope=... tokens from args (last-wins for multiple
+  // occurrences). Everything else passes through as `rest` for the caller's
+  // further parsing.
+  const scopeTokens: string[] = [];
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--scope") {
+      scopeTokens.push(args[i]);
+      // dotw-ignore no-manual-arg-parsing: pre-extraction to delegate to parseFlags; --scope must be stripped from rest before caller does further parsing
+      if (i + 1 < args.length) scopeTokens.push(args[i + 1]);
+      i++;
+    } else if (args[i].startsWith("--scope=")) {
+      scopeTokens.push(args[i]);
+    } else {
+      rest.push(args[i]);
+    }
   }
 
   const { flags, errors } = parseFlags(scopeTokens, {
