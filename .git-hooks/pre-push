@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Pre-push hook — runs the same step list CI's `check` and `coverage` jobs run,
+# so "passes locally → passes CI" (modulo platform differences). The retry-
+# and-classify logic for #1004 (Bun crash-after-pass) and #1419 (coverage
+# panic-on-teardown) lives in scripts/_runner/ci-steps.ts and is exercised
+# both here and from the workflow — one definition of done (#2345).
+#
+# Bypass with `git push --no-verify` if you need to push WIP for review.
+#
+# Skips entirely on branch deletions and tag-only pushes (nothing to validate).
+
+set -euo pipefail
+
+# Git pipes the refs being pushed on stdin:
+#   <local ref> SP <local oid> SP <remote ref> SP <remote oid> LF
+# A local oid of all-zeros is a branch deletion (nothing to validate).
+# Tag pushes use refs/tags/* — also skip (no source change to gate).
+needs_check=false
+zero="0000000000000000000000000000000000000000"
+while read -r local_ref local_sha remote_ref _; do
+  [ -z "$local_ref" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  case "$remote_ref" in
+    refs/tags/*) continue ;;
+  esac
+  needs_check=true
+done
+
+if ! $needs_check; then
+  echo "pre-push: nothing to validate (deletion or tag push) — skipping"
+  exit 0
+fi
+
+exec bun run am-i-done --pre-push
