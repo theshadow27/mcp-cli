@@ -86,41 +86,39 @@ burndowns with fanout if large. Orchestrator must never implement directly.
 
 ---
 
-## RUN STATE — live recovery doc (updated 2026-05-24 20:33 ET)
+## RUN STATE — live recovery doc (updated 2026-05-25 03:10 ET — session 2)
 
-Sprint ran ~6h past the 15:00 rollover; sessions completed autonomously. **Read this first if resuming in a fresh context — it is the authoritative state.** Daemon is converged to ONE clean instance. Original diffs of everything merged live in main history (cherry-pickable).
+Sprint resumed in a FRESH context 2026-05-25 (~20:40 ET). There is no `/sprint resume` verb — the tail is being driven MANUALLY (orchestrator spawns phase sessions, reads this doc as the plan). Daemon converged to ONE instance the whole run; using build-matched `mcx` not `bun dev:mcx` (see #2381). **Read this first if resuming — it is the authoritative state.**
 
 ### DONE — merged to main
-I #2319/2320→#2356 · T #2289→#2357 · J #2335→#2358 · Z #2340/2341+#2264reconcile→#2359 · A #2285/2286/2287/2288/2290→#2360 · bun-install #2355→#2361 · G #2322(78 empty-catch)→#2363 · F #2332→#2364 · C #2292/2293→#2365 (also closed D #2291 as FP-obsolete) · S #2337→#2366 · L #2284→#2367 · B #2300/2301→#2368 · K #2336→#2369 · H #2323(25 timers)→#2372 · yoga-flaky #2362→#2379
+**Session 1:** I #2356 · T #2357 · J #2358 · Z #2359 · A #2360 · bun-install #2361 · G #2363 · F #2364 · C #2365 (closed D #2291 FP-obsolete) · S #2366 · L #2367 · B #2368 · K #2369 · H #2372 · yoga-flaky #2379
+**Session 2 (this run — each via a FULL independent review cycle; every reviewer found+fixed real defects that ✅+green alone would have shipped):**
+- E #2283 parseFlags 94-site → **#2378** (int/empty/multi-scope fixes + an empty-string-parity cluster the reviewer found)
+- V dotw-todo-needs-issue meta-rule → **#2375** (guidance↔regex + guard fixtures; reviewer self-repaired 3 Copilot findings incl. a real preceding-char FN)
+- #2380 fix-forward (Q/M/N defects + R review) → **#2384** (reviewer caught Detection-4 scope-walk was still incomplete, fixed it)
+- Y #2346 spawnManaged → **#2382** (reviewer found+fixed a SIGKILL-timer leak AND all 6 real Copilot findings — stderr truncation/flush, trailing-line, exitCode-on-signal)
+- O #2262 named-timeouts NEW RULE → **#2385** (54 sites; reviewer fixed 3 missed mail.ts sites + a parseFloat zero-exemption FN on hex/separator literals)
 
-### MERGED BUT NEEDS FIX-FORWARD — tracked in #2380 (gate currently CLEAN; defects are latent FP-risk)
-- Q #2321→#2374: over-broad cwd detection; identifier-only matching; invalid clean fixture (`const cwd` twice)
-- M #2314/2327→#2377: `-h` help-flag FP asymmetry; inline-import smell
-- N #2261→#2376 (NEW RULE): wrong file scope (runs everywhere); exported-vs-any const mismatch; split() in loop
-- R #2342→#2373: clean, needs review pass only
-ACTION: reviewed follow-up PR per item.
-
-### OPEN PRs — DO NOT merge without a review cycle
-- E #2283 parseFlags 94-site burndown → PR #2378 (MERGEABLE; only red check = #2135 disconnect flaky → rerun, review, merge)
-- V phase-4 `dotw-todo-needs-issue` meta-rule → PR #2375 (MERGEABLE; same #2135 flaky; NEW rule → adversarial review then merge)
-
-### RECOVER
-- Y #2346 managed long-lived spawn helper: worktree `.claude/worktrees/claude-mpk1bzyf`, branch `feat/issue-2346-managed-spawn`, 13 files staged (1356-line diff; backup `/tmp/sprint63-y-backup/issue-2346-full.patch`). Branch is at OLD main (pre-yoga-fix). ACTION: rebase onto origin/main → commit → push → review → merge.
+### IN FLIGHT (session 2)
+- P #2315 cross-file anchor hard-error (engine `anchors` or per-rule violation + zero-check debug signal) → impl session `47048aee`, worktree `claude-mpkmaan9`
+- U Phase-2 migrate 4 check-*.ts (args-bounds/phase-drift/session-teardown/test-timeouts) → `*.rule.ts` + refresh ROADMAP → impl session `f15843ca`, worktree `claude-mpkmc2g3`. EDITS THE GATE (am-i-done.ts) — review carefully for dropped coverage.
 
 ### NOT LAUNCHED
-- O #2262 timeouts→named-constants (burndown-scale; scope carefully)
-- P #2315 cross-file rule hard-error (engine)
-- U Phase-2: migrate 4 `check-*.ts` (args-bounds/phase-drift/session-teardown/test-timeouts)→`*.rule.ts` + REFRESH `scripts/ROADMAP.md` (Phase 3 done, Phase 2 pkg.json done). Hot-shared files.
-- W #2345 route test+coverage through am-i-done (after U; shares ci.yml w/ X)
-- X #2311 _runner tests + scripts/ to CI (after W)
+- W #2345 route test+coverage through am-i-done (after U merges; shares ci.yml w/ X)
+- X #2311 _runner tests + scripts/ to CI (after W merges)
 
 ### INFRA / BUGS
-- #2370 P1 daemon socket-theft (auto-start unlinks live socket) — ROOT CAUSE of split-brain; NOT fixed
-- #2371 poll-until string-literal `//` FP edge case — open follow-up
-- #2135 disconnect-test flaky (10s) — pre-existing; blocks E/V CI; rerun to clear
+- #2370 P1 daemon socket-theft — NOT fixed (mitigated: held concurrency ≤3-4, daemon stayed at 1 all run)
+- #2381 NEW (this session): stale-daemon mismatch error gives directionally-wrong remediation (recommends `mcx shutdown` when the daemon is the NEWER build) — dangerous under #2370
+- #2371 poll-until string-literal `//` FP — open follow-up
+- #2135 disconnect flaky — CLOSED (fixed); no longer a blocker (RUN STATE session-1 note was stale)
+
+### MERGE DISCIPLINE (what's working — do not regress)
+Every PR: rebase onto main → fresh-session adversarial review (NOT the author) → triage ALL 4 comment surfaces, esp. Copilot inline (several had REAL findings hidden behind ✅+green) → CI green on the FINAL commit → merge → verify `state==MERGED`. Reviewer-self-repair for 1-3 contained findings; fresh opus repair otherwise. NO green-CI-only merges — confirmed essential this run.
 
 ### LESSONS (retro)
-1. Never merge on green CI alone — always a review cycle (caused #2380).
-2. Don't end a turn on a passive event-wait that may not fire — Monitor was bound to an orphaned daemon → 6h blind → ~400k cache miss. Drive actively; bounded polls; keep this doc current.
-3. Daemon auto-start steals the IPC socket (#2370) — converge to one daemon before heavy parallel spawning.
-4. Pre-commit runs FULL test:coverage for source changes → any test flaky blocks commits; fix flakies fast, never bypass.
+1. Never merge on green CI alone — always a review cycle. CONFIRMED HARD this run (Y #2382: 6 real bugs; O #2385: parseFloat FN; V #2375: real FN — all caught only by surface triage).
+2. Don't end a turn on a passive event-wait that may not fire — drive actively, bounded. Monitor tool worked with a healthy daemon this run.
+3. Daemon auto-start steals the socket (#2370) — converge to one daemon first; keep concurrency modest.
+4. Pre-commit runs FULL test:coverage → fix flakies fast, never bypass.
+5. Use build-matched `mcx`/`dist/mcx` during orchestration, not `bun dev:mcx` (spawn rejects build mismatch even when protocols match — #2381).
