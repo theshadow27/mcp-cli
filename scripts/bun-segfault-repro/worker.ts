@@ -10,6 +10,9 @@
 
 declare const self: Worker;
 
+/** Aggressive fetch loop — pile up deferred-work tickets so the parent's terminate() races them. */
+const FETCH_LOOP_INTERVAL_MS = 50;
+
 // Start a lightweight HTTP server — creates deferred I/O callbacks in JSC.
 const server = Bun.serve({
   port: 0,
@@ -26,7 +29,7 @@ const interval = setInterval(async () => {
   } catch {
     // Worker may be shutting down; ignore fetch errors.
   }
-}, 50);
+}, FETCH_LOOP_INTERVAL_MS);
 
 self.postMessage({ type: "ready", port: server.port });
 

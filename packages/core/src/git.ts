@@ -6,6 +6,9 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnCaptureSync } from "./subprocess";
 
+/** Timeout for `git rev-parse` plumbing probes — should complete in milliseconds on any sane repo. */
+export const GIT_REV_PARSE_TIMEOUT_MS = 5_000;
+
 export interface ExecResult {
   stdout: string;
   exitCode: number;
@@ -141,7 +144,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
   let result: string | null = null;
   try {
     const top = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
-      timeoutMs: 5000,
+      timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
       env,
     });
     if (top.exitCode === 0) {
@@ -151,7 +154,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
         return null;
       }
       const gitDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-dir"], {
-        timeoutMs: 5000,
+        timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
         env,
       });
       if (gitDir.exitCode === 0) {
@@ -161,7 +164,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
         // Only fetch --git-common-dir when we're in a linked worktree.
         if (gitDirStr.includes("/worktrees/")) {
           const commonDir = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
-            timeoutMs: 5000,
+            timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
             env,
           });
           if (commonDir.exitCode === 0) {
@@ -180,7 +183,7 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
     } else {
       // Bare repo fallback — no working tree, use the common dir directly.
       const common = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], {
-        timeoutMs: 5000,
+        timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
         env,
       });
       if (common.exitCode === 0) {

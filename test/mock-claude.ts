@@ -7,6 +7,9 @@
  * Used to exercise the full daemon dispatch path without a real claude binary.
  */
 
+/** Settle delay after sending the result message so the daemon observes the frame before close. */
+const POST_RESULT_CLOSE_DELAY_MS = 200;
+
 const args = process.argv.slice(2);
 
 // Handle --version probes from the daemon's binary-resolver (#1808/#1835).
@@ -103,7 +106,7 @@ async function run(): Promise<void> {
               session_id: sessionId,
             }),
           );
-          setTimeout(() => ws.close(), 200);
+          setTimeout(() => ws.close(), POST_RESULT_CLOSE_DELAY_MS);
         }
       }
     };

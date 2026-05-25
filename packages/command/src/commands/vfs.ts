@@ -47,6 +47,9 @@ export function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
 const callTool = makeToolCaller(ipcCall);
 const log = (msg: string) => process.stderr.write(`${msg}\n`);
 
+/** Preflight `listTools` probe — server may need a few seconds to spin up and respond. */
+const LIST_TOOLS_PREFLIGHT_TIMEOUT_MS = 10_000;
+
 /** Map provider name → the MCP server name it requires. */
 export const PROVIDER_SERVER: Record<string, string> = {
   confluence: "atlassian",
@@ -82,7 +85,11 @@ export async function preflightCheck(providerName: string, deps: PreflightDeps =
     }
 
     // Verify the server has tools available (i.e., it's connected and responding)
-    const tools = (await ipc("listTools", { server: serverName }, { timeoutMs: 10_000 })) as unknown[];
+    const tools = (await ipc(
+      "listTools",
+      { server: serverName },
+      { timeoutMs: LIST_TOOLS_PREFLIGHT_TIMEOUT_MS },
+    )) as unknown[];
     if (!tools || (Array.isArray(tools) && tools.length === 0)) {
       printError(
         `MCP server "${serverName}" is configured but returned no tools.\n\nThis usually means:\n  - The server failed to start (check: mcx status)\n  - Authentication is needed (check: mcx auth ${serverName})\n  - The server binary is missing or misconfigured\n\nTry restarting: mcx ctl restart ${serverName}`,

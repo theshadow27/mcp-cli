@@ -18,6 +18,9 @@ import { dirname } from "node:path";
 /** Max entries before pruning oldest on write */
 const MAX_ENTRIES = 10_000;
 
+/** `git rev-parse` plumbing probe — diagnostic context only, must not stall test logging. */
+const GIT_REV_PARSE_TIMEOUT_MS = 5_000;
+
 export interface TestFailureEntry {
   timestamp: string;
   file: string;
@@ -97,13 +100,19 @@ export function getGitContext(): { worktree: string; branch: string; pr: number 
   let pr: number | null = null;
 
   try {
-    branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf-8", timeout: 5000 }).trim();
+    branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      encoding: "utf-8",
+      timeout: GIT_REV_PARSE_TIMEOUT_MS,
+    }).trim();
   } catch {
     // not in a git repo or timeout
   }
 
   try {
-    const toplevel = execSync("git rev-parse --show-toplevel", { encoding: "utf-8", timeout: 5000 }).trim();
+    const toplevel = execSync("git rev-parse --show-toplevel", {
+      encoding: "utf-8",
+      timeout: GIT_REV_PARSE_TIMEOUT_MS,
+    }).trim();
     const dirName = toplevel.split("/").pop() ?? "main";
     // Worktrees live in .claude/worktrees/<name>
     if (toplevel.includes(".claude/worktrees/")) {

@@ -15,6 +15,19 @@
  */
 import { createInterface } from "node:readline";
 
+/** Standard "schedule the next protocol step" delay — long enough for the daemon to observe the prior frame. */
+const STEP_DELAY_MS = 30;
+/** First streamed `session/update` chunk delay — kept tiny so tests don't drag. */
+const STREAM_CHUNK_1_DELAY_MS = 10;
+/** Second streamed `session/update` chunk delay — leaves room between frames. */
+const STREAM_CHUNK_2_DELAY_MS = 20;
+/** Short tail delay before `completePrompt()` / `process.exit()` — final state transition. */
+const SHORT_COMPLETE_DELAY_MS = 50;
+/** Medium tail delay — paired with fs/read/write server-requests so the daemon round-trips before completion. */
+const MED_COMPLETE_DELAY_MS = 100;
+/** Long tail delay — paired with permission / terminal flows that require user-side decisions. */
+const LONG_COMPLETE_DELAY_MS = 200;
+
 const mode = process.argv[2] ?? "simple";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
@@ -78,7 +91,7 @@ function schedulePromptEvents(): void {
   promptDone = false;
 
   if (mode === "simple") {
-    setTimeout(() => completePrompt(), 30);
+    setTimeout(() => completePrompt(), STEP_DELAY_MS);
   } else if (mode === "with-updates") {
     // Stream some session/update chunks then complete
     setTimeout(() => {
@@ -89,7 +102,7 @@ function schedulePromptEvents(): void {
           content: { type: "text", text: "Hello " },
         },
       });
-    }, 10);
+    }, STREAM_CHUNK_1_DELAY_MS);
     setTimeout(() => {
       sendNotification("session/update", {
         sessionId: acpSessionId,
@@ -98,8 +111,8 @@ function schedulePromptEvents(): void {
           content: { type: "text", text: "world!" },
         },
       });
-    }, 20);
-    setTimeout(() => completePrompt(), 50);
+    }, STREAM_CHUNK_2_DELAY_MS);
+    setTimeout(() => completePrompt(), SHORT_COMPLETE_DELAY_MS);
   } else if (mode === "permission") {
     // Send a permission request
     setTimeout(() => {
@@ -115,13 +128,13 @@ function schedulePromptEvents(): void {
         ],
       });
       // Complete after a delay (regardless of permission response)
-      setTimeout(() => completePrompt(), 200);
-    }, 30);
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "crash-after-prompt") {
     setTimeout(() => {
       completePrompt();
-      setTimeout(() => process.exit(2), 50);
-    }, 30);
+      setTimeout(() => process.exit(2), SHORT_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "silent") {
     // No events after accepting prompt — process stays alive (for watchdog testing)
   } else if (mode === "fs-write") {
@@ -130,23 +143,23 @@ function schedulePromptEvents(): void {
         path: `${process.cwd()}/acp-test-probe.txt`,
         content: "hello from acp",
       });
-      setTimeout(() => completePrompt(), 100);
-    }, 30);
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "fs-read") {
     setTimeout(() => {
       sendServerRequest("fs-2", "fs/read_text_file", {
         path: `${process.cwd()}/package.json`,
       });
-      setTimeout(() => completePrompt(), 100);
-    }, 30);
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "fs-write-traversal") {
     setTimeout(() => {
       sendServerRequest("fs-3", "fs/write_text_file", {
         path: "/tmp/acp-traversal-probe.txt",
         content: "should be blocked",
       });
-      setTimeout(() => completePrompt(), 100);
-    }, 30);
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "terminal") {
     setTimeout(() => {
       sendServerRequest("term-1", "terminal/create", {
@@ -155,7 +168,7 @@ function schedulePromptEvents(): void {
         cwd: process.cwd(),
       });
       // After terminal/create response, request output and release
-      setTimeout(() => completePrompt(), 200);
-    }, 30);
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   }
 }

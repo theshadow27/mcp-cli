@@ -10,6 +10,13 @@
  */
 import { createInterface } from "node:readline";
 
+/** Standard "schedule the next protocol step" delay — long enough for the daemon to observe the prior frame. */
+const STEP_DELAY_MS = 30;
+/** Tail delay after a server-request (approval) before completing the turn. */
+const POST_APPROVAL_COMPLETE_DELAY_MS = 100;
+/** Tail delay before `process.exit()` in crash-after-turn mode. */
+const CRASH_EXIT_DELAY_MS = 50;
+
 const mode = process.argv[2] ?? "simple";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
@@ -85,20 +92,20 @@ function scheduleEvents(): void {
         })}\n`,
       );
       // Complete the turn regardless of approval response
-      setTimeout(() => sendTurnCompleted(), 100);
-    }, 30);
+      setTimeout(() => sendTurnCompleted(), POST_APPROVAL_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "crash-after-turn") {
     setTimeout(() => {
       sendTurnCompleted();
-      setTimeout(() => process.exit(2), 50);
-    }, 30);
+      setTimeout(() => process.exit(2), CRASH_EXIT_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "validate-input") {
     // input already validated above — complete like simple
-    setTimeout(() => sendTurnCompleted(), 30);
+    setTimeout(() => sendTurnCompleted(), STEP_DELAY_MS);
   } else if (mode === "silent") {
     // No events after turn/start — process stays alive but silent (for watchdog testing)
   } else {
     // simple
-    setTimeout(() => sendTurnCompleted(), 30);
+    setTimeout(() => sendTurnCompleted(), STEP_DELAY_MS);
   }
 }

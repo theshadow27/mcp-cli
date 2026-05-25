@@ -53,6 +53,9 @@ Options:
   -h, --help        Show this help
 `;
 
+/** Default `mcx mail --wait` timeout — seconds (parsed.timeout is multiplied by 1000 at the call site). */
+const DEFAULT_MAIL_WAIT_TIMEOUT_S = 180;
+
 export interface MailArgs {
   subject: string | undefined;
   headersOnly: boolean;
@@ -138,7 +141,7 @@ export function parseMailArgs(args: string[]): MailArgs {
       replyTo: undefined,
       suppressHeaders: false,
       wait: false,
-      timeout: 180,
+      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
       forRecipient: undefined,
       recipient: undefined,
       from: undefined,
@@ -154,7 +157,7 @@ export function parseMailArgs(args: string[]): MailArgs {
       replyTo: undefined,
       suppressHeaders: false,
       wait: false,
-      timeout: 180,
+      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
       forRecipient: undefined,
       recipient: undefined,
       from: undefined,
@@ -168,7 +171,7 @@ export function parseMailArgs(args: string[]): MailArgs {
   const replyTo = flags["reply-to"] as number | undefined;
   const suppressHeaders = (flags["suppress-headers"] as boolean | undefined) ?? false;
   const wait = (flags.wait as boolean | undefined) ?? false;
-  const timeout = (flags.timeout as number | undefined) ?? 180;
+  const timeout = (flags.timeout as number | undefined) ?? DEFAULT_MAIL_WAIT_TIMEOUT_S;
   const forRecipient = flags.for as string | undefined;
   const from = flags.from as string | undefined;
   const recipient = positionals[0] as string | undefined;
@@ -182,7 +185,7 @@ export function parseMailArgs(args: string[]): MailArgs {
       replyTo: undefined,
       suppressHeaders: false,
       wait: false,
-      timeout: 180,
+      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
       forRecipient: undefined,
       recipient: undefined,
       from: undefined,
