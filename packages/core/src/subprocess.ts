@@ -39,9 +39,14 @@ export interface ManagedHandle {
   readonly exited: Promise<ManagedExitStatus>;
   /** SIGTERM immediately; SIGKILL after graceMs (default from spawn opts). Returns exit status. */
   kill(graceMs?: number): Promise<ManagedExitStatus>;
+  /**
+   * Force SIGKILL immediately, bypassing SIGTERM and the grace window.
+   * Use for callers that ran their own SIGTERM timeout and need an escape hatch.
+   */
+  killNow(): void;
   /** Detach the child so the parent can exit without waiting. */
   unref(): void;
-  /** Return the last N bytes captured from the auto-drained stderr ring buffer. */
+  /** Return up to stderrMaxBytes captured from the auto-drained stderr ring buffer. */
   stderrTail(): string;
 }
 
@@ -70,24 +75,46 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
   }
 
   // --- stderr auto-drain ring buffer ---
-  let stderrBuf = "";
+  // Bytes-accurate ring: store raw Uint8Array chunks and trim by total byte
+  // length (not UTF-16 code units). Decode lazily in stderrTail() so the
+  // truncation boundary never silently splits a multibyte char in storage —
+  // any partial codepoint at the front becomes U+FFFD on decode (honest).
+  const stderrChunks: Uint8Array[] = [];
+  let stderrTotalBytes = 0;
   if (stderrMode === "pipe" && proc.stderr && typeof proc.stderr !== "number") {
     const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const onChunk = opts?.onStderr;
+    const append = (chunk: Uint8Array) => {
+      if (chunk.byteLength === 0) return;
+      stderrChunks.push(chunk);
+      stderrTotalBytes += chunk.byteLength;
+      while (stderrTotalBytes > maxStderr && stderrChunks.length > 0) {
+        const first = stderrChunks[0] as Uint8Array;
+        const excess = stderrTotalBytes - maxStderr;
+        if (excess >= first.byteLength) {
+          stderrChunks.shift();
+          stderrTotalBytes -= first.byteLength;
+        } else {
+          stderrChunks[0] = first.subarray(excess);
+          stderrTotalBytes -= excess;
+        }
+      }
+    };
     (async () => {
       try {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
           const text = decoder.decode(value, { stream: true });
-          onChunk?.(text);
-          stderrBuf += text;
-          if (stderrBuf.length > maxStderr) {
-            stderrBuf = stderrBuf.slice(-maxStderr);
-          }
+          if (text) onChunk?.(text);
+          append(value);
         }
-        stderrBuf += decoder.decode(); // flush
+        // Flush any partial codepoint the streaming decoder was buffering.
+        // Pass it through onStderr too (was previously dropped from the tap),
+        // and the raw bytes are already in `stderrChunks` from the last read.
+        const tail = decoder.decode();
+        if (tail) onChunk?.(tail);
       } catch {
         // stream closed — expected on kill
       }
@@ -136,14 +163,32 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
       ? (proc.stdout as ReadableStream<Uint8Array>)
       : null;
 
+  const killNow = (): void => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // already dead
+    }
+  };
+
   const handle: ManagedHandle = {
     pid: proc.pid,
     stdin: stdinSink,
     stdout: stdoutStream,
     exited: exitedPromise,
     kill,
+    killNow,
     unref: () => proc.unref(),
-    stderrTail: () => stderrBuf,
+    stderrTail: () => {
+      if (stderrChunks.length === 0) return "";
+      const total = new Uint8Array(stderrTotalBytes);
+      let off = 0;
+      for (const c of stderrChunks) {
+        total.set(c, off);
+        off += c.byteLength;
+      }
+      return new TextDecoder("utf-8").decode(total);
+    },
   };
 
   return { ok: true, handle };

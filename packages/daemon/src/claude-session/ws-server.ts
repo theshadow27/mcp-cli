@@ -2606,8 +2606,12 @@ function defaultSpawn(
   return {
     pid: r.handle.pid,
     exited: r.handle.exited.then((s) => (s.exitCode === null ? 1 : s.exitCode)),
-    kill: () => {
-      r.handle.kill();
+    kill: (signal?: number) => {
+      // Route signal=9 (SIGKILL) through killNow so callers running their own
+      // SIGTERM-then-SIGKILL timeout (killAndAwaitProc) actually escalate. The
+      // grace-based kill() is one-shot and would silently no-op the SIGKILL.
+      if (signal === 9) r.handle.killNow();
+      else r.handle.kill();
     },
     stderrTail: () => r.handle.stderrTail(),
   };

@@ -49,6 +49,7 @@ interface RunningMonitor {
   restartTimer: ReturnType<typeof setTimeout> | null;
   stopped: boolean;
   stderrRing: string[];
+  flushStderrLine: () => void;
   startedAt: number;
 }
 
@@ -149,24 +150,33 @@ export class MonitorRuntime {
 
     const payload = JSON.stringify({ bundledJs, aliasName: alias.name });
     const stderrRing: string[] = [];
-    let stderrLineBuf = "";
+    const stderrLine = { buf: "" };
     const logger = this.logger;
     const aliasName = alias.name;
+    const emitLine = (line: string): void => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      logger.warn(`[monitor:${aliasName}] ${trimmed}`);
+      stderrRing.push(trimmed);
+      if (stderrRing.length > STDERR_RING_SIZE) stderrRing.shift();
+    };
+    const flushStderrLine = (): void => {
+      if (stderrLine.buf) {
+        emitLine(stderrLine.buf);
+        stderrLine.buf = "";
+      }
+    };
 
     const result = spawnManaged(process.execPath, [this.executorPath], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
       onStderr: (chunk) => {
-        stderrLineBuf += chunk;
-        for (let idx = stderrLineBuf.indexOf("\n"); idx !== -1; idx = stderrLineBuf.indexOf("\n")) {
-          const line = stderrLineBuf.slice(0, idx).trim();
-          stderrLineBuf = stderrLineBuf.slice(idx + 1);
-          if (line) {
-            logger.warn(`[monitor:${aliasName}] ${line}`);
-            stderrRing.push(line);
-            if (stderrRing.length > STDERR_RING_SIZE) stderrRing.shift();
-          }
+        stderrLine.buf += chunk;
+        for (let idx = stderrLine.buf.indexOf("\n"); idx !== -1; idx = stderrLine.buf.indexOf("\n")) {
+          const line = stderrLine.buf.slice(0, idx);
+          stderrLine.buf = stderrLine.buf.slice(idx + 1);
+          emitLine(line);
         }
       },
     });
@@ -190,6 +200,7 @@ export class MonitorRuntime {
       restartTimer: null,
       stopped: false,
       stderrRing,
+      flushStderrLine,
       startedAt: Date.now(),
     };
     this.monitors.set(alias.name, mon);
@@ -270,6 +281,9 @@ export class MonitorRuntime {
 
   private watchExit(mon: RunningMonitor): void {
     mon.handle.exited.then((status) => {
+      // Flush any trailing stderr line the child wrote without a newline so
+      // diagnostics aren't silently dropped on a no-EOL crash message.
+      mon.flushStderrLine();
       const code = status.exitCode;
       if (mon.stopped || this.stopped) return;
 

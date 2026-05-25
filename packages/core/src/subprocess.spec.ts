@@ -204,6 +204,20 @@ describe("spawnManaged", () => {
     expect(status.signal).toBeTruthy();
   });
 
+  it("killNow() bypasses grace and SIGKILLs immediately", async () => {
+    const r = spawnManaged("sleep", ["30"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const start = Date.now();
+    r.handle.killNow();
+    const status = await r.handle.exited;
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(status.signal).toBe("SIGKILL");
+  });
+
   it("kill() does not leak the SIGKILL timer into the event loop after exit", async () => {
     // Spawn a bun child that itself calls spawnManaged + kill + await exited,
     // then exits promptly. If the SIGKILL timer is not cleared, the child's

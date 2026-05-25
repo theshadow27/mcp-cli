@@ -354,7 +354,12 @@ export class AliasServer {
             if (!(e instanceof SyntaxError)) throw e;
           }
         }
-        throw new Error(result.stderr || `Alias executor exited with code ${result.exitCode}`);
+        const reason = result.timedOut
+          ? `timed out after ${timeoutMs}ms`
+          : result.signal
+            ? `killed by signal ${result.signal}`
+            : `exit code ${result.exitCode ?? "null"}`;
+        throw new Error(result.stderr || `Alias executor failed: ${reason}`);
       }
 
       const parsed = JSON.parse(result.stdout) as { result: unknown; error?: string };
