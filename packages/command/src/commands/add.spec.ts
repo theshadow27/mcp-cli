@@ -530,7 +530,7 @@ describe("cmdAddJson validation", () => {
 
 describe("parseRemoveArgs edge cases", () => {
   test("throws on unknown flag", () => {
-    expect(() => parseRemoveArgs(["--verbose", "my-server"])).toThrow("Unknown flag: --verbose");
+    expect(() => parseRemoveArgs(["--verbose", "my-server"])).toThrow("unknown flag: --verbose");
   });
 
   test("parses -s shorthand", () => {

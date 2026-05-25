@@ -21,6 +21,7 @@
 
 import type { IpcMethod, IpcMethodResult, MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 import { readStdin } from "../parse";
 
@@ -102,90 +103,106 @@ export function defaultSenderName(): string {
   return process.env.USER ?? "unknown";
 }
 
-export function parseMailArgs(args: string[]): MailArgs {
-  let subject: string | undefined;
-  let headersOnly = false;
-  let user: string | undefined;
-  let replyTo: number | undefined;
-  let suppressHeaders = false;
-  let wait = false;
-  let timeout = 180;
-  let forRecipient: string | undefined;
-  let recipient: string | undefined;
-  let from: string | undefined;
-  let error: string | undefined;
+const mailFlagSpecs = {
+  subject: { type: "string" as const, alias: "s" },
+  "headers-only": { type: "boolean" as const, alias: "H" },
+  user: { type: "string" as const, alias: "u" },
+  "reply-to": { type: "number" as const, alias: "r" },
+  "suppress-headers": { type: "boolean" as const, alias: "N" },
+  wait: { type: "boolean" as const },
+  timeout: { type: "number" as const },
+  for: { type: "string" as const },
+  from: { type: "string" as const },
+};
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--help" || arg === "-h") {
-      error = "HELP";
-      break;
-    }
-    if (arg === "-s") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next) {
-        error = "-s requires a subject";
-        break;
-      }
-      subject = next;
-    } else if (arg === "-H") {
-      headersOnly = true;
-    } else if (arg === "-u") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next) {
-        error = "-u requires a username";
-        break;
-      }
-      user = next;
-    } else if (arg === "-r") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next || Number.isNaN(Number(next))) {
-        error = "-r requires a message number";
-        break;
-      }
-      replyTo = Number(next);
-    } else if (arg === "-N") {
-      suppressHeaders = true;
-    } else if (arg === "--wait") {
-      wait = true;
-    } else if (arg.startsWith("--timeout=")) {
-      const val = Number(arg.slice("--timeout=".length));
-      if (Number.isNaN(val) || val <= 0) {
-        error = "--timeout requires a positive number";
-        break;
-      }
-      timeout = val;
-    } else if (arg === "--timeout") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next || Number.isNaN(Number(next)) || Number(next) <= 0) {
-        error = "--timeout requires a positive number";
-        break;
-      }
-      timeout = Number(next);
-    } else if (arg.startsWith("--for=")) {
-      forRecipient = arg.slice("--for=".length);
-    } else if (arg === "--for") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next) {
-        error = "--for requires a recipient name";
-        break;
-      }
-      forRecipient = next;
-    } else if (arg === "--from") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next) {
-        error = "--from requires a sender name";
-        break;
-      }
-      from = next;
-    } else if (arg.startsWith("--from=")) {
-      from = arg.slice("--from=".length);
-    } else if (!arg.startsWith("-")) {
-      recipient = arg;
-    }
+/** Map generic parseFlags error messages to the domain-specific ones tests expect. */
+function mapFlagError(err: string): string {
+  if (err.includes("-s") && err.includes("requires")) return "-s requires a subject";
+  if (err.includes("-u") && err.includes("requires")) return "-u requires a username";
+  if (err.includes("-r") && err.includes("requires")) return "-r requires a message number";
+  if (err.includes("--reply-to") && err.includes("requires")) return "-r requires a message number";
+  if (err.includes("--timeout") && err.includes("requires")) return "--timeout requires a positive number";
+  if (err.includes("--for") && err.includes("requires")) return "--for requires a recipient name";
+  if (err.includes("--from") && err.includes("requires")) return "--from requires a sender name";
+  return err;
+}
+
+export function parseMailArgs(args: string[]): MailArgs {
+  const { flags, positionals, errors, help } = parseFlags(args, mailFlagSpecs);
+
+  if (help) {
+    return {
+      subject: undefined,
+      headersOnly: false,
+      user: undefined,
+      replyTo: undefined,
+      suppressHeaders: false,
+      wait: false,
+      timeout: 180,
+      forRecipient: undefined,
+      recipient: undefined,
+      from: undefined,
+      error: "HELP",
+    };
   }
 
-  return { subject, headersOnly, user, replyTo, suppressHeaders, wait, timeout, forRecipient, recipient, from, error };
+  if (errors.length > 0) {
+    return {
+      subject: undefined,
+      headersOnly: false,
+      user: undefined,
+      replyTo: undefined,
+      suppressHeaders: false,
+      wait: false,
+      timeout: 180,
+      forRecipient: undefined,
+      recipient: undefined,
+      from: undefined,
+      error: mapFlagError(errors[0]),
+    };
+  }
+
+  const subject = flags.subject as string | undefined;
+  const headersOnly = (flags["headers-only"] as boolean | undefined) ?? false;
+  const user = flags.user as string | undefined;
+  const replyTo = flags["reply-to"] as number | undefined;
+  const suppressHeaders = (flags["suppress-headers"] as boolean | undefined) ?? false;
+  const wait = (flags.wait as boolean | undefined) ?? false;
+  const timeout = (flags.timeout as number | undefined) ?? 180;
+  const forRecipient = flags.for as string | undefined;
+  const from = flags.from as string | undefined;
+  const recipient = positionals[0] as string | undefined;
+
+  // Post-validation: timeout must be positive
+  if (flags.timeout !== undefined && timeout <= 0) {
+    return {
+      subject: undefined,
+      headersOnly: false,
+      user: undefined,
+      replyTo: undefined,
+      suppressHeaders: false,
+      wait: false,
+      timeout: 180,
+      forRecipient: undefined,
+      recipient: undefined,
+      from: undefined,
+      error: "--timeout requires a positive number",
+    };
+  }
+
+  return {
+    subject,
+    headersOnly,
+    user,
+    replyTo,
+    suppressHeaders,
+    wait,
+    timeout,
+    forRecipient,
+    recipient,
+    from,
+    error: undefined,
+  };
 }
 
 export async function cmdMail(args: string[], deps?: Partial<MailDeps>): Promise<void> {

@@ -17,6 +17,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { McpConfigFile, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
 import { PROJECT_MCP_FILENAME, findFileUpward, options, spawnCapture } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 import { parseScope } from "../parse";
 import {
@@ -225,32 +226,32 @@ export async function importFromKeychain(
 
 export async function cmdImport(args: string[]): Promise<void> {
   // Parse flags
-  let scope: ConfigScope | undefined;
-  let claude = false;
-  let all = false;
-  let fromKeychain = false;
-  const positional: string[] = [];
+  const {
+    flags,
+    positionals: positional,
+    errors,
+    help,
+  } = parseFlags(args, {
+    scope: { type: "string", alias: "s" },
+    claude: { type: "boolean", alias: "c" },
+    all: { type: "boolean" },
+    "from-keychain": { type: "boolean" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--scope" || arg === "-s") {
-      if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (arg === "--claude" || arg === "-c") {
-      claude = true;
-    } else if (arg === "--all") {
-      all = true;
-    } else if (arg === "--from-keychain") {
-      fromKeychain = true;
-    } else if (arg === "--help" || arg === "-h") {
-      printImportUsage();
-      return;
-    } else if (arg.startsWith("-")) {
-      throw new Error(`Unknown flag: ${arg}`);
-    } else {
-      positional.push(arg);
-    }
+  if (help) {
+    printImportUsage();
+    return;
   }
+  if (errors.length > 0) {
+    throw new Error(errors[0]);
+  }
+
+  const scope: ConfigScope | undefined = flags.scope
+    ? parseScope(flags.scope as string, CONFIG_SCOPES_NO_LOCAL)
+    : undefined;
+  const claude = flags.claude === true;
+  const all = flags.all === true;
+  const fromKeychain = flags["from-keychain"] === true;
 
   if (fromKeychain) {
     await importFromKeychain(scope ?? "user");
@@ -389,15 +390,12 @@ export async function cmdAddFromClaudeDesktop(
   args: string[],
   configPath = options.CLAUDE_DESKTOP_CONFIG_PATH,
 ): Promise<void> {
-  let scope: ConfigScope = "user";
+  const { flags, errors, help } = parseFlags(args, {
+    scope: { type: "string", alias: "s" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--scope" || arg === "-s") {
-      if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (arg === "--help" || arg === "-h") {
-      console.log(`mcx add-from-claude-desktop — import servers from Claude Desktop
+  if (help) {
+    console.log(`mcx add-from-claude-desktop — import servers from Claude Desktop
 
 Usage:
   mcx add-from-claude-desktop              Import all servers from Claude Desktop config
@@ -408,11 +406,13 @@ Options:
   -s                      Shorthand for --scope
 
 Reads: ~/Library/Application Support/Claude/claude_desktop_config.json`);
-      return;
-    } else if (arg.startsWith("-")) {
-      throw new Error(`Unknown flag: ${arg}`);
-    }
+    return;
   }
+  if (errors.length > 0) {
+    throw new Error(errors[0]);
+  }
+
+  const scope: ConfigScope = flags.scope ? parseScope(flags.scope as string, CONFIG_SCOPES_NO_LOCAL) : "user";
 
   if (!existsSync(configPath)) {
     throw new Error(`Claude Desktop config not found: ${configPath}`);

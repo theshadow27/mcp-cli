@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, openLogStream, options } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 
 export interface LogsArgs {
@@ -50,31 +51,19 @@ const defaultDeps: LogsDeps = {
 };
 
 export function parseLogsArgs(args: string[]): LogsArgs {
-  let server: string | undefined;
-  let daemon = false;
-  let follow = false;
-  let lines = 50;
-  let error: string | undefined;
+  const { flags, positionals, errors } = parseFlags(args, {
+    daemon: { type: "boolean" },
+    follow: { type: "boolean", alias: "f" },
+    lines: { type: "number", alias: "n" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--daemon") {
-      daemon = true;
-    } else if (arg === "-f" || arg === "--follow") {
-      follow = true;
-    } else if (arg === "--lines" || arg === "-n") {
-      const next = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!next || Number.isNaN(Number(next))) {
-        error = "--lines requires a number";
-        break;
-      }
-      lines = Number(next);
-    } else if (!arg.startsWith("-")) {
-      server = arg;
-    }
-  }
-
-  return { server, daemon, follow, lines, error };
+  return {
+    server: positionals[0],
+    daemon: (flags.daemon as boolean) ?? false,
+    follow: (flags.follow as boolean) ?? false,
+    lines: (flags.lines as number) ?? 50,
+    error: errors.length > 0 ? errors[0] : undefined,
+  };
 }
 
 export async function cmdLogs(args: string[], deps?: Partial<LogsDeps>): Promise<void> {

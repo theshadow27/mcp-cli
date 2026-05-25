@@ -9,6 +9,7 @@
 import type { IpcMethod, IpcMethodResult, MonitorEvent, PrThreadSnapshot } from "@mcp-cli/core";
 import { COPILOT_USERS, DEFAULT_TIMEOUT_MS, findGitRoot, openEventStream, spawnCaptureSync } from "@mcp-cli/core";
 import { ipcCall as defaultIpcCall } from "../daemon-lifecycle";
+import { parseFlags } from "../flags";
 import { printError as defaultPrintError } from "../output";
 
 // ── Deps ──
@@ -54,48 +55,44 @@ export interface PrMergeArgs {
 }
 
 export function parsePrMergeArgs(args: string[]): PrMergeArgs {
-  let prNumber: string | undefined;
-  let squash = false;
-  let rebase = false;
-  let mergeCommit = false;
-  let auto = false;
-  let wait = false;
-  let timeout = DEFAULT_TIMEOUT_MS;
-  let error: string | undefined;
+  const { flags, positionals, errors } = parseFlags(args, {
+    squash: { type: "boolean" },
+    rebase: { type: "boolean" },
+    merge: { type: "boolean" },
+    auto: { type: "boolean" },
+    wait: { type: "boolean" },
+    timeout: { type: "number", alias: "t" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--squash") {
-      squash = true;
-    } else if (arg === "--rebase") {
-      rebase = true;
-    } else if (arg === "--merge") {
-      mergeCommit = true;
-    } else if (arg === "--auto") {
-      auto = true;
-    } else if (arg === "--wait") {
-      wait = true;
-    } else if (arg === "--timeout" || arg === "-t") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--timeout requires a value in ms";
-      } else {
-        timeout = Number(val);
-        if (Number.isNaN(timeout)) error = "--timeout must be a number";
-      }
-    } else if (!arg.startsWith("-")) {
-      prNumber = arg;
+  let error: string | undefined;
+  if (errors.length > 0) {
+    // Map parseFlags error messages to match original format
+    const raw = errors[0];
+    if (raw.includes("requires a value")) {
+      error = "--timeout requires a value in ms";
+    } else if (raw.includes("requires a numeric value")) {
+      error = "--timeout must be a number";
+    } else {
+      error = raw;
     }
   }
+
+  const prNumber = positionals[0] as string | undefined;
+  const squash = (flags.squash as boolean | undefined) ?? false;
+  const rebase = (flags.rebase as boolean | undefined) ?? false;
+  const mergeCommit = (flags.merge as boolean | undefined) ?? false;
+  const auto = (flags.auto as boolean | undefined) ?? false;
+  const wait = (flags.wait as boolean | undefined) ?? false;
+  const timeout = (flags.timeout as number | undefined) ?? DEFAULT_TIMEOUT_MS;
 
   if (!prNumber && !error) {
     error = "Usage: mcx pr merge <pr-number> [--squash|--rebase|--merge] [--auto] [--wait] [--timeout/-t <ms>]";
   }
 
   // Default to squash if no strategy given
-  if (!squash && !rebase && !mergeCommit) squash = true;
+  const finalSquash = !squash && !rebase && !mergeCommit ? true : squash;
 
-  return { prNumber, squash, rebase, mergeCommit, auto, wait, timeout, error };
+  return { prNumber, squash: finalSquash, rebase, mergeCommit, auto, wait, timeout, error };
 }
 
 export interface PrCommentsArgs {
@@ -186,31 +183,35 @@ export interface PrWaitArgs {
 }
 
 export function parsePrWaitArgs(args: string[]): PrWaitArgs {
-  let prNumber: number | undefined;
-  let maxWaitMs = 600_000;
-  let error: string | undefined;
+  const { flags, positionals, errors } = parseFlags(args, {
+    "max-wait": { type: "number" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--max-wait") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) {
-        error = "--max-wait requires a value in seconds";
-      } else {
-        const secs = Number(val);
-        if (Number.isNaN(secs)) {
-          error = "--max-wait must be a number";
-        } else {
-          maxWaitMs = secs * 1000;
-        }
-      }
-    } else if (!arg.startsWith("-")) {
-      prNumber = Number(arg);
-      if (Number.isNaN(prNumber)) error = `Invalid PR number: ${arg}`;
+  let error: string | undefined;
+  if (errors.length > 0) {
+    const raw = errors[0];
+    if (raw.includes("requires a value")) {
+      error = "--max-wait requires a value in seconds";
+    } else if (raw.includes("requires a numeric value")) {
+      error = "--max-wait must be a number";
+    } else if (raw.startsWith("unknown flag:")) {
+      error = `Unknown flag: ${raw.slice("unknown flag: ".length)}`;
     } else {
-      error = `Unknown flag: ${arg}`;
+      error = raw;
     }
   }
+
+  let prNumber: number | undefined;
+  if (positionals.length > 0 && !error) {
+    prNumber = Number(positionals[0]);
+    if (Number.isNaN(prNumber)) {
+      error = `Invalid PR number: ${positionals[0]}`;
+      prNumber = undefined;
+    }
+  }
+
+  const maxWaitSecs = flags["max-wait"] as number | undefined;
+  const maxWaitMs = maxWaitSecs !== undefined ? maxWaitSecs * 1000 : 600_000;
 
   if (prNumber === undefined && !error) {
     error = "Usage: mcx pr wait-for-copilot <pr-number> [--max-wait <seconds>]";

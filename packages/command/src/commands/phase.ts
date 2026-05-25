@@ -76,6 +76,7 @@ import {
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
 import type { ExecFn, ExecResult } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 
 export interface PhaseInstallDeps {
@@ -297,50 +298,32 @@ export interface PhaseRunDeps {
 }
 
 export function parsePhaseRunArgs(args: string[]): PhaseRunOptions {
-  let target: string | null = null;
-  let from: string | null = null;
-  let workItemId: string | null = null;
-  let forceSeen = false;
-  let forceMessage: string | null = null;
+  const { flags, positionals, errors } = parseFlags(args, {
+    from: { type: "string" },
+    "work-item": { type: "string" },
+    force: { type: "string" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--from") {
-      from = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (from === null) throw new Error("--from requires a phase name");
-    } else if (a.startsWith("--from=")) {
-      from = a.slice("--from=".length);
-    } else if (a === "--work-item") {
-      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (workItemId === null) throw new Error("--work-item requires an id");
-    } else if (a.startsWith("--work-item=")) {
-      workItemId = a.slice("--work-item=".length);
-    } else if (a === "--force") {
-      forceSeen = true;
-      const next = args[i + 1]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (next !== undefined && !next.startsWith("--")) {
-        forceMessage = next;
-        i++;
-      }
-    } else if (a.startsWith("--force=")) {
-      forceSeen = true;
-      forceMessage = a.slice("--force=".length);
-    } else if (a.startsWith("-")) {
-      throw new Error(`unknown flag: ${a}`);
-    } else if (target === null) {
-      target = a;
-    } else {
-      throw new Error(`unexpected positional argument: ${a}`);
-    }
-  }
+  if (errors.length > 0) throw new Error(errors[0]);
+  if (positionals.length > 1) throw new Error(`unexpected positional argument: ${positionals[1]}`);
 
+  const target = positionals[0] ?? null;
   if (target === null) {
     throw new Error("Usage: mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]");
   }
-  if (forceSeen && (forceMessage === null || forceMessage.trim() === "")) {
+
+  const from = (flags.from as string | undefined) ?? null;
+  if (from !== null && from === "") throw new Error("--from requires a phase name");
+
+  const workItemId = (flags["work-item"] as string | undefined) ?? null;
+  if (workItemId !== null && workItemId === "") throw new Error("--work-item requires an id");
+
+  const forceMessage = (flags.force as string | undefined) ?? null;
+  if (forceMessage !== null && forceMessage.trim() === "") {
     throw new Error("--force requires a non-empty justification message");
   }
-  return { target, from, workItemId, forceMessage: forceSeen ? (forceMessage as string) : null };
+
+  return { target, from, workItemId, forceMessage };
 }
 
 export interface PhaseLogOptions {
@@ -350,26 +333,27 @@ export interface PhaseLogOptions {
 }
 
 export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
-  let workItemId: string | null = null;
-  let forcedOnly = false;
-  let json = false;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--work-item") {
-      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!workItemId) throw new Error("--work-item requires a non-empty id");
-    } else if (a.startsWith("--work-item=")) {
-      workItemId = a.slice("--work-item=".length);
-      if (!workItemId) throw new Error("--work-item requires a non-empty id");
-    } else if (a === "--forced-only") {
-      forcedOnly = true;
-    } else if (a === "--json") {
-      json = true;
-    } else {
-      throw new Error(`unknown argument: ${a}`);
-    }
+  const { flags, positionals, errors } = parseFlags(args, {
+    "work-item": { type: "string" },
+    "forced-only": { type: "boolean" },
+    json: { type: "boolean" },
+  });
+
+  if (errors.length > 0) {
+    // Remap "unknown flag:" to "unknown argument:" for backward compatibility
+    const msg = errors[0].replace(/^unknown flag: /, "unknown argument: ");
+    throw new Error(msg);
   }
-  return { workItemId, forcedOnly, json };
+  if (positionals.length > 0) throw new Error(`unknown argument: ${positionals[0]}`);
+
+  const workItemId = (flags["work-item"] as string | undefined) ?? null;
+  if (workItemId !== null && workItemId === "") throw new Error("--work-item requires a non-empty id");
+
+  return {
+    workItemId,
+    forcedOnly: (flags["forced-only"] as boolean | undefined) ?? false,
+    json: (flags.json as boolean | undefined) ?? false,
+  };
 }
 
 /** Apply filters from options; return newest-first. */
@@ -925,41 +909,37 @@ export async function cmdPhase(
 }
 
 async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
-  const positional: string[] = [];
-  const flags = new Set<string>();
-  const extraArgs: Record<string, string> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--arg") {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const pair = argv[++i];
-      if (!pair) {
-        d.logError("--arg requires a key=val argument");
-        d.exit(1);
-      }
-      const eq = pair.indexOf("=");
-      if (eq === -1) {
-        d.logError(`--arg value must be in key=val form, got: ${pair}`);
-        d.exit(1);
-      }
-      const key = pair.slice(0, eq);
-      if (!key) {
-        d.logError(`--arg key must be non-empty in key=val form, got: ${pair}`);
-        d.exit(1);
-      }
-      extraArgs[key] = pair.slice(eq + 1);
-    } else if (a.startsWith("--")) {
-      flags.add(a);
-    } else {
-      positional.push(a);
-    }
+  const { flags, positionals, errors } = parseFlags(argv, {
+    arg: { type: "string", repeatable: true },
+    "dry-run": { type: "boolean" },
+  });
+
+  if (errors.length > 0) {
+    d.logError(errors[0]);
+    d.exit(1);
   }
-  const name = positional[0];
+
+  const extraArgs: Record<string, string> = {};
+  for (const pair of flags.arg as string[]) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) {
+      d.logError(`--arg value must be in key=val form, got: ${pair}`);
+      d.exit(1);
+    }
+    const key = pair.slice(0, eq);
+    if (!key) {
+      d.logError(`--arg key must be non-empty in key=val form, got: ${pair}`);
+      d.exit(1);
+    }
+    extraArgs[key] = pair.slice(eq + 1);
+  }
+
+  const name = positionals[0];
   if (!name) {
     d.logError("Usage: mcx phase run <name> --dry-run");
     d.exit(1);
   }
-  if (!flags.has("--dry-run")) {
+  if (!flags["dry-run"]) {
     d.logError("mcx phase run currently supports --dry-run only");
     d.exit(1);
   }
@@ -1089,39 +1069,46 @@ export interface PhaseExecuteArgs {
  * inputs: `--arg key=val` pairs and `--input <json>` for the handler input.
  */
 export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
-  const passthrough: string[] = [];
+  const { flags, positionals, errors } = parseFlags(argv, {
+    arg: { type: "string", repeatable: true },
+    input: { type: "string" },
+    from: { type: "string" },
+    "work-item": { type: "string" },
+    force: { type: "string" },
+  });
+
+  if (errors.length > 0) throw new Error(errors[0]);
+
   const cliArgs: Record<string, string> = {};
-  let inputJson: string | null = null;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--arg") {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const pair = argv[++i];
-      if (!pair) throw new Error("--arg requires a key=val argument");
-      const eq = pair.indexOf("=");
-      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
-      const key = pair.slice(0, eq);
-      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
-      cliArgs[key] = pair.slice(eq + 1);
-    } else if (a.startsWith("--arg=")) {
-      const pair = a.slice("--arg=".length);
-      const eq = pair.indexOf("=");
-      if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
-      const key = pair.slice(0, eq);
-      if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
-      cliArgs[key] = pair.slice(eq + 1);
-    } else if (a === "--input") {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      inputJson = argv[++i] ?? null;
-      if (inputJson === null) throw new Error("--input requires a JSON argument");
-    } else if (a.startsWith("--input=")) {
-      inputJson = a.slice("--input=".length);
-    } else {
-      passthrough.push(a);
-    }
+  for (const pair of flags.arg as string[]) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) throw new Error(`--arg value must be in key=val form, got: ${pair}`);
+    const key = pair.slice(0, eq);
+    if (!key) throw new Error(`--arg key must be non-empty in key=val form, got: ${pair}`);
+    cliArgs[key] = pair.slice(eq + 1);
   }
-  const opts = parsePhaseRunArgs(passthrough);
-  return { ...opts, args: cliArgs, inputJson };
+
+  const inputJson = (flags.input as string | undefined) ?? null;
+
+  // Build the transition options from shared flags
+  if (positionals.length > 1) throw new Error(`unexpected positional argument: ${positionals[1]}`);
+  const target = positionals[0] ?? null;
+  if (target === null) {
+    throw new Error("Usage: mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]");
+  }
+
+  const from = (flags.from as string | undefined) ?? null;
+  if (from !== null && from === "") throw new Error("--from requires a phase name");
+
+  const workItemId = (flags["work-item"] as string | undefined) ?? null;
+  if (workItemId !== null && workItemId === "") throw new Error("--work-item requires an id");
+
+  const forceMessage = (flags.force as string | undefined) ?? null;
+  if (forceMessage !== null && forceMessage.trim() === "") {
+    throw new Error("--force requires a non-empty justification message");
+  }
+
+  return { target, from, workItemId, forceMessage, args: cliArgs, inputJson };
 }
 
 function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
@@ -1490,20 +1477,20 @@ export async function executePhase(
 // ── phase advance ──────────────────────────────────────────────────────────
 
 export function parsePhaseAdvanceArgs(args: string[]): { workItemId: string } {
-  let workItemId: string | null = null;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === "--work-item") {
-      workItemId = args[++i] ?? null; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!workItemId) throw new Error("--work-item requires an id");
-    } else if (a.startsWith("--work-item=")) {
-      workItemId = a.slice("--work-item=".length);
-      if (!workItemId) throw new Error("--work-item requires an id");
-    } else {
-      throw new Error(`unknown flag: ${a}`);
-    }
+  const { flags, positionals, errors } = parseFlags(args, {
+    "work-item": { type: "string" },
+  });
+
+  if (errors.length > 0) {
+    // Remap generic "requires a value" to domain-specific message
+    const msg = errors[0].replace("--work-item requires a value", "--work-item requires an id");
+    throw new Error(msg);
   }
+  if (positionals.length > 0) throw new Error(`unknown flag: ${positionals[0]}`);
+
+  const workItemId = (flags["work-item"] as string | undefined) ?? null;
   if (!workItemId) throw new Error("Usage: mcx phase advance --work-item <id>");
+
   return { workItemId };
 }
 

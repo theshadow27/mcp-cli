@@ -382,7 +382,7 @@ describe("cmdSprintStats", () => {
     mkdirSync(otherDir, { recursive: true });
     writeJsonl(otherDir, "sess.jsonl", [makeAssistantEntry({ sessionId: "o1", inputTokens: 777 })]);
 
-    const { stdout } = await captureOutput(() => cmdSprintStats(["--project", otherSlug], makeDeps(tmpHome)));
+    const { stdout } = await captureOutput(() => cmdSprintStats([`--project=${otherSlug}`], makeDeps(tmpHome)));
     const parsed = JSON.parse(stdout);
     expect(parsed.sessions).toBe(1);
     expect(parsed.totals.inputTokens).toBe(777);
@@ -468,14 +468,14 @@ describe("cmdSprintStats", () => {
   test("missing --sprint argument exits with error", async () => {
     const tmpHome = makeTmpDir();
     const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--sprint"], makeDeps(tmpHome)));
-    expect(stderr).toContain("--sprint requires a sprint number");
+    expect(stderr).toContain("--sprint requires a value");
     expect(exitCode).toBe(1);
   });
 
   test("missing --since argument exits with error", async () => {
     const tmpHome = makeTmpDir();
     const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--since"], makeDeps(tmpHome)));
-    expect(stderr).toContain("--since requires a tag or SHA");
+    expect(stderr).toContain("--since requires a value");
     expect(exitCode).toBe(1);
   });
 
@@ -491,7 +491,7 @@ describe("cmdSprintStats", () => {
   test("unknown flag exits with error", async () => {
     const tmpHome = makeTmpDir();
     const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--spint", "42"], makeDeps(tmpHome)));
-    expect(stderr).toContain("unknown flag '--spint'");
+    expect(stderr).toContain("unknown flag: --spint");
     expect(exitCode).toBe(1);
   });
 
@@ -555,7 +555,7 @@ describe("cmdSprintStats", () => {
   test("missing --project value exits with error", async () => {
     const tmpHome = makeTmpDir();
     const { stderr, exitCode } = await captureOutput(() => cmdSprintStats(["--project"], makeDeps(tmpHome)));
-    expect(stderr).toContain("--project requires a project slug");
+    expect(stderr).toContain("--project requires a value");
     expect(exitCode).toBe(1);
   });
 

@@ -19,43 +19,40 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { options, projectConfigPath } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 import { parseScope } from "../parse";
 import { CONFIG_SCOPES_NO_LOCAL, readConfigFile } from "./config-file";
 
 type ExportScope = "user" | "project";
 
 export async function cmdExport(args: string[]): Promise<void> {
-  let scope: ExportScope | undefined;
-  let all = false;
-  const serverFilter: string[] = [];
-  const positional: string[] = [];
+  const { flags, positionals, errors, help } = parseFlags(args, {
+    scope: { type: "string", alias: "s" },
+    server: { type: "string", repeatable: true },
+    all: { type: "boolean", alias: "a" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--scope" || arg === "-s") {
-      if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES_NO_LOCAL); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (arg === "--server") {
-      const val = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (!val) throw new Error("--server requires a name");
-      serverFilter.push(val);
-    } else if (arg === "--all" || arg === "-a") {
-      all = true;
-    } else if (arg === "--help" || arg === "-h") {
-      printExportUsage();
-      return;
-    } else if (arg.startsWith("-")) {
-      throw new Error(`Unknown flag: ${arg}`);
-    } else {
-      positional.push(arg);
-    }
+  if (help) {
+    printExportUsage();
+    return;
   }
+  if (errors.length > 0) {
+    throw new Error(errors[0]);
+  }
+
+  const scope = flags.scope ? parseScope(flags.scope as string, CONFIG_SCOPES_NO_LOCAL) : undefined;
+  const serverFilter = flags.server as string[];
+  // Pre-migration: explicit `if (!val)` rejected empty --server. parseFlags accepts "".
+  if (serverFilter.some((s) => s === "")) {
+    throw new Error("--server requires a name");
+  }
+  const all = flags.all === true;
 
   if (all && scope) {
     throw new Error("Cannot use --all with --scope");
   }
 
-  const outputFile = positional[0];
+  const outputFile = positionals[0];
 
   // Collect servers from the requested scope(s)
   const servers: Record<string, ServerConfig> = {};
