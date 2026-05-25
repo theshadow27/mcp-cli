@@ -2,6 +2,7 @@ import ts from "typescript";
 
 import type { AstHelper } from "./_engine/ast";
 import { createAstHelper } from "./_engine/ast";
+import type { FileMeta } from "./_engine/file-loader";
 import type { CheckRule, RuleContext } from "./_engine/rule";
 
 const MAIN_REL = "packages/command/src/main.ts";
@@ -144,7 +145,11 @@ function collectParsedFlags(ast: AstHelper): Map<string, { line: number; col: nu
   const result = new Map<string, { line: number; col: number }>();
 
   function addFlag(text: string, node: ts.Node) {
-    if (!text.startsWith("--")) return;
+    // Accept both long (`--foo`) and short (`-h`) flag literals so the two
+    // directions of the check are symmetric — the reverse direction iterates
+    // every KNOWN_FLAGS entry, and excluding short flags here would mean a
+    // KNOWN_FLAGS entry like `-h` could never be matched as "parsed".
+    if (!text.startsWith("-")) return;
     if (HELP_FLAGS.has(text)) return;
     if (result.has(text)) return;
     const pos = ast.positionOf(node);
@@ -219,7 +224,7 @@ function checkSubcommandsToDispatch(ctx: RuleContext): void {
   const entries = extractSubcommandsWithPositions(ctx.ast);
   if (!entries) return;
 
-  let mainMeta: import("./_engine/file-loader").FileMeta | undefined;
+  let mainMeta: FileMeta | undefined;
   for (const meta of ctx.files.values()) {
     if (meta.relPath === MAIN_REL) {
       mainMeta = meta;
@@ -251,6 +256,10 @@ function checkFlagKnownFlags(ctx: RuleContext): void {
   }
 
   for (const { name, line, col } of known.entries) {
+    // Skip help flags in the reverse direction too — they're handled centrally
+    // (not per-command parse) and would otherwise be unmatchable when listed
+    // in a per-command KNOWN_FLAGS for documentation/completion purposes.
+    if (HELP_FLAGS.has(name)) continue;
     if (!parsed.has(name)) {
       ctx.violated(line, col, `KNOWN_FLAGS entry "${name}" not parsed anywhere`);
     }

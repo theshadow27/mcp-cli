@@ -281,6 +281,42 @@ describe("cli-surface-registered: flag ↔ KNOWN_FLAGS", () => {
     expect(violations).toHaveLength(0);
   });
 
+  it("does not flag -h in KNOWN_FLAGS as unparsed (help-flag symmetry)", () => {
+    const file = makeFile(
+      "packages/command/src/commands/example.ts",
+      `const KNOWN_FLAGS = new Set(["--verbose", "-h"]);
+      if (args[i] === "--verbose") {}
+      if (args[i] === "-h") return;`,
+    );
+    const files = new Map([[file.path, file]]);
+    const violations = evaluateRule(rule, file, files);
+    expect(violations).toHaveLength(0);
+  });
+
+  it("does not flag --help in KNOWN_FLAGS as unparsed (help-flag symmetry)", () => {
+    const file = makeFile(
+      "packages/command/src/commands/example.ts",
+      `const KNOWN_FLAGS = new Set(["--verbose", "--help"]);
+      if (args[i] === "--verbose") {}`,
+    );
+    const files = new Map([[file.path, file]]);
+    const violations = evaluateRule(rule, file, files);
+    expect(violations).toHaveLength(0);
+  });
+
+  it("detects parsed short flags not in KNOWN_FLAGS", () => {
+    const file = makeFile(
+      "packages/command/src/commands/example.ts",
+      `const KNOWN_FLAGS = new Set(["--verbose"]);
+      if (args[i] === "--verbose") {}
+      if (args[i] === "-q") {}`,
+    );
+    const files = new Map([[file.path, file]]);
+    const violations = evaluateRule(rule, file, files);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toBe('flag "-q" parsed but not in KNOWN_FLAGS');
+  });
+
   it("does not fire when file has no KNOWN_FLAGS", () => {
     const file = makeFile(
       "packages/command/src/commands/gc.ts",
