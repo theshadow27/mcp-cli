@@ -101,24 +101,28 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
   }));
 
   // --- kill with SIGTERM→SIGKILL escalation ---
+  // Clear the SIGKILL timer on exit so a SIGTERM-cooperator doesn't leak a
+  // graceMs-pending timer into the event loop AND doesn't fire SIGKILL at a
+  // recycled PID. exitedPromise.finally is a microtask, so even if exited
+  // already resolved before kill() set the timer, the cleanup wins the race.
   let killed = false;
   const kill = (overrideGraceMs?: number): Promise<ManagedExitStatus> => {
-    if (!killed) {
-      killed = true;
+    if (killed) return exitedPromise;
+    killed = true;
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // already dead
+    }
+    const g = overrideGraceMs ?? graceMs;
+    const timer = setTimeout(() => {
       try {
-        proc.kill("SIGTERM");
+        proc.kill("SIGKILL");
       } catch {
         // already dead
       }
-      const g = overrideGraceMs ?? graceMs;
-      setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // already dead
-        }
-      }, g);
-    }
+    }, g);
+    exitedPromise.finally(() => clearTimeout(timer));
     return exitedPromise;
   };
 

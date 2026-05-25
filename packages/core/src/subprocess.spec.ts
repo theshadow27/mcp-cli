@@ -204,6 +204,27 @@ describe("spawnManaged", () => {
     expect(status.signal).toBeTruthy();
   });
 
+  it("kill() does not leak the SIGKILL timer into the event loop after exit", async () => {
+    // Spawn a bun child that itself calls spawnManaged + kill + await exited,
+    // then exits promptly. If the SIGKILL timer is not cleared, the child's
+    // event loop is held alive for graceMs (5s default) — observable as wall
+    // time of the parent's await.
+    const child = process.execPath;
+    const script = `
+      import { spawnManaged } from "${import.meta.dir.replace(/\\\\/g, "/")}/subprocess";
+      const r = spawnManaged("sleep", ["30"]);
+      if (!r.ok) process.exit(2);
+      // SIGKILL grace 10s — if the timer leaks, this process hangs ~10s after exit.
+      await r.handle.kill(10_000);
+    `;
+    const start = Date.now();
+    const result = await spawnCapture(child, ["-e", script], { timeoutMs: 8_000 });
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
   it("reports non-zero exit code honestly", async () => {
     const r = spawnManaged("false", []);
     expect(r.ok).toBe(true);
