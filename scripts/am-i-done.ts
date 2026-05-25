@@ -98,7 +98,7 @@ const RULES: Step = {
     "see the rule-by-rule guidance above",
     "run `bun scripts/doing-it-wrong.ts --rule <id>` to iterate on one rule",
     "permanent exception: // dotw-ignore <rule-id>: <reason>",
-    "temporary exception: // dotw-todo <rule-id>: <desc> — fix in #NNN",
+    "temporary exception: // dotw-todo <rule-id>: <desc> — fix in #1234 (a real issue number)",
   ],
 };
 

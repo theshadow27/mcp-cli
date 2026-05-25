@@ -75,9 +75,9 @@ export async function runRules(
       for (const v of raw) {
         const s = checkSuppression(file.content, v.line, rule.id);
         if (s.suppressed) {
-          // A malformed dotw-todo (missing #NNN) is itself the problem — surface
-          // it once as a malformed-suppression note, not as the underlying rule.
-          // Phase 4's meta-rule will promote this to a hard failure.
+          // A malformed dotw-todo (missing #NNN) is also caught by the
+          // dotw-todo-needs-issue meta-rule as a standalone violation.
+          // This log is supplementary — the meta-rule is the hard gate.
           if (s.todoWithoutIssue) malformedTodos.push({ file: file.relPath, line: v.line, ruleId: rule.id });
           continue;
         }
@@ -95,8 +95,8 @@ function reportMalformedTodos(malformedTodos: MalformedTodo[], logger: Pick<Cons
     `\n⚠ ${malformedTodos.length} malformed dotw-todo comment${malformedTodos.length === 1 ? "" : "s"} (missing #<issue>):`,
   );
   for (const t of malformedTodos) logger.warn(`  ${t.file}:${t.line}  (rule: ${t.ruleId})`);
-  logger.warn("  expected: // dotw-todo <rule-id>: <description> — fix in #NNN");
-  logger.warn("  these currently suppress the underlying violation; Phase 4 promotes them to errors");
+  logger.warn("  expected: // dotw-todo <rule-id>: <description> — fix in #1234 (a real issue number)");
+  logger.warn("  these are also flagged by the dotw-todo-needs-issue rule as violations");
 }
 
 /** Step adapter — lets am-i-done.ts run the rule engine in-process. */
