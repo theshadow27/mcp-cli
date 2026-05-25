@@ -27,6 +27,16 @@ const TIMER_FN_NAMES = new Set(["setTimeout", "setInterval"]);
 const TIMEOUT_OPT_KEYS = new Set(["timeout", "timeoutMs"]);
 
 /**
+ * Resolve the real numeric value of a `ts.NumericLiteral` text. Strips
+ * numeric separators (`1_000` → `1000`) and uses `Number()` so non-decimal
+ * forms (`0x1F4`, `0o755`, `0b111`) parse to their actual value — unlike
+ * `parseFloat`, which stops at the `x`/`o`/`b`/`_` and silently returns 0.
+ */
+function numericLiteralValue(text: string): number {
+  return Number(text.replace(/_/g, ""));
+}
+
+/**
  * Match a NumericLiteral, optionally wrapped in a unary `+`. Excludes `0`
  * (the next-tick form) and any non-literal expression — variables, member
  * accesses, arithmetic, and template literals all fall through as "named
@@ -39,8 +49,8 @@ function flaggedLiteralValue(node: ts.Expression | undefined): string | undefine
     inner = inner.operand;
   }
   if (!ts.isNumericLiteral(inner)) return undefined;
-  // `0` and `0.0` etc. — next-tick is always allowed.
-  if (Number.parseFloat(inner.text) === 0) return undefined;
+  // `0`, `0.0`, `0x0`, `0_000`, etc. — next-tick is always allowed.
+  if (numericLiteralValue(inner.text) === 0) return undefined;
   return inner.text;
 }
 

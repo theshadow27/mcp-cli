@@ -23,6 +23,13 @@ void ipc("listTools", {}, { timeoutMs: DEFAULT_TIMEOUT_MS });
 setTimeout(fn, 0);
 setTimeout(() => fn(), 0);
 
+// Non-decimal zero forms still evaluate to 0 — allowed (counterpart to the
+// flagged-fixture hex/oct/bin cases, where the real value is non-zero).
+setTimeout(fn, 0x0);
+setTimeout(fn, 0o0);
+setTimeout(fn, 0b0);
+setTimeout(fn, 0_000);
+
 // Bare numeric literals NOT in a timeout context — must not be matched.
 const port = 19275;
 const max = 100;
