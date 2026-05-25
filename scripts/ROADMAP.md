@@ -1,23 +1,25 @@
 # am-i-done / doing-it-wrong roadmap
 
-Status of this branch (`chore/am-i-done-mvp`) and the partitioned follow-up
-work. The MVP shipped here is intentionally small — a working step runner
-with an AI file-logger, a working rule engine with fixture-driven tests,
-and exactly one rule (`shell-injection`) migrated end-to-end as a proof
-the pattern works in mcp-cli's actual codebase shape.
+Status of the rule-engine migration. Phase 1 (scaffolding), Phase 2 (rule
+migrations), Phase 3 (pre-commit consolidation), and Phase 4 (meta-rule
+for unreferenced suppressions) are all DONE. Phase 5 (context-aware
+tiering) remains untriggered.
 
-Everything after Phase 1 is an independent PR. Each phase has a single
-purpose, a clear "done when" criterion, and no dependency on phases
-beyond its predecessor.
+The current shape of the gate: `bun run am-i-done --pre-commit` runs
+`typecheck → lint → doing-it-wrong (full rule sweep)`; the comprehensive
+form adds the parallel/control test split and the coverage ratchet. No
+per-architecture standalone `check-*.ts` scripts remain — every
+invariant lives under `scripts/rules/*.rule.ts` and is exercised by the
+single unified sweep.
 
 ---
 
-## Phase 1 (this branch) — scaffolding
+## Phase 1 — scaffolding ✅ DONE
 
 **Goal.** Make it possible to *write* a rule with fixtures and *run* it
-end-to-end via `bun run doing-it-wrong`. Make it possible to invoke the
-full check suite via `bun run am-i-done`, with the AI file-logger
-preserving orchestrator context budget on failure.
+end-to-end via `bun run doing-it-wrong`. Make `bun run am-i-done` the
+unified oracle, with the AI file-logger preserving orchestrator context
+budget on failure.
 
 **What landed:**
 
@@ -25,192 +27,120 @@ preserving orchestrator context budget on failure.
   loggers, `StepRunner` with silent-first / verbose-on-failure /
   `--from N` / `--only X` semantics.
 - `scripts/rules/_engine/` — `Rule` type (pattern / check kinds), file
-  loader (excludes fixtures, .d.ts, node_modules), JSDoc-frontmatter
-  fixture loader with line-preserving comment blanking, suppression
-  parser (`// dotw-ignore` / `// dotw-todo #NNN`), grouped violation
-  reporter.
+  loader (excludes fixtures, .d.ts, node_modules, `*.rule.ts`),
+  JSDoc-frontmatter fixture loader with line-preserving comment blanking,
+  suppression parser (`// dotw-ignore` / `// dotw-todo #NNN`), grouped
+  violation reporter, lazy AST helper (`ctx.ast`) shared across `check`
+  rules.
 - `scripts/am-i-done.ts` — unified oracle, two step lists (pre-commit
   subset, comprehensive). AI logger active when `CLAUDECODE` / `AGENT` /
   `MCP_CLI_AI` is set.
 - `scripts/doing-it-wrong.ts` — rule entry point, also exported as a
   `ScriptFunction` so am-i-done runs it in-process.
 - `scripts/rules/shell-injection.rule.ts` + 3 fixtures
-  (interpolated / safe-array / suppressed). Replaces the deleted
+  (interpolated / safe-array / suppressed). Replaced the deleted
   `scripts/check-shell-injection.ts` and its spec.
-- `scripts/tsconfig.json` — strict typecheck (`noUncheckedIndexedAccess`)
-  over `_runner/`, `rules/`, and the two entry scripts.
-- 18 tests across `_runner/runner.spec.ts`, `rules/_engine/suppression.spec.ts`,
-  and the autoloading `rules/fixtures.spec.ts`.
-
-**Not done in this branch (deliberate):**
-
-- Migrating the other five `check-*.ts` scripts — each is its own PR
-  (see Phase 2). Behavior is unchanged: every existing pre-commit step
-  still runs, the rule engine is just a new step alongside them.
-- Wiring `am-i-done --pre-commit` into the pre-commit hook. The hook
-  still invokes each `bun run lint:*` / `check:*` script individually.
-  Swapping it is a one-liner once Phase 2 is far enough along that
-  am-i-done is the equivalent or superset.
 
 ---
 
-## Phase 2 — rule migrations (one PR per rule)
+## Phase 2 — rule migrations ✅ DONE
 
-Each migration is the same shape: take the standalone `check-*.ts`, turn
-it into a `<id>.rule.ts` declaration plus fixtures, delete the script
-and its spec, drop the corresponding `bun run lint:*` line from the
-pre-commit hook (replaced by the rule engine running it).
+Every standalone `check-*.ts` script slated for migration has been
+ported to a `<id>.rule.ts` declaration plus fixtures. The scripts and
+their specs are deleted; the rule sweep now covers them.
 
-Order by complexity — start with the simplest so the team confirms the
-pattern before tackling AST-flavoured rules.
+### 2a. test-timeouts → rule ✅
 
-### 2a. test-timeouts → rule
+- `scripts/rules/test-timeouts.rule.ts` (`check` kind, `appliesToTests: true`).
+- Paren-depth tracking for multi-line `setTimeout(...)` and `Bun.sleep(...)`.
+- `setTimeout` delay is always the 2nd positional argument (not the last),
+  so `setTimeout(fn, 50, extra)` is flagged.
+- Fixtures: `flagged`, `clean`, `multi-line`, `non-test-file`.
+- Standalone parity: scoped to `.spec.ts(x)` only (matching the original
+  `**/*.spec.ts` glob); `.test.ts` files like `scripts/bun-segfault-repro/repro.test.ts`
+  remain unscanned by this rule.
+- Removed: `scripts/check-test-timeouts.ts` + `.spec.ts`.
 
-**Why.** Simplest single-line regex. Currently 250 lines of
-glob+regex+report boilerplate; should collapse to ~30.
+### 2b. args-bounds → rule ✅
 
-**Done when.**
-- `scripts/rules/test-timeouts.rule.ts` exists.
-- `scripts/rules/fixtures/test-timeouts__*.fixture.ts` covers: fixed
-  setTimeout-with-numeric-delay (positive), `await pollUntil()` (negative,
-  expect 0), `Bun.sleep` exception (negative).
-- `scripts/check-test-timeouts.ts` + `.spec.ts` deleted.
-- `lint:timeouts` removed from `package.json` and pre-commit hook.
+- `scripts/rules/args-bounds.rule.ts` (`check` kind).
+- All four originally-recognised safe patterns preserved: `args[++i] ??`
+  null-coalescing, truthy `args[i+1]` pre-check (6-line lookback,
+  multi-line `if` blocks too), explicit bounds comparison
+  (`i + 1 < args.length` and the algebraic `i < args.length - 1` /
+  reversed forms), post-check on the assigned variable
+  (`!val`, `val === undefined/null`, `val == null`) within 2 lines.
+- Suppression: engine boundary handles `// dotw-ignore args-bounds: <reason>`.
+  The legacy `// lint-allow-args-bounds: <reason>` form is inert — no
+  remaining call sites in the codebase, no codemod required.
+- Fixtures: `flagged`, `safe`, `suppressed`.
+- Removed: `scripts/check-args-bounds.ts` + `.spec.ts`.
 
-**Anticipated landmines.**
-- The current detector tracks parenthesis depth for multi-line callbacks.
-  A simple regex won't catch every form. Decide upfront: either ship as a
-  `pattern` rule and accept some false negatives (and add fixtures
-  covering both), or upgrade to a `check` rule that walks tokens.
+### 2c. session-teardown → rule ✅
 
-### 2b. args-bounds → rule
+- `scripts/rules/session-teardown.rule.ts` (`check` kind, scoped to
+  `packages/`).
+- Direct port of `ASYNC_METHOD_RE`, multi-line signature scanner (handles
+  access modifiers, `Promise<{ ... }>` return types, generic angle-bracket
+  depth), and `checkMethodViolation` (delete-after-await reporter).
+- Fixtures: `clean`, `flagged`, `multi-line-signature`.
+- Removed: `scripts/check-session-teardown.ts` + `.spec.ts`.
 
-**Why.** Already has a custom suppression syntax (`// lint-allow-args-bounds: <reason>`).
-Migrating consolidates that into the standard `// dotw-ignore args-bounds: <reason>` and
-gets one fewer dialect to learn.
+### 2d. phase-drift → rule ✅
 
-**Done when.**
-- Rule fires on `args[++i]` accesses without bounds check.
-- Fixtures cover all four currently-detected safe patterns (null
-  coalescing, truthy pre-check, explicit bounds, post-check on assigned
-  variable) plus the suppression form.
-- `scripts/check-args-bounds.ts` + `.spec.ts` deleted, `lint:args-bounds`
-  unregistered, **and** a one-time codemod renames existing
-  `// lint-allow-args-bounds: <reason>` comments to
-  `// dotw-ignore args-bounds: <reason>` (single sed pass; commit
-  separately).
-
-**Anticipated landmines.**
-- The "look at the next 2 lines for `!varName` / `=== undefined`"
-  heuristic is the kind of multi-line context that a pure regex can't
-  express. This wants a `check` rule with a small scanning helper, not
-  a `pattern` rule.
-- **Sprint guidance update.** After this lands, existing
-  `// lint-allow-args-bounds: <reason>` comments that the codemod
-  missed (e.g. inside string literals, in branches not yet rebased)
-  will silently fail to suppress. Implementer / repairer workers
-  trained on the old syntax will burn cycles. Add a one-liner to
-  `run.md`: "args-bounds suppression syntax is `// dotw-ignore
-  args-bounds: <reason>`; the old `// lint-allow-args-bounds` form is
-  inert."
-
-### 2c. session-teardown → rule
-
-**Why.** Already AST-shaped (matches async method signatures, tracks
-"first await"). Already has a passing spec — port the logic and reuse
-the test cases as fixtures.
-
-**Done when.**
-- `scripts/rules/session-teardown.rule.ts` is a `check` rule with the
-  current `ASYNC_METHOD_RE` + `SESSIONS_DELETE_RE` logic moved over.
-- Fixtures recreate the scenarios from the existing spec (delete before
-  await, delete after await, no delete at all).
-- `scripts/check-session-teardown.ts` + `.spec.ts` deleted; `lint:teardown`
-  unregistered.
-
-### 2d. phase-drift → rule
-
-**Why.** File-scoped (only `packages/command/src/commands/phase.ts`).
-A `check` rule with a fast-path `if (file.relPath !== ...) return;`
-keeps the cross-tree scan free and migrates the logic verbatim.
-
-**Done when.**
-- Rule fires if the `sub === "run"` block in phase.ts doesn't call
-  `assertNoDrift` / `detectDrift`.
-- Fixtures cover: drift-call present, drift-call missing,
-  run-block absent (which is itself a violation — the rule needs the
-  block to exist).
-- `scripts/check-phase-drift.ts` + `.spec.ts` deleted; `check:phase-drift`
-  unregistered.
+- `scripts/rules/phase-drift.rule.ts` (`check` kind, file-scoped via fast
+  early-return — only scans `packages/command/src/commands/phase.ts`).
+- Verifies the `sub === "run"` block calls `assertNoDrift` /
+  `detectDrift`; flags the block-missing and call-missing shapes.
+- Fixtures: `guard-present`, `guard-missing`, `no-run-block`.
+- Removed: `scripts/check-phase-drift.ts` + `.spec.ts`.
 
 ### Not migrating
 
-- **`check-coverage.ts`** — this isn't a per-file rule; it reads
-  coverage JSON and gates against thresholds. It stays a standalone
-  Step.
+- **`check-coverage.ts`** — not a per-file rule; reads coverage JSON
+  and gates against thresholds. Stays a standalone Step.
 - **`test-noise.ts`, `test-failures.ts`, `test-timings.ts`** — analysis
-  utilities, not invariants. No migration needed.
+  utilities, not invariants.
 - **`prepare-npm.ts`, `release.ts`, `build.ts`, etc.** — workflow
   scripts, not lints.
 
 ---
 
-## Phase 3 — pre-commit consolidation
+## Phase 3 — pre-commit consolidation ✅ DONE
 
-**Goal.** Once 2a–2d are merged, the pre-commit hook is enumerating
-half-empty: most of its steps are gone, replaced by a single
-`bun run doing-it-wrong`. At that point, swap the per-step shell
-chain in `.git-hooks/pre-commit` for a single
-`bun run am-i-done --pre-commit`.
+`.git-hooks/pre-commit` now invokes `bun run am-i-done --pre-commit` as
+its sole static gate (in addition to the privacy-check and
+tier-classification bash prelude). The pre-commit step list in
+`scripts/am-i-done.ts` covers every static check the hook previously ran
+inline. Pre-push and CI use the comprehensive `am-i-done` step list via
+the same entry point — local and CI share one static definition of done
+(#2344).
 
-**Done when.**
-- `.git-hooks/pre-commit` invokes `bun run am-i-done --pre-commit` and
-  nothing else (other than the privacy-check and tier-classification
-  bash prelude).
-- The pre-commit step list in `scripts/am-i-done.ts` includes all the
-  checks the hook previously ran.
-- Pre-push and CI also call `bun run am-i-done --pre-push`.
-
-**Why a separate PR.** Behavior change. The hook works today; cutting
-over invites surprise if any step list disagrees with what the hook
-ran. Best to land it when the lists are obviously equivalent.
-
-**Sprint guidance update.** This is the moment workers stop seeing
-stderr-with-100-lines on failure and start seeing a one-line
-"full logs: build/am-i-done-<ts>.txt" pointer. Repair workers that
-read only the orchestrator's truncated error will miss the actual
-failure. Update `run.md` (or wherever the repair playbook lives) to
-read the log file path out of the pre-commit failure and pass it to
-the repair worker. Also note: the file is deleted on success, so a
-later passing run won't leave a stale artifact.
+On failure in an AI context, only the path to
+`build/am-i-done-<timestamp>.txt` is surfaced — the captured output stays
+out of the orchestrator's context budget. The file is deleted on
+success.
 
 ---
 
-## Phase 4 — meta-rule for unreferenced suppressions
+## Phase 4 — meta-rule for unreferenced suppressions ✅ DONE
 
-**Goal.** Enforce the team norm "every `dotw-todo` has an issue
-number" by failing the build when one doesn't. The suppression parser
-already returns `todoWithoutIssue: true` for these; the meta-rule
-surfaces it as a violation in its own right.
-
-**Done when.**
-- New rule `dotw-todo-needs-issue` registered. Scans every file for
-  `// dotw-todo <rule>: <text>` comments lacking `#<number>`.
-- Fixture covers a `dotw-todo` with `#1234` (no violation), without
-  (one violation).
-- Documented in `scripts/rules/README.md` (new — short, ~30 lines).
+`dotw-todo-needs-issue` is registered. Scans every file for
+`// dotw-todo <rule>: <text>` comments lacking `#<number>` and emits a
+violation on each. Documented in `scripts/rules/README.md` alongside the
+suppression syntax (see #2352).
 
 ---
 
 ## Phase 5 — context-aware tiering (only if a need emerges)
 
-One option is splitting steps by execution context (`ci` / `ai` / `sh`).
-mcp-cli currently doesn't differentiate — the AI logger handles
-audience, and pre-commit/pre-push already provide the speed tier.
+Splitting steps by execution context (`ci` / `ai` / `sh`) remains
+deferred. mcp-cli currently doesn't differentiate — the AI logger
+handles audience and pre-commit/pre-push provide the speed tier.
 
-**Trigger.** Land Phase 5 only when there is a concrete step we want
-to run in one audience but not another (e.g. "skip the docker-based
-e2e in interactive runs"). Don't add the machinery speculatively.
+**Trigger.** Land Phase 5 only when there is a concrete step we want to
+run in one audience but not another (e.g. "skip the docker-based e2e in
+interactive runs"). Don't add the machinery speculatively.
 
 ---
 
@@ -223,28 +153,28 @@ e2e in interactive runs"). Don't add the machinery speculatively.
   rule kind already says when a rule applies; audience-based filtering
   belongs at the Step level, not the Rule level.
 - **No 50-file batched `Promise.all` parallelism.** mcp-cli has ~200
-  source files; the current sequential scan completes in 100ms. Add
-  batching when a rule is slow enough to justify the complexity.
-- **No CLI subcommand for "generate a new rule scaffold".** Three rules
-  worth of repetition is the point at which a scaffolder pays for
-  itself. We have one. Revisit at four.
+  source files; the current sequential scan completes in <2s. Add
+  batching only when a rule is slow enough to justify the complexity.
+- **No CLI subcommand for "generate a new rule scaffold".** With ~25
+  rules now in place, the existing files are the template — copy and
+  edit, no scaffolder required.
 
 ---
 
-## Open questions deferred to Phase 2 PRs
+## Resolved open questions
 
 1. **Suppression comment syntax — `// dotw-` or `// doing-it-wrong-`?**
-   This branch picked the short form to match the existing
-   `// lint-allow-args-bounds` brevity. The parser is a single file so
-   the choice can be revisited cheaply.
+   Settled on the short `// dotw-ignore` / `// dotw-todo` form. The
+   suppression parser is a single file so the choice can still be
+   revisited cheaply.
 
-2. ~~Should `check` rules get a shared TypeScript AST helper?~~ **Resolved
-   (#2267).** `scripts/rules/_engine/ast.ts` provides an `AstHelper`
-   interface accessible as `ctx.ast` in check rules (lazy, WeakMap-cached
-   per FileMeta). AST is now the preferred substrate for structural rules.
-   First consumer: `derive-union-from-const` (#2261). Planned consumers:
-   #2263, #2264, #2265, #2266.
+2. **Should `check` rules get a shared TypeScript AST helper?** Resolved
+   (#2267). `scripts/rules/_engine/ast.ts` provides an `AstHelper`
+   interface accessible as `ctx.ast` in check rules (lazy,
+   WeakMap-cached per FileMeta). AST is the preferred substrate for
+   structural rules.
 
 3. **Does the file-loader need workspace metadata (e.g. `pkg`)?**
-   Currently populated but unused. Leave it until a rule needs
-   cross-package logic, then validate the shape against real use.
+   Populated and used by rules that scope by package prefix
+   (e.g. `no-manual-arg-parsing`, `session-teardown`,
+   `cli-surface-registered`). Kept.

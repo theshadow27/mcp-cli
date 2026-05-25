@@ -53,10 +53,12 @@ source "$HOOK_DIR/classify.sh"
 classify_files <<< "$staged_files"
 
 # The static gate is a single command — `am-i-done --pre-commit` — which runs
-# typecheck, lint:check, args-bounds, timeouts, teardown, phase-drift, and the
-# FULL doing-it-wrong rule sweep (all rules, not just shell-injection). CI runs
-# the identical command, so local and CI share one static definition of done
-# (#2344). Source changes additionally run the test + coverage gate.
+# typecheck, lint:check, and the FULL doing-it-wrong rule sweep (every rule,
+# including args-bounds, test-timeouts, session-teardown, and phase-drift —
+# all migrated out of standalone check-*.ts scripts in Phase 2 of
+# scripts/ROADMAP.md). CI runs the identical command, so local and CI share
+# one static definition of done (#2344). Source changes additionally run the
+# test + coverage gate.
 #
 # am-i-done shells out to tsc/biome directly (no `bun install` step), so a
 # fresh checkout (or a lockfile change) would hit "command not found". Mirror
@@ -71,7 +73,7 @@ fi
 if $has_source; then
   echo "Running pre-commit checks (source changes detected)..."
 
-  echo "  am-i-done (static gate: typecheck, lint, rules, phase-drift)..."
+  echo "  am-i-done (static gate: typecheck, lint, rules)..."
   bun run am-i-done --pre-commit
 
   echo "  test + coverage..."
@@ -84,7 +86,7 @@ if $has_source; then
 elif $has_config; then
   echo "Running pre-commit checks (config-only changes, skipping tests)..."
 
-  echo "  am-i-done (static gate: typecheck, lint, rules, phase-drift)..."
+  echo "  am-i-done (static gate: typecheck, lint, rules)..."
   bun run am-i-done --pre-commit
 
   echo "Config checks passed (tests skipped)."

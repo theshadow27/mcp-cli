@@ -17,7 +17,10 @@
  *
  * Steps that are themselves standalone scripts (typecheck, lint, test,
  * coverage) run as shell commands. Rule checks run in-process via the
- * doing-it-wrong adapter — no second bun startup.
+ * doing-it-wrong adapter — no second bun startup. Per-architecture
+ * checks (args-bounds, phase-drift, session-teardown, test-timeouts)
+ * have been migrated into the rule engine and are covered by the
+ * doing-it-wrong sweep (see scripts/rules/*.rule.ts).
  */
 
 import { resolve } from "node:path";
@@ -65,30 +68,6 @@ const LINT_CHECK: Step = {
   onFailure: ["run `bun run lint` locally to auto-fix"],
 };
 
-const ARGS_BOUNDS: Step = {
-  name: "args-bounds",
-  description: "post-increment arg-array access requires bounds check or suppression comment",
-  command: "bun scripts/check-args-bounds.ts",
-};
-
-const TIMEOUTS: Step = {
-  name: "test-timeouts",
-  description: "no setTimeout-based waits in *.spec.ts (use polling instead)",
-  command: "bun scripts/check-test-timeouts.ts",
-};
-
-const TEARDOWN: Step = {
-  name: "session-teardown",
-  description: "this.sessions.delete must precede the first await",
-  command: "bun scripts/check-session-teardown.ts",
-};
-
-const PHASE_DRIFT: Step = {
-  name: "phase-drift",
-  description: "phase.ts run-block must call assertNoDrift",
-  command: "bun scripts/check-phase-drift.ts",
-};
-
 const RULES: Step = {
   name: "doing-it-wrong",
   description: "architectural rule engine (scripts/rules/*.rule.ts)",
@@ -129,20 +108,8 @@ const COVERAGE: Step = {
 // Pre-push / default: comprehensive. Includes the full test suite and
 //   coverage ratchet. This is what CI also runs.
 
-const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, ARGS_BOUNDS, TIMEOUTS, TEARDOWN, PHASE_DRIFT, RULES];
-const COMPREHENSIVE: Step[] = [
-  INSTALL,
-  TYPECHECK,
-  LINT,
-  ARGS_BOUNDS,
-  TIMEOUTS,
-  TEARDOWN,
-  PHASE_DRIFT,
-  RULES,
-  TEST_PARALLEL,
-  TEST_CONTROL,
-  COVERAGE,
-];
+const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES];
+const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
 
 function selectSteps(): { steps: Step[]; label: string } {
   if (isPreCommit) return { steps: PRE_COMMIT, label: "pre-commit" };
@@ -211,8 +178,8 @@ step output is captured to build/am-i-done-<timestamp>.txt and only the
 path is surfaced on failure. This is intentional — it prevents typecheck
 or test failures from blowing out the orchestrator context budget.
 
-See scripts/ROADMAP.md for the migration plan to consolidate the
-standalone check-*.ts scripts into the doing-it-wrong rule engine.
+All per-architecture invariants run through the doing-it-wrong rule
+engine — see scripts/rules/*.rule.ts and scripts/ROADMAP.md.
 `;
 
 if (import.meta.main) {
