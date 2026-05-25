@@ -95,7 +95,7 @@ function reportMalformedTodos(malformedTodos: MalformedTodo[], logger: Pick<Cons
     `\n⚠ ${malformedTodos.length} malformed dotw-todo comment${malformedTodos.length === 1 ? "" : "s"} (missing #<issue>):`,
   );
   for (const t of malformedTodos) logger.warn(`  ${t.file}:${t.line}  (rule: ${t.ruleId})`);
-  logger.warn("  expected: // dotw-todo <rule-id>: <description> — fix in #NNN");
+  logger.warn("  expected: // dotw-todo <rule-id>: <description> — fix in #1234 (a real issue number)");
   logger.warn("  these are also flagged by the dotw-todo-needs-issue rule as violations");
 }
 
