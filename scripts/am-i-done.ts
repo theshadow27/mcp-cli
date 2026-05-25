@@ -126,6 +126,7 @@ const NON_DAEMON_TEST_PATHS = [
   "packages/opencode",
   "packages/permissions",
   "scripts/rules",
+  "scripts/_runner",
   "test/integration.spec.ts",
 ];
 
