@@ -8,6 +8,192 @@ export interface SpawnResult {
   truncated: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// spawnManaged — long-lived process helper
+// ---------------------------------------------------------------------------
+
+export interface ManagedSpawnOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  stdin?: "pipe" | "ignore";
+  stdout?: "pipe" | "inherit" | "ignore";
+  stderr?: "pipe" | "inherit" | "ignore";
+  /** Real-time tap on decoded stderr chunks (only when stderr is "pipe"). */
+  onStderr?: (chunk: string) => void;
+  /** Maximum bytes retained in the stderr ring buffer (default 64 KB). */
+  stderrMaxBytes?: number;
+  /** SIGTERM → SIGKILL grace window in ms (default 5 000). */
+  killGraceMs?: number;
+}
+
+export interface ManagedExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
+
+export interface ManagedHandle {
+  readonly pid: number;
+  readonly stdin: import("bun").FileSink | null;
+  readonly stdout: ReadableStream<Uint8Array> | null;
+  /** Resolves when the process exits. */
+  readonly exited: Promise<ManagedExitStatus>;
+  /** SIGTERM immediately; SIGKILL after graceMs (default from spawn opts). Returns exit status. */
+  kill(graceMs?: number): Promise<ManagedExitStatus>;
+  /**
+   * Force SIGKILL immediately, bypassing SIGTERM and the grace window.
+   * Use for callers that ran their own SIGTERM timeout and need an escape hatch.
+   */
+  killNow(): void;
+  /** Detach the child so the parent can exit without waiting. */
+  unref(): void;
+  /** Return up to stderrMaxBytes captured from the auto-drained stderr ring buffer. */
+  stderrTail(): string;
+}
+
+export type ManagedSpawnResult = { ok: true; handle: ManagedHandle } | { ok: false };
+
+const DEFAULT_STDERR_MAX_BYTES = 64 * 1024; // 64 KB
+
+export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOptions): ManagedSpawnResult {
+  const stderrMode = opts?.stderr ?? "pipe";
+  const stdoutMode = opts?.stdout ?? "pipe";
+  const stdinMode = opts?.stdin ?? "pipe";
+  const graceMs = opts?.killGraceMs ?? SIGKILL_GRACE_MS;
+  const maxStderr = opts?.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES;
+
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([cmd, ...args], {
+      cwd: opts?.cwd,
+      env: opts?.env,
+      stdin: stdinMode,
+      stdout: stdoutMode === "ignore" ? "ignore" : stdoutMode === "inherit" ? "inherit" : "pipe",
+      stderr: stderrMode === "ignore" ? "ignore" : stderrMode === "inherit" ? "inherit" : "pipe",
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  // --- stderr auto-drain ring buffer ---
+  // Bytes-accurate ring: store raw Uint8Array chunks and trim by total byte
+  // length (not UTF-16 code units). Decode lazily in stderrTail() so the
+  // truncation boundary never silently splits a multibyte char in storage —
+  // any partial codepoint at the front becomes U+FFFD on decode (honest).
+  const stderrChunks: Uint8Array[] = [];
+  let stderrTotalBytes = 0;
+  if (stderrMode === "pipe" && proc.stderr && typeof proc.stderr !== "number") {
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const onChunk = opts?.onStderr;
+    const append = (chunk: Uint8Array) => {
+      if (chunk.byteLength === 0) return;
+      stderrChunks.push(chunk);
+      stderrTotalBytes += chunk.byteLength;
+      while (stderrTotalBytes > maxStderr && stderrChunks.length > 0) {
+        const first = stderrChunks[0] as Uint8Array;
+        const excess = stderrTotalBytes - maxStderr;
+        if (excess >= first.byteLength) {
+          stderrChunks.shift();
+          stderrTotalBytes -= first.byteLength;
+        } else {
+          stderrChunks[0] = first.subarray(excess);
+          stderrTotalBytes -= excess;
+        }
+      }
+    };
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          if (text) onChunk?.(text);
+          append(value);
+        }
+        // Flush any partial codepoint the streaming decoder was buffering.
+        // Pass it through onStderr too (was previously dropped from the tap),
+        // and the raw bytes are already in `stderrChunks` from the last read.
+        const tail = decoder.decode();
+        if (tail) onChunk?.(tail);
+      } catch {
+        // stream closed — expected on kill
+      }
+    })();
+  }
+
+  // --- exited promise with honest reporting ---
+  const exitedPromise: Promise<ManagedExitStatus> = proc.exited.then(() => ({
+    exitCode: proc.exitCode ?? null,
+    signal: proc.signalCode ?? null,
+  }));
+
+  // --- kill with SIGTERM→SIGKILL escalation ---
+  // Clear the SIGKILL timer on exit so a SIGTERM-cooperator doesn't leak a
+  // graceMs-pending timer into the event loop AND doesn't fire SIGKILL at a
+  // recycled PID. exitedPromise.finally is a microtask, so even if exited
+  // already resolved before kill() set the timer, the cleanup wins the race.
+  let killed = false;
+  const kill = (overrideGraceMs?: number): Promise<ManagedExitStatus> => {
+    if (killed) return exitedPromise;
+    killed = true;
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // already dead
+    }
+    const g = overrideGraceMs ?? graceMs;
+    const timer = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+    }, g);
+    exitedPromise.finally(() => clearTimeout(timer));
+    return exitedPromise;
+  };
+
+  const stdinSink: import("bun").FileSink | null =
+    stdinMode === "pipe" && proc.stdin && typeof proc.stdin !== "number"
+      ? (proc.stdin as import("bun").FileSink)
+      : null;
+
+  const stdoutStream: ReadableStream<Uint8Array> | null =
+    stdoutMode === "pipe" && proc.stdout && typeof proc.stdout !== "number"
+      ? (proc.stdout as ReadableStream<Uint8Array>)
+      : null;
+
+  const killNow = (): void => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // already dead
+    }
+  };
+
+  const handle: ManagedHandle = {
+    pid: proc.pid,
+    stdin: stdinSink,
+    stdout: stdoutStream,
+    exited: exitedPromise,
+    kill,
+    killNow,
+    unref: () => proc.unref(),
+    stderrTail: () => {
+      if (stderrChunks.length === 0) return "";
+      const total = new Uint8Array(stderrTotalBytes);
+      let off = 0;
+      for (const c of stderrChunks) {
+        total.set(c, off);
+        off += c.byteLength;
+      }
+      return new TextDecoder("utf-8").decode(total);
+    },
+  };
+
+  return { ok: true, handle };
+}
+
 const SIGKILL_GRACE_MS = 5_000;
 const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024; // 50 MB
 

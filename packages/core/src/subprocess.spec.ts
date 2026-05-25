@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { spawnCapture, spawnCaptureSync } from "./subprocess";
+import { spawnCapture, spawnCaptureSync, spawnManaged } from "./subprocess";
+
+const POLL_INTERVAL_MS = 10;
 
 describe("spawnCapture", () => {
   it("captures stdout from a successful command", async () => {
@@ -117,5 +119,175 @@ describe("spawnCaptureSync", () => {
     expect(r.ok).toBe(true);
     expect(r.truncated).toBe(true);
     expect(r.stdout.length).toBeLessThanOrEqual(50);
+  });
+});
+
+describe("spawnManaged", () => {
+  it("spawns a process and reports exit status", async () => {
+    const r = spawnManaged("echo", ["managed"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.handle.pid).toBeGreaterThan(0);
+    const status = await r.handle.exited;
+    expect(status.exitCode).toBe(0);
+    expect(status.signal).toBeNull();
+  });
+
+  it("returns ok:false for missing binary without throwing", () => {
+    const r = spawnManaged("nonexistent-binary-xyzzy-42", []);
+    expect(r.ok).toBe(false);
+  });
+
+  it("captures stdout as a readable stream", async () => {
+    const r = spawnManaged("echo", ["stream-test"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.handle.stdout).not.toBeNull();
+    const text = await new Response(r.handle.stdout as ReadableStream).text();
+    expect(text.trim()).toBe("stream-test");
+    await r.handle.exited;
+  });
+
+  it("auto-drains stderr into ring buffer", async () => {
+    const r = spawnManaged("sh", ["-c", "echo err-output >&2"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    await r.handle.exited;
+    const deadline = Date.now() + 2000;
+    while (!r.handle.stderrTail().includes("err-output") && Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    expect(r.handle.stderrTail()).toContain("err-output");
+  });
+
+  it("calls onStderr callback with chunks", async () => {
+    const chunks: string[] = [];
+    const r = spawnManaged("sh", ["-c", "echo callback-test >&2"], {
+      onStderr: (chunk) => chunks.push(chunk),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    await r.handle.exited;
+    const deadline = Date.now() + 2000;
+    while (!chunks.join("").includes("callback-test") && Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    expect(chunks.join("")).toContain("callback-test");
+  });
+
+  it("truncates stderr ring buffer to stderrMaxBytes", async () => {
+    const r = spawnManaged("sh", ["-c", "dd if=/dev/zero bs=1024 count=128 2>/dev/null | tr '\\0' 'A' >&2"], {
+      stderrMaxBytes: 1024,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    await r.handle.exited;
+    const deadline = Date.now() + 2000;
+    while (r.handle.stderrTail().length === 0 && Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    expect(r.handle.stderrTail().length).toBeLessThanOrEqual(1024);
+  });
+
+  it("kill() sends SIGTERM then SIGKILL after grace period", async () => {
+    const r = spawnManaged("sleep", ["30"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const status = await r.handle.kill(100);
+    expect(status.exitCode).not.toBe(0);
+    expect(status.signal).toBeTruthy();
+  });
+
+  it("killNow() bypasses grace and SIGKILLs immediately", async () => {
+    const r = spawnManaged("sleep", ["30"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const start = Date.now();
+    r.handle.killNow();
+    const status = await r.handle.exited;
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(status.signal).toBe("SIGKILL");
+  });
+
+  it("kill() does not leak the SIGKILL timer into the event loop after exit", async () => {
+    // Spawn a bun child that itself calls spawnManaged + kill + await exited,
+    // then exits promptly. If the SIGKILL timer is not cleared, the child's
+    // event loop is held alive for graceMs (5s default) — observable as wall
+    // time of the parent's await.
+    const child = process.execPath;
+    const script = `
+      import { spawnManaged } from "${import.meta.dir.replace(/\\\\/g, "/")}/subprocess";
+      const r = spawnManaged("sleep", ["30"]);
+      if (!r.ok) process.exit(2);
+      // SIGKILL grace 10s — if the timer leaks, this process hangs ~10s after exit.
+      await r.handle.kill(10_000);
+    `;
+    const start = Date.now();
+    const result = await spawnCapture(child, ["-e", script], { timeoutMs: 8_000 });
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  it("reports non-zero exit code honestly", async () => {
+    const r = spawnManaged("false", []);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const status = await r.handle.exited;
+    expect(status.exitCode).not.toBe(0);
+  });
+
+  it("exposes stdin as a writable sink", async () => {
+    const r = spawnManaged("cat", []);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.handle.stdin).not.toBeNull();
+    const stdin = r.handle.stdin as import("bun").FileSink;
+    stdin.write("hello-stdin\n");
+    await stdin.end();
+
+    const text = await new Response(r.handle.stdout as ReadableStream).text();
+    expect(text.trim()).toBe("hello-stdin");
+    await r.handle.exited;
+  });
+
+  it("respects cwd option", async () => {
+    const r = spawnManaged("pwd", [], { cwd: "/tmp" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const text = await new Response(r.handle.stdout as ReadableStream).text();
+    expect(text.trim()).toMatch(/\/tmp/);
+    await r.handle.exited;
+  });
+
+  it("returns null stdin/stdout when configured as ignore", () => {
+    const r = spawnManaged("true", [], { stdin: "ignore", stdout: "ignore" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.handle.stdin).toBeNull();
+    expect(r.handle.stdout).toBeNull();
+  });
+
+  it("stderrTail returns empty string when stderr is inherit", async () => {
+    const r = spawnManaged("true", [], { stderr: "inherit" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    await r.handle.exited;
+    expect(r.handle.stderrTail()).toBe("");
   });
 });

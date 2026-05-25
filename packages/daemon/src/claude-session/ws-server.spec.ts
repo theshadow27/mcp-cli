@@ -3406,17 +3406,12 @@ describe("stderr drain", () => {
     lastOpts: { cwd?: string };
   } {
     let exitResolve: (code: number) => void = () => {};
-    let stderrController: ReadableStreamDefaultController<Uint8Array> | null = null;
-    const encoder = new TextEncoder();
+    let stderrAccum = "";
     const state = {
       spawn: ((cmd: string[], opts: { cwd?: string }) => {
         state.lastCmd = cmd;
         state.lastOpts = { cwd: opts.cwd };
-        const stderrStream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            stderrController = controller;
-          },
-        });
+        stderrAccum = "";
         return {
           pid: 99999,
           exited: new Promise<number>((r) => {
@@ -3426,12 +3421,14 @@ describe("stderr drain", () => {
             state.killed = true;
             exitResolve(143);
           },
-          stderr: stderrStream,
+          stderrTail: () => stderrAccum,
         };
       }) as SpawnFn,
       exitResolve: (code: number) => exitResolve(code),
-      writeStderr: (text: string) => stderrController?.enqueue(encoder.encode(text)),
-      closeStderr: () => stderrController?.close(),
+      writeStderr: (text: string) => {
+        stderrAccum += text;
+      },
+      closeStderr: () => {},
       killed: false,
       lastCmd: [] as string[],
       lastOpts: {} as { cwd?: string },
@@ -3488,7 +3485,7 @@ describe("stderr drain", () => {
     await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
   });
 
-  test("stderrLines ring buffer limits to 50 lines", async () => {
+  test("stderrTail content appears in exit log", async () => {
     const errors: string[] = [];
     const capturingLogger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args.join(" ")) };
     const ms = mockSpawnWithStderr();
@@ -3498,8 +3495,7 @@ describe("stderr drain", () => {
     server.prepareSession("ring-buffer-test", { prompt: "Hello" });
     server.spawnClaude("ring-buffer-test");
 
-    // Write 80 lines — only last 50 should be kept
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 10; i++) {
       ms.writeStderr(`line ${i}\n`);
     }
 
@@ -3507,19 +3503,10 @@ describe("stderr drain", () => {
     ms.exitResolve(1);
     await pollUntil(() => server?.listSessions().some((s: { state: string }) => s.state === "disconnected"));
 
-    // The exit handler logs all buffered stderr lines — verify ring buffer behavior
     const exitLog = errors.find((e) => e.includes("Spawn exited"));
     expect(exitLog).toBeDefined();
-    // Should NOT contain early lines (0-29) — they were evicted
-    expect(exitLog).not.toContain("line 0\n");
-    expect(exitLog).not.toContain("line 29\n");
-    // Should contain the last 50 lines (30-79)
-    expect(exitLog).toContain("line 30");
-    expect(exitLog).toContain("line 79");
-    // Count the lines in the logged suffix (after ": ")
-    const suffix = exitLog?.split(": ").slice(1).join(": ") ?? "";
-    const lineCount = suffix.split("\n").filter((l: string) => l.startsWith("line ")).length;
-    expect(lineCount).toBe(50);
+    expect(exitLog).toContain("line 0");
+    expect(exitLog).toContain("line 9");
   });
 
   test("spawnClaude passes cwd to spawn for hook-created worktrees", async () => {

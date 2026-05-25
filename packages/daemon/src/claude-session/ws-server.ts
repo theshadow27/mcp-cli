@@ -51,6 +51,7 @@ import {
   consoleLogger,
   findGitRoot,
   generateSessionName,
+  spawnManaged,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
@@ -236,6 +237,7 @@ export type SpawnFn = (
   exited: Promise<number>;
   kill: (signal?: number) => void;
   stderr?: ReadableStream<Uint8Array> | null;
+  stderrTail?: () => string;
 };
 
 interface ResultWaiter {
@@ -895,34 +897,17 @@ export class ClaudeWsServer {
       }
     }, this.connectTimeoutMs);
 
-    // Drain stderr immediately to prevent pipe buffer deadlock.
-    // On macOS the pipe buffer is 64KB — if the child writes more than that
-    // without the parent reading, the child blocks on the write syscall.
-    // This is the root cause of #546: hook-created worktrees in complex repos
-    // (git-crypt, large projects) produce enough stderr during Claude startup
-    // to fill the buffer, blocking Claude before it connects via WebSocket.
-    //
-    // Per-process buffer: captured by closure so old drain coroutines can't
-    // contaminate a new process's buffer after clearSession respawns.
-    const procStderrLines: string[] = [];
-    const drainDone = proc.stderr
-      ? drainStderr(proc.stderr, procStderrLines).catch(() => {
-          /* stream closed — expected on process exit */
-        })
-      : Promise.resolve();
+    // stderr is auto-drained by spawnManaged to prevent pipe buffer deadlock
+    // (#546). Use proc.stderrTail() for diagnostics.
 
     // Watch for process exit
     proc.exited.then(async () => {
-      // If a new process has been spawned (e.g. via clearSession), ignore the old one
       if (session.proc !== proc) return;
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
-      // Wait for drain to finish — proc.exited fires when the kernel reaps
-      // the process, but the pipe may still have buffered data.
-      await drainDone;
-      // Re-check after async drain — a clearSession or bye may have run
       if (session.proc !== proc || (session.state.state as string) === "ended") return;
-      const suffix = procStderrLines.length > 0 ? `: ${procStderrLines.join("\n")}` : "";
+      const stderrTail = proc.stderrTail?.() ?? "";
+      const suffix = stderrTail ? `: ${stderrTail}` : "";
       this.logger.error(
         `[_claude] Spawn exited for session ${sessionId} (pid ${proc.pid}, state ${session.state.state}, workCompleted ${session.workCompleted})${suffix}`,
       );
@@ -2498,44 +2483,6 @@ export function readJsonlTranscript(
   }
 }
 
-// ── Stderr drain ──
-
-const MAX_STDERR_LINES = 50;
-
-/**
- * Actively consume a stderr ReadableStream into a ring buffer of lines.
- *
- * CRITICAL: Without this, piped stderr fills the OS pipe buffer (64KB on macOS)
- * and the child process blocks on the next write — deadlocking before it can
- * connect via WebSocket. This is the fix for #546.
- */
-async function drainStderr(stream: ReadableStream<Uint8Array>, lines: string[]): Promise<void> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let partial = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      partial += decoder.decode(value, { stream: true });
-      const parts = partial.split("\n");
-      partial = parts.pop() ?? "";
-      for (const line of parts) {
-        if (line.length === 0) continue;
-        lines.push(line);
-        if (lines.length > MAX_STDERR_LINES) lines.shift();
-      }
-    }
-    // Flush any remaining partial line
-    if (partial.length > 0) {
-      lines.push(partial);
-      if (lines.length > MAX_STDERR_LINES) lines.shift();
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 // ── Helpers ──
 
 function isAddrInUse(err: unknown): boolean {
@@ -2634,6 +2581,7 @@ function defaultSpawn(
   exited: Promise<number>;
   kill: (signal?: number) => void;
   stderr?: ReadableStream<Uint8Array> | null;
+  stderrTail?: () => string;
 } {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
@@ -2646,18 +2594,25 @@ function defaultSpawn(
     env.PWD = opts.cwd;
   }
 
-  // dotw-ignore no-raw-spawn: retains live proc handle — exposes pid, kill, exited, and stderr stream to caller
-  const proc = Bun.spawn(cmd, {
+  const [bin, ...args] = cmd;
+  const r = spawnManaged(bin, args, {
     cwd: opts.cwd,
     env,
-    stdout: opts.stdout === "ignore" ? null : "pipe",
-    stderr: opts.stderr === "ignore" ? null : "pipe",
-    stdin: opts.stdin === "ignore" ? null : "pipe",
+    stdout: opts.stdout ?? "pipe",
+    stderr: opts.stderr ?? "pipe",
+    stdin: opts.stdin ?? "pipe",
   });
+  if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
   return {
-    pid: proc.pid,
-    exited: proc.exited,
-    kill: (signal?: number) => proc.kill(signal),
-    stderr: proc.stderr,
+    pid: r.handle.pid,
+    exited: r.handle.exited.then((s) => (s.exitCode === null ? 1 : s.exitCode)),
+    kill: (signal?: number) => {
+      // Route signal=9 (SIGKILL) through killNow so callers running their own
+      // SIGTERM-then-SIGKILL timeout (killAndAwaitProc) actually escalate. The
+      // grace-based kill() is one-shot and would silently no-op the SIGKILL.
+      if (signal === 9) r.handle.killNow();
+      else r.handle.kill();
+    },
+    stderrTail: () => r.handle.stderrTail(),
   };
 }

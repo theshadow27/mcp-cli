@@ -30,6 +30,7 @@ import {
   pingDaemon,
   rawFetch,
   spawnCaptureSync,
+  spawnManaged,
   tryFlockExclusive,
 } from "@mcp-cli/core";
 
@@ -419,29 +420,22 @@ export function resolveDaemonCommand(): string[] {
 /** Spawn the daemon as a detached background process */
 async function startDaemon(): Promise<void> {
   const cmd = resolveDaemonCommand();
+  const [bin, ...args] = cmd;
 
-  // dotw-ignore no-raw-spawn: long-running daemon process; retains proc handle for incremental stdout reads, proc.kill(), and proc.unref()
-  const proc = Bun.spawn(cmd, {
+  const result = spawnManaged(bin, args, {
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  // Drain stderr in parallel to prevent pipe buffer deadlock (64KB limit).
-  // Capture output for inclusion in timeout error messages.
-  let stderrOutput = "";
-  const stderrDrain = (async () => {
-    const decoder = new TextDecoder();
-    const reader = proc.stderr.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      stderrOutput += decoder.decode(value, { stream: true });
-    }
-    stderrOutput += decoder.decode(); // flush
-  })();
+  if (!result.ok) {
+    throw new Error(`Failed to spawn daemon: ${bin}`);
+  }
+
+  const { handle } = result;
+  if (!handle.stdout) throw new Error("stdout pipe not available");
 
   const stdoutDecoder = new TextDecoder();
-  const reader = proc.stdout.getReader();
+  const reader = handle.stdout.getReader();
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
   let stdout = "";
 
@@ -450,15 +444,13 @@ async function startDaemon(): Promise<void> {
     if (done) break;
     stdout += stdoutDecoder.decode(value, { stream: true });
     if (stdout.includes(DAEMON_READY_SIGNAL)) {
-      proc.unref();
+      handle.unref();
       return;
     }
   }
 
-  proc.kill();
-  await stderrDrain.catch((e) => {
-    stderrOutput += `\n[drain error: ${e instanceof Error ? e.message : String(e)}]`;
-  });
+  await handle.kill();
+  const stderrOutput = handle.stderrTail();
   const details = [stdout && `stdout: ${stdout.trim()}`, stderrOutput && `stderr: ${stderrOutput.trim()}`]
     .filter(Boolean)
     .join("; ");

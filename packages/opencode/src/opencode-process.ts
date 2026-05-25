@@ -9,6 +9,8 @@
  * need stdout for URL discovery, then communication moves to HTTP.
  */
 
+import { spawnManaged } from "@mcp-cli/core";
+
 /** Default timeout for URL discovery from stdout (30s). */
 export const URL_DISCOVERY_TIMEOUT_MS = 30_000;
 
@@ -28,6 +30,25 @@ export type SpawnFn = (
   cmd: string[],
   opts: { cwd: string; stdout: "pipe"; stderr: "inherit"; env: Record<string, string | undefined> },
 ) => SpawnResult;
+
+const defaultSpawnFn: SpawnFn = (cmd, o) => {
+  const [bin, ...args] = cmd;
+  const r = spawnManaged(bin, args, {
+    cwd: o.cwd,
+    stdout: o.stdout,
+    stderr: o.stderr,
+    env: o.env,
+  });
+  if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
+  return {
+    pid: r.handle.pid,
+    stdout: r.handle.stdout,
+    exited: r.handle.exited.then((s) => (s.exitCode === null ? undefined : s.exitCode)),
+    kill: () => {
+      r.handle.kill();
+    },
+  };
+};
 
 export interface OpenCodeProcessOptions {
   /** Working directory for the agent process. */
@@ -51,8 +72,7 @@ export class OpenCodeProcess {
 
   constructor(opts: OpenCodeProcessOptions) {
     this.opts = opts;
-    // dotw-ignore no-raw-spawn: long-lived agent subprocess; needs live handle for streaming stdout URL discovery + kill
-    this.spawnFn = opts.spawnFn ?? ((cmd, o) => Bun.spawn(cmd, o));
+    this.spawnFn = opts.spawnFn ?? defaultSpawnFn;
   }
 
   /**
