@@ -181,8 +181,12 @@ const rule: CheckRule = {
     "parsed --flag missing from KNOWN_FLAGS → add to the KNOWN_FLAGS set in the same file",
     "KNOWN_FLAGS entry not parsed anywhere → remove from KNOWN_FLAGS or add code that handles it",
   ],
-  documentation: "#2246, #2314, #2327",
+  documentation: "#2246, #2314, #2315, #2327",
   appliesToTests: false,
+  // Engine hard-errors if these anchor paths are absent from the loaded
+  // file set — a rename or filter-narrowing that hides them would
+  // otherwise silently no-op the rule. See #2315.
+  anchors: [MAIN_REL, COMPLETIONS_REL],
   check(ctx) {
     if (ctx.file.relPath === MAIN_REL) {
       checkDispatchToSubcommands(ctx);
@@ -201,9 +205,14 @@ const rule: CheckRule = {
 function checkDispatchToSubcommands(ctx: RuleContext): void {
   const cases = collectSwitchCases(ctx);
   if (cases.length === 0) return;
+  ctx.checked();
 
   const subcommands = findSubcommands(ctx);
   if (!subcommands) {
+    // In production runs the engine's anchor validation guarantees
+    // completions.ts is loaded, so this branch is unreachable. Kept as a
+    // defensive guard for direct `evaluateRule` callers (unit tests,
+    // tooling) that pass a partial file set.
     ctx.violated(1, 1, `SUBCOMMANDS anchor not found — is ${COMPLETIONS_REL} missing or renamed?`);
     return;
   }
@@ -218,6 +227,7 @@ function checkDispatchToSubcommands(ctx: RuleContext): void {
 function checkSubcommandsToDispatch(ctx: RuleContext): void {
   const entries = extractSubcommandsWithPositions(ctx.ast);
   if (!entries) return;
+  ctx.checked();
 
   let mainMeta: import("./_engine/file-loader").FileMeta | undefined;
   for (const meta of ctx.files.values()) {
@@ -226,6 +236,8 @@ function checkSubcommandsToDispatch(ctx: RuleContext): void {
       break;
     }
   }
+  // Engine anchors guarantee main.ts is present in production runs;
+  // direct-call (test) paths may omit it and fall through to a no-op.
   if (!mainMeta) return;
 
   const mainAst = createAstHelper(mainMeta);
@@ -241,6 +253,7 @@ function checkSubcommandsToDispatch(ctx: RuleContext): void {
 function checkFlagKnownFlags(ctx: RuleContext): void {
   const known = extractKnownFlags(ctx.ast);
   if (!known) return;
+  ctx.checked();
 
   const parsed = collectParsedFlags(ctx.ast);
 

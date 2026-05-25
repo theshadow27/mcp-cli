@@ -191,4 +191,33 @@ describe("loadAllRules", () => {
       await rm(tmp, { recursive: true });
     }
   });
+
+  it("accepts and freezes a rule's anchors array", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "anchored.rule.ts"),
+        `export default { id: "anc", kind: "check", scold: "x", guidance: [], anchors: ["a/b.ts"], check() {} };`,
+      );
+      const rules = await loadAllRules(tmp);
+      expect(rules.length).toBe(1);
+      expect(rules[0].anchors).toEqual(["a/b.ts"]);
+      expect(Object.isFrozen(rules[0].anchors)).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
+
+  it("rejects a rule whose anchors is not an array of strings", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "rule-loader-"));
+    try {
+      await writeFile(
+        join(tmp, "bad.rule.ts"),
+        `export default { id: "bad", kind: "check", scold: "x", guidance: [], anchors: [123], check() {} };`,
+      );
+      await expect(loadAllRules(tmp)).rejects.toThrow(/failed validation/);
+    } finally {
+      await rm(tmp, { recursive: true });
+    }
+  });
 });
