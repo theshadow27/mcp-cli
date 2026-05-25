@@ -21,7 +21,7 @@ import { MissingAnchorError, type Violation, evaluateRule, validateAnchors } fro
 import { checkSuppression } from "./rules/_engine/suppression";
 import { loadAllRules } from "./rules/index";
 
-import type { Logger, ScriptFunction } from "./_runner/types";
+import type { ScriptFunction } from "./_runner/types";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 
@@ -82,12 +82,14 @@ export async function runRules(opts: RunRulesOptions, logger: LoggerWithDebug): 
   // failures (not just the first) so a renamed-file regression that hits
   // multiple rules surfaces them together in one CI run.
   const missingAnchors: { ruleId: string; missing: readonly string[] }[] = [];
+  const failedRuleIds = new Set<string>();
   for (const rule of rules) {
     try {
       validateAnchors(rule, files);
     } catch (e) {
       if (e instanceof MissingAnchorError) {
         missingAnchors.push({ ruleId: e.ruleId, missing: e.missing });
+        failedRuleIds.add(e.ruleId);
         logger.error(`✗ ${e.message}`);
       } else {
         throw e;
@@ -102,6 +104,10 @@ export async function runRules(opts: RunRulesOptions, logger: LoggerWithDebug): 
   // grouping) come out in RULES registration order — independent of glob
   // iteration order on the file scan.
   for (const rule of rules) {
+    // Rules whose anchors are missing are already a fatal failure; skip
+    // evaluation so a check() that relies on its anchors doesn't generate
+    // misleading secondary violations or throw on a missing peer file.
+    if (failedRuleIds.has(rule.id)) continue;
     let inspectionCount = 0;
     let applicableFileCount = 0;
     for (const file of files.values()) {

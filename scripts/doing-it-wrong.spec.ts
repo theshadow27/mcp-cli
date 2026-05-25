@@ -59,6 +59,18 @@ describe("runRules", () => {
     expect(errorMsg).toContain("silently pass");
   });
 
+  it("skips evaluation of rules whose anchors are missing (no secondary violations)", async () => {
+    // Realistic rename scenario: main.ts is loaded but completions.ts is not.
+    // The MissingAnchorError must be the dominant signal — the rule body must
+    // NOT also run and produce misleading secondary violations.
+    const { logger } = makeLogger();
+    const result = await runRules({ ruleId: "cli-surface-registered", filter: "packages/command/src/main.ts" }, logger);
+    expect(result.missingAnchors).toHaveLength(1);
+    // No spurious "SUBCOMMANDS anchor not found" violation on main.ts —
+    // the anchor failure is the sole signal.
+    expect(result.violations).toEqual([]);
+  });
+
   it("passes cleanly on the real repo when all anchor files are loaded", async () => {
     // Belt + suspenders for #2315: the migration to engine-level anchors must
     // not regress existing cli-surface-registered behavior on the full tree.
