@@ -42,6 +42,10 @@ export async function cmdExport(args: string[]): Promise<void> {
 
   const scope = flags.scope ? parseScope(flags.scope as string, CONFIG_SCOPES_NO_LOCAL) : undefined;
   const serverFilter = flags.server as string[];
+  // Pre-migration: explicit `if (!val)` rejected empty --server. parseFlags accepts "".
+  if (serverFilter.some((s) => s === "")) {
+    throw new Error("--server requires a name");
+  }
   const all = flags.all === true;
 
   if (all && scope) {

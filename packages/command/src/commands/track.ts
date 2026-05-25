@@ -160,6 +160,16 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   const automationOverrides = flags.automation as string | undefined;
   const branch = flags.branch as string | undefined;
 
+  // Pre-migration parsers explicitly rejected empty values; preserve that contract.
+  if (automationOverrides === "") {
+    printError("--automation requires a value (e.g. merge=false,bind=true)");
+    return deps.exit(1);
+  }
+  if (branch === "") {
+    printError("Usage: mcx track --branch <name>");
+    return deps.exit(1);
+  }
+
   if (branch) {
     try {
       const item = await deps.ipcCall("trackWorkItem", {
@@ -339,6 +349,12 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   const rawPhase = flags.phase as string | undefined;
+  if (rawPhase === "") {
+    // Pre-migration explicitly rejected empty --phase; preserve usage hint.
+    const valid = declaredPhases ?? WORK_ITEM_PHASES;
+    printError(`--phase requires a value: ${valid.join(", ")}`);
+    return deps.exit(1);
+  }
   if (rawPhase) {
     if (declaredPhases) {
       if (!declaredPhases.includes(rawPhase)) {

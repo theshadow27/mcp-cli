@@ -59,6 +59,10 @@ export function parseGcArgs(args: string[]): GcOptions {
   }
 
   const olderThanRaw = flags["older-than"] as string | undefined;
+  // Pre-migration: explicit empty rejection. parseFlags accepts "", so guard explicitly.
+  if (olderThanRaw === "") {
+    throw new Error("--older-than requires a value (e.g. 1d, 3h)");
+  }
 
   const opts: GcOptions = {
     dryRun: (flags["dry-run"] as boolean) ?? false,

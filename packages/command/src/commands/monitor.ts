@@ -81,6 +81,25 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     error = errors[0];
   }
 
+  // Pre-migration parsers explicitly rejected literal empty values (`if (!val)`);
+  // parseFlags accepts `""`. Preserve prior error contract per-flag.
+  const emptyChecks: Array<[string, string]> = [
+    ["response-tail", "--response-tail requires a session ID"],
+    ["subscribe", "--subscribe requires a value"],
+    ["session", "--session requires a value"],
+    ["work-item", "--work-item requires a value"],
+    ["type", "--type requires a value"],
+    ["src", "--src requires a value"],
+    ["phase", "--phase requires a value"],
+    ["repo", "--repo requires a path"],
+    ["until", "--until requires a value"],
+  ];
+  for (const [key, msg] of emptyChecks) {
+    if (flags[key] === "") {
+      error ??= msg;
+    }
+  }
+
   const maxEvents = flags["max-events"] as number | undefined;
   if (maxEvents !== undefined && maxEvents < 1) {
     error = "--max-events requires a positive integer";
