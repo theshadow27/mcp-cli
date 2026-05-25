@@ -86,9 +86,18 @@ burndowns with fanout if large. Orchestrator must never implement directly.
 
 ---
 
-## RUN STATE — live recovery doc (updated 2026-05-25 03:10 ET — session 2)
+## RUN STATE — COMPLETE (2026-05-25 ~03:15 ET — session 2 done)
 
-Sprint resumed in a FRESH context 2026-05-25 (~20:40 ET). There is no `/sprint resume` verb — the tail is being driven MANUALLY (orchestrator spawns phase sessions, reads this doc as the plan). Daemon converged to ONE instance the whole run; using build-matched `mcx` not `bun dev:mcx` (see #2381). **Read this first if resuming — it is the authoritative state.**
+**The planned sprint-63 tail is 100% merged.** Session 2 resumed in a fresh context and drove the
+tail manually (no `/sprint resume` verb): a phase session per item, a fresh adversarial review per
+PR, merge only on green CI + all-4-surfaces-clean. Daemon held at ONE instance the whole run.
+
+All 9 remaining work items merged: E #2378 · V #2375 · #2380→#2384 · Y→#2382 · O→#2385 · P→#2386 ·
+U→#2387 · W→#2389 · X→#2390. Every reviewer found+fixed real defects (see diary `20260524.63.md`).
+Carried forward (out of scope): #2370 (P1 socket-theft), #2135 (disconnect flaky, reopened),
+#2381 (new DX bug), #2350/#2333 (excluded meta), #2371/#2354/#2325/#2248 (rule follow-ups).
+
+--- historical session-2 in-flight snapshot (kept for the record) ---
 
 ### DONE — merged to main
 **Session 1:** I #2356 · T #2357 · J #2358 · Z #2359 · A #2360 · bun-install #2361 · G #2363 · F #2364 · C #2365 (closed D #2291 FP-obsolete) · S #2366 · L #2367 · B #2368 · K #2369 · H #2372 · yoga-flaky #2379
