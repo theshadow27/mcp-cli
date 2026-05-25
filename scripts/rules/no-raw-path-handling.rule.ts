@@ -150,6 +150,18 @@ function lookupName(name: string, from: ts.Node): ts.Declaration | undefined {
       }
     }
 
+    // for-loop bindings (`for (const x = ...; ...)`, `for (const x of ...)`) are
+    // block-scoped to the loop including its body, so check them when ascending
+    // out of the body but before the enclosing function/block scope.
+    if (ts.isForStatement(parent) || ts.isForInStatement(parent) || ts.isForOfStatement(parent)) {
+      const init = parent.initializer;
+      if (init && ts.isVariableDeclarationList(init)) {
+        for (const decl of init.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
+        }
+      }
+    }
+
     if (ts.isBlock(parent) || ts.isSourceFile(parent) || ts.isModuleBlock(parent)) {
       const found = findConstDeclInScope(parent, name);
       if (found) return found;
@@ -160,27 +172,23 @@ function lookupName(name: string, from: ts.Node): ts.Declaration | undefined {
   return undefined;
 }
 
-function findConstDeclInScope(scope: ts.Node, name: string): ts.VariableDeclaration | undefined {
-  let found: ts.VariableDeclaration | undefined;
-  function visit(child: ts.Node): void {
-    if (found) return;
-    if (ts.isVariableDeclaration(child) && ts.isIdentifier(child.name) && child.name.text === name) {
-      found = child;
-      return;
+/**
+ * Look up a `const`/`let`/`var` declaration of `name` in the *direct* statement
+ * list of `scope`. Walking all descendants would leak nested-block bindings
+ * (e.g. `if (cond) { const x = ... }`) into outer scopes, violating JS lexical
+ * scope and producing both false positives and false negatives.
+ */
+function findConstDeclInScope(
+  scope: ts.Block | ts.SourceFile | ts.ModuleBlock,
+  name: string,
+): ts.VariableDeclaration | undefined {
+  for (const stmt of scope.statements) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const decl of stmt.declarationList.declarations) {
+      if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
     }
-    if (
-      ts.isFunctionDeclaration(child) ||
-      ts.isFunctionExpression(child) ||
-      ts.isArrowFunction(child) ||
-      ts.isMethodDeclaration(child) ||
-      ts.isConstructorDeclaration(child)
-    ) {
-      return;
-    }
-    ts.forEachChild(child, visit);
   }
-  ts.forEachChild(scope, visit);
-  return found;
+  return undefined;
 }
 
 export default rule;
