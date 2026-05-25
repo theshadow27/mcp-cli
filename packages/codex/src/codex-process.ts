@@ -6,7 +6,7 @@
  * and reports process exit.
  */
 
-import type { Subprocess } from "bun";
+import { type ManagedHandle, spawnManaged } from "@mcp-cli/core";
 
 export interface CodexProcessOptions {
   /** Working directory for the codex process. */
@@ -26,11 +26,10 @@ export interface CodexProcessOptions {
 }
 
 export class CodexProcess {
-  private proc: Subprocess | null = null;
+  private handle: ManagedHandle | null = null;
   private readonly opts: CodexProcessOptions;
   private _exited = false;
   private readLoopPromise: Promise<void> | null = null;
-  private stderrLoopPromise: Promise<void> | null = null;
 
   constructor(opts: CodexProcessOptions) {
     this.opts = opts;
@@ -38,38 +37,40 @@ export class CodexProcess {
 
   /** Spawn the codex app-server process. */
   spawn(): void {
-    if (this.proc) throw new Error("CodexProcess already spawned");
+    if (this.handle) throw new Error("CodexProcess already spawned");
 
     const cmd = this.opts.command ?? ["codex", "app-server"];
-    // dotw-ignore no-raw-spawn: long-lived agent subprocess; retains the handle for streaming stdin/stdout (NDJSON line reader), stderr, and exit monitoring
-    this.proc = Bun.spawn(cmd, {
+    const [bin, ...args] = cmd;
+    const result = spawnManaged(bin, args, {
       cwd: this.opts.cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: this.opts.onStderr ? "pipe" : "inherit",
+      onStderr: this.opts.onStderr,
       env: { ...process.env, ...this.opts.env },
     });
 
-    // Start reading stdout lines
-    this.readLoopPromise = this.readLines();
-
-    // Start reading stderr if requested
-    if (this.opts.onStderr && this.proc.stderr) {
-      this.stderrLoopPromise = this.readStderr();
+    if (!result.ok) {
+      this._exited = true;
+      this.opts.onExit(null, null);
+      return;
     }
 
-    // Monitor process exit
-    this.proc.exited.then((code) => {
+    this.handle = result.handle;
+
+    this.readLoopPromise = this.readLines();
+
+    this.handle.exited.then((status) => {
       if (this._exited) return;
       this._exited = true;
-      this.opts.onExit(code, null);
+      this.opts.onExit(status.exitCode, status.signal);
     });
   }
 
   /** Write a JSON-RPC message to the process stdin and flush. */
   async write(msg: Record<string, unknown>): Promise<void> {
-    const stdin = this.proc?.stdin;
-    if (!stdin || typeof stdin === "number") throw new Error("Process not spawned or stdin unavailable");
+    const stdin = this.handle?.stdin;
+    if (!stdin) throw new Error("Process not spawned or stdin unavailable");
     const line = `${JSON.stringify(msg)}\n`;
     stdin.write(line);
     await stdin.flush();
@@ -77,18 +78,18 @@ export class CodexProcess {
 
   /** Send SIGTERM to the process. */
   kill(): void {
-    if (!this.proc || this._exited) return;
-    this.proc.kill("SIGTERM");
+    if (!this.handle || this._exited) return;
+    this.handle.kill();
   }
 
   /** Whether the process is still running. */
   get alive(): boolean {
-    return this.proc !== null && !this._exited;
+    return this.handle !== null && !this._exited;
   }
 
   /** The process PID, if spawned. */
   get pid(): number | undefined {
-    return this.proc?.pid;
+    return this.handle?.pid;
   }
 
   /** Whether the process has exited. */
@@ -98,8 +99,8 @@ export class CodexProcess {
 
   /** Read stdout line by line and parse as JSON. */
   private async readLines(): Promise<void> {
-    const stdout = this.proc?.stdout;
-    if (!stdout || typeof stdout === "number") return;
+    const stdout = this.handle?.stdout;
+    if (!stdout) return;
 
     const reader = stdout.getReader();
     const decoder = new TextDecoder();
@@ -112,7 +113,6 @@ export class CodexProcess {
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        // Keep the last partial line in the buffer
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
@@ -127,7 +127,6 @@ export class CodexProcess {
         }
       }
 
-      // Process any remaining buffer content
       if (buffer.trim()) {
         try {
           const parsed = JSON.parse(buffer.trim()) as Record<string, unknown>;
@@ -137,29 +136,9 @@ export class CodexProcess {
         }
       }
     } catch (err) {
-      // Stream closed unexpectedly — process likely died
       if (!this._exited) {
         this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), "");
       }
-    }
-  }
-
-  /** Read stderr chunks. */
-  private async readStderr(): Promise<void> {
-    const stderr = this.proc?.stderr;
-    if (!stderr) return;
-
-    const reader = (stderr as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        this.opts.onStderr?.(decoder.decode(value, { stream: true }));
-      }
-    } catch {
-      // Stream closed — ignore
     }
   }
 }

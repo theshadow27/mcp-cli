@@ -4,11 +4,11 @@ import type { CheckRule } from "./_engine/rule";
 const rule: CheckRule = {
   id: "no-raw-spawn",
   kind: "check",
-  scold: "raw Bun.spawn/spawnSync or exitCode null-coercion — use spawnCapture() from @mcp-cli/core",
+  scold: "raw Bun.spawn/spawnSync or exitCode null-coercion — use spawnCapture/spawnManaged from @mcp-cli/core",
   guidance: [
-    "use spawnCapture / spawnCaptureSync from @mcp-cli/core. The point is to NOT relitigate the spawn corner cases at every call site: raw Bun.spawn THROWS on a missing binary instead of returning, a full stderr pipe can deadlock the child unless drained, a hung child needs timeout → SIGTERM → SIGKILL escalation, output needs a maxBuffer cap, and exitCode is null when the process never ran (so ?? 0 / || 0 silently reports failure as success). The helper solves all of these once; branch on result.ok / result.timedOut.",
-    "if the helper lacks an option you need (env, stdin, cwd, …), EXTEND THE HELPER — adding it once fixes every call site. Re-implementing raw spawn to get one missing option means re-owning every corner case above, for everyone. A missing option is NOT a reason to suppress.",
-    'suppress with // dotw-ignore no-raw-spawn: <reason> ONLY when the spawn is fundamentally not capture-and-wait: a long-lived process whose handle you retain (pid / kill / streaming stdin / incremental stdout), interactive stdio:"inherit" (pager/editor), or fire-and-forget. Capture-and-wait that just needs another option does not qualify.',
+    "use spawnCapture / spawnCaptureSync from @mcp-cli/core for capture-and-wait (run a command, collect output, check result). Use spawnManaged for long-lived processes whose handle you retain (streaming stdin/stdout, kill, exit monitoring). The point is to NOT relitigate the spawn corner cases at every call site: raw Bun.spawn THROWS on a missing binary instead of returning, a full stderr pipe can deadlock the child unless drained, a hung child needs timeout → SIGTERM → SIGKILL escalation, and exitCode is null when the process never ran (so ?? 0 / || 0 silently reports failure as success). Both helpers solve all of these once.",
+    "if either helper lacks an option you need, EXTEND THE HELPER — adding it once fixes every call site. Re-implementing raw spawn to get one missing option means re-owning every corner case above, for everyone. A missing option is NOT a reason to suppress.",
+    'suppress with // dotw-ignore no-raw-spawn: <reason> ONLY when the spawn is fundamentally not capture-and-wait AND not a managed long-lived process: interactive stdio:"inherit" (pager/editor), fire-and-forget (no handle retained), or file-redirect stdout/stderr (Bun.file). If you retain a handle for streaming, kill, or exit monitoring, use spawnManaged instead of suppressing.',
   ],
   documentation: "#2269",
   appliesToTests: false,

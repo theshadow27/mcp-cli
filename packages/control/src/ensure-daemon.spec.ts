@@ -57,7 +57,7 @@ describe("ensureDaemonRunning", () => {
         spawned = true;
         return {
           stdout: mockStream("starting...\nMCPD_READY\n"),
-          stderr: mockStream(""),
+
           unref: () => {
             unrefCalled = true;
           },
@@ -144,6 +144,28 @@ describe("ensureDaemonRunning", () => {
       },
       readySignal: "MCPD_READY",
       timeoutMs: 1000,
+    });
+
+    expect(result).toBe(false);
+  });
+
+  it("exercises the default spawnManaged-backed spawn against a real binary", async () => {
+    const result = await ensureDaemonRunning({
+      ping: async () => false,
+      resolveCmd: () => ["sh", "-c", "echo SPAWN_DEFAULT_READY"],
+      readySignal: "SPAWN_DEFAULT_READY",
+      timeoutMs: 5000,
+    });
+
+    expect(result).toBe(true);
+  });
+
+  it("returns false when the default spawn cannot start the resolved binary", async () => {
+    const result = await ensureDaemonRunning({
+      ping: async () => false,
+      resolveCmd: () => ["definitely-not-a-real-binary-xyzzy-2346"],
+      readySignal: "MCPD_READY",
+      timeoutMs: 500,
     });
 
     expect(result).toBe(false);

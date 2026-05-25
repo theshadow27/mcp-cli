@@ -8,7 +8,7 @@
  * Mirrors codex-process.ts but for the ACP protocol.
  */
 
-import type { Subprocess } from "bun";
+import { type ManagedHandle, spawnManaged } from "@mcp-cli/core";
 
 export interface AcpProcessOptions {
   /** Working directory for the agent process. */
@@ -28,7 +28,7 @@ export interface AcpProcessOptions {
 }
 
 export class AcpProcess {
-  private proc: Subprocess | null = null;
+  private handle: ManagedHandle | null = null;
   private readonly opts: AcpProcessOptions;
   private _exited = false;
 
@@ -38,37 +38,39 @@ export class AcpProcess {
 
   /** Spawn the ACP agent process. */
   spawn(): void {
-    if (this.proc) throw new Error("AcpProcess already spawned");
+    if (this.handle) throw new Error("AcpProcess already spawned");
 
-    // dotw-ignore no-raw-spawn: long-lived agent subprocess; needs live handle for streaming stdio + kill
-    this.proc = Bun.spawn(this.opts.command, {
+    const [bin, ...args] = this.opts.command;
+    const result = spawnManaged(bin, args, {
       cwd: this.opts.cwd,
       stdin: "pipe",
       stdout: "pipe",
       stderr: this.opts.onStderr ? "pipe" : "inherit",
+      onStderr: this.opts.onStderr,
       env: { ...process.env, ...this.opts.env },
     });
 
-    // Start reading stdout lines
-    this.readLines();
-
-    // Start reading stderr if requested
-    if (this.opts.onStderr && this.proc.stderr) {
-      this.readStderr();
+    if (!result.ok) {
+      this._exited = true;
+      this.opts.onExit(null, null);
+      return;
     }
 
-    // Monitor process exit
-    this.proc.exited.then((code) => {
+    this.handle = result.handle;
+
+    this.readLines();
+
+    this.handle.exited.then((status) => {
       if (this._exited) return;
       this._exited = true;
-      this.opts.onExit(code, null);
+      this.opts.onExit(status.exitCode, status.signal);
     });
   }
 
   /** Write a JSON-RPC message to the process stdin and flush. */
   async write(msg: Record<string, unknown>): Promise<void> {
-    const stdin = this.proc?.stdin;
-    if (!stdin || typeof stdin === "number") throw new Error("Process not spawned or stdin unavailable");
+    const stdin = this.handle?.stdin;
+    if (!stdin) throw new Error("Process not spawned or stdin unavailable");
     const line = `${JSON.stringify(msg)}\n`;
     stdin.write(line);
     await stdin.flush();
@@ -76,18 +78,18 @@ export class AcpProcess {
 
   /** Send SIGTERM to the process. */
   kill(): void {
-    if (!this.proc || this._exited) return;
-    this.proc.kill("SIGTERM");
+    if (!this.handle || this._exited) return;
+    this.handle.kill();
   }
 
   /** Whether the process is still running. */
   get alive(): boolean {
-    return this.proc !== null && !this._exited;
+    return this.handle !== null && !this._exited;
   }
 
   /** The process PID, if spawned. */
   get pid(): number | undefined {
-    return this.proc?.pid;
+    return this.handle?.pid;
   }
 
   /** Whether the process has exited. */
@@ -97,8 +99,8 @@ export class AcpProcess {
 
   /** Read stdout line by line and parse as JSON. */
   private async readLines(): Promise<void> {
-    const stdout = this.proc?.stdout;
-    if (!stdout || typeof stdout === "number") return;
+    const stdout = this.handle?.stdout;
+    if (!stdout) return;
 
     const reader = stdout.getReader();
     const decoder = new TextDecoder();
@@ -125,7 +127,6 @@ export class AcpProcess {
         }
       }
 
-      // Process any remaining buffer content
       if (buffer.trim()) {
         try {
           const parsed = JSON.parse(buffer.trim()) as Record<string, unknown>;
@@ -138,25 +139,6 @@ export class AcpProcess {
       if (!this._exited) {
         this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), "");
       }
-    }
-  }
-
-  /** Read stderr chunks. */
-  private async readStderr(): Promise<void> {
-    const stderr = this.proc?.stderr;
-    if (!stderr) return;
-
-    const reader = (stderr as ReadableStream<Uint8Array>).getReader();
-    const decoder = new TextDecoder();
-
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        this.opts.onStderr?.(decoder.decode(value, { stream: true }));
-      }
-    } catch {
-      // Stream closed — ignore
     }
   }
 }

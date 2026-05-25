@@ -11,12 +11,13 @@ import {
   DAEMON_START_TIMEOUT_MS,
   resolveDaemonCommand as coreResolveDaemonCommand,
   pingDaemon,
+  spawnManaged,
 } from "@mcp-cli/core";
 
 /** Dependencies injectable for testing */
 export interface EnsureDaemonDeps {
   ping: () => Promise<boolean>;
-  spawn: (cmd: string[]) => { stdout: ReadableStream; stderr: ReadableStream; unref: () => void; kill: () => void };
+  spawn: (cmd: string[]) => { stdout: ReadableStream; unref: () => void; kill: () => void };
   resolveCmd: () => string[];
   readySignal: string;
   timeoutMs: number;
@@ -24,8 +25,20 @@ export interface EnsureDaemonDeps {
 
 const defaultDeps: EnsureDaemonDeps = {
   ping: pingDaemon,
-  // dotw-ignore no-raw-spawn: launches the long-lived daemon and retains live handle for unref, kill, and streaming stdout/stderr
-  spawn: (cmd) => Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" }),
+  spawn: (cmd) => {
+    const [bin, ...args] = cmd;
+    const r = spawnManaged(bin, args, { stdout: "pipe", stderr: "pipe" });
+    if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
+    const stdout = r.handle.stdout;
+    if (!stdout) throw new Error("stdout pipe not available");
+    return {
+      stdout,
+      unref: () => r.handle.unref(),
+      kill: () => {
+        r.handle.kill();
+      },
+    };
+  },
   resolveCmd: () => coreResolveDaemonCommand(import.meta.dir),
   readySignal: DAEMON_READY_SIGNAL,
   timeoutMs: DAEMON_START_TIMEOUT_MS,
@@ -46,30 +59,12 @@ export async function ensureDaemonRunning(deps: Partial<EnsureDaemonDeps> = {}):
     const cmd = resolveCmd();
     const proc = spawn(cmd);
 
-    // Abort controller bounds all reads to the timeout window.
-    // This prevents reader.read() from blocking indefinitely if the
-    // daemon emits partial output then hangs.
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
 
-    // Wait for MCPD_READY signal on stdout
     const decoder = new TextDecoder();
     const reader = proc.stdout.getReader();
     let stdout = "";
-
-    // Drain stderr to prevent pipe buffer deadlock.
-    // Attach .catch() so cancellation doesn't produce an unhandled rejection.
-    const stderrReader = proc.stderr.getReader();
-    const drainStderr = (async () => {
-      try {
-        for (;;) {
-          const { done } = await stderrReader.read();
-          if (done) break;
-        }
-      } catch {
-        // Cancelled or aborted — expected on success/timeout paths
-      }
-    })();
 
     try {
       while (!ac.signal.aborted) {
@@ -84,12 +79,9 @@ export async function ensureDaemonRunning(deps: Partial<EnsureDaemonDeps> = {}):
         if (readResult.done) break;
         stdout += decoder.decode(readResult.value, { stream: true });
         if (stdout.includes(readySignal)) {
-          // Detach — let daemon run independently
           clearTimeout(timer);
           proc.unref();
           reader.releaseLock();
-          stderrReader.cancel().catch(() => {});
-          await drainStderr;
           return true;
         }
       }
@@ -97,12 +89,9 @@ export async function ensureDaemonRunning(deps: Partial<EnsureDaemonDeps> = {}):
       // AbortError from timeout — fall through to cleanup
     }
 
-    // Timed out or process exited without ready signal — kill to avoid orphans
     clearTimeout(timer);
     proc.kill();
     reader.releaseLock();
-    stderrReader.cancel().catch(() => {});
-    await drainStderr;
     return await ping();
   } catch {
     return false;

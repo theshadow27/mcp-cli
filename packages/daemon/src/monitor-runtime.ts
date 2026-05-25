@@ -10,9 +10,8 @@
  * #1583
  */
 
-import type { AliasType, Logger, MonitorCategory, MonitorEventInput } from "@mcp-cli/core";
-import { bundleAlias } from "@mcp-cli/core";
-import type { Subprocess } from "bun";
+import type { AliasType, Logger, ManagedHandle, MonitorCategory, MonitorEventInput } from "@mcp-cli/core";
+import { bundleAlias, spawnManaged } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
 import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
@@ -44,7 +43,7 @@ const VALID_CATEGORIES: ReadonlySet<string> = new Set<MonitorCategory>([
 
 interface RunningMonitor {
   name: string;
-  proc: Subprocess;
+  handle: ManagedHandle;
   crashTimestamps: number[];
   attempt: number;
   restartTimer: ReturnType<typeof setTimeout> | null;
@@ -107,7 +106,7 @@ export class MonitorRuntime {
     if (existing) {
       existing.stopped = true;
       if (existing.restartTimer) clearTimeout(existing.restartTimer);
-      await this.killProc(existing.proc, 5_000);
+      await existing.handle.kill(5_000);
       this.monitors.delete(name);
     }
     const alias = this.getAlias(name);
@@ -126,7 +125,7 @@ export class MonitorRuntime {
     for (const [, mon] of this.monitors) {
       mon.stopped = true;
       if (mon.restartTimer) clearTimeout(mon.restartTimer);
-      stopPromises.push(this.killProc(mon.proc, 5_000));
+      stopPromises.push(mon.handle.kill(5_000).then(() => {}));
     }
     await Promise.allSettled(stopPromises);
     this.monitors.clear();
@@ -149,37 +148,60 @@ export class MonitorRuntime {
     }
 
     const payload = JSON.stringify({ bundledJs, aliasName: alias.name });
-    // dotw-ignore no-raw-spawn: retains live proc handle for streaming stdout/stderr NDJSON and crash detection via watchExit
-    const proc = Bun.spawn([process.execPath, this.executorPath], {
+    const stderrRing: string[] = [];
+    let stderrLineBuf = "";
+    const logger = this.logger;
+    const aliasName = alias.name;
+
+    const result = spawnManaged(process.execPath, [this.executorPath], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      onStderr: (chunk) => {
+        stderrLineBuf += chunk;
+        for (let idx = stderrLineBuf.indexOf("\n"); idx !== -1; idx = stderrLineBuf.indexOf("\n")) {
+          const line = stderrLineBuf.slice(0, idx).trim();
+          stderrLineBuf = stderrLineBuf.slice(idx + 1);
+          if (line) {
+            logger.warn(`[monitor:${aliasName}] ${line}`);
+            stderrRing.push(line);
+            if (stderrRing.length > STDERR_RING_SIZE) stderrRing.shift();
+          }
+        }
+      },
     });
 
-    proc.stdin.write(payload);
-    proc.stdin.end();
+    if (!result.ok) {
+      this.logger.error(`[monitor-runtime] Failed to spawn executor for "${alias.name}"`);
+      return false;
+    }
+
+    const { handle } = result;
+    if (handle.stdin) {
+      handle.stdin.write(payload);
+      await handle.stdin.end();
+    }
 
     const mon: RunningMonitor = {
       name: alias.name,
-      proc,
+      handle,
       crashTimestamps: [],
       attempt: 0,
       restartTimer: null,
       stopped: false,
-      stderrRing: [],
+      stderrRing,
       startedAt: Date.now(),
     };
     this.monitors.set(alias.name, mon);
 
     this.readStdout(mon);
-    this.readStderr(mon);
     this.watchExit(mon);
     return true;
   }
 
   private readStdout(mon: RunningMonitor): void {
-    const stdout = mon.proc.stdout;
-    if (!stdout || typeof stdout === "number") return;
+    const stdout = mon.handle.stdout;
+    if (!stdout) return;
     const reader = stdout.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -246,56 +268,9 @@ export class MonitorRuntime {
     pump();
   }
 
-  private readStderr(mon: RunningMonitor): void {
-    const stderr = mon.proc.stderr;
-    if (!stderr || typeof stderr === "number") return;
-    const reader = stderr.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    const pump = async () => {
-      try {
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          if (buffer.length > MAX_LINE_BUFFER) {
-            buffer = buffer.slice(-MAX_LINE_BUFFER);
-          }
-
-          for (let newlineIdx = buffer.indexOf("\n"); newlineIdx !== -1; newlineIdx = buffer.indexOf("\n")) {
-            const line = buffer.slice(0, newlineIdx).trim();
-            buffer = buffer.slice(newlineIdx + 1);
-            if (line) {
-              this.logger.warn(`[monitor:${mon.name}] ${line}`);
-              mon.stderrRing.push(line);
-              if (mon.stderrRing.length > STDERR_RING_SIZE) {
-                mon.stderrRing.shift();
-              }
-            }
-          }
-        }
-
-        buffer += decoder.decode();
-        const remaining = buffer.trim();
-        if (remaining) {
-          this.logger.warn(`[monitor:${mon.name}] ${remaining}`);
-          mon.stderrRing.push(remaining);
-          if (mon.stderrRing.length > STDERR_RING_SIZE) {
-            mon.stderrRing.shift();
-          }
-        }
-      } catch {
-        // Reader closed
-      }
-    };
-
-    pump();
-  }
-
   private watchExit(mon: RunningMonitor): void {
-    mon.proc.exited.then((code) => {
+    mon.handle.exited.then((status) => {
+      const code = status.exitCode;
       if (mon.stopped || this.stopped) return;
 
       // Clean exit (code 0) means the generator completed — not a crash.
@@ -361,24 +336,6 @@ export class MonitorRuntime {
         }
       }, delay);
     });
-  }
-
-  private async killProc(proc: Subprocess, timeoutMs: number): Promise<void> {
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      return;
-    }
-
-    const exited = Promise.race([proc.exited, Bun.sleep(timeoutMs).then(() => "timeout" as const)]);
-    const result = await exited;
-    if (result === "timeout") {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        // already dead
-      }
-    }
   }
 }
 

@@ -8,6 +8,143 @@ export interface SpawnResult {
   truncated: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// spawnManaged — long-lived process helper
+// ---------------------------------------------------------------------------
+
+export interface ManagedSpawnOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  stdin?: "pipe" | "ignore";
+  stdout?: "pipe" | "inherit" | "ignore";
+  stderr?: "pipe" | "inherit" | "ignore";
+  /** Real-time tap on decoded stderr chunks (only when stderr is "pipe"). */
+  onStderr?: (chunk: string) => void;
+  /** Maximum bytes retained in the stderr ring buffer (default 64 KB). */
+  stderrMaxBytes?: number;
+  /** SIGTERM → SIGKILL grace window in ms (default 5 000). */
+  killGraceMs?: number;
+}
+
+export interface ManagedExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
+
+export interface ManagedHandle {
+  readonly pid: number;
+  readonly stdin: import("bun").FileSink | null;
+  readonly stdout: ReadableStream<Uint8Array> | null;
+  /** Resolves when the process exits. */
+  readonly exited: Promise<ManagedExitStatus>;
+  /** SIGTERM immediately; SIGKILL after graceMs (default from spawn opts). Returns exit status. */
+  kill(graceMs?: number): Promise<ManagedExitStatus>;
+  /** Detach the child so the parent can exit without waiting. */
+  unref(): void;
+  /** Return the last N bytes captured from the auto-drained stderr ring buffer. */
+  stderrTail(): string;
+}
+
+export type ManagedSpawnResult = { ok: true; handle: ManagedHandle } | { ok: false };
+
+const DEFAULT_STDERR_MAX_BYTES = 64 * 1024; // 64 KB
+
+export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOptions): ManagedSpawnResult {
+  const stderrMode = opts?.stderr ?? "pipe";
+  const stdoutMode = opts?.stdout ?? "pipe";
+  const stdinMode = opts?.stdin ?? "pipe";
+  const graceMs = opts?.killGraceMs ?? SIGKILL_GRACE_MS;
+  const maxStderr = opts?.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES;
+
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([cmd, ...args], {
+      cwd: opts?.cwd,
+      env: opts?.env,
+      stdin: stdinMode,
+      stdout: stdoutMode === "ignore" ? "ignore" : stdoutMode === "inherit" ? "inherit" : "pipe",
+      stderr: stderrMode === "ignore" ? "ignore" : stderrMode === "inherit" ? "inherit" : "pipe",
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  // --- stderr auto-drain ring buffer ---
+  let stderrBuf = "";
+  if (stderrMode === "pipe" && proc.stderr && typeof proc.stderr !== "number") {
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const onChunk = opts?.onStderr;
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          onChunk?.(text);
+          stderrBuf += text;
+          if (stderrBuf.length > maxStderr) {
+            stderrBuf = stderrBuf.slice(-maxStderr);
+          }
+        }
+        stderrBuf += decoder.decode(); // flush
+      } catch {
+        // stream closed — expected on kill
+      }
+    })();
+  }
+
+  // --- exited promise with honest reporting ---
+  const exitedPromise: Promise<ManagedExitStatus> = proc.exited.then(() => ({
+    exitCode: proc.exitCode ?? null,
+    signal: proc.signalCode ?? null,
+  }));
+
+  // --- kill with SIGTERM→SIGKILL escalation ---
+  let killed = false;
+  const kill = (overrideGraceMs?: number): Promise<ManagedExitStatus> => {
+    if (!killed) {
+      killed = true;
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // already dead
+      }
+      const g = overrideGraceMs ?? graceMs;
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // already dead
+        }
+      }, g);
+    }
+    return exitedPromise;
+  };
+
+  const stdinSink: import("bun").FileSink | null =
+    stdinMode === "pipe" && proc.stdin && typeof proc.stdin !== "number"
+      ? (proc.stdin as import("bun").FileSink)
+      : null;
+
+  const stdoutStream: ReadableStream<Uint8Array> | null =
+    stdoutMode === "pipe" && proc.stdout && typeof proc.stdout !== "number"
+      ? (proc.stdout as ReadableStream<Uint8Array>)
+      : null;
+
+  const handle: ManagedHandle = {
+    pid: proc.pid,
+    stdin: stdinSink,
+    stdout: stdoutStream,
+    exited: exitedPromise,
+    kill,
+    unref: () => proc.unref(),
+    stderrTail: () => stderrBuf,
+  };
+
+  return { ok: true, handle };
+}
+
 const SIGKILL_GRACE_MS = 5_000;
 const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024; // 50 MB
 

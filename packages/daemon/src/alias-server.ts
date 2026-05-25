@@ -12,14 +12,14 @@ import type {
   MonitorAliasMetadata,
   ToolInfo,
 } from "@mcp-cli/core";
-import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature } from "@mcp-cli/core";
+import { ALIAS_SERVER_NAME, bundleAlias, computeSourceHash, formatToolSignature, spawnCapture } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { StateDb } from "./db/state";
-import { safeSetTimeout } from "./safe-timers";
+
 import { workerPath } from "./worker-path";
 
 /** Max concurrent subprocess executions to prevent fork-bomb scenarios. */
@@ -336,46 +336,28 @@ export class AliasServer {
   private async spawnExecutor(stdinPayload: string, timeoutMs: number): Promise<unknown> {
     await this.semaphore.acquire();
     try {
-      // dotw-ignore no-raw-spawn: retains live proc handle — uses proc.stdin.write, proc.kill via killTimeout, and proc.exited
-      const proc = Bun.spawn([process.execPath, this.executorPath], {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
+      const result = await spawnCapture(process.execPath, [this.executorPath], {
+        input: stdinPayload,
+        timeoutMs,
       });
 
-      proc.stdin.write(stdinPayload);
-      proc.stdin.end();
-
-      const killTimeout = safeSetTimeout(() => {
-        proc.kill("SIGKILL");
-      }, timeoutMs);
-
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-
-      clearTimeout(killTimeout);
-
-      // Surface subprocess warnings (e.g. output validation) even on success
-      if (exitCode === 0 && stderr.trim()) {
-        console.warn(`[alias] executor stderr: ${stderr.trim()}`);
+      if (result.ok && result.stderr.trim()) {
+        console.warn(`[alias] executor stderr: ${result.stderr.trim()}`);
       }
 
-      if (exitCode !== 0) {
-        if (stdout) {
+      if (!result.ok) {
+        if (result.stdout) {
           try {
-            const parsed = JSON.parse(stdout) as { error?: string };
+            const parsed = JSON.parse(result.stdout) as { error?: string };
             if (parsed.error) throw new Error(parsed.error);
           } catch (e) {
             if (!(e instanceof SyntaxError)) throw e;
           }
         }
-        throw new Error(stderr || `Alias executor exited with code ${exitCode}`);
+        throw new Error(result.stderr || `Alias executor exited with code ${result.exitCode}`);
       }
 
-      const parsed = JSON.parse(stdout) as { result: unknown; error?: string };
+      const parsed = JSON.parse(result.stdout) as { result: unknown; error?: string };
       if (parsed.error) throw new Error(parsed.error);
       return parsed.result;
     } finally {
