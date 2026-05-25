@@ -20,6 +20,11 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { options } from "@mcp-cli/core";
 
+/** `openssl version` / `openssl x509 -checkend` probes — pure on-disk work, should be near-instant. */
+const OPENSSL_PROBE_TIMEOUT_MS = 5_000;
+/** Key-pair + cert generation can spend noticeable CPU on RSA 2048 keygen on slow hosts. */
+const OPENSSL_REQ_TIMEOUT_MS = 30_000;
+
 /** Result of a successful certificate ensure call. */
 export interface SelfSignedMaterial {
   cert: string;
@@ -63,7 +68,7 @@ export function certPaths(dir: string): { certPath: string; keyPath: string } {
 
 /** Throws if `openssl` is not on PATH. */
 function assertOpensslAvailable(): void {
-  const r = spawnSync("openssl", ["version"], { encoding: "utf-8", timeout: 5_000 });
+  const r = spawnSync("openssl", ["version"], { encoding: "utf-8", timeout: OPENSSL_PROBE_TIMEOUT_MS });
   if (r.status !== 0) {
     throw new Error(
       "openssl is required for the local WSS listener but was not found on PATH. " +
@@ -81,7 +86,7 @@ export function isCertFresh(certPath: string, renewWithinSeconds: number): boole
   // `openssl x509 -checkend <secs>` exits 0 if cert NOT expiring within that window.
   const r = spawnSync("openssl", ["x509", "-checkend", String(renewWithinSeconds), "-noout", "-in", certPath], {
     encoding: "utf-8",
-    timeout: 5_000,
+    timeout: OPENSSL_PROBE_TIMEOUT_MS,
   });
   return r.status === 0;
 }
@@ -118,7 +123,7 @@ export function generateSelfSignedCert(
     "subjectAltName=IP:::1,IP:127.0.0.1,DNS:localhost",
   ];
 
-  const r = spawnSync("openssl", args, { encoding: "utf-8", timeout: 30_000 });
+  const r = spawnSync("openssl", args, { encoding: "utf-8", timeout: OPENSSL_REQ_TIMEOUT_MS });
   if (r.status !== 0) {
     throw new Error(`openssl req failed: ${r.stderr.trim() || `exit ${r.status}`}`);
   }

@@ -4,7 +4,7 @@
 
 import { dirname, resolve } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
-import { spawnCaptureSync } from "@mcp-cli/core";
+import { GIT_REV_PARSE_TIMEOUT_MS, spawnCaptureSync } from "@mcp-cli/core";
 import { c } from "../output";
 
 // ── Transcript walker ──
@@ -413,7 +413,7 @@ export function compactTranscript(entries: TranscriptEntry[], maxResultLen = 100
  */
 export function getGitRepoRoot(): string | null {
   try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
     if (!result.ok) return null;
     const commonDir = result.stdout.trim();
     if (!commonDir) return null;

@@ -5,6 +5,7 @@ import type { TranscriptEntry } from "../components/agent-session-detail";
 import { extractToolText, serverForProvider, toolForProvider } from "./ipc-tool-helpers";
 
 const MAX_ENTRIES = 10;
+const TRANSCRIPT_POLL_INTERVAL_MS = 3_000;
 
 export interface UseTranscriptOptions {
   /** Override ipcCall for testing (dependency injection). */
@@ -55,7 +56,7 @@ export function useTranscript(
     }
 
     poll();
-    const id = setInterval(poll, 3000);
+    const id = setInterval(poll, TRANSCRIPT_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);

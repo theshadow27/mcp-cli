@@ -24,6 +24,15 @@ import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 
 // ── Config ──
 
+/** Grace window for an agent process to exit cleanly after stdin closes before SIGTERM. */
+const GRACEFUL_EXIT_TIMEOUT_MS = 3_000;
+/** Second grace window after SIGTERM before falling through to SIGKILL. */
+const SIGTERM_GRACE_MS = 2_000;
+/** How long to let the agent stream tokens before sending session/cancel in the cancel-mid-generation test. */
+const PRE_CANCEL_STREAM_DELAY_MS = 3_000;
+/** Grace window for the SDK-based copilot probe to exit after we end stdin. */
+const SDK_PROBE_EXIT_GRACE_MS = 3_000;
+
 interface Config {
   agent: "copilot" | "gemini";
   tracePath: string;
@@ -243,12 +252,15 @@ class NdjsonTransport {
     }
 
     // Give it a moment to exit gracefully
-    const exited = Promise.race([this.proc.exited, new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
+    const exited = Promise.race([
+      this.proc.exited,
+      new Promise<null>((r) => setTimeout(() => r(null), GRACEFUL_EXIT_TIMEOUT_MS)),
+    ]);
     const code = await exited;
     if (code === null) {
       console.error("[transport] Process did not exit, sending SIGTERM");
       this.proc.kill("SIGTERM");
-      await Promise.race([this.proc.exited, new Promise((r) => setTimeout(r, 2000))]);
+      await Promise.race([this.proc.exited, new Promise((r) => setTimeout(r, SIGTERM_GRACE_MS))]);
     }
   }
 
@@ -546,7 +558,7 @@ async function runSpike(config: Config): Promise<Findings> {
     // Wait 3s to ensure the agent is mid-generation before cancelling.
     // Note: Copilot DOES stream session/update chunks (confirmed via SDK test),
     // but they only appear for text-generation prompts, not tool-use prompts.
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, PRE_CANCEL_STREAM_DELAY_MS));
     const cancelSentAt = Date.now();
     const cancelNotif = makeNotification("session/cancel", {
       sessionId: findings.sessionId,
@@ -683,7 +695,7 @@ async function runSpike(config: Config): Promise<Findings> {
       } catch {
         /* ignore */
       }
-      await Promise.race([sdkProc.exited, new Promise((r) => setTimeout(r, 3000))]);
+      await Promise.race([sdkProc.exited, new Promise((r) => setTimeout(r, SDK_PROBE_EXIT_GRACE_MS))]);
     }
     console.error(`[sdk] Notes: ${findings.sdkNotes.split("\n")[0]}`);
   } finally {

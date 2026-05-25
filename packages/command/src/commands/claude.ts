@@ -11,6 +11,7 @@ import "../help-claude";
 import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
+  GIT_REV_PARSE_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
@@ -50,6 +51,11 @@ import type { MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
+
+/** Quick fire-and-fallback IPC probe — return fast if the daemon is slow rather than block `ls`. */
+const QUICK_IPC_PROBE_TIMEOUT_MS = 2_000;
+/** Per-worktree git probe — must finish well inside an interactive `ls` render. */
+const WORKTREE_GIT_PROBE_TIMEOUT_MS = 3_000;
 
 export interface PrStatus {
   number: number;
@@ -160,7 +166,7 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus
  */
 function getGitRoot(): string | null {
   try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
     if (!result.ok) return null;
     const commonDir = result.stdout.trim();
     if (!commonDir) return null;
@@ -992,7 +998,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
     d.callTool("claude_session_list", toolArgs),
-    ipcCall("listWorkItems", {}, { timeoutMs: 2000 })
+    ipcCall("listWorkItems", {}, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS })
       .then((r) => r.items)
       .catch((): WorkItem[] => []),
   ]);
@@ -1026,7 +1032,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Fetch quota status (non-blocking — don't fail ls if quota unavailable)
   let quotaBanner: string | null = null;
   try {
-    const quota = await ipcCall("quotaStatus", undefined, { timeoutMs: 2000 });
+    const quota = await ipcCall("quotaStatus", undefined, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS });
     quotaBanner = formatQuotaBanner(quota);
   } catch {
     // Quota monitoring unavailable — continue without banner
@@ -1136,7 +1142,7 @@ function formatPrStatus(pr: PrStatus | null): string {
 function getWorktreeBranch(worktreePath: string): string | null {
   try {
     const result = spawnCaptureSync("git", ["-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"], {
-      timeoutMs: 3000,
+      timeoutMs: WORKTREE_GIT_PROBE_TIMEOUT_MS,
     });
     if (!result.ok) return null;
     const branch = result.stdout.trim();

@@ -36,6 +36,8 @@ import { useUnreadMail } from "./hooks/use-unread-mail";
 const LOG_VIEW_HEIGHT = 20;
 const STATS_VIEW_HEIGHT = 20;
 const TRANSCRIPT_VIEW_HEIGHT = 15;
+const CONFIG_REFRESH_INTERVAL_MS = 10_000;
+const AUTH_STATUS_CLEAR_DELAY_MS = 5_000;
 
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
@@ -217,7 +219,7 @@ export function App() {
         .catch(() => {});
     };
     fetchConfig();
-    const interval = setInterval(fetchConfig, 10_000);
+    const interval = setInterval(fetchConfig, CONFIG_REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -333,7 +335,7 @@ export function App() {
   useEffect(() => {
     if (authStatus && authStatus.state !== "pending") {
       if (authTimerRef.current) clearTimeout(authTimerRef.current);
-      authTimerRef.current = setTimeout(() => setAuthStatus(null), 5000);
+      authTimerRef.current = setTimeout(() => setAuthStatus(null), AUTH_STATUS_CLEAR_DELAY_MS);
     }
     return () => {
       if (authTimerRef.current) clearTimeout(authTimerRef.current);

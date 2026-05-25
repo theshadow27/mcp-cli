@@ -30,6 +30,13 @@ import { options } from "../constants";
 import { sha256Hex } from "../manifest-lock";
 import { type PatchStrategy, resolveStrategy } from "./strategies";
 
+/** `<bin> --version` / `codesign -d` probe — should return well under a second; allow slack for cold disk. */
+const VERSION_PROBE_TIMEOUT_MS = 10_000;
+/** `codesign --force` (re-sign) — Mach-O signing on slow disks/CI can take a few seconds. */
+const CODESIGN_RESIGN_TIMEOUT_MS = 30_000;
+/** `which claude` PATH lookup — pure userspace, must be near-instant. */
+const WHICH_PROBE_TIMEOUT_MS = 5_000;
+
 export interface PatcherDeps {
   /** Resolve the version of a claude binary. Default: spawn `<bin> --version`. */
   versionResolver: (binPath: string) => Promise<string>;
@@ -146,7 +153,7 @@ function updateCurrentLink(linkPath: string, target: string): void {
  * Default version resolver: spawn `<binPath> --version`, expect "X.Y.Z (...)" or similar.
  */
 export async function defaultVersionResolver(binPath: string): Promise<string> {
-  const result = spawnSync(binPath, ["--version"], { encoding: "utf-8", timeout: 10_000 });
+  const result = spawnSync(binPath, ["--version"], { encoding: "utf-8", timeout: VERSION_PROBE_TIMEOUT_MS });
   if (result.status !== 0) {
     throw new Error(`${binPath} --version exited ${result.status}: ${result.stderr || result.stdout}`);
   }
@@ -164,7 +171,7 @@ export async function defaultVersionResolver(binPath: string): Promise<string> {
 export async function defaultExtractEntitlements(binPath: string): Promise<string> {
   const result = spawnSync("codesign", ["-d", "--entitlements", ":-", binPath], {
     encoding: "utf-8",
-    timeout: 10_000,
+    timeout: VERSION_PROBE_TIMEOUT_MS,
   });
   // codesign writes the plist to stdout. Empty stdout is acceptable (no entitlements).
   if (result.status !== 0) {
@@ -185,7 +192,7 @@ export async function defaultResignBinary(binPath: string, entitlementsPath: str
   const result = spawnSync(
     "codesign",
     ["--force", "--sign", "-", "--options=runtime", "--entitlements", entitlementsPath, binPath],
-    { encoding: "utf-8", timeout: 30_000 },
+    { encoding: "utf-8", timeout: CODESIGN_RESIGN_TIMEOUT_MS },
   );
   if (result.error) {
     throw new Error(`codesign --force failed: ${result.error.message}`);
@@ -201,7 +208,7 @@ export async function defaultResignBinary(binPath: string, entitlementsPath: str
  * commit the patched copy.
  */
 export async function defaultSmokeTest(binPath: string): Promise<void> {
-  const result = spawnSync(binPath, ["--version"], { encoding: "utf-8", timeout: 10_000 });
+  const result = spawnSync(binPath, ["--version"], { encoding: "utf-8", timeout: VERSION_PROBE_TIMEOUT_MS });
   if (result.status !== 0) {
     throw new Error(`smoke test failed: ${binPath} --version exited ${result.status}`);
   }
@@ -262,7 +269,7 @@ export function resolveSourceClaudePath(configPathOverride?: string): string | n
     );
   }
 
-  const r = spawnSync("which", ["claude"], { encoding: "utf-8", timeout: 5_000 });
+  const r = spawnSync("which", ["claude"], { encoding: "utf-8", timeout: WHICH_PROBE_TIMEOUT_MS });
   if (r.status !== 0) return null;
   const path = (r.stdout || "").trim();
   return path || null;

@@ -17,6 +17,7 @@ import { emitMailEvent, pollMailUntil } from "./mail-wait";
 import "../help-claude";
 import {
   DEFAULT_TIMEOUT_MS,
+  GIT_REV_PARSE_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   buildHookEnv,
@@ -100,7 +101,7 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
 
 function getGitRoot(): string | null {
   try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: 5000 });
+    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
     if (!result.ok) return null;
     const commonDir = result.stdout.trim();
     if (!commonDir) return null;
