@@ -14,6 +14,7 @@ const PatternRuleSchema = z.object({
   guidance: z.array(z.string()),
   documentation: z.string().optional(),
   appliesToTests: z.boolean().optional(),
+  anchors: z.array(z.string().min(1)).optional(),
   except: z.array(z.string()).optional(),
 });
 
@@ -25,6 +26,7 @@ const CheckRuleSchema = z.object({
   guidance: z.array(z.string()),
   documentation: z.string().optional(),
   appliesToTests: z.boolean().optional(),
+  anchors: z.array(z.string().min(1)).optional(),
 });
 
 const RuleSchema = z.discriminatedUnion("kind", [PatternRuleSchema, CheckRuleSchema]);
@@ -43,6 +45,7 @@ function validateRule(rel: string, rule: unknown): asserts rule is Rule {
 
 function deepFreezeRule(rule: Rule): Rule {
   Object.freeze(rule.guidance);
+  if (rule.anchors) Object.freeze(rule.anchors);
   if (rule.kind === "pattern" && (rule as PatternRule).except) {
     Object.freeze((rule as PatternRule).except);
   }

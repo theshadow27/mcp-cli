@@ -27,13 +27,15 @@ export default rule;
 - `guidance: string[]` — "how to fix" bullets, shown once per rule (not per violation).
 - `documentation?: string` — pointer (issue/PR/anchor).
 - `appliesToTests?: boolean` — when `false`, `*.spec.ts`/`*.test.ts` are skipped. Default `true`.
+- `anchors?: readonly string[]` — repo-relative paths that MUST be in the loaded file set. The engine validates these in `runRules` *before* invoking `check()` and hard-errors with `MissingAnchorError` if any are absent. Use for **cross-file rules** that read a sibling file — without this, a rename or `--filter` narrowing silently no-ops the rule and reports a false-confidence pass (#2315). Anchors are advisory in direct `evaluateRule` callers (unit tests); only `runRules` enforces them.
 
 Two kinds:
 - **`PatternRule`** — `{ kind: "pattern", pattern: RegExp, except?: string[] }`. The engine runs the regex per-line (forces `/g`), reports each match as `line:column`. `except` is a list of substrings that, if present on a matched line, exempt it.
-- **`CheckRule`** — `{ kind: "check", check(ctx) }`. `ctx` is `{ file, files, violated, ast }`:
+- **`CheckRule`** — `{ kind: "check", check(ctx) }`. `ctx` is `{ file, files, violated, checked, ast }`:
   - `file: FileMeta` — `{ path, relPath, content, pkg, isTest }`. `pkg` is `"packages/<name>" | "scripts" | "test" | ""`.
   - `files: Map<string, FileMeta>` — all loaded files, for cross-file checks.
   - `violated(line, column, snippet)` — call once per violation. 1-indexed line/column.
+  - `checked()` — call when the rule performs real inspection work (not an early return). The runner aggregates per-rule counts; a rule that scanned >0 applicable files but signalled zero inspection logs a debug `silent-pass` warning. Crucial after a refactor/rename so a regression doesn't slip through as a clean pass.
   - `ast: AstHelper` — lazily parsed (only on first access; nothing is paid if you don't touch it).
 
 ## 2. Regex or AST?
