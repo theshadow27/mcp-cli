@@ -12,11 +12,19 @@
  *      `args[i + 1]` in a boolean context (`&& args[i + 1]`,
  *      `if (args[i + 1]`, etc.), or `args[i + 1]` is the first token
  *      followed by `&&`/`||` (multi-line `if` blocks).
- *   3. Explicit bounds comparison on the current or preceding 6 lines:
- *      `i + 1 < args.length`, `i < args.length - 1` (strict `<` only),
- *      or the reversed forms. Inline comments are stripped first.
- *      `i <= args.length - 1` is NOT safe (≡ `i < args.length`), since
- *      `args[++i]` accesses index `i + 1` which may equal `args.length`.
+ *   3. Explicit bounds comparison on the current or preceding 6 lines.
+ *      Two regexes recognise the safe forms:
+ *        - `BOUNDS_EXPR`: `i + 1 [<|<=|>|>=] args.length` (and the reversed
+ *          forms with `args.length` on the left). Any comparator that
+ *          pairs `i + 1` with `args.length` is accepted — the `i + 1`
+ *          token already encodes the off-by-one for `args[++i]`.
+ *        - `BOUNDS_EXPR_ALT`: `i < args.length - 1` / `args.length - 1 > i`
+ *          (algebraic equivalent without the `i + 1` token). Strict `<`
+ *          only — `i <= args.length - 1` is NOT safe (≡ `i < args.length`),
+ *          since `args[++i]` accesses index `i + 1` which may equal
+ *          `args.length`.
+ *      Inline comments are stripped first so `// i + 1 < args.length`
+ *      is not treated as a guard.
  *   4. Post-check on the assigned variable: the line assigns to a
  *      variable, and one of the next 2 lines checks it via `!varName`,
  *      `varName === undefined`, `varName === null`, or `varName == null`.

@@ -2,9 +2,11 @@
  * Rule: test-timeouts
  *
  * Flag `setTimeout` and `Bun.sleep` calls with literal numeric delays in
- * *.spec.ts / *.test.ts files. Fixed-delay waits in tests are flaky and
+ * *.spec.ts(x) files. Fixed-delay waits in tests are flaky and
  * environment-dependent — they pass on a fast laptop and fail in CI, or
- * vice-versa.
+ * vice-versa. Standalone parity: the original `check-test-timeouts.ts`
+ * globbed `**\/*.spec.ts` only, so `.test.ts` files are intentionally
+ * not scanned by this rule (broaden in a separate PR if desired).
  *
  * Detection tracks parenthesis depth across the whole file content so
  * multi-line calls (`setTimeout(\n  r,\n  50,\n)`) are matched correctly.
@@ -16,7 +18,8 @@
  *   - inject a FakeClock for timer-dependent behavior
  *   - pass a named constant or parameter delay (e.g. `Bun.sleep(intervalMs)`)
  *
- * Suppression: `// dotw-ignore test-timeouts: <reason>` on the call line.
+ * Suppression: `// dotw-ignore test-timeouts: <reason>` on the call line
+ * or the line immediately above (handled by the engine boundary).
  *
  * Migrated from the standalone `scripts/check-test-timeouts.ts`.
  */
