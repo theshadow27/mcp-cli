@@ -188,7 +188,7 @@ function emitOnFailure(logger: Logger, step: Step): void {
   for (const h of hints) logger.info(`  💡 ${h}`);
 }
 
-function formatMs(ms: number): string {
+export function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;
   return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;

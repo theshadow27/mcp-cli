@@ -1,16 +1,27 @@
-import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createCaptureLogger } from "./logger";
-import { StepRunner } from "./runner";
+import { StepRunner, formatMs } from "./runner";
 import type { Logger, Step } from "./types";
 
-// Just above formatMs's `< 1000` threshold — picks the seconds branch in
-// the duration formatter without bloating the suite. Named constant satisfies
-// the test-timeouts rule (a numeric literal here would be flagged).
-const SECONDS_BRANCH_DELAY_MS = 1100;
+// Tracked temp dirs: every `mkdtempSync` in this file goes through `tempDir()`
+// so afterEach can clean them up. Otherwise /tmp accumulates `runner-shell-*`
+// dirs across runs (Copilot review #2390).
+const tempDirs: string[] = [];
+function tempDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(d);
+  return d;
+}
+afterEach(() => {
+  while (tempDirs.length) {
+    const d = tempDirs.pop();
+    if (d) rmSync(d, { recursive: true, force: true });
+  }
+});
 
 function makeLog(): { logger: Logger; entries: string[] } {
   const entries: string[] = [];
@@ -304,23 +315,30 @@ describe("StepRunner — additional coverage", () => {
     expect(seen.args).toEqual(["--flag", "v"]);
     expect(seen.envVal).toBe("abc");
   });
+});
 
-  it("formats duration in ms / seconds / minutes ranges", async () => {
-    const { logger, entries } = makeLog();
-    const fast: Step = { name: "fast", description: "x", command: async () => ({ success: true }) };
-    const slowSeconds: Step = {
-      name: "slow-s",
-      description: "x",
-      command: async () => {
-        await new Promise<void>((r) => setTimeout(r, SECONDS_BRANCH_DELAY_MS));
-        return { success: true };
-      },
-    };
-    await new StepRunner({ logger }).add(fast, slowSeconds).run();
-    // fast → "Xms"
-    expect(entries.some((e) => /✓ fast \(\d+ms\)/.test(e))).toBe(true);
-    // slow-s → "X.Ys"
-    expect(entries.some((e) => /✓ slow-s \(\d+\.\d+s\)/.test(e))).toBe(true);
+describe("formatMs", () => {
+  // Unit-tests the duration formatter directly with synthetic elapsed values —
+  // avoids the wall-clock sleep the earlier version used to land in the
+  // seconds branch (Copilot review #2390, also flagged by the test-timeouts rule).
+  it("renders < 1s as integer milliseconds", () => {
+    expect(formatMs(0)).toBe("0ms");
+    expect(formatMs(1)).toBe("1ms");
+    expect(formatMs(999)).toBe("999ms");
+  });
+
+  it("renders 1s through just-under-60s with one decimal", () => {
+    expect(formatMs(1000)).toBe("1.0s");
+    expect(formatMs(1100)).toBe("1.1s");
+    expect(formatMs(59_999)).toBe("60.0s");
+  });
+
+  it("renders ≥ 60s as XmYs (minutes branch)", () => {
+    expect(formatMs(60_000)).toBe("1m0s");
+    expect(formatMs(65_000)).toBe("1m5s");
+    // 125.5 s → floor(125.5/60)=2, round(125.5%60)=round(5.5)=6
+    expect(formatMs(125_500)).toBe("2m6s");
+    expect(formatMs(3_600_000)).toBe("60m0s");
   });
 });
 
@@ -332,7 +350,7 @@ describe("StepRunner — additional coverage", () => {
 // branches). A non-existent command exercises the spawn `error` branch.
 
 function shimScript(opts: { stdout?: string; stderr?: string; code: number }): string {
-  const dir = mkdtempSync(join(tmpdir(), "runner-shell-"));
+  const dir = tempDir("runner-shell-");
   const path = join(dir, "shim");
   const stdout = (opts.stdout ?? "").replace(/'/g, "'\\''");
   const stderr = (opts.stderr ?? "").replace(/'/g, "'\\''");
@@ -394,7 +412,7 @@ describe("StepRunner — runShell (string command)", () => {
 
   it("appends step.args to the shell command's argv", async () => {
     const { logger } = makeLog();
-    const dir = mkdtempSync(join(tmpdir(), "runner-shell-args-"));
+    const dir = tempDir("runner-shell-args-");
     const path = join(dir, "argshim");
     // The shim echoes its argv joined; we'll fail it unless the arg shows up.
     writeFileSync(
@@ -419,7 +437,7 @@ esac
 
   it("drops undefined env values before spawning (no upstream `unset` needed)", async () => {
     const { logger } = makeLog();
-    const dir = mkdtempSync(join(tmpdir(), "runner-shell-env-"));
+    const dir = tempDir("runner-shell-env-");
     const path = join(dir, "envshim");
     writeFileSync(
       path,
