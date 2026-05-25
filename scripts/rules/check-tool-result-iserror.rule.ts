@@ -56,22 +56,63 @@ function walkSkippingNestedFunctions(node: ts.Node, visit: (n: ts.Node) => void)
   });
 }
 
+function isExpressionWrapper(node: ts.Node): boolean {
+  return (
+    ts.isAwaitExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isSatisfiesExpression(node)
+  );
+}
+
 function getBindingName(node: ts.Node): string | undefined {
   let current = node.parent;
   while (current) {
     if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
       return current.name.text;
     }
-    if (
-      ts.isAwaitExpression(current) ||
-      ts.isParenthesizedExpression(current) ||
-      ts.isAsExpression(current) ||
-      ts.isNonNullExpression(current) ||
-      ts.isTypeAssertionExpression(current) ||
-      ts.isSatisfiesExpression(current)
-    ) {
+    if (isExpressionWrapper(current)) {
       current = current.parent;
       continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function getDestructuredContentElement(node: ts.Node): ts.BindingElement | undefined {
+  let current = node.parent;
+  while (current) {
+    if (ts.isVariableDeclaration(current) && ts.isObjectBindingPattern(current.name)) {
+      for (const el of current.name.elements) {
+        const name = el.propertyName ?? el.name;
+        if (ts.isIdentifier(name) && name.text === "content") {
+          return el;
+        }
+      }
+      return undefined;
+    }
+    if (isExpressionWrapper(current)) {
+      current = current.parent;
+      continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function getInlineContentAccess(node: ts.Node): ts.PropertyAccessExpression | undefined {
+  let current: ts.Node = node;
+  while (current.parent) {
+    const parent = current.parent;
+    if (isExpressionWrapper(parent)) {
+      current = parent;
+      continue;
+    }
+    if (ts.isPropertyAccessExpression(parent) && parent.name.text === "content" && parent.expression === current) {
+      return parent;
     }
     break;
   }
@@ -151,7 +192,22 @@ const rule: CheckRule = {
 
     for (const call of callToolCalls) {
       const bindingName = getBindingName(call);
-      if (!bindingName) continue;
+      if (!bindingName) {
+        const destructuredEl = getDestructuredContentElement(call);
+        if (destructuredEl) {
+          const pos = ast.positionOf(destructuredEl);
+          const line = lines[pos.line - 1] ?? "";
+          violated(pos.line, pos.column, line.trim());
+          continue;
+        }
+        const inlineAccess = getInlineContentAccess(call);
+        if (inlineAccess) {
+          const pos = ast.positionOf(inlineAccess);
+          const line = lines[pos.line - 1] ?? "";
+          violated(pos.line, pos.column, line.trim());
+        }
+        continue;
+      }
 
       const scope = getEnclosingBlock(call);
       const contentAccesses = findContentAccesses(scope, bindingName);
