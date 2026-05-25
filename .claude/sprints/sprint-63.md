@@ -83,3 +83,44 @@ remain the real debt. Phase 3 (gate wiring) is DONE but ROADMAP still lists it a
 WI U refreshes it. Use the /rule-author skill for any rule add/extend. Risk: O (#2262) and
 N (#2261) are new rules whose remediation surface is unknown until shown-red — treat as
 burndowns with fanout if large. Orchestrator must never implement directly.
+
+---
+
+## RUN STATE — live recovery doc (updated 2026-05-24 20:33 ET)
+
+Sprint ran ~6h past the 15:00 rollover; sessions completed autonomously. **Read this first if resuming in a fresh context — it is the authoritative state.** Daemon is converged to ONE clean instance. Original diffs of everything merged live in main history (cherry-pickable).
+
+### DONE — merged to main
+I #2319/2320→#2356 · T #2289→#2357 · J #2335→#2358 · Z #2340/2341+#2264reconcile→#2359 · A #2285/2286/2287/2288/2290→#2360 · bun-install #2355→#2361 · G #2322(78 empty-catch)→#2363 · F #2332→#2364 · C #2292/2293→#2365 (also closed D #2291 as FP-obsolete) · S #2337→#2366 · L #2284→#2367 · B #2300/2301→#2368 · K #2336→#2369 · H #2323(25 timers)→#2372 · yoga-flaky #2362→#2379
+
+### MERGED BUT NEEDS FIX-FORWARD — tracked in #2380 (gate currently CLEAN; defects are latent FP-risk)
+- Q #2321→#2374: over-broad cwd detection; identifier-only matching; invalid clean fixture (`const cwd` twice)
+- M #2314/2327→#2377: `-h` help-flag FP asymmetry; inline-import smell
+- N #2261→#2376 (NEW RULE): wrong file scope (runs everywhere); exported-vs-any const mismatch; split() in loop
+- R #2342→#2373: clean, needs review pass only
+ACTION: reviewed follow-up PR per item.
+
+### OPEN PRs — DO NOT merge without a review cycle
+- E #2283 parseFlags 94-site burndown → PR #2378 (MERGEABLE; only red check = #2135 disconnect flaky → rerun, review, merge)
+- V phase-4 `dotw-todo-needs-issue` meta-rule → PR #2375 (MERGEABLE; same #2135 flaky; NEW rule → adversarial review then merge)
+
+### RECOVER
+- Y #2346 managed long-lived spawn helper: worktree `.claude/worktrees/claude-mpk1bzyf`, branch `feat/issue-2346-managed-spawn`, 13 files staged (1356-line diff; backup `/tmp/sprint63-y-backup/issue-2346-full.patch`). Branch is at OLD main (pre-yoga-fix). ACTION: rebase onto origin/main → commit → push → review → merge.
+
+### NOT LAUNCHED
+- O #2262 timeouts→named-constants (burndown-scale; scope carefully)
+- P #2315 cross-file rule hard-error (engine)
+- U Phase-2: migrate 4 `check-*.ts` (args-bounds/phase-drift/session-teardown/test-timeouts)→`*.rule.ts` + REFRESH `scripts/ROADMAP.md` (Phase 3 done, Phase 2 pkg.json done). Hot-shared files.
+- W #2345 route test+coverage through am-i-done (after U; shares ci.yml w/ X)
+- X #2311 _runner tests + scripts/ to CI (after W)
+
+### INFRA / BUGS
+- #2370 P1 daemon socket-theft (auto-start unlinks live socket) — ROOT CAUSE of split-brain; NOT fixed
+- #2371 poll-until string-literal `//` FP edge case — open follow-up
+- #2135 disconnect-test flaky (10s) — pre-existing; blocks E/V CI; rerun to clear
+
+### LESSONS (retro)
+1. Never merge on green CI alone — always a review cycle (caused #2380).
+2. Don't end a turn on a passive event-wait that may not fire — Monitor was bound to an orphaned daemon → 6h blind → ~400k cache miss. Drive actively; bounded polls; keep this doc current.
+3. Daemon auto-start steals the IPC socket (#2370) — converge to one daemon before heavy parallel spawning.
+4. Pre-commit runs FULL test:coverage for source changes → any test flaky blocks commits; fix flakies fast, never bypass.
