@@ -4,6 +4,7 @@
  * Removes a server entry from the config file. The daemon's ConfigWatcher picks up changes.
  */
 
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 import { parseScope } from "../parse";
 import { CONFIG_SCOPES, type ConfigScope, removeServerFromConfig, resolveConfigPath } from "./config-file";
@@ -14,22 +15,15 @@ import { CONFIG_SCOPES, type ConfigScope, removeServerFromConfig, resolveConfigP
  * Format: mcx remove [--scope {user|project|local}] <name>
  */
 export function parseRemoveArgs(args: string[]): { name: string; scope: ConfigScope } {
-  let scope: ConfigScope = "user";
-  const positional: string[] = [];
+  const { flags, positionals, errors } = parseFlags(args, {
+    scope: { type: "string", alias: "s" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--scope" || arg === "-s") {
-      if (i + 1 >= args.length) throw new Error("--scope requires a value");
-      scope = parseScope(args[++i], CONFIG_SCOPES); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (!arg.startsWith("-")) {
-      positional.push(arg);
-    } else {
-      throw new Error(`Unknown flag: ${arg}`);
-    }
-  }
+  if (errors.length > 0) throw new Error(errors[0]);
 
-  const name = positional[0];
+  const scope: ConfigScope = flags.scope ? parseScope(flags.scope as string, CONFIG_SCOPES) : "user";
+
+  const name = positionals[0];
   if (!name) {
     throw new Error("Server name is required");
   }

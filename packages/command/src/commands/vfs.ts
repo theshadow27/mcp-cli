@@ -22,6 +22,7 @@ import {
 } from "@mcp-cli/clone";
 import type { CloneResult, McpToolCaller } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
+import { parseFlags } from "../flags";
 import { printError } from "../output";
 
 export interface VfsDeps {
@@ -141,26 +142,31 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
 
   const providerName = args[0];
   const scopeKey = args[1];
-  let targetDir: string | undefined;
-  let cloudId: string | undefined;
-  let limit = 0;
-  let depth = 0;
 
-  for (let i = 2; i < args.length; i++) {
-    const arg = args[i];
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    if (arg === "--cloud-id" && args[i + 1]) {
-      cloudId = args[++i]; // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (arg === "--limit" && args[i + 1]) {
-      limit = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (arg === "--depth" && args[i + 1]) {
-      depth = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    } else if (!arg.startsWith("-") && !targetDir) {
-      targetDir = arg;
-    }
+  const { flags, positionals, errors } = parseFlags(args.slice(2), {
+    "cloud-id": { type: "string" },
+    limit: { type: "number" },
+    depth: { type: "number" },
+  });
+  if (errors.length > 0) {
+    printError(errors[0]);
+    deps.exit(1);
   }
 
-  if (!targetDir) targetDir = `./${scopeKey}`;
+  const cloudId = flags["cloud-id"] as string | undefined;
+  const limitRaw = flags.limit as number | undefined;
+  const depthRaw = flags.depth as number | undefined;
+  if (limitRaw !== undefined && !Number.isInteger(limitRaw)) {
+    printError(`--limit requires an integer, got: ${limitRaw}`);
+    deps.exit(1);
+  }
+  if (depthRaw !== undefined && !Number.isInteger(depthRaw)) {
+    printError(`--depth requires an integer, got: ${depthRaw}`);
+    deps.exit(1);
+  }
+  const limit = limitRaw ?? 0;
+  const depth = depthRaw ?? 0;
+  const targetDir = positionals[0] ?? `./${scopeKey}`;
 
   await deps.preflightCheck(providerName);
 
@@ -204,19 +210,23 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   log(
     'Warning: "mcx vfs pull" is deprecated. Use "git pull" instead.\n         The command will be removed in a future release.',
   );
-  const full = args.includes("--full");
-  let depth = 0;
-  const filteredArgs: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--full") continue;
-    // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-    if (args[i] === "--depth" && args[i + 1]) {
-      depth = Number.parseInt(args[++i], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      continue;
-    }
-    filteredArgs.push(args[i]);
+  const { flags, positionals, errors } = parseFlags(args, {
+    full: { type: "boolean" },
+    depth: { type: "number" },
+  });
+  if (errors.length > 0) {
+    printError(errors[0]);
+    deps.exit(1);
   }
-  const repoDir = resolve(filteredArgs[0] ?? ".");
+
+  const full = (flags.full as boolean) ?? false;
+  const depthRaw = flags.depth as number | undefined;
+  if (depthRaw !== undefined && !Number.isInteger(depthRaw)) {
+    printError(`--depth requires an integer, got: ${depthRaw}`);
+    deps.exit(1);
+  }
+  const depth = depthRaw ?? 0;
+  const repoDir = resolve(positionals[0] ?? ".");
   const { provider, providerName } = deps.resolveProviderFromCache(repoDir);
 
   await deps.preflightCheck(providerName);

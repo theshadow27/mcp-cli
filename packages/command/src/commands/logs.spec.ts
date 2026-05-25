@@ -73,12 +73,12 @@ describe("parseLogsArgs", () => {
 
   test("returns error for --lines without value", () => {
     const result = parseLogsArgs(["myserver", "--lines"]);
-    expect(result.error).toBe("--lines requires a number");
+    expect(result.error).toBe("--lines requires a value");
   });
 
   test("returns error for --lines with non-numeric value", () => {
     const result = parseLogsArgs(["myserver", "--lines", "abc"]);
-    expect(result.error).toBe("--lines requires a number");
+    expect(result.error).toBe('--lines requires a numeric value, got "abc"');
   });
 
   test("returns undefined server when no positional arg", () => {
@@ -189,7 +189,7 @@ describe("cmdLogs error paths", () => {
   test("exits on parse error", async () => {
     const deps = makeDeps();
     await expect(cmdLogs(["srv", "--lines", "abc"], deps)).rejects.toThrow(ExitError);
-    expect(deps.printError).toHaveBeenCalledWith("--lines requires a number");
+    expect(deps.printError).toHaveBeenCalledWith('--lines requires a numeric value, got "abc"');
   });
 
   test("exits when no server provided", async () => {

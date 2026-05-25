@@ -6,6 +6,7 @@
  *   mcx registry list             List all servers
  */
 
+import { parseFlags } from "../flags";
 import { printError, printRegistryList } from "../output";
 import { extractJsonFlag } from "../parse";
 import { listRegistry, searchRegistry } from "../registry/client";
@@ -63,23 +64,30 @@ export function extractRegistryFlags(args: string[]): {
   noCache: boolean;
   remaining: string[];
 } {
-  const remaining: string[] = [];
-  let limit: number | undefined;
-  let noCache = false;
+  const { flags, positionals, errors } = parseFlags(args, {
+    limit: { type: "number", alias: "n" },
+    "no-cache": { type: "boolean" },
+  });
 
-  for (let i = 0; i < args.length; i++) {
-    if ((args[i] === "--limit" || args[i] === "-n") && i + 1 < args.length) {
-      limit = Number.parseInt(args[i + 1], 10); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      if (Number.isNaN(limit) || limit <= 0) {
-        throw new Error(`Invalid --limit "${args[i + 1]}": must be a positive integer`); // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      }
-      i++;
-    } else if (args[i] === "--no-cache") {
-      noCache = true;
-    } else {
-      remaining.push(args[i]);
+  if (errors.length > 0) {
+    // Translate parseFlags error format to the original thrown message
+    const limitErr = errors.find((e) => e.includes("--limit") || e.includes("-n"));
+    if (limitErr) {
+      const match = limitErr.match(/got "(.+)"/);
+      const raw = match ? match[1] : "";
+      throw new Error(`Invalid --limit "${raw}": must be a positive integer`);
     }
+    throw new Error(errors[0]);
   }
 
-  return { limit, noCache, remaining };
+  const limit = flags.limit as number | undefined;
+  if (limit !== undefined && (limit <= 0 || !Number.isInteger(limit))) {
+    throw new Error(`Invalid --limit "${limit}": must be a positive integer`);
+  }
+
+  return {
+    limit,
+    noCache: (flags["no-cache"] as boolean) ?? false,
+    remaining: positionals,
+  };
 }

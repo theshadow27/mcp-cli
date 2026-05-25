@@ -11,6 +11,7 @@
 
 import { findGitRoot } from "@mcp-cli/core";
 import type { AutomationModuleInfo, GetAutomationLogResult, ListAutomationResult } from "@mcp-cli/core";
+import { parseFlags } from "../flags";
 
 export interface AutomationDeps {
   ipcCall: <T>(method: string, params?: unknown) => Promise<T>;
@@ -56,20 +57,19 @@ export async function cmdAutomation(args: string[], deps?: Partial<AutomationDep
     }
     await cmdShow(repoRoot, name, d);
   } else if (sub === "log") {
-    const limitIdx = args.indexOf("--limit");
-    let limit: number | undefined;
-    if (limitIdx >= 0) {
-      // dotw-todo no-manual-arg-parsing: migrate to parseFlags — fix in #2283
-      const raw = args[limitIdx + 1];
-      const parsed = Number.parseInt(raw, 10);
-      if (!raw || Number.isNaN(parsed) || parsed < 1) {
-        d.logError(`--limit requires a positive integer, got: ${raw ?? "(missing)"}`);
-        d.exit(1);
-      }
-      limit = parsed;
+    const { flags, positionals, errors } = parseFlags(args.slice(1), {
+      limit: { type: "number", alias: "n" },
+    });
+    if (errors.length > 0) {
+      d.logError(errors[0]);
+      d.exit(1);
     }
-    const firstPositional = args[1];
-    const name = firstPositional && !firstPositional.startsWith("--") ? firstPositional : undefined;
+    const limit = flags.limit as number | undefined;
+    if (limit !== undefined && (limit < 1 || !Number.isInteger(limit))) {
+      d.logError(`--limit requires a positive integer, got: ${limit}`);
+      d.exit(1);
+    }
+    const name = positionals[0];
     await cmdLog(repoRoot, name, limit, d);
   } else {
     d.logError(`Unknown subcommand: ${sub}`);
