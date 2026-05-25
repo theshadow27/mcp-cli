@@ -1,9 +1,9 @@
 # am-i-done / doing-it-wrong roadmap
 
 Status of the rule-engine migration. Phase 1 (scaffolding), Phase 2 (rule
-migrations), Phase 3 (pre-commit consolidation), and Phase 4 (meta-rule
-for unreferenced suppressions) are all DONE. Phase 5 (context-aware
-tiering) remains untriggered.
+migrations), Phase 3 (pre-commit consolidation), Phase 4 (meta-rule for
+unreferenced suppressions), and Phase 5 (context-aware tiering for CI's
+test + coverage) are all DONE.
 
 The current shape of the gate: `bun run am-i-done --pre-commit` runs
 `typecheck → lint → doing-it-wrong (full rule sweep)`; the comprehensive
@@ -132,15 +132,36 @@ suppression syntax (see #2352).
 
 ---
 
-## Phase 5 — context-aware tiering (only if a need emerges)
+## Phase 5 — context-aware tiering ✅ DONE
 
-Splitting steps by execution context (`ci` / `ai` / `sh`) remains
-deferred. mcp-cli currently doesn't differentiate — the AI logger
-handles audience and pre-commit/pre-push provide the speed tier.
+Triggered by #2345: CI's `check` and `coverage` jobs needed a step
+shape (split tests with #1004 retry, coverage with #1419 retry,
+`lint:check` not `--write`) that the developer-friendly default
+intentionally lacks. `am-i-done` now exposes a third audience
+alongside `--pre-commit` and the default:
 
-**Trigger.** Land Phase 5 only when there is a concrete step we want to
-run in one audience but not another (e.g. "skip the docker-based e2e in
-interactive runs"). Don't add the machinery speculatively.
+- `--ci` / `--pre-push` — same step list, both shared between the
+  `.git-hooks/pre-push` hook and `.github/workflows/ci.yml`. Runs
+  `INSTALL → TYPECHECK → LINT_CHECK → RULES → TEST_NON_DAEMON →
+  TEST_DAEMON → COVERAGE_CI`.
+- The retry-and-classify logic for the Bun crash signatures
+  (#1004 SIGILL / post-cleanup exit 1; #1419 coverage panic-on-
+  teardown) lives once in `scripts/_runner/ci-steps.ts` —
+  `bunTestWithCrashTolerance` and `coverageWithCrashTolerance`.
+  Used to live as duplicated bash in `ci.yml` (#2345).
+- The runner gained `--skip <name>` so the CI workflow can split
+  the list across two GitHub jobs (`check` skips coverage;
+  `coverage` runs `--only coverage`) without duplicating step
+  definitions.
+
+The audience flags are intent (what the caller wants), not the
+auto-detected context (where it's running). `scripts/_runner/context.ts`
+still classifies `ai` / `ci` / `sh` for logger selection — those two
+axes are independent.
+
+The original "only if a need emerges" trigger stands: don't add new
+audiences speculatively. CI test/coverage was the concrete need; new
+audiences require a similarly concrete one.
 
 ---
 

@@ -74,70 +74,29 @@ jobs:
           bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
-      # Single source of truth for the static gate: the same command the
-      # pre-commit hook runs. `--pre-commit` = typecheck, lint:check,
-      # args-bounds, timeouts, teardown, phase-drift, and the FULL
-      # doing-it-wrong rule sweep. CI is the unforgettable backstop since the
-      # hook is bypassable (--no-verify, web edits, force-push). Running it
-      # here means a violation surfaces locally, not for the first time in CI.
+      # Single source of truth: `am-i-done --ci` runs typecheck, lint:check,
+      # the full doing-it-wrong rule sweep, and the split non-daemon /
+      # daemon test pair (sequential, no `--parallel` — that's what
+      # avoided the #1004 segfault in the first place). The retry-and-
+      # classify logic for #1004 (Bun crash-after-pass / SIGILL retry)
+      # lives in `scripts/_runner/ci-steps.ts` and is shared with the
+      # `.git-hooks/pre-push` hook — local pre-push and CI run the same
+      # code path (#2345). `--skip coverage` defers coverage to the
+      # dedicated `coverage` job so the two run in parallel.
       #
-      # Test + coverage are NOT routed through am-i-done's --pre-push: CI's
-      # tuned test/coverage jobs carry #1004 segfault + #1419 coverage-crash
-      # retry handling that am-i-done's plain `bun test` / `check-coverage`
-      # lack. Folding those in is tracked in #2345.
-      #
-      # See #2344: sprint 62 added rules whose sweep ran nowhere.
-      - name: am-i-done (static gate — typecheck, lint, rules, phase-drift)
+      # CI is the unforgettable backstop since hooks are bypassable
+      # (--no-verify, web edits, force-push). The static-only equivalent
+      # is `am-i-done --pre-commit` (also shared with the pre-commit
+      # hook). See #2344 for the static gate and #2345 for test/coverage.
+      # `--skip install` because the explicit `bun install --frozen-lockfile`
+      # step above already installed deps — without this we'd reinstall twice
+      # per check run for zero behaviour change (#2389 review).
+      - name: am-i-done --ci (typecheck, lint, rules, non-daemon + daemon tests)
         if: needs.detect.outputs.docs_only != 'true'
-        run: bun run am-i-done --pre-commit --verbose
-      # Split daemon tests into a separate invocation to avoid a non-deterministic
-      # Bun v1.3.11 segfault that triggers when daemon worker-thread tests run in
-      # the same process as all other tests. See #1004 for upstream tracking.
-      #
-      # Bun crashes (SIGILL exit 132, or post-cleanup exit 1) happen AFTER all tests
-      # complete, so "0 fail" in stdout means the suite is clean. We treat any
-      # non-zero exit as a pass when "^ 0 fail$" appears in the output. Real test
-      # failures always produce a non-zero fail count line instead.
-      - name: Test (non-daemon)
-        if: needs.detect.outputs.docs_only != 'true'
-        run: |
-          set +e
-          bun test packages/acp packages/clone packages/codex packages/command packages/control packages/core packages/opencode packages/permissions scripts/rules test/integration.spec.ts 2>&1 | tee /tmp/test_non_daemon.txt
-          code=${PIPESTATUS[0]}
-          if [ $code -eq 0 ]; then
-            exit 0
-          elif grep -q "^ 0 fail$" /tmp/test_non_daemon.txt; then
-            echo "::warning::Bun crash (exit $code) after all tests passed — treating as pass (see #1004)"
-            exit 0
-          else
-            exit $code
-          fi
-      - name: Test (daemon)
-        if: needs.detect.outputs.docs_only != 'true'
-        run: |
-          set +e
-          bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts 2>&1 | tee /tmp/test_daemon.txt
-          code=${PIPESTATUS[0]}
-          if [ $code -eq 0 ]; then
-            exit 0
-          elif grep -q "^ 0 fail$" /tmp/test_daemon.txt; then
-            echo "::warning::Bun crash (exit $code) after all tests passed — treating as pass (see #1004)"
-            exit 0
-          elif [ $code -eq 132 ]; then
-            echo "::warning::Bun segfault (exit 132) — retrying once (see #1004)"
-            bun test packages/daemon test/cli-orchestration.spec.ts test/daemon-integration.spec.ts test/stress.spec.ts test/transport-errors.spec.ts 2>&1 | tee /tmp/test_daemon_retry.txt
-            code2=${PIPESTATUS[0]}
-            if [ $code2 -eq 0 ] || grep -q "^ 0 fail$" /tmp/test_daemon_retry.txt; then
-              exit 0
-            elif [ $code2 -eq 132 ]; then
-              echo "::warning::Bun segfault on retry too — treating as pass (known upstream bug, see #1004)"
-              exit 0
-            else
-              exit $code2
-            fi
-          else
-            exit $code
-          fi
+        run: bun run am-i-done --ci --skip install --skip coverage --verbose
+      # ci-steps.ts persists captured stdout+stderr to /tmp/test_*.txt for
+      # this artefact upload (test_non_daemon.txt, test_daemon.txt,
+      # test_daemon_retry.txt on retry).
       - name: Upload test logs
         if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
@@ -162,49 +121,23 @@ jobs:
           bun-version: "1.3.14"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
-      # Enforces per-file + global coverage thresholds from scripts/check-coverage.ts.
-      # Same command the pre-commit hook runs; --ci forces the full daemon run.
-      # Backstops the coverage ratchet against PRs merged without pre-commit hooks
-      # (force-push, web UI edits, etc.). See #1252.
+      # Coverage ratchet via am-i-done's `coverage` step (same code path the
+      # pre-push hook runs). Internally this is `bun scripts/check-coverage.ts
+      # --ci` with the #1419 / #1004 panic-on-teardown retry+passthrough logic
+      # baked in — see `scripts/_runner/ci-steps.ts`. The shell version of
+      # that retry chain used to live here. Real Bun panics (SIGILL 132 /
+      # SIGSEGV 139) get one retry; "PASS: All coverage thresholds met" /
+      # "0 fail" output passthroughs cover the legitimate post-test exit-1
+      # case from #1419. Truncated-output heuristics intentionally excluded
+      # — per #1870 they masked real failures, not Bun flakes.
       #
-      # Real Bun panics (SIGILL 132 / SIGSEGV 139) get one retry. Truncated-output
-      # heuristics removed: per #1870, the "exit 1 with no test summary" pattern
-      # was a deterministic test failure plus a kernel-pipe-buffer truncation in
-      # check-coverage.ts, not a Bun flake — broadening the retry guard there
-      # accomplished nothing. The "PASS: All coverage thresholds met" / "0 fail"
-      # passthroughs cover the legitimate post-test exit-1 case from #1419.
-      - name: Coverage thresholds
+      # Backstops the coverage ratchet against PRs merged without pre-commit
+      # hooks (force-push, web UI edits, etc.). See #1252 / #2345.
+      - name: am-i-done --ci --only coverage
         if: needs.detect.outputs.docs_only != 'true'
-        run: |
-          set +e
-          bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_out.txt
-          code=${PIPESTATUS[0]}
-          if [ $code -eq 0 ]; then
-            exit 0
-          elif grep -q "PASS: All coverage thresholds met" /tmp/coverage_out.txt; then
-            echo "::warning::Bun crash (exit $code) after coverage check passed — treating as pass (#1419)"
-            exit 0
-          elif grep -q "^ 0 fail$" /tmp/coverage_out.txt && ! grep -q "^FAIL:" /tmp/coverage_out.txt; then
-            echo "::warning::Bun crash (exit $code) after all coverage tests passed — treating as pass (#1419)"
-            exit 0
-          elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
-            echo "::warning::Bun panic (exit $code) — retrying once"
-            bun scripts/check-coverage.ts --ci 2>&1 | tee /tmp/coverage_retry.txt
-            code2=${PIPESTATUS[0]}
-            if [ $code2 -eq 0 ]; then
-              exit 0
-            elif grep -q "PASS: All coverage thresholds met" /tmp/coverage_retry.txt; then
-              echo "::warning::Bun crash (exit $code2) on retry after coverage passed — treating as pass (#1419)"
-              exit 0
-            elif grep -q "^ 0 fail$" /tmp/coverage_retry.txt && ! grep -q "^FAIL:" /tmp/coverage_retry.txt; then
-              echo "::warning::Bun crash (exit $code2) on retry after all coverage tests passed — treating as pass (#1419)"
-              exit 0
-            else
-              exit $code2
-            fi
-          else
-            exit $code
-          fi
+        run: bun run am-i-done --ci --only coverage --verbose
+      # ci-steps.ts persists captured stdout+stderr to /tmp/coverage_out.txt
+      # (and coverage_out_retry.txt on retry) for this artefact upload.
       - name: Upload coverage logs
         if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7

@@ -30,6 +30,8 @@ import type { Logger, ScriptFunction, Step, StepResult } from "./types";
 export interface RunnerOptions {
   from?: string;
   only?: string;
+  /** Step names to omit from the run (substring match). */
+  skip?: string[];
   verbose?: boolean;
   failFast?: boolean;
   logger: Logger;
@@ -53,7 +55,7 @@ export class StepRunner {
   }
 
   async run(): Promise<RunReport> {
-    const { logger, from, only, failFast = true } = this.opts;
+    const { logger, from, only, skip, failFast = true } = this.opts;
     const [startIdx, endIdx] = this.resolveRange();
     if (startIdx < 0) {
       logger.error(`step '${from ?? only}' not found. available: ${this.steps.map((s) => s.name).join(", ")}`);
@@ -65,6 +67,10 @@ export class StepRunner {
 
     for (const [i, step] of slice.entries()) {
       const idx = startIdx + i;
+      if (skip && matchesAny(step.name, skip)) {
+        logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — skipped (--skip)`);
+        continue;
+      }
       const stepStart = Date.now();
       logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — ${step.description}`);
 
@@ -186,4 +192,9 @@ function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;
   return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
+}
+
+function matchesAny(name: string, patterns: string[]): boolean {
+  const lower = name.toLowerCase();
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
 }

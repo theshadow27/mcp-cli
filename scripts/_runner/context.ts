@@ -10,8 +10,14 @@
  *     short summary.
  *   - sh  → Interactive shell; pretty-print with colour where supported.
  *
- * `--pre-commit` / `--pre-push` are intent flags, not contexts: the same
- * runner answers both, but the step list differs. Keep those separate.
+ * `--pre-commit` / `--pre-push` / `--ci` are intent flags, not contexts:
+ * the same runner answers all three, but the step list differs. Keep those
+ * separate.
+ *
+ * `--pre-push` and `--ci` resolve to the same CI step list (split tests
+ * with #1004 retry, coverage with #1419 retry, `lint:check` — no
+ * `--write`). The pre-push hook and the CI workflow share one definition
+ * of done (#2345). `--pre-commit` is the fast static-only subset.
  */
 
 import type { ExecutionContext } from "./types";
@@ -30,3 +36,4 @@ export function detectContext(env: Record<string, string | undefined> = process.
 
 export const isPreCommit = process.argv.includes("--pre-commit");
 export const isPrePush = process.argv.includes("--pre-push");
+export const isCi = process.argv.includes("--ci");

@@ -74,6 +74,41 @@ describe("StepRunner", () => {
     expect(seen).toEqual(["second"]);
   });
 
+  it("--skip omits matched steps by substring", async () => {
+    const { logger } = makeLog();
+    const seen: string[] = [];
+    const tag = (n: string): Step => ({
+      name: n,
+      description: "x",
+      command: async () => {
+        seen.push(n);
+        return { success: true };
+      },
+    });
+    const report = await new StepRunner({ logger, skip: ["coverage"] })
+      .add(tag("typecheck"), tag("lint"), tag("test-non-daemon"), tag("coverage"))
+      .run();
+    expect(report.success).toBe(true);
+    expect(seen).toEqual(["typecheck", "lint", "test-non-daemon"]);
+  });
+
+  it("--skip accepts multiple patterns", async () => {
+    const { logger } = makeLog();
+    const seen: string[] = [];
+    const tag = (n: string): Step => ({
+      name: n,
+      description: "x",
+      command: async () => {
+        seen.push(n);
+        return { success: true };
+      },
+    });
+    await new StepRunner({ logger, skip: ["test-daemon", "coverage"] })
+      .add(tag("typecheck"), tag("test-non-daemon"), tag("test-daemon"), tag("coverage"))
+      .run();
+    expect(seen).toEqual(["typecheck", "test-non-daemon"]);
+  });
+
   it("--from skips earlier steps", async () => {
     const { logger } = makeLog();
     const seen: string[] = [];
