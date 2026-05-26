@@ -454,10 +454,10 @@ describe("changedTestsStep", () => {
     expect(readFileSync("/tmp/test_changed_argv.txt", "utf8")).toContain("--changed=STUB_BASE");
   });
 
-  it("main pass carries --path-ignore-patterns for control; control pass does not", async () => {
+  it("main pass carries --path-ignore-patterns for control; control pass does not carry control/**", async () => {
     // Verifies the --path-ignore-patterns + --changed interaction: main pass
     // must exclude packages/control via the flag; control pass targets it
-    // directly as a positional arg (no ignore flag needed).
+    // directly as a positional arg (no control/** ignore flag needed).
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
     const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase, computeKey: noCache });
@@ -469,7 +469,7 @@ describe("changedTestsStep", () => {
     const mainLog = readFileSync("/tmp/test_changed_flags.txt", "utf8");
     const controlLog = readFileSync("/tmp/test_changed_flags_control.txt", "utf8");
     expect(mainLog).toContain("--path-ignore-patterns=packages/control/**");
-    expect(controlLog).not.toContain("--path-ignore-patterns");
+    expect(controlLog).not.toContain("--path-ignore-patterns=packages/control/**");
     expect(controlLog).toContain("packages/control");
   });
 
@@ -555,5 +555,126 @@ describe("changedTestsStep", () => {
     // Tests ran (fake bun exits 0) and overwrite the cached failure.
     expect(result).toEqual({ success: true });
     expect(lookupVerdict(cacheRoot, "fail-key")).toBe(true);
+  });
+
+  it("closure cache: skips files with unchanged closure hash, runs changed ones", async () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-closure-"));
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+
+    const specA = join(cacheRoot, "a.spec.ts");
+    const specB = join(cacheRoot, "b.spec.ts");
+    const dep = join(cacheRoot, "dep.ts");
+    writeFileSync(specA, 'import "./dep";\ntest("a", () => {});');
+    writeFileSync(specB, 'test("b", () => {});');
+    writeFileSync(dep, "export const x = 1;");
+
+    const { buildImportGraph } = await import("../rules/_engine/import-graph");
+    const { readFileCache, storeFileVerdicts, computeClosureHash } = await import("./file-cache");
+
+    const specFiles = [specA, specB];
+    const graph = buildImportGraph(specFiles, {
+      readFile: (p) => readFileSync(p, "utf8"),
+      resolve: (spec, fromDir) => {
+        const name = spec.replace("./", "");
+        return join(fromDir, `${name}.ts`);
+      },
+    });
+
+    const hashA = computeClosureHash(specA, graph, (p) => readFileSync(p, "utf8"));
+    const hashB = computeClosureHash(specB, graph, (p) => readFileSync(p, "utf8"));
+
+    const cache = readFileCache(cacheRoot);
+    const { relative } = await import("node:path");
+    storeFileVerdicts(cache, [
+      { relPath: relative(cacheRoot, specA), closureHash: hashA, passed: true },
+      { relPath: relative(cacheRoot, specB), closureHash: hashB, passed: true },
+    ]);
+    const { writeFileCache } = await import("./file-cache");
+    writeFileCache(cacheRoot, cache);
+
+    writeFileSync(dep, "export const x = 2;");
+
+    const step = changedTestsStep({
+      logName: "test_closure_skip",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: noCache,
+      findSpecFiles: () => specFiles,
+      buildGraph: (files) =>
+        buildImportGraph(files, {
+          readFile: (p) => readFileSync(p, "utf8"),
+          resolve: (spec, fromDir) => {
+            const name = spec.replace("./", "");
+            return join(fromDir, `${name}.ts`);
+          },
+        }),
+    });
+
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+
+    const mainLog = readFileSync("/tmp/test_closure_skip.txt", "utf8");
+    const relB = relative(cacheRoot, specB);
+    expect(mainLog).toContain(`--path-ignore-patterns=${relB}`);
+    const relA = relative(cacheRoot, specA);
+    expect(mainLog).not.toContain(`--path-ignore-patterns=${relA}`);
+  });
+
+  it("closure cache: records verdicts only for non-skipped files after run", async () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-closure-"));
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+
+    const specA = join(cacheRoot, "a.spec.ts");
+    const specB = join(cacheRoot, "b.spec.ts");
+    writeFileSync(specA, 'test("a", () => {});');
+    writeFileSync(specB, 'test("b", () => {});');
+
+    const { buildImportGraph } = await import("../rules/_engine/import-graph");
+    const { readFileCache, storeFileVerdicts, computeClosureHash } = await import("./file-cache");
+
+    const specFiles = [specA, specB];
+    const trivialBuild = (files: string[]) =>
+      buildImportGraph(files, {
+        readFile: (p) => readFileSync(p, "utf8"),
+        resolve: () => {
+          throw new Error("no deps");
+        },
+      });
+
+    const graph = trivialBuild(specFiles);
+    const hashB = computeClosureHash(specB, graph, (p) => readFileSync(p, "utf8"));
+    const cache = readFileCache(cacheRoot);
+    const { relative } = await import("node:path");
+    storeFileVerdicts(cache, [{ relPath: relative(cacheRoot, specB), closureHash: hashB, passed: true }]);
+    const { writeFileCache } = await import("./file-cache");
+    writeFileCache(cacheRoot, cache);
+
+    const step = changedTestsStep({
+      logName: "test_closure_verdicts",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: noCache,
+      findSpecFiles: () => specFiles,
+      buildGraph: trivialBuild,
+    });
+
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+
+    const updatedCache = readFileCache(cacheRoot);
+    const relA = relative(cacheRoot, specA);
+    const relB = relative(cacheRoot, specB);
+    expect(updatedCache.entries[relA]).toBeDefined();
+    expect(updatedCache.entries[relA]?.passed).toBe(true);
+    expect(updatedCache.entries[relB]).toBeDefined();
   });
 });

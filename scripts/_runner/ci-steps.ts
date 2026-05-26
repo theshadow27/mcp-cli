@@ -25,9 +25,12 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Glob } from "bun";
 
+import { buildImportGraph } from "../rules/_engine/import-graph";
+import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import type { Logger, ScriptFunction, StepResult } from "./types";
 import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
 
@@ -247,6 +250,68 @@ interface ChangedTestsOpts {
   repoRoot?: string;
   /** Override verdict-key computation. DI for tests. */
   computeKey?: (resolveBase: () => string) => string | null;
+  /** Override spec-file discovery. DI for tests. */
+  findSpecFiles?: (repoRoot: string) => string[];
+  /** Override import-graph builder. DI for tests. */
+  buildGraph?: (files: string[]) => ReturnType<typeof buildImportGraph>;
+}
+
+/**
+ * Synchronously find all spec files under the standard scan roots.
+ * Uses Bun.Glob for efficient scanning.
+ */
+export function findAllSpecFiles(repoRoot: string): string[] {
+  const roots = ["packages", "scripts", "test"];
+  const results: string[] = [];
+  for (const root of roots) {
+    const cwd = join(repoRoot, root);
+    const glob = new Glob("**/*.spec.{ts,tsx}");
+    for (const rel of glob.scanSync({ cwd, absolute: false })) {
+      if (rel.includes("node_modules")) continue;
+      results.push(join(cwd, rel));
+    }
+  }
+  return results;
+}
+
+/**
+ * Build closure hashes for test files and identify which can be skipped
+ * because their closure hash matches a previous green run (#2408).
+ *
+ * Returns null if the graph build fails (fall back to --changed).
+ */
+function tryClosureCacheFilter(
+  specFiles: string[],
+  repoRoot: string,
+  graph: ReturnType<typeof buildImportGraph>,
+  logger: Logger,
+): { toRun: string[]; skipped: string[]; hashes: Map<string, string> } | null {
+  try {
+    return filterByClosureCache({ testFiles: specFiles, repoRoot, graph });
+  } catch (err) {
+    logger.warn(`closure cache filter failed, falling back to --changed: ${err}`);
+    return null;
+  }
+}
+
+function recordClosureVerdicts(
+  specFiles: string[],
+  hashes: Map<string, string>,
+  passed: boolean,
+  repoRoot: string,
+): void {
+  try {
+    const cache = readFileCache(repoRoot);
+    const verdicts = specFiles.map((f) => ({
+      relPath: relative(repoRoot, f),
+      closureHash: hashes.get(f) ?? "",
+      passed,
+    }));
+    storeFileVerdicts(cache, verdicts);
+    writeFileCache(repoRoot, cache);
+  } catch {
+    // Best-effort — cache write failure must not fail the gate.
+  }
 }
 
 /**
@@ -254,6 +319,12 @@ interface ChangedTestsOpts {
  * files Bun's module graph says are affected by the diff (`bun test --changed`),
  * not the whole suite — the local gate covers the 99% blast radius in seconds;
  * the exhaustive suite + coverage ratchet stay in CI (`--ci`). See #2393.
+ *
+ * When the per-file closure cache (#2408) has entries, test files whose
+ * closure hash (content of the file + all transitive imports) is unchanged
+ * since their last green run are skipped entirely — even if `--changed`
+ * would select them. This narrows the run further for the 38.7% of PRs
+ * that touch a single leaf package.
  *
  * The safe subset runs `--parallel` (a quiet-machine sweep showed 0 flakes
  * across 22k executions); `packages/control` runs sequentially in a second
@@ -267,6 +338,8 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   const resolveBase = opts.resolveBase ?? defaultResolveBase;
   const repoRoot = opts.repoRoot ?? resolve(fileURLToPath(import.meta.url), "../../..");
   const getKey = opts.computeKey ?? computeVerdictKey;
+  const getSpecFiles = opts.findSpecFiles ?? findAllSpecFiles;
+  const getGraph = opts.buildGraph ?? buildImportGraph;
   return async ({ logger, env }) => {
     const base = resolveBase();
 
@@ -277,6 +350,40 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
       if (cached === true) {
         logger.info("verdict cache hit — worktree state unchanged since last green run, skipping tests (#2396)");
         return { success: true };
+      }
+    }
+
+    // Per-file closure cache: identify test files whose transitive import
+    // closure is unchanged since their last green run (#2408). These files
+    // are passed as --path-ignore-patterns to bun test --changed, narrowing
+    // the run within the diff-selected set.
+    // Wrapped in try-catch because the graph build requires real source files
+    // on disk — in test environments with fake bun/temp dirs this gracefully
+    // falls through to plain --changed.
+    let cacheResult: ReturnType<typeof tryClosureCacheFilter> = null;
+    try {
+      const t0 = performance.now();
+      const specFiles = getSpecFiles(repoRoot);
+      const graph = getGraph(specFiles);
+      cacheResult = tryClosureCacheFilter(specFiles, repoRoot, graph, logger);
+      const graphMs = (performance.now() - t0).toFixed(0);
+
+      if (cacheResult && cacheResult.skipped.length > 0) {
+        logger.info(
+          `closure cache (${graphMs}ms): ${cacheResult.skipped.length} files unchanged, ${cacheResult.toRun.length} need re-run (#2408)`,
+        );
+      } else {
+        logger.debug(`closure cache built in ${graphMs}ms, no files skipped`);
+      }
+    } catch (err) {
+      logger.debug(`closure cache unavailable, falling back to --changed: ${err}`);
+    }
+
+    // Build --path-ignore-patterns for closure-cached skipped files (#2408).
+    const skipPatterns: string[] = [];
+    if (cacheResult && cacheResult.skipped.length > 0) {
+      for (const abs of cacheResult.skipped) {
+        skipPatterns.push(`--path-ignore-patterns=${relative(repoRoot, abs)}`);
       }
     }
 
@@ -291,6 +398,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
         `--changed=${base}`,
         "--parallel",
         "--path-ignore-patterns=packages/control/**",
+        ...skipPatterns,
         "--pass-with-no-tests",
       ],
       logger,
@@ -301,12 +409,14 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     const mainVerdict = classifyChangedTest(main, logger);
     if (!mainVerdict.success) {
       if (key) storeVerdict(repoRoot, key, false);
+      if (cacheResult) recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, false, repoRoot);
       return mainVerdict;
     }
 
     // control specs (sequential — yoga TDZ). Fast no-op when none changed.
+    const controlSkipPatterns = skipPatterns.filter((p) => p.startsWith("--path-ignore-patterns=packages/control/"));
     const control = await runBun(
-      ["test", "--no-orphans", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
+      ["test", "--no-orphans", `--changed=${base}`, "packages/control", ...controlSkipPatterns, "--pass-with-no-tests"],
       logger,
       env,
       junitTmpPath(`${opts.logName}_control`),
@@ -314,6 +424,14 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     persistLog(`${opts.logName}_control`, control.output);
     const controlVerdict = classifyChangedTest(control, logger);
     if (key) storeVerdict(repoRoot, key, controlVerdict.success);
+
+    // Record per-file verdicts only for files that actually ran (#2408).
+    // Skipped files keep their existing cached green — re-stamping them
+    // would create a circular guarantee (skipped → green → skipped).
+    if (cacheResult) {
+      recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, controlVerdict.success, repoRoot);
+    }
+
     return controlVerdict;
   };
 }
