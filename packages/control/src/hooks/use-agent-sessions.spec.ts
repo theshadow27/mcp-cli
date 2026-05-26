@@ -187,6 +187,9 @@ describe("useAgentSessions", () => {
     while (callCount < 2 && Date.now() < deadline) {
       await Bun.sleep(RETRY_SLEEP_MS);
     }
+    // Guard: if the deadline elapsed without reaching the target, the subsequent
+    // "count stayed the same" assertion would vacuously pass. Fail loudly instead.
+    expect(callCount).toBeGreaterThanOrEqual(2);
 
     instance.unmount();
     instances.pop();
