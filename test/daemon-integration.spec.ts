@@ -51,7 +51,7 @@ describe("P1: Daemon lifecycle", () => {
     expect(res.result).toEqual({ ok: true });
 
     const exitCode = await Promise.race([
-      daemon.proc.exited,
+      daemon.exitCode,
       Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
     ]);
     expect(exitCode).toBe(0);
@@ -66,12 +66,12 @@ describe("P1: Daemon lifecycle", () => {
     daemon = await startTestDaemon({});
     await rpc(daemon.socketPath, "shutdown");
     const exitCode = await Promise.race([
-      daemon.proc.exited,
+      daemon.exitCode,
       Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
     ]);
     expect(exitCode).not.toBe("timeout");
 
-    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    const stderr = daemon.stderrTail();
     expect(stderr).toContain("Shutting down (IPC shutdown request)");
     expect(stderr).toContain("Shutdown complete in ");
     // Per-phase instrumentation should be visible at info level (#1103)
@@ -82,14 +82,14 @@ describe("P1: Daemon lifecycle", () => {
 
   test("shutdown via SIGTERM logs reason in stderr", async () => {
     daemon = await startTestDaemon({});
-    daemon.proc.kill("SIGTERM");
+    await daemon.handle.kill();
     const exitCode = await Promise.race([
-      daemon.proc.exited,
+      daemon.exitCode,
       Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
     ]);
     expect(exitCode).not.toBe("timeout");
 
-    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    const stderr = daemon.stderrTail();
     expect(stderr).toContain("Shutting down (SIGTERM)");
     daemon = undefined;
   });
@@ -103,15 +103,13 @@ describe("P1: Daemon lifecycle", () => {
     // Under CPU contention setTimeout can fire late — see #842 for root cause investigation.
     const t0 = Date.now();
     const exitCode = await Promise.race([
-      daemon.proc.exited,
+      daemon.exitCode,
       Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
     ]);
     const elapsed = Date.now() - t0;
 
     if (exitCode === "timeout") {
-      console.error(
-        `[idle-timeout-test] timed out after ${elapsed}ms, pid ${daemon.proc.pid} killed=${daemon.proc.killed}`,
-      );
+      console.error(`[idle-timeout-test] timed out after ${elapsed}ms, pid ${daemon.handle.pid}`);
     }
     expect(exitCode).toBe(0);
 
@@ -119,7 +117,7 @@ describe("P1: Daemon lifecycle", () => {
     if (exitCode === 0) expect(elapsed).toBeLessThan(8_000);
 
     // Verify timing instrumentation is present in stderr (#842)
-    const stderr = await new Response(daemon.proc.stderr as ReadableStream).text();
+    const stderr = daemon.stderrTail();
     expect(stderr).toContain("Idle timer fired: expected=4000ms actual=");
     expect(stderr).toContain("drift=");
     expect(stderr).toContain("Shutdown complete in ");
@@ -139,8 +137,8 @@ describe("P1: Daemon lifecycle", () => {
     expect(existsSync(pidPath)).toBe(true);
 
     // Force kill (no clean shutdown → PID file remains)
-    daemon.proc.kill("SIGKILL");
-    await daemon.proc.exited;
+    daemon.handle.killNow();
+    await daemon.exitCode;
     expect(existsSync(pidPath)).toBe(true);
 
     // Start a new daemon in the same directory — it should overwrite the stale PID
