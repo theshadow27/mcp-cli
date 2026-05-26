@@ -82,12 +82,8 @@ describe("P1: Daemon lifecycle", () => {
 
   test("shutdown via SIGTERM logs reason in stderr", async () => {
     daemon = await startTestDaemon({});
-    await daemon.handle.kill();
-    const exitCode = await Promise.race([
-      daemon.exitCode,
-      Bun.sleep(SHUTDOWN_TIMEOUT_MS).then(() => "timeout" as const),
-    ]);
-    expect(exitCode).not.toBe("timeout");
+    const status = await daemon.handle.kill();
+    expect(status.exitCode).not.toBeNull();
 
     const stderr = daemon.stderrTail();
     expect(stderr).toContain("Shutting down (SIGTERM)");
