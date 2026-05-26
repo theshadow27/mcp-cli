@@ -187,6 +187,31 @@ describe("bunTestWithCrashTolerance", () => {
     expect(result).toEqual({ success: true });
   });
 
+  it("post-test crash with no junit file falls back to stdout ' 0 fail' (#1004 hybrid)", async () => {
+    // The real #1004 scenario: bun crashes during teardown BEFORE flushing the
+    // junit reporter to disk. The ' 0 fail' stdout line is the durable fallback
+    // signal — it is written incrementally and survives a post-test crash even
+    // when the sidecar file does not (#2401).
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const ps = passingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${ps}'
+# Deliberately write NO --reporter-outfile — simulates bun crashing before flush.
+exit 139
+`,
+      { mode: 0o755 },
+    );
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_no_junit" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
   it("no retryOn132: exit 132 with no `0 fail` summary fails", async () => {
     const dir = makeFakeBun({ code: 132 });
     const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_x", retryOn132: false });
@@ -288,6 +313,68 @@ describe("coverageWithCrashTolerance", () => {
   it("exit other than 132/139 with no passthrough is a hard fail (no retry)", async () => {
     const dir = makeFakeBun({ code: 1, stdout: "some unrelated failure\n" });
     const step = coverageWithCrashTolerance({ logName: "coverage_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("inner bun crash without junit summary falls back to stdout ' 0 fail' (#1419 hybrid)", async () => {
+    // Simulates the case where check-coverage.ts writes { failures: null } because
+    // an inner bun run crashed before flushing its junit XML. The outer classifier
+    // must fall back to the durable stdout signal — the inner bun's ' 0 fail' line
+    // piped through check-coverage.ts output (#2401).
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const ps = passingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${ps}'
+for arg in "$@"; do
+  case "$arg" in
+    --junit-outfile=*)
+      cpath="\${arg#--junit-outfile=}"
+      printf '{"failures":null}' > "$cpath"
+      ;;
+  esac
+done
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const step = coverageWithCrashTolerance({ logName: "coverage_null_junit" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("inner bun crash with null summary AND real failures is a hard fail", async () => {
+    // When there are real test failures (no ' 0 fail' in stdout), the null-summary
+    // fallback must NOT fire — the crash masked genuine failures.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const fs = failingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${fs}'
+for arg in "$@"; do
+  case "$arg" in
+    --junit-outfile=*)
+      cpath="\${arg#--junit-outfile=}"
+      printf '{"failures":null}' > "$cpath"
+      ;;
+  esac
+done
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const step = coverageWithCrashTolerance({ logName: "coverage_null_junit_fail" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),

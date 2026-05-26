@@ -121,7 +121,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
@@ -253,6 +253,10 @@ const skipRun2 = !forceRun2;
 let stdout2 = "";
 let stderr2 = "";
 let exitCode2 = 0;
+// Declared here so the junit aggregation block below can read it regardless of
+// whether skipRun2 is true — block-scoped const inside the else {} would not be
+// visible at the aggregation site.
+let junit2Path: string | undefined = undefined;
 
 if (skipRun2) {
   console.log("Skipping run-2 (daemon tests) — pre-commit fast path (#1125). Use --ci or --force-run2 for full suite.");
@@ -262,7 +266,7 @@ if (skipRun2) {
     .map((f) => `test/${f}`);
   // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
   // and ws-server's port-retry tax has been reduced (see ws-server.ts).
-  const junit2Path = junitOutfile ? `/tmp/coverage-junit-run2-${Date.now()}.xml` : undefined;
+  junit2Path = junitOutfile ? `/tmp/coverage-junit-run2-${Date.now()}.xml` : undefined;
   const run2Args = [
     "bun",
     "test",
@@ -317,17 +321,27 @@ await Bun.write(Bun.stderr, stderr);
 // process exits cleanly or with an error code.
 if (junitOutfile) {
   try {
-    const readJunitFailures = (xmlPath: string | undefined): number => {
-      if (!xmlPath) return 0;
+    // Returns null when the junit file is absent or unparseable — mirrors
+    // parseJunitFailures() in ci-steps.ts. A missing file means the inner bun
+    // run crashed before flushing the reporter; returning 0 would fabricate a
+    // false "clean" signal. The outer classifyCoverage falls back to the durable
+    // stdout signal instead (#2401 hybrid).
+    const readJunitFailures = (xmlPath: string | undefined): number | null => {
+      if (!xmlPath) return null;
       try {
         const xml = readFileSync(xmlPath, "utf8");
         const m = xml.match(/failures="(\d+)"/);
-        return m ? Number.parseInt(m[1], 10) : 0;
+        return m ? Number.parseInt(m[1], 10) : null;
       } catch {
-        return 0;
+        return null;
       }
     };
-    const totalFailures = readJunitFailures(junit1Path) + readJunitFailures(junit2Path);
+    const f1 = readJunitFailures(junit1Path);
+    // run-2 was skipped → no tests ran in that phase, treat as 0 failures.
+    const f2 = skipRun2 ? 0 : readJunitFailures(junit2Path);
+    // Any missing junit file → write null so the outer classifier uses the
+    // durable stdout fallback instead of trusting a fabricated zero.
+    const totalFailures = f1 === null || f2 === null ? null : f1 + f2;
     writeFileSync(junitOutfile, JSON.stringify({ failures: totalFailures }));
   } catch {
     /* best-effort — crash tolerance is non-essential */

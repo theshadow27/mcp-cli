@@ -79,13 +79,17 @@ function junitTmpPath(stem: string): string {
 }
 
 /**
- * True when the junit report confirms zero test failures — the authoritative
- * signal for crash-after-pass tolerance (#1004). Falls back to false when the
- * junit file was not written (e.g. --pass-with-no-tests fired and no tests ran,
- * but that case produces exit 0 so this helper is never called for it).
+ * True when the run produced zero test failures, using a two-signal hybrid:
+ *   1. JUnit XML (primary): authoritative when the file exists and is parseable.
+ *   2. ZERO_FAIL_RE on stdout (fallback): bun crashes during post-test teardown
+ *      BEFORE flushing the junit file (the #1004 scenario). Stdout is written
+ *      incrementally and the " 0 fail" summary line survives a teardown crash
+ *      even when the sidecar file does not (#2401).
  */
 function hasZeroJunitFailures(outcome: RunOutcome): boolean {
-  return outcome.junitFailures === 0;
+  if (outcome.junitFailures === 0) return true;
+  if (outcome.junitFailures === null) return ZERO_FAIL_RE.test(outcome.output);
+  return false;
 }
 
 async function runBun(
@@ -130,6 +134,11 @@ function persistLog(logName: string, output: string): void {
   }
 }
 
+// Anchors the Bun test-summary line. Used as a durable fallback when the junit
+// reporter file was not written — e.g. bun crashes during post-test teardown
+// BEFORE flushing the file (the #1004 scenario). Stdout is written incrementally
+// and survives a teardown crash even when the sidecar file does not.
+const ZERO_FAIL_RE = /^ 0 fail$/m;
 const COVERAGE_PASS_RE = /PASS: All coverage thresholds met/;
 const FAIL_LINE_RE = /^FAIL:/m;
 
@@ -214,7 +223,11 @@ function classifyCoverage({ code, output, junitFailures }: RunOutcome, logger: L
     logger.warn(`bun crash (exit ${code}) after coverage check passed — treating as pass (#1419)`);
     return { success: true };
   }
-  if (junitFailures === 0 && !FAIL_LINE_RE.test(output)) {
+  // Primary: junit summary present and zero failures.
+  // Fallback: check-coverage.ts crashes before writing its summary file — the
+  // inner bun's " 0 fail" line still reaches our stdout (#2401 hybrid).
+  const cleanTests = junitFailures === 0 || (junitFailures === null && ZERO_FAIL_RE.test(output));
+  if (cleanTests && !FAIL_LINE_RE.test(output)) {
     logger.warn(`bun crash (exit ${code}) after all coverage tests passed — treating as pass (#1419)`);
     return { success: true };
   }
