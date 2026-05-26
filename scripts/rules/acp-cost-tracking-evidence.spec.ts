@@ -91,6 +91,19 @@ test("session_info_update tracks tokens", () => {
 });
 `;
 
+// Block-comment around expect(state.cost) — inner line doesn't start with * so
+// the old text-matching comment filter missed it. AST excludes it structurally.
+const SPEC_WITH_BLOCK_COMMENT_COST = `
+test("session_info_update tracks tokens", () => {
+  const state = createAcpEventMapState();
+  mapSessionUpdate({ update: { sessionUpdate: "session_info_update" } }, state);
+  /*
+  expect(state.cost).toBe(0.005);
+  */
+  expect(state.totalTokens).toBe(0);
+});
+`;
+
 // Single-quoted variant of the session_info_update signal — biome may rewrite quotes.
 const SPEC_WITH_SINGLE_QUOTE_EVIDENCE = `
 test('session_info_update tracks cost', () => {
@@ -215,6 +228,17 @@ describe("acp-cost-tracking-evidence: cross-file evidence check", () => {
   it("flags when expect(state.cost) appears only in a comment", () => {
     const provider = makeFile(PROVIDER_PATH, PROVIDER_WITH_ACP_COST_TRACKING);
     const spec = makeFile(SPEC_PATH, SPEC_WITH_COMMENTED_OUT_COST);
+    const files = new Map([
+      [provider.path, provider],
+      [spec.path, spec],
+    ]);
+    const violations = evaluateRule(rule, provider, files);
+    expect(violations).toHaveLength(1);
+  });
+
+  it("flags when expect(state.cost) is inside a block comment", () => {
+    const provider = makeFile(PROVIDER_PATH, PROVIDER_WITH_ACP_COST_TRACKING);
+    const spec = makeFile(SPEC_PATH, SPEC_WITH_BLOCK_COMMENT_COST);
     const files = new Map([
       [provider.path, provider],
       [spec.path, spec],
