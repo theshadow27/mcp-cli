@@ -597,6 +597,16 @@ function escapeRegExp(s: string): string {
  * tsconfig.json, then runs tsc. Diagnostics are returned as warnings.
  * Returns valid: true unless tsc crashes (signal kill, not diagnostic errors).
  */
+function resolveTscBin(): string | null {
+  const fromPath = Bun.which("tsc");
+  if (fromPath) return fromPath;
+  try {
+    return require.resolve("typescript/bin/tsc");
+  } catch {
+    return null;
+  }
+}
+
 export async function validateFreeformTsc(
   sourcePath: string,
   timeoutMs = 30_000,
@@ -606,7 +616,7 @@ export async function validateFreeformTsc(
   const { tmpdir } = await import("node:os");
   const { join, basename } = await import("node:path");
 
-  const tscBin = tscBinOverride !== undefined ? tscBinOverride : Bun.which("tsc");
+  const tscBin = tscBinOverride !== undefined ? tscBinOverride : resolveTscBin();
   if (!tscBin) {
     return {
       warnings: ["tsc not found on PATH — skipping type-check (install typescript: bun add -d typescript)"],

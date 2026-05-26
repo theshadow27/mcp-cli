@@ -86,33 +86,34 @@ describe("verdict-cache", () => {
 });
 
 describe("computeVerdictKey", () => {
-  // Tests run inside the mcp-cli worktree — a valid git repo with a HEAD commit.
-  // computeVerdictKey runs git commands in process.cwd() so there's no need to
-  // create a temporary repo.
-
-  it("returns a non-null string with three colon-separated parts in a valid git repo", () => {
-    const key = computeVerdictKey(() => "HEAD~1");
+  it("returns a key with base:head:diffHash format when run in a git repo", () => {
+    const key = computeVerdictKey(() => "fakebase123");
     expect(key).not.toBeNull();
-    const parts = (key as string).split(":");
-    // Format: <base>:<headSha>:<diffHash> — three non-empty segments.
+    const parts = key?.split(":");
     expect(parts).toHaveLength(3);
-    for (const p of parts) expect(p.length).toBeGreaterThan(0);
+    expect(parts?.[0]).toBe("fakebase123");
+    expect(parts?.[1]).toMatch(/^[0-9a-f]{40}$/);
+    expect(parts?.[2]).toBeTruthy();
   });
 
-  it("is stable across identical invocations (same state → same key)", () => {
-    const base = "HEAD~1";
-    const key1 = computeVerdictKey(() => base);
-    const key2 = computeVerdictKey(() => base);
-    expect(key1).toEqual(key2);
+  it("produces different keys for different bases", () => {
+    const key1 = computeVerdictKey(() => "base-a");
+    const key2 = computeVerdictKey(() => "base-b");
+
+    expect(key1).not.toBeNull();
+    expect(key2).not.toBeNull();
+    expect(key1).not.toBe(key2);
   });
 
-  it("changes when the base ref changes", () => {
-    // Two different base refs produce different keys because the first
-    // key segment (the resolved base SHA) changes.
-    const key1 = computeVerdictKey(() => "HEAD~1");
-    const key2 = computeVerdictKey(() => "HEAD~2");
-    // HEAD~2 may not exist in a shallow repo — skip gracefully.
-    if (key1 === null || key2 === null) return;
-    expect(key1).not.toEqual(key2);
+  it("uses the resolveBase callback for the first key component", () => {
+    const key = computeVerdictKey(() => "custom-merge-base-sha");
+    expect(key).not.toBeNull();
+    expect(key?.startsWith("custom-merge-base-sha:")).toBe(true);
+  });
+
+  it("same inputs produce the same key (deterministic)", () => {
+    const key1 = computeVerdictKey(() => "stable");
+    const key2 = computeVerdictKey(() => "stable");
+    expect(key1).toBe(key2);
   });
 });
