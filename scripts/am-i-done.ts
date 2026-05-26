@@ -194,6 +194,7 @@ const TEST_CHANGED: Step = {
     "this runs only tests in your diff's blast radius — CI (`--ci`) runs the full suite + coverage",
     "to reproduce a CI-only failure locally: bun run am-i-done --ci",
     "log artefact: /tmp/test_changed.txt (control pass: /tmp/test_changed_control.txt)",
+    "if you changed a worker or alias file and 0 tests ran (--pass-with-no-tests fired silently), bun's module graph cannot trace dynamic imports or path-string worker loads — run `bun run am-i-done --ci` before pushing (#2396)",
   ],
 };
 

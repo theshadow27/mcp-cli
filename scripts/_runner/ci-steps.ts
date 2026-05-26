@@ -183,7 +183,9 @@ interface ChangedTestsOpts {
  * across 22k executions); `packages/control` runs sequentially in a second
  * pass because of the yoga-layout TDZ crash under `--parallel` (#2362). Both
  * carry the #1004 crash-after-pass tolerance — a non-zero exit AFTER a clean
- * `0 fail` summary is a known post-test Bun crash, not a real failure.
+ * `0 fail` summary is a known post-test Bun crash, not a real failure. Note:
+ * unlike `bunTestWithCrashTolerance`, this step does NOT retry on SIGILL (exit
+ * 132) before the summary is printed — only post-summary crashes are tolerated.
  */
 export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   const resolveBase = opts.resolveBase ?? defaultResolveBase;
@@ -213,12 +215,15 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   };
 }
 
-// Resolve the ref to diff against: the merge-base with the upstream tracking
-// branch (what a push actually compares against), falling back to origin/main,
-// then main, then the previous commit. Each candidate is validated by asking
-// git for a real merge-base — a missing ref simply moves to the next.
+// Resolve the ref to diff against. `origin/main` is the primary candidate —
+// it's the branch you're proposing to merge into and stable regardless of
+// whether your local branch has a tracking ref. `@{upstream}` is tried next
+// so that incremental pushes on a feature branch (where `@{upstream}` already
+// has your earlier commits) scope only to what's new. Falls through to the
+// local `main` and finally `HEAD~1`. Each candidate is validated by asking git
+// for a real merge-base — a missing or unreachable ref simply moves to the next.
 function defaultResolveBase(): string {
-  for (const ref of ["@{upstream}", "origin/main", "main"]) {
+  for (const ref of ["origin/main", "@{upstream}", "main"]) {
     const r = spawnSync("git", ["merge-base", ref, "HEAD"], { encoding: "utf8" });
     if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
   }
