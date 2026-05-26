@@ -4,8 +4,8 @@
  *
  *   bun run am-i-done                       # full suite, developer-friendly
  *   bun run am-i-done --pre-commit          # fast static subset (pre-commit hook)
- *   bun run am-i-done --pre-push            # matches CI exactly (pre-push hook)
- *   bun run am-i-done --ci                  # alias for --pre-push (used by ci.yml)
+ *   bun run am-i-done --pre-push            # local gate: static + diff-aware tests (pre-push hook)
+ *   bun run am-i-done --ci                  # exhaustive: full suite + coverage (used by ci.yml)
  *   bun run am-i-done --ci --skip coverage  # ci.yml `check` job
  *   bun run am-i-done --ci --only coverage  # ci.yml `coverage` job
  *   bun run am-i-done --from 3              # resume at step 3 (number or name)
@@ -20,17 +20,18 @@
  *
  * Steps that are themselves standalone scripts (typecheck, lint) run as
  * shell commands. Rule checks run in-process via the doing-it-wrong
- * adapter — no second bun startup. CI-flavoured test and coverage steps
- * (--ci / --pre-push) run through factories in `scripts/_runner/ci-steps.ts`
- * that carry the #1004 (Bun crash-after-pass) and #1419 (coverage
- * panic-on-teardown) retry tolerance the naive shell commands lack —
- * Phase 5 of scripts/ROADMAP.md (#2345).
+ * adapter — no second bun startup. Test/coverage steps run through factories
+ * in `scripts/_runner/ci-steps.ts`: --ci runs the exhaustive suite + coverage
+ * (Phase 5, #2345); --pre-push runs the diff-aware `bun test --changed` subset
+ * for a ~90s local gate (#2393). Both carry the #1004 (Bun crash-after-pass)
+ * and #1419 (coverage panic-on-teardown) retry tolerance the naive shell
+ * commands lack.
  */
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bunTestWithCrashTolerance, coverageWithCrashTolerance } from "./_runner/ci-steps";
+import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./_runner/ci-steps";
 import { detectContext, isCi, isPreCommit, isPrePush } from "./_runner/context";
 import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
 import { StepRunner } from "./_runner/runner";
@@ -182,29 +183,49 @@ const COVERAGE_CI: Step = {
   ],
 };
 
+const TEST_CHANGED: Step = {
+  name: "test-changed",
+  description:
+    "diff-aware tests — only files affected by the diff (bun test --changed; parallel, control sequential #2362)",
+  command: changedTestsStep({ logName: "test_changed" }),
+  source: "scripts/_runner/ci-steps.ts",
+  onFailure: [
+    "real failure: see the captured output above",
+    "this runs only tests in your diff's blast radius — CI (`--ci`) runs the full suite + coverage",
+    "to reproduce a CI-only failure locally: bun run am-i-done --ci",
+    "log artefact: /tmp/test_changed.txt (control pass: /tmp/test_changed_control.txt)",
+  ],
+};
+
 // ===== Step lists per mode =====
 //
-// Pre-commit: fast feedback during `git commit`. Skips full test run
-//   (already covered by pre-push / CI) but keeps the architectural
-//   checks — they're cheap and catch the easy bugs early.
+// Pre-commit: fast feedback during `git commit`. Skips tests entirely
+//   (covered by pre-push / CI) but keeps the architectural checks —
+//   they're cheap and catch the easy bugs early.
 //
-// Pre-push / CI: the gate that has to match what CI's `check` and `coverage`
-//   jobs run. Test/coverage steps carry the #1004 / #1419 crash tolerance
-//   the naive `bun test` / `check-coverage.ts` can't.
+// Pre-push: the local gate. Same *pipeline* as CI (typecheck → lint → rules
+//   → tests) but scoped to the diff: `bun test --changed` runs only the
+//   files in the change's blast radius, and coverage is omitted (it's a
+//   whole-codebase ratchet — meaningless to scope, so it lives only in CI).
+//   This keeps a real push under a ~90s human/agent attention budget while
+//   CI owns the long tail. "Local covers 99%, CI covers the rest" (#2393).
+//
+// CI: the exhaustive gate CI's `check` and `coverage` jobs run — full
+//   non-daemon + daemon suites and the coverage ratchet, all carrying the
+//   #1004 / #1419 crash tolerance the naive `bun test` can't.
 //
 // Default (no flag): the developer-friendly path — parallel tests for
-//   speed, `biome --write` for auto-fix, and the simpler coverage step
-//   (no `--ci`, no crash retry). Use `--pre-push` or `--ci` when you want
-//   exactly what CI runs.
+//   speed, `biome --write` for auto-fix, and the simpler coverage step.
 
 const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES];
+const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, TEST_CHANGED];
 const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
 const CI: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, TEST_NON_DAEMON_CI, TEST_DAEMON_CI, COVERAGE_CI];
 
 function selectSteps(): { steps: Step[]; label: string } {
   if (isPreCommit) return { steps: PRE_COMMIT, label: "pre-commit" };
   if (isCi) return { steps: CI, label: "ci" };
-  if (isPrePush) return { steps: CI, label: "pre-push" };
+  if (isPrePush) return { steps: PRE_PUSH, label: "pre-push" };
   return { steps: COMPREHENSIVE, label: "default" };
 }
 
@@ -269,19 +290,24 @@ Usage:
 
 Flags:
   --pre-commit   fast subset suitable for the pre-commit hook (static only)
-  --pre-push     comprehensive — matches CI exactly (the pre-push hook runs this)
-  --ci           same as --pre-push; flag name CI itself uses
+  --pre-push     local gate — static checks + diff-aware tests (~90s budget)
+  --ci           exhaustive — full suite + coverage, exactly what CI runs
   --from N       resume from step N (number or name substring)
   --only N       run exactly one step (number or name substring)
   --skip NAME    skip a step by name (repeatable; substring match)
   --verbose      show captured step output even on success
 
---ci / --pre-push share one step list: typecheck → lint:check → rules sweep
-→ non-daemon tests → daemon tests → coverage --ci. Tests and coverage carry
-the #1004 (Bun crash-after-pass) and #1419 (coverage panic-on-teardown)
-retry tolerance the naive \`bun test\` and \`check-coverage.ts\` lack. The
-.git-hooks/pre-push hook and the CI workflow share this code path — one
-definition of done (#2345).
+--pre-push is the local gate the .git-hooks/pre-push hook runs: typecheck →
+lint:check → rules sweep → \`bun test --changed\` (only files in the diff's
+blast radius; parallel, control sequential for #2362). It deliberately omits
+coverage — the ratchet is a whole-codebase check that belongs in CI. The goal
+is a real push under a ~90s attention budget; CI owns the long tail (#2393).
+
+--ci is the exhaustive gate CI's \`check\` and \`coverage\` jobs run: full
+non-daemon → daemon suites → coverage --ci, all carrying the #1004 (Bun
+crash-after-pass) and #1419 (coverage panic-on-teardown) retry tolerance the
+naive \`bun test\` / \`check-coverage.ts\` lack. Same code path here and in the
+workflow — one definition of done (#2345).
 
 The default (no flag) runs the developer-friendly comprehensive list:
 parallel tests, \`biome --write\` for auto-fix, naive coverage step.

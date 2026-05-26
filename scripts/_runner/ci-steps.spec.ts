@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { bunTestWithCrashTolerance, coverageWithCrashTolerance } from "./ci-steps";
+import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./ci-steps";
 import { createCaptureLogger } from "./logger";
 
 // The factories spawn `bun` and inspect exit codes + output. The regex
@@ -216,5 +216,59 @@ describe("coverageWithCrashTolerance", () => {
       }),
     );
     expect(result).toMatchObject({ success: false });
+  });
+});
+
+describe("changedTestsStep", () => {
+  // resolveBase is injected so the test never shells out to git — the step
+  // then spawns the fake `bun` (twice: safe subset + control pass), and we
+  // assert the #1004 classification on the combined verdict.
+  const stubBase = () => "STUB_BASE";
+
+  it("exit 0 on both passes → success", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
+    const dir = makeFakeBun({ code: 1, stdout: passingSummary });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("real failure in the safe subset short-circuits before the control pass", async () => {
+    const dir = makeFakeBun({ code: 1, stdout: failingSummary });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("passes the resolved base ref to bun via --changed", async () => {
+    // Fake bun echoes its own argv so we can prove --changed=<base> is forwarded.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+    const step = changedTestsStep({ logName: "test_changed_argv", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+    expect(readFileSync("/tmp/test_changed_argv.txt", "utf8")).toContain("--changed=STUB_BASE");
   });
 });
