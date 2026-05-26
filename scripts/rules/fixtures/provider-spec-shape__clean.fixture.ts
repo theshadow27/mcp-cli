@@ -29,7 +29,7 @@ test("getAllProviders used for iteration without enumeration assertion", () => {
   }
 });
 
-test("getAllShims for a non-enumeration check", () => {
+test("getAllProviders for a non-enumeration check", () => {
   const all = getAllProviders();
   expect(all.every((p) => p.serverName.startsWith("_"))).toBe(true);
 });
@@ -52,6 +52,9 @@ test("getAllShims().find() then toEqual([literals]) on element property — not 
   const worktree = shims.find((s) => s.feature === "worktree");
   expect(worktree?.allowedPhases).toEqual(["impl", "qa", "repair"]);
 });
+
+// concise-arrow non-enumeration assertion — not flagged
+test("concise arrow — non-enumeration check", () => expect(getAllProviders().every((p) => p.serverName.startsWith("_"))).toBe(true));
 
 // test.skip with a non-enumeration assertion is fine
 test.skip("skipped shape assertion — not flagged", () => {

@@ -30,7 +30,6 @@
  *   tracked — shape assertions on individual elements are legitimate.
  *
  * Known limitations:
- *   - test.each with a concise arrow body (no curly braces) is not inspected
  *   - describe-scope registry calls are not tracked across nested test bodies
  *   - helper function indirection (const counts = () => getAllProviders().length)
  *     is not detected — it is a syntactic guard, not a semantic one
@@ -167,9 +166,8 @@ function isTestCallback(node: ts.Node): boolean {
 function findTestCallbackBody(node: ts.Node): ts.Node | undefined {
   if (isTestCallback(node)) {
     const call = node as ts.CallExpression;
-    // test("name", () => { ... }) — callback is the last argument
     const last = call.arguments[call.arguments.length - 1];
-    if (last && (ts.isArrowFunction(last) || ts.isFunctionExpression(last)) && ts.isBlock(last.body)) {
+    if (last && (ts.isArrowFunction(last) || ts.isFunctionExpression(last))) {
       return last.body;
     }
   }

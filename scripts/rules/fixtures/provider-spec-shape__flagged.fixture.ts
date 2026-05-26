@@ -1,6 +1,6 @@
 /**
  * @rule provider-spec-shape
- * @expect 5
+ * @expect 6
  * @path packages/core/src/agent-provider.spec.ts
  *
  * Registry enumeration assertions must be flagged.
@@ -35,3 +35,6 @@ test(".length on a derived variable + toEqual — enumeration", () => {
   const all = getAllProviders();
   expect(all.length).toEqual(8);
 });
+
+// concise-arrow expression body — still flagged
+test("concise arrow — count assertion", () => expect(getAllProviders()).toHaveLength(8));
