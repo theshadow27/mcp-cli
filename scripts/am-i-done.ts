@@ -90,13 +90,13 @@ const RULES: Step = {
 const TEST_PARALLEL: Step = {
   name: "test-parallel",
   description: "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362)",
-  command: "bun test --parallel --path-ignore-patterns=packages/control/**",
+  command: "bun test --parallel --no-orphans --path-ignore-patterns=packages/control/**",
 };
 
 const TEST_CONTROL: Step = {
   name: "test-control",
   description: "bun test packages/control (sequential — yoga-layout TDZ workaround #2362)",
-  command: "bun test packages/control",
+  command: "bun test --no-orphans packages/control",
 };
 
 const COVERAGE: Step = {
