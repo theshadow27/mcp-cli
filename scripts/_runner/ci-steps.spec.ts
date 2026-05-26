@@ -9,7 +9,7 @@ import { createCaptureLogger } from "./logger";
 // `bun` binary whose exit code and stdout/stderr we control via env vars,
 // then assert the returned StepResult matches the documented contract.
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -381,6 +381,26 @@ describe("changedTestsStep", () => {
 
     const { lookupVerdict } = await import("./verdict-cache");
     expect(lookupVerdict(cacheRoot, "new-key")).toBe(true);
+  });
+
+  it("runs tests and does not store when computeKey returns null (git unavailable)", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-cache-"));
+
+    const step = changedTestsStep({
+      logName: "test_changed_null_key",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: () => null,
+    });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+    // No verdict stored — cache file should not exist.
+    expect(existsSync(join(cacheRoot, "build/.verdict-cache.json"))).toBe(false);
   });
 
   it("does not short-circuit on a cached failure", async () => {

@@ -74,4 +74,13 @@ describe("verdict-cache", () => {
     storeVerdict(root, "after-corrupt", true);
     expect(lookupVerdict(root, "after-corrupt")).toBe(true);
   });
+
+  it("handles valid JSON with wrong shape gracefully", () => {
+    const root = tmp();
+    mkdirSync(join(root, "build"), { recursive: true });
+    writeFileSync(join(root, "build/.verdict-cache.json"), '{"entries": "not an array"}');
+    expect(lookupVerdict(root, "anything")).toBeNull();
+    storeVerdict(root, "after-bad-shape", true);
+    expect(lookupVerdict(root, "after-bad-shape")).toBe(true);
+  });
 });

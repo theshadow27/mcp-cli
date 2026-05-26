@@ -198,8 +198,10 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   const repoRoot = opts.repoRoot ?? resolve(fileURLToPath(import.meta.url), "../../..");
   const getKey = opts.computeKey ?? computeVerdictKey;
   return async ({ logger, env }) => {
+    const base = resolveBase();
+
     // Verdict cache: skip tests when the worktree state is unchanged (#2396).
-    const key = getKey(resolveBase);
+    const key = getKey(() => base);
     if (key) {
       const cached = lookupVerdict(repoRoot, key);
       if (cached === true) {
@@ -208,7 +210,6 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
       }
     }
 
-    const base = resolveBase();
     logger.info(`diff-aware: running tests affected by changes since ${base} (bun test --changed)`);
 
     // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel, #2362).

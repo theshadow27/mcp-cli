@@ -58,7 +58,9 @@ function readCache(repoRoot: string): VerdictCacheFile {
   const p = cachePath(repoRoot);
   if (!existsSync(p)) return { entries: [] };
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as VerdictCacheFile;
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    if (!Array.isArray(parsed.entries)) return { entries: [] };
+    return parsed as VerdictCacheFile;
   } catch {
     return { entries: [] };
   }
@@ -81,9 +83,13 @@ export function lookupVerdict(repoRoot: string, key: string): boolean | null {
 }
 
 export function storeVerdict(repoRoot: string, key: string, passed: boolean): void {
-  const cache = readCache(repoRoot);
-  cache.entries = cache.entries.filter((e) => e.key !== key);
-  cache.entries.unshift({ key, passed, ts: new Date().toISOString() });
-  if (cache.entries.length > MAX_ENTRIES) cache.entries.length = MAX_ENTRIES;
-  writeCache(repoRoot, cache);
+  try {
+    const cache = readCache(repoRoot);
+    cache.entries = cache.entries.filter((e) => e.key !== key);
+    cache.entries.unshift({ key, passed, ts: new Date().toISOString() });
+    if (cache.entries.length > MAX_ENTRIES) cache.entries.length = MAX_ENTRIES;
+    writeCache(repoRoot, cache);
+  } catch {
+    // Best-effort — a failed cache write must not fail the gate.
+  }
 }
