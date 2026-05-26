@@ -138,6 +138,34 @@ describe("buildImportGraph — synthetic", () => {
     });
     const closure = graph.closureOf("/test/a.ts");
     expect(closure.has("/test/b.ts")).toBe(true);
+    expect(closure.has("/test/a.ts")).toBe(false);
+  });
+
+  test("closureOf excludes self in longer cycles", () => {
+    const graph = syntheticGraph({
+      "/test/a.ts": `import "./b";`,
+      "/test/b.ts": `import "./c";`,
+      "/test/c.ts": `import "./a";`,
+    });
+    const closureA = graph.closureOf("/test/a.ts");
+    expect(closureA.has("/test/b.ts")).toBe(true);
+    expect(closureA.has("/test/c.ts")).toBe(true);
+    expect(closureA.has("/test/a.ts")).toBe(false);
+
+    const closureB = graph.closureOf("/test/b.ts");
+    expect(closureB.has("/test/a.ts")).toBe(true);
+    expect(closureB.has("/test/c.ts")).toBe(true);
+    expect(closureB.has("/test/b.ts")).toBe(false);
+  });
+
+  test("dependentsOf excludes self in cycles", () => {
+    const graph = syntheticGraph({
+      "/test/a.ts": `import "./b";`,
+      "/test/b.ts": `import "./a";`,
+    });
+    const depsA = graph.dependentsOf("/test/a.ts");
+    expect(depsA.has("/test/b.ts")).toBe(true);
+    expect(depsA.has("/test/a.ts")).toBe(false);
   });
 
   test("closureOf returns empty set for leaf with no imports", () => {

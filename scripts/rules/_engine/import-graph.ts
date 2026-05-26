@@ -198,6 +198,7 @@ function createGraph(edges: MutableEdges, allFiles: Set<string>): ImportGraph {
       }
     }
 
+    result.delete(file);
     closureCache.set(file, result);
     return result;
   }
@@ -221,6 +222,7 @@ function createGraph(edges: MutableEdges, allFiles: Set<string>): ImportGraph {
       }
     }
 
+    result.delete(file);
     reverseClosureCache.set(file, result);
     return result;
   }
