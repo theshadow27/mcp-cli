@@ -40,6 +40,8 @@ export interface CommonSpawnOpts {
   extras?: Record<string, unknown>;
 }
 
+export type BuiltInProviderName = "claude" | "codex" | "opencode" | "acp" | "copilot" | "gemini" | "grok" | "mock";
+
 export interface AgentProvider {
   /** Provider identifier: "claude", "codex", "acp", "opencode", "copilot", "gemini" */
   name: string;
