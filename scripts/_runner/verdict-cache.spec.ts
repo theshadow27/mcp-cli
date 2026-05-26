@@ -103,6 +103,8 @@ describe("computeVerdictKey", () => {
     const base = "HEAD~1";
     const key1 = computeVerdictKey(() => base);
     const key2 = computeVerdictKey(() => base);
+    expect(key1).not.toBeNull();
+    expect(key2).not.toBeNull();
     expect(key1).toEqual(key2);
   });
 
