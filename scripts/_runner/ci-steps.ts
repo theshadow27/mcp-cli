@@ -25,9 +25,11 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Logger, ScriptFunction, StepResult } from "./types";
+import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
 
 // Artefact directory matches the path the CI workflow's `Upload test/coverage
 // logs` steps glob for (`/tmp/test_*.txt`, `/tmp/coverage_*.txt`). `/tmp`
@@ -171,6 +173,10 @@ interface ChangedTestsOpts {
    * CLAUDE.md — `mock.module` pollutes Bun's global registry across files).
    */
   resolveBase?: () => string;
+  /** Override repo root for verdict cache location. DI for tests. */
+  repoRoot?: string;
+  /** Override verdict-key computation. DI for tests. */
+  computeKey?: (resolveBase: () => string) => string | null;
 }
 
 /**
@@ -189,8 +195,21 @@ interface ChangedTestsOpts {
  */
 export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   const resolveBase = opts.resolveBase ?? defaultResolveBase;
+  const repoRoot = opts.repoRoot ?? resolve(fileURLToPath(import.meta.url), "../../..");
+  const getKey = opts.computeKey ?? computeVerdictKey;
   return async ({ logger, env }) => {
     const base = resolveBase();
+
+    // Verdict cache: skip tests when the worktree state is unchanged (#2396).
+    const key = getKey(() => base);
+    if (key) {
+      const cached = lookupVerdict(repoRoot, key);
+      if (cached === true) {
+        logger.info("verdict cache hit — worktree state unchanged since last green run, skipping tests (#2396)");
+        return { success: true };
+      }
+    }
+
     logger.info(`diff-aware: running tests affected by changes since ${base} (bun test --changed)`);
 
     // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel, #2362).
@@ -209,7 +228,10 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     );
     persistLog(opts.logName, main.output);
     const mainVerdict = classifyChangedTest(main, logger);
-    if (!mainVerdict.success) return mainVerdict;
+    if (!mainVerdict.success) {
+      if (key) storeVerdict(repoRoot, key, false);
+      return mainVerdict;
+    }
 
     // control specs (sequential — yoga TDZ). Fast no-op when none changed.
     const control = await runBun(
@@ -218,7 +240,9 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
       env,
     );
     persistLog(`${opts.logName}_control`, control.output);
-    return classifyChangedTest(control, logger);
+    const controlVerdict = classifyChangedTest(control, logger);
+    if (key) storeVerdict(repoRoot, key, controlVerdict.success);
+    return controlVerdict;
   };
 }
 
