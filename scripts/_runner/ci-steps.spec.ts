@@ -454,10 +454,10 @@ describe("changedTestsStep", () => {
     expect(readFileSync("/tmp/test_changed_argv.txt", "utf8")).toContain("--changed=STUB_BASE");
   });
 
-  it("main pass carries --path-ignore-patterns for control; control pass does not", async () => {
+  it("main pass carries --path-ignore-patterns for control; control pass does not carry control/**", async () => {
     // Verifies the --path-ignore-patterns + --changed interaction: main pass
     // must exclude packages/control via the flag; control pass targets it
-    // directly as a positional arg (no ignore flag needed).
+    // directly as a positional arg (no control/** ignore flag needed).
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
     const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase, computeKey: noCache });
@@ -469,7 +469,7 @@ describe("changedTestsStep", () => {
     const mainLog = readFileSync("/tmp/test_changed_flags.txt", "utf8");
     const controlLog = readFileSync("/tmp/test_changed_flags_control.txt", "utf8");
     expect(mainLog).toContain("--path-ignore-patterns=packages/control/**");
-    expect(controlLog).not.toContain("--path-ignore-patterns");
+    expect(controlLog).not.toContain("--path-ignore-patterns=packages/control/**");
     expect(controlLog).toContain("packages/control");
   });
 

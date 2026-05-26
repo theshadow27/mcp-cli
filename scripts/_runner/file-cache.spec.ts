@@ -96,7 +96,7 @@ describe("readFileCache / writeFileCache", () => {
     const root = tmpRoot();
     roots.push(root);
     const cache = readFileCache(root);
-    expect(cache.bunVersion).toBe(Bun.version);
+    expect(cache.bunVersion).toStartWith(Bun.version);
     expect(Object.keys(cache.entries)).toHaveLength(0);
   });
 
@@ -129,6 +129,19 @@ describe("readFileCache / writeFileCache", () => {
     const root = tmpRoot();
     roots.push(root);
     writeFileSync(join(root, "build/.file-cache.json"), "not json{{");
+    const loaded = readFileCache(root);
+    expect(Object.keys(loaded.entries)).toHaveLength(0);
+  });
+
+  test("invalidates cache when bun.lock changes", () => {
+    const root = tmpRoot();
+    roots.push(root);
+    writeFileSync(join(root, "bun.lock"), "lockfile-v1");
+    const cache = readFileCache(root);
+    cache.entries["a.spec.ts"] = { closureHash: "abc", passed: true, ts: new Date().toISOString() };
+    writeFileCache(root, cache);
+
+    writeFileSync(join(root, "bun.lock"), "lockfile-v2");
     const loaded = readFileCache(root);
     expect(Object.keys(loaded.entries)).toHaveLength(0);
   });
@@ -194,6 +207,27 @@ describe("storeFileVerdicts", () => {
     }
     storeFileVerdicts(cache, verdicts);
     expect(Object.keys(cache.entries).length).toBeLessThanOrEqual(500);
+  });
+
+  test("evicts entries by insertion order, not alphabetical order", () => {
+    const cache = {
+      bunVersion: Bun.version,
+      entries: {} as Record<string, { closureHash: string; passed: boolean; ts: string }>,
+    };
+    const verdicts = [];
+    for (let i = 0; i < 510; i++) {
+      verdicts.push({
+        relPath: `file-${i.toString().padStart(4, "0")}.spec.ts`,
+        closureHash: `h${i}`,
+        passed: true,
+      });
+    }
+    storeFileVerdicts(cache, verdicts);
+    // The first 10 entries (indices 0–9) should be evicted — they were inserted
+    // first and got the lowest monotonic timestamps. The last entry must survive.
+    expect(cache.entries["file-0000.spec.ts"]).toBeUndefined();
+    expect(cache.entries["file-0009.spec.ts"]).toBeUndefined();
+    expect(cache.entries["file-0509.spec.ts"]).toBeDefined();
   });
 });
 

@@ -27,6 +27,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Glob } from "bun";
 
 import { buildImportGraph } from "../rules/_engine/import-graph";
 import { computeClosureHash, lookupFileVerdict, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
@@ -260,7 +261,6 @@ interface ChangedTestsOpts {
  * Uses Bun.Glob for efficient scanning.
  */
 export function findAllSpecFiles(repoRoot: string): string[] {
-  const { Glob } = require("bun") as typeof import("bun");
   const roots = ["packages", "scripts", "test"];
   const results: string[] = [];
   for (const root of roots) {
@@ -379,17 +379,29 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     // falls through to plain --changed.
     let cacheResult: ReturnType<typeof tryClosureCacheFilter> = null;
     try {
+      const t0 = performance.now();
       const specFiles = getSpecFiles(repoRoot);
       const graph = getGraph(specFiles);
       cacheResult = tryClosureCacheFilter(specFiles, repoRoot, graph, logger);
+      const graphMs = (performance.now() - t0).toFixed(0);
 
       if (cacheResult && cacheResult.skipped.length > 0) {
         logger.info(
-          `closure cache: ${cacheResult.skipped.length} files unchanged, ${cacheResult.toRun.length} need re-run (#2408)`,
+          `closure cache (${graphMs}ms): ${cacheResult.skipped.length} files unchanged, ${cacheResult.toRun.length} need re-run (#2408)`,
         );
+      } else {
+        logger.debug(`closure cache built in ${graphMs}ms, no files skipped`);
       }
     } catch (err) {
       logger.debug(`closure cache unavailable, falling back to --changed: ${err}`);
+    }
+
+    // Build --path-ignore-patterns for closure-cached skipped files (#2408).
+    const skipPatterns: string[] = [];
+    if (cacheResult && cacheResult.skipped.length > 0) {
+      for (const abs of cacheResult.skipped) {
+        skipPatterns.push(`--path-ignore-patterns=${relative(repoRoot, abs)}`);
+      }
     }
 
     logger.info(`diff-aware: running tests affected by changes since ${base} (bun test --changed)`);
@@ -403,6 +415,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
         `--changed=${base}`,
         "--parallel",
         "--path-ignore-patterns=packages/control/**",
+        ...skipPatterns,
         "--pass-with-no-tests",
       ],
       logger,
@@ -418,8 +431,9 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     }
 
     // control specs (sequential — yoga TDZ). Fast no-op when none changed.
+    const controlSkipPatterns = skipPatterns.filter((p) => p.includes("packages/control/"));
     const control = await runBun(
-      ["test", "--no-orphans", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
+      ["test", "--no-orphans", `--changed=${base}`, "packages/control", ...controlSkipPatterns, "--pass-with-no-tests"],
       logger,
       env,
       junitTmpPath(`${opts.logName}_control`),
@@ -428,13 +442,11 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     const controlVerdict = classifyChangedTest(control, logger);
     if (key) storeVerdict(repoRoot, key, controlVerdict.success);
 
-    // Record per-file verdicts for the closure cache (#2408).
+    // Record per-file verdicts only for files that actually ran (#2408).
+    // Skipped files keep their existing cached green — re-stamping them
+    // would create a circular guarantee (skipped → green → skipped).
     if (cacheResult) {
-      const allPassed = controlVerdict.success;
-      recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, allPassed, repoRoot);
-      if (allPassed) {
-        recordClosureVerdicts(cacheResult.skipped, cacheResult.hashes, true, repoRoot);
-      }
+      recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, controlVerdict.success, repoRoot);
     }
 
     return controlVerdict;

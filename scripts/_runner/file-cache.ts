@@ -20,6 +20,19 @@ import type { ImportGraph } from "../rules/_engine/import-graph";
 const CACHE_FILE = "build/.file-cache.json";
 const MAX_ENTRIES = 500;
 
+function lockfileHash(repoRoot: string): string {
+  try {
+    const content = readFileSync(join(repoRoot, "bun.lock"), "utf8");
+    return Bun.hash(content).toString(16);
+  } catch {
+    return "no-lockfile";
+  }
+}
+
+function cacheVersion(repoRoot: string): string {
+  return `${Bun.version}:${lockfileHash(repoRoot)}`;
+}
+
 export interface FileCacheEntry {
   /** Hash of (test file + transitive closure contents). */
   closureHash: string;
@@ -67,14 +80,15 @@ function cachePath(repoRoot: string): string {
 
 export function readFileCache(repoRoot: string): FileCacheFile {
   const p = cachePath(repoRoot);
-  if (!existsSync(p)) return { bunVersion: Bun.version, entries: {} };
+  const version = cacheVersion(repoRoot);
+  if (!existsSync(p)) return { bunVersion: version, entries: {} };
   try {
     const parsed = JSON.parse(readFileSync(p, "utf8")) as FileCacheFile;
-    if (parsed.bunVersion !== Bun.version) return { bunVersion: Bun.version, entries: {} };
-    if (!parsed.entries || typeof parsed.entries !== "object") return { bunVersion: Bun.version, entries: {} };
+    if (parsed.bunVersion !== version) return { bunVersion: version, entries: {} };
+    if (!parsed.entries || typeof parsed.entries !== "object") return { bunVersion: version, entries: {} };
     return parsed;
   } catch {
-    return { bunVersion: Bun.version, entries: {} };
+    return { bunVersion: version, entries: {} };
   }
 }
 
@@ -104,9 +118,9 @@ export function storeFileVerdicts(
   cache: FileCacheFile,
   verdicts: { relPath: string; closureHash: string; passed: boolean }[],
 ): void {
-  const now = new Date().toISOString();
+  let counter = Date.now();
   for (const { relPath, closureHash, passed } of verdicts) {
-    cache.entries[relPath] = { closureHash, passed, ts: now };
+    cache.entries[relPath] = { closureHash, passed, ts: new Date(counter++).toISOString() };
   }
   evict(cache);
 }
