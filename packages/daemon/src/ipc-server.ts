@@ -5,7 +5,7 @@
  * Handler logic lives in per-domain modules under ./handlers/.
  */
 
-import { unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import type {
   IpcError,
   IpcMethod,
@@ -62,6 +62,28 @@ import type { ServerPool } from "./server-pool";
 // Re-export for backward compat with existing tests and external code.
 export { buildEventFilter } from "./ipc-filter";
 export type { RequestContext } from "./handler-types";
+
+const SOCKET_PROBE_TIMEOUT_MS = 2_000;
+
+/** Probe a Unix socket to check if a live daemon is listening. */
+async function probeSocket(socketPath: string): Promise<boolean> {
+  try {
+    const res = await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "probe", method: "ping" }),
+      unix: socketPath,
+      signal: AbortSignal.timeout(SOCKET_PROBE_TIMEOUT_MS),
+    } as RequestInit);
+    // Any established HTTP response means a live daemon accepted the connection.
+    // A draining daemon returns 503 for non-shutdown methods — that still counts as live.
+    void res;
+    return true;
+  } catch {
+    // Connect error or timeout — no live daemon on this socket.
+    return false;
+  }
+}
 
 export class IpcServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
@@ -143,14 +165,22 @@ export class IpcServer {
     this.db.pruneExpiredAliases();
   }
 
-  /** Start listening on the Unix socket */
-  start(socketPath = options.SOCKET_PATH): void {
+  /** Start listening on the Unix socket. Probes for a live daemon first to prevent socket theft. */
+  async start(socketPath = options.SOCKET_PATH): Promise<void> {
     this.socketPath = socketPath;
 
-    try {
-      unlinkSync(socketPath);
-    } catch {
-      // doesn't exist, fine
+    if (existsSync(socketPath)) {
+      if (await probeSocket(socketPath)) {
+        throw new Error(
+          `[ipc] Refusing to start: a live daemon is already listening on ${socketPath}. Kill the existing daemon first or check for stale state.`,
+        );
+      }
+      // Socket file exists but no daemon is listening — stale from a crash. Safe to reclaim.
+      try {
+        unlinkSync(socketPath);
+      } catch {
+        // raced with another cleanup — fine
+      }
     }
 
     const onActivity = this.onActivity;

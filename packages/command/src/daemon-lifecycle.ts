@@ -161,17 +161,27 @@ export function isDaemonFlockHeld(): boolean {
  * Uses an exclusive lock file to prevent concurrent startups (race condition).
  */
 export async function ensureDaemon(): Promise<void> {
-  // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
-  if (await isDaemonRunning()) {
-    verboseLog("daemon already running");
+  // Flock check FIRST — kernel-enforced, no side effects, no false negatives.
+  // isDaemonRunning() calls cleanStaleFiles() on failure, which unlinks the PID file.
+  // If flock runs after that, it opens a NEW inode and the original daemon's lock
+  // (held on the old inode) is invisible — defeating the guard. See #2370.
+  if (isDaemonFlockHeld()) {
+    // Flock-holder is alive. Still check protocol version — a version-mismatched
+    // daemon should fail fast, not wait indefinitely for a socket that speaks wrong protocol.
+    const pidData = readPidFileVersion();
+    // Absent protocolVersion (old PID file) is treated as a mismatch — consistent with
+    // isDaemonRunning(), which throws ProtocolMismatchError when the field is missing.
+    if (!pidData?.protocolVersion || pidData.protocolVersion !== PROTOCOL_VERSION) {
+      throw new ProtocolMismatchError(pidData?.protocolVersion ?? "unknown", PROTOCOL_VERSION);
+    }
+    verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
+    await waitForDaemon();
     return;
   }
 
-  // Check if the daemon holds the PID file flock — definitive kernel-level liveness.
-  // This catches sleep/wake scenarios where the daemon is suspended but alive.
-  if (isDaemonFlockHeld()) {
-    verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
-    await waitForDaemon();
+  // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
+  if (await isDaemonRunning()) {
+    verboseLog("daemon already running");
     return;
   }
 
@@ -314,6 +324,15 @@ export async function stopDaemon(opts?: { force?: boolean }): Promise<void> {
   }
 
   cleanStaleFiles();
+}
+
+/** Read just the protocol version from the PID file. No liveness checks, no side effects. */
+function readPidFileVersion(): { protocolVersion?: string } | null {
+  try {
+    return JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 /**

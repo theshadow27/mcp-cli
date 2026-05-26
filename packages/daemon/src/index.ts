@@ -895,7 +895,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     },
     automationDispatcher: automationDispatcher ?? undefined,
   });
-  ipcServer.start();
+  await ipcServer.start();
 
   // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
