@@ -117,7 +117,7 @@ const rule: CheckRule = {
     "drop the explicit timeout and rely on the 1500ms harness default — it already has ample headroom under the watchdog",
     "a condition should resolve in milliseconds, not seconds; if you need ≥5s the test waits on time, not a condition",
     "if a suite is genuinely slow, raise the file's setDefaultTimeout above the deadline — a deadline ≥ the test timeout is a no-op",
-    "if the file already sets setDefaultTimeout(N), explicit pollUntil timeouts below N are valid — the effective watchdog is N, not 5000ms; the rule only flags timeouts ≥ the effective watchdog",
+    "if the file sets setDefaultTimeout(N) where N > 5000ms, the effective watchdog is N (not 5000ms) — explicit pollUntil timeouts below N are valid; the rule only flags timeouts ≥ the effective watchdog",
     'quote from Bun\'s own test discipline: "You are not testing the TIME PASSING, you are testing the CONDITION"',
     "cross-reference test/CLAUDE.md flaky-prevention patterns",
   ],
