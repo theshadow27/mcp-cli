@@ -23,9 +23,9 @@
 
 import type { ExecutionContext } from "./types";
 
-// "0" and "false" are explicit opt-outs; anything else (including absent) is
-// neither an explicit opt-in nor an explicit opt-out.
-function isFalsyEnv(val: string | undefined): boolean {
+// Returns true only when MCP_CLI_AI is explicitly set to "0" or "false" —
+// the two values that signal an intentional opt-out of the ai context.
+function isExplicitAiOptOut(val: string | undefined): boolean {
   return val === "0" || val === "false";
 }
 
@@ -36,7 +36,7 @@ export function detectContext(env: Record<string, string | undefined> = process.
   // MCP_CLI_AI=false to force-opt back into the streaming path — this
   // override wins even when CLAUDECODE/AGENT are set (e.g. a non-Claude
   // agent running inside a Claude session).
-  if (!isFalsyEnv(env.MCP_CLI_AI) && (env.CLAUDECODE || env.AGENT || env.MCP_CLI_AI)) return "ai";
+  if (!isExplicitAiOptOut(env.MCP_CLI_AI) && (env.CLAUDECODE || env.AGENT || env.MCP_CLI_AI)) return "ai";
   if (env.GITHUB_ACTIONS || env.CI) return "ci";
   const shell = env.SHELL?.split("/").pop() ?? "";
   if (["sh", "bash", "zsh"].includes(shell)) return "sh";

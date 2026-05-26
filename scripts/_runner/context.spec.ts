@@ -15,11 +15,14 @@ describe("detectContext", () => {
     expect(detectContext({ MCP_CLI_AI: "1" })).toBe("ai");
   });
 
-  it("MCP_CLI_AI=0 opts out of ai even when CLAUDECODE/AGENT are set", () => {
-    // The documented escape hatch: explicit "0" or "false" forces streaming
-    // output even in an AI-var environment (e.g. grok running inside Claude).
+  it("MCP_CLI_AI=0 or MCP_CLI_AI=false opts out of ai", () => {
     expect(detectContext({ MCP_CLI_AI: "0" })).not.toBe("ai");
     expect(detectContext({ MCP_CLI_AI: "false" })).not.toBe("ai");
+  });
+
+  it("MCP_CLI_AI=0 opt-out overrides CLAUDECODE and AGENT", () => {
+    // The documented escape hatch: explicit opt-out wins even when other AI
+    // vars are set (e.g. a non-Claude agent running inside a Claude session).
     expect(detectContext({ MCP_CLI_AI: "0", CLAUDECODE: "1" })).not.toBe("ai");
     expect(detectContext({ MCP_CLI_AI: "0", AGENT: "grok" })).not.toBe("ai");
     expect(detectContext({ MCP_CLI_AI: "false", CLAUDECODE: "1", AGENT: "x" })).not.toBe("ai");
