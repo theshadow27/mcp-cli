@@ -18,6 +18,8 @@ export class VfsError extends Error {
     public readonly kind: VfsErrorKind,
     message: string,
     public readonly cause?: Error,
+    /** Structured diagnostic content to display verbatim (e.g. alias discovery details). */
+    public readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "VfsError";
@@ -86,9 +88,8 @@ export function friendlyMessage(err: VfsError, context?: string): string {
       return `Network error${ctx}. Check your connection and that the MCP server is running:\n  mcx status`;
     case "not_found":
       // Preserve diagnostic content (e.g. alias discovery details) when present
-      // dotw-todo no-error-message-sniffing: add typed DiagnosticError with structured content field — fix in #2354
-      if (err.message.includes("Tried aliases") || err.message.includes("mcx ls")) {
-        return err.message;
+      if (err.diagnostic != null) {
+        return err.diagnostic;
       }
       return `Resource not found${ctx}. The page or tool may have been removed.`;
     case "conflict":
@@ -284,11 +285,8 @@ export function createResilientCaller(opts: ResilientCallerOptions): McpToolCall
 
       // All aliases failed
       const triedNames = aliases.join(", ");
-      throw new VfsError(
-        "not_found",
-        `Tool "${canonicalTool}" not found. Tried aliases: ${triedNames}. Your Atlassian MCP server may use different tool names — check "mcx ls atlassian".`,
-        err.cause,
-      );
+      const diagnosticMsg = `Tool "${canonicalTool}" not found. Tried aliases: ${triedNames}. Your Atlassian MCP server may use different tool names — check "mcx ls atlassian".`;
+      throw new VfsError("not_found", diagnosticMsg, err.cause, diagnosticMsg);
     }
   }
 

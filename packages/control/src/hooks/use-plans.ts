@@ -1,5 +1,11 @@
 import type { Plan, PlanMetrics, ServerStatus } from "@mcp-cli/core";
-import { CLAUDE_SERVER_NAME, GetPlanMetricsResultSchema, ListPlansResultSchema } from "@mcp-cli/core";
+import {
+  CLAUDE_SERVER_NAME,
+  GetPlanMetricsResultSchema,
+  IPC_ERROR,
+  IpcCallError,
+  ListPlansResultSchema,
+} from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { extractToolText } from "./ipc-tool-helpers";
@@ -42,8 +48,7 @@ async function fetchClaudePlans(
     return JSON.parse(text) as Plan[];
   } catch (err) {
     // _claude server not available is expected — only log unexpected errors
-    // dotw-todo no-error-message-sniffing: replace with typed NotFoundError instanceof check — fix in #2354
-    if (!(err instanceof Error && err.message.includes("not found"))) {
+    if (!(err instanceof IpcCallError && err.code === IPC_ERROR.SERVER_NOT_FOUND)) {
       console.error("[use-plans] fetchClaudePlans failed:", err);
     }
     return [];
