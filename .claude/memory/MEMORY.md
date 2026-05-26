@@ -33,6 +33,7 @@
 - [Agent briefs run full gate](feedback_agent_briefs_full_gate.md) — tell code-editing agents to run `bun run am-i-done`, not a subset; enumerate ALL packages when partitioning (#2344 missed codex)
 - [Guidance names the cause](feedback_guidance_names_cause.md) — rule/fix guidance explains the failure mechanism + non-exhaustive examples, never just "do X"
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
+- [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
