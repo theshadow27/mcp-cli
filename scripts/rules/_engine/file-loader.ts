@@ -1,10 +1,14 @@
 /**
  * File loader for the rule engine.
  *
- * mcp-cli is a flat repo, not a layered monorepo, so the loader stays
- * simple: glob `packages/`, `scripts/`, `test/` for *.ts (excluding .d.ts
- * and node_modules), read each into memory, attach a few quick-derived
+ * mcp-cli is a layered Bun workspace — a one-line edit to
+ * `packages/core/src/model.ts` fans out through the `@mcp-cli/core`
+ * barrel to 165+ test files. The loader stays simple on purpose: glob
+ * `packages/`, `scripts/`, `test/` for *.ts (excluding .d.ts and
+ * node_modules), read each into memory, attach a few quick-derived
  * flags (`isTest`, `pkg`) and return a Map keyed by absolute path.
+ * Cross-package import edges are not tracked here; `bun test --changed`
+ * owns the authoritative module graph for diff-aware test selection.
  *
  * Rules that need richer metadata (parsed imports/exports) can attach
  * their own per-rule cache. We intentionally don't pre-parse ASTs across

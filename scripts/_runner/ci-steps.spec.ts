@@ -257,10 +257,12 @@ describe("changedTestsStep", () => {
   // then spawns the fake `bun` (twice: safe subset + control pass), and we
   // assert the #1004 classification on the combined verdict.
   const stubBase = () => "STUB_BASE";
+  // Disable verdict cache for all legacy tests — they don't set up a repo root.
+  const noCache = () => null;
 
   it("exit 0 on both passes → success", async () => {
     const dir = makeFakeBun({ code: 0, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase, computeKey: noCache });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -271,7 +273,7 @@ describe("changedTestsStep", () => {
 
   it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
     const dir = makeFakeBun({ code: 1, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase, computeKey: noCache });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -284,7 +286,7 @@ describe("changedTestsStep", () => {
     // Pass 1 (main) fails; pass 2 (control) would succeed — if the short-circuit
     // is removed, control runs and flips the verdict to success, catching the bug.
     const dir = makeTwoPassFakeBun({ code: 1, stdout: failingSummary }, { code: 0, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_sc", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_sc", resolveBase: stubBase, computeKey: noCache });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -297,7 +299,7 @@ describe("changedTestsStep", () => {
     // Pass 1 (main) succeeds; pass 2 (control) fails — exercises the second
     // classifyChangedTest return and the control-fail code path.
     const dir = makeTwoPassFakeBun({ code: 0, stdout: passingSummary }, { code: 1, stdout: failingSummary });
-    const step = changedTestsStep({ logName: "test_changed_ctrl_fail", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_ctrl_fail", resolveBase: stubBase, computeKey: noCache });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -310,7 +312,7 @@ describe("changedTestsStep", () => {
     // Fake bun echoes its own argv so we can prove --changed=<base> is forwarded.
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const step = changedTestsStep({ logName: "test_changed_argv", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_argv", resolveBase: stubBase, computeKey: noCache });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -326,7 +328,7 @@ describe("changedTestsStep", () => {
     // directly as a positional arg (no ignore flag needed).
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase });
+    const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase, computeKey: noCache });
     await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -337,5 +339,69 @@ describe("changedTestsStep", () => {
     expect(mainLog).toContain("--path-ignore-patterns=packages/control/**");
     expect(controlLog).not.toContain("--path-ignore-patterns");
     expect(controlLog).toContain("packages/control");
+  });
+
+  it("skips tests on verdict cache hit (passing)", async () => {
+    // A fake bun that would fail — but the cache hit should prevent it from running.
+    const dir = makeFakeBun({ code: 1, stdout: "SHOULD NOT RUN\n 1 fail\n" });
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-cache-"));
+    const { storeVerdict } = await import("./verdict-cache");
+    storeVerdict(cacheRoot, "cached-key", true);
+
+    const step = changedTestsStep({
+      logName: "test_changed_cache_hit",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: () => "cached-key",
+    });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("runs tests on verdict cache miss and stores the result", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-cache-"));
+
+    const step = changedTestsStep({
+      logName: "test_changed_cache_miss",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: () => "new-key",
+    });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+
+    const { lookupVerdict } = await import("./verdict-cache");
+    expect(lookupVerdict(cacheRoot, "new-key")).toBe(true);
+  });
+
+  it("does not short-circuit on a cached failure", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-cache-"));
+    const { storeVerdict, lookupVerdict } = await import("./verdict-cache");
+    storeVerdict(cacheRoot, "fail-key", false);
+
+    const step = changedTestsStep({
+      logName: "test_changed_cache_fail",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: () => "fail-key",
+    });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    // Tests ran (fake bun exits 0) and overwrite the cached failure.
+    expect(result).toEqual({ success: true });
+    expect(lookupVerdict(cacheRoot, "fail-key")).toBe(true);
   });
 });
