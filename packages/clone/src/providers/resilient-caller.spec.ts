@@ -319,9 +319,9 @@ describe("classifyError regression tests", () => {
 });
 
 describe("friendlyMessage regression tests", () => {
-  test("not_found with diagnostic field preserves the diagnostic message", () => {
+  test("VfsError.notFound preserves the diagnostic message verbatim", () => {
     const detail = 'Tool "getConfluenceSpaces" not found. Tried aliases: a, b, c. Check mcx ls atlassian.';
-    const err = new VfsError("not_found", detail, undefined, detail);
+    const err = VfsError.notFound(detail);
     const msg = friendlyMessage(err, "clone confluence/FOO");
     expect(msg).toContain("Tried aliases");
     expect(msg).toContain("mcx ls atlassian");

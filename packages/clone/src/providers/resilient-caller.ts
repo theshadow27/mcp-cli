@@ -18,11 +18,29 @@ export class VfsError extends Error {
     public readonly kind: VfsErrorKind,
     message: string,
     public readonly cause?: Error,
-    /** Structured diagnostic content to display verbatim (e.g. alias discovery details). */
+    /**
+     * User-facing diagnostic content for `friendlyMessage` to display verbatim.
+     * Only respected when `kind === "not_found"`. When omitted, `friendlyMessage`
+     * returns the generic fallback ("Resource not found…").
+     *
+     * Prefer `VfsError.notFound(message, cause)` over setting this directly —
+     * it enforces that `message` and `diagnostic` are consistent.
+     */
     public readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "VfsError";
+  }
+
+  /**
+   * Create a `not_found` error whose full message is shown verbatim by
+   * `friendlyMessage`. Use this (not the raw constructor) whenever the
+   * message contains user-actionable diagnostic content such as alias
+   * discovery details — the factory guarantees `diagnostic === message`
+   * so future refactors can't accidentally drop the 4th positional arg.
+   */
+  static notFound(message: string, cause?: Error): VfsError {
+    return new VfsError("not_found", message, cause, message);
   }
 }
 
@@ -286,7 +304,7 @@ export function createResilientCaller(opts: ResilientCallerOptions): McpToolCall
       // All aliases failed
       const triedNames = aliases.join(", ");
       const diagnosticMsg = `Tool "${canonicalTool}" not found. Tried aliases: ${triedNames}. Your Atlassian MCP server may use different tool names — check "mcx ls atlassian".`;
-      throw new VfsError("not_found", diagnosticMsg, err.cause, diagnosticMsg);
+      throw VfsError.notFound(diagnosticMsg, err.cause);
     }
   }
 
