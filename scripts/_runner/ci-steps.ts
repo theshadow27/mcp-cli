@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
 
 import { buildImportGraph } from "../rules/_engine/import-graph";
-import { computeClosureHash, lookupFileVerdict, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
+import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import type { Logger, ScriptFunction, StepResult } from "./types";
 import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
 
@@ -287,24 +287,7 @@ function tryClosureCacheFilter(
   logger: Logger,
 ): { toRun: string[]; skipped: string[]; hashes: Map<string, string> } | null {
   try {
-    const cache = readFileCache(repoRoot);
-    const toRun: string[] = [];
-    const skipped: string[] = [];
-    const hashes = new Map<string, string>();
-
-    for (const absPath of specFiles) {
-      const relPath = relative(repoRoot, absPath);
-      const hash = computeClosureHash(absPath, graph);
-      hashes.set(absPath, hash);
-
-      if (lookupFileVerdict(cache, relPath, hash)) {
-        skipped.push(absPath);
-      } else {
-        toRun.push(absPath);
-      }
-    }
-
-    return { toRun, skipped, hashes };
+    return filterByClosureCache({ testFiles: specFiles, repoRoot, graph });
   } catch (err) {
     logger.warn(`closure cache filter failed, falling back to --changed: ${err}`);
     return null;
@@ -431,7 +414,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     }
 
     // control specs (sequential — yoga TDZ). Fast no-op when none changed.
-    const controlSkipPatterns = skipPatterns.filter((p) => p.includes("packages/control/"));
+    const controlSkipPatterns = skipPatterns.filter((p) => p.startsWith("--path-ignore-patterns=packages/control/"));
     const control = await runBun(
       ["test", "--no-orphans", `--changed=${base}`, "packages/control", ...controlSkipPatterns, "--pass-with-no-tests"],
       logger,
