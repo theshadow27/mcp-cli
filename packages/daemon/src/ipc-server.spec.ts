@@ -4193,6 +4193,80 @@ describe("IpcServer HTTP transport", () => {
   });
 });
 
+// ── Socket theft prevention (#2370) ──
+
+describe("socket theft prevention (#2370)", () => {
+  let serverA: IpcServer | undefined;
+  let serverB: IpcServer | undefined;
+  let socketPath: string;
+
+  afterEach(() => {
+    serverA?.stop();
+    serverB?.stop();
+    serverA = undefined;
+    serverB = undefined;
+    try {
+      unlinkSync(socketPath);
+      // dotw-ignore test-empty-catch: best-effort cleanup
+    } catch {
+      /* already cleaned up */
+    }
+  });
+
+  test("start() refuses to unlink a socket owned by a live server", async () => {
+    socketPath = tmpSocket();
+    serverA = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    await serverA.start(socketPath);
+
+    // Verify server A is alive
+    const ping = await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "p1", method: "ping" }),
+      unix: socketPath,
+    } as RequestInit);
+    expect(ping.ok).toBe(true);
+
+    // Second server must refuse to steal the socket
+    serverB = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    await expect(serverB.start(socketPath)).rejects.toThrow("live daemon is already listening");
+
+    // Original server must still be reachable after the refused theft
+    const ping2 = await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "p2", method: "ping" }),
+      unix: socketPath,
+    } as RequestInit);
+    expect(ping2.ok).toBe(true);
+  });
+
+  test("start() reclaims a stale socket from a crashed server", async () => {
+    socketPath = tmpSocket();
+    serverA = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    await serverA.start(socketPath);
+    // Stop server A (simulates crash) — socket file remains
+    serverA.stop();
+    serverA = undefined;
+
+    // Write a fake stale socket file (stop already cleaned it, recreate)
+    const { writeFileSync: wfs } = await import("node:fs");
+    wfs(socketPath, "");
+
+    // Second server should reclaim the stale socket
+    serverB = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+    await serverB.start(socketPath);
+
+    const ping = await fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "p3", method: "ping" }),
+      unix: socketPath,
+    } as RequestInit);
+    expect(ping.ok).toBe(true);
+  });
+});
+
 // ── buildEventFilter unit tests ──
 
 import { resolve } from "node:path";
