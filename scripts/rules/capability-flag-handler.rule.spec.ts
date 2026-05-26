@@ -112,6 +112,8 @@ registerProvider({
     expect(violations).toHaveLength(1);
     expect(violations[0].snippet).toContain("bad");
     expect(violations[0].snippet).toContain("costTracking");
+    expect(violations[0].line).toBeGreaterThan(0);
+    expect(violations[0].column).toBeGreaterThan(0);
   });
 
   it("flagged — compactLog true but no compact code in session", () => {
@@ -184,6 +186,28 @@ registerProvider({
     expect(violations).toHaveLength(0);
   });
 
+  it("spec files do not satisfy evidence — isTest:true files are ignored", () => {
+    const pf = providerFile(`
+registerProvider({
+	name: "bad",
+	serverName: "_bad",
+	toolPrefix: "bad",
+	buildSpawnArgs: () => ({}),
+	native: { costTracking: true },
+});
+`);
+    const specFile: FileMeta = {
+      path: "packages/daemon/src/bad-session/state.spec.ts",
+      relPath: "packages/daemon/src/bad-session/state.spec.ts",
+      content: "total_cost_usd: 0.05",
+      pkg: "packages/daemon",
+      isTest: true,
+    };
+    const violations = evaluateRule(rule, pf, buildFiles(pf, specFile));
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("costTracking");
+  });
+
   it("ignores flags not in the evidence map", () => {
     const pf = providerFile(`
 registerProvider({
@@ -212,8 +236,14 @@ registerProvider({
     const glob = new Bun.Glob("packages/daemon/src/**/*.ts");
     const files = buildFiles(pf);
     for await (const path of glob.scan({ cwd: ".", absolute: false })) {
-      if (path.includes(".spec.") || path.includes(".test.")) continue;
-      const meta = makeFile(path, await Bun.file(path).text());
+      const content = await Bun.file(path).text();
+      const meta: FileMeta = {
+        path,
+        relPath: path,
+        content,
+        pkg: path.split("/").slice(0, 2).join("/"),
+        isTest: /\.(spec|test)\.tsx?$/.test(path),
+      };
       files.set(meta.path, meta);
     }
 

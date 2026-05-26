@@ -11,7 +11,7 @@ const SESSION_DIR = "packages/daemon/src/";
 interface FlagEntry {
   flag: string;
   line: number;
-  col: number;
+  column: number;
 }
 
 interface ProviderInfo {
@@ -74,7 +74,7 @@ function extractProviders(ast: AstHelper): ProviderInfo[] {
             const flagName = flagProp.name.text;
             if (flagName in EVIDENCE) {
               const pos = ast.positionOf(flagProp);
-              flags.push({ flag: flagName, line: pos.line, col: pos.col });
+              flags.push({ flag: flagName, line: pos.line, column: pos.column });
             }
           }
         }
@@ -91,6 +91,7 @@ function extractProviders(ast: AstHelper): ProviderInfo[] {
 
 function sessionFilesHaveEvidence(files: Map<string, FileMeta>, prefix: string, pattern: RegExp): boolean {
   for (const meta of files.values()) {
+    if (meta.isTest) continue;
     if (!meta.relPath.startsWith(SESSION_DIR)) continue;
     if (!isSessionFile(meta.relPath, prefix)) continue;
     if (pattern.test(meta.content)) return true;
@@ -118,13 +119,13 @@ const rule: CheckRule = {
     const providers = extractProviders(ctx.ast);
     for (const provider of providers) {
       const prefix = sessionPrefix(provider.serverName);
-      for (const { flag, line, col } of provider.flags) {
+      for (const { flag, line, column } of provider.flags) {
         const pattern = EVIDENCE[flag];
         if (!pattern) continue;
         if (!sessionFilesHaveEvidence(ctx.files, prefix, pattern)) {
           ctx.violated(
             line,
-            col,
+            column,
             `${provider.name}: native.${flag} is true but no handler found in ${prefix}-session/`,
           );
         }
