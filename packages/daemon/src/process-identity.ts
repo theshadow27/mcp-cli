@@ -7,7 +7,7 @@
  * not depend on the system timezone or DST transitions.
  */
 
-import { spawnCaptureSync } from "@mcp-cli/core";
+import { type SpawnResult, spawnCaptureSync } from "@mcp-cli/core";
 
 /**
  * Parse `ps -o etime=` output format [[dd-]hh:]mm:ss into total seconds.
@@ -49,22 +49,33 @@ export function parseEtime(etime: string): number | null {
 /**
  * Get the start time (epoch ms) of a process by PID.
  * Returns null if the process doesn't exist or the start time can't be determined.
+ *
+ * @param pid - The process ID to query.
+ * @param retries - Number of additional attempts after the first failure (default 0 = one attempt total). Retries on !ok exit, unparseable etime, or thrown exception.
+ * @param _spawn - Injectable spawner for testing; defaults to `spawnCaptureSync`.
  */
-export function getProcessStartTime(pid: number): number | null {
-  try {
-    const result = spawnCaptureSync("ps", ["-o", "etime=", "-p", String(pid)]);
-    // Capture wall clock AFTER ps completes so the time reference is close to
-    // when ps actually sampled the elapsed time. Before this fix, Date.now()
-    // was called before spawnSync — under CI load ps can take 1-2s, shifting
-    // the computed start time enough to trip isOurProcess's tolerance (#2255).
-    const now = Date.now();
-    if (!result.ok) return null;
-    const elapsedSeconds = parseEtime(result.stdout);
-    if (elapsedSeconds === null) return null;
-    return now - elapsedSeconds * 1000;
-  } catch {
-    return null;
+export function getProcessStartTime(
+  pid: number,
+  retries = 0,
+  _spawn: (cmd: string, args: string[]) => SpawnResult = spawnCaptureSync,
+): number | null {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = _spawn("ps", ["-o", "etime=", "-p", String(pid)]);
+      // Capture wall clock AFTER ps completes so the time reference is close to
+      // when ps actually sampled the elapsed time. Before this fix, Date.now()
+      // was called before spawnSync — under CI load ps can take 1-2s, shifting
+      // the computed start time enough to trip isOurProcess's tolerance (#2255).
+      const now = Date.now();
+      if (!result.ok) continue;
+      const elapsedSeconds = parseEtime(result.stdout);
+      if (elapsedSeconds === null) continue;
+      return now - elapsedSeconds * 1000;
+    } catch {
+      // ps invocation threw; retry if attempts remain
+    }
   }
+  return null;
 }
 
 /**
@@ -120,7 +131,8 @@ export function getProcessStartTimesBatch(pids: number[]): Map<number, number> {
  * @returns true if confirmed ours, false if confirmed recycled (start time mismatch), null if indeterminate (ps failed or process dead)
  */
 export function isOurProcess(pid: number, storedStartTimeMs: number, toleranceMs = 2_000): boolean | null {
-  const currentStartTime = getProcessStartTime(pid);
+  // Retry once on null — transient ps failure under load is not a meaningful signal (#2383)
+  const currentStartTime = getProcessStartTime(pid, 1);
   if (currentStartTime === null) return null;
   return Math.abs(currentStartTime - storedStartTimeMs) <= toleranceMs;
 }

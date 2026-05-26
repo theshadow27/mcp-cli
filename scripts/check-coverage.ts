@@ -131,7 +131,7 @@ import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTi
 /** Run a single test file and return its wall-clock duration in ms */
 async function timeTestFile(file: string): Promise<{ file: string; ms: number }> {
   const start = performance.now();
-  const p = Bun.spawn(["bun", "test", file, "--timeout", "30000"], {
+  const p = Bun.spawn(["bun", "test", "--no-orphans", file, "--timeout", "30000"], {
     stdout: "ignore",
     stderr: "ignore",
   });
@@ -227,7 +227,7 @@ const testStart = Date.now();
 // 35 files falsely flagged below the 80% per-file floor. The dev `bun test`
 // command uses --parallel for speed (no --coverage there), and this script
 // stays sequential for accurate coverage aggregation.
-const proc1 = Bun.spawn(["bun", "test", "--coverage", ...nonDaemonPaths], {
+const proc1 = Bun.spawn(["bun", "test", "--no-orphans", "--coverage", ...nonDaemonPaths], {
   stdout: "pipe",
   stderr: "pipe",
 });
@@ -255,7 +255,7 @@ if (skipRun2) {
   // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
   // and ws-server's port-retry tax has been reduced (see ws-server.ts).
   const proc2 = Bun.spawn(
-    ["bun", "test", "--parallel", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles],
+    ["bun", "test", "--no-orphans", "--parallel", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles],
     {
       stdout: "pipe",
       stderr: "pipe",

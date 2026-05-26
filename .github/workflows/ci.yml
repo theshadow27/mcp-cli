@@ -173,7 +173,7 @@ jobs:
         if: needs.detect.outputs.docs_only != 'true'
         run: |
           set +e
-          unbuffer bun test packages/command/src/commands/claude.spec.ts packages/control/src/components/metrics-panel.spec.ts 2>&1 | tee /tmp/test_pty.txt
+          unbuffer bun test --no-orphans packages/command/src/commands/claude.spec.ts packages/control/src/components/metrics-panel.spec.ts 2>&1 | tee /tmp/test_pty.txt
           code=${PIPESTATUS[0]}
           if [ $code -eq 0 ]; then
             exit 0

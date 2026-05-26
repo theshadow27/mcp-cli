@@ -81,10 +81,18 @@ describe("agent-provider", () => {
       expect(args.agentOverride).toBe("gemini");
     });
 
-    test("getAllProviders returns all 7 built-in providers", () => {
+    test("grok is an ACP variant (first-class harness target) with agentOverride", () => {
+      const grok = requireProvider("grok");
+      expect(grok.serverName).toBe("_acp");
+      expect(grok.toolPrefix).toBe("acp");
+      const args = grok.buildSpawnArgs({ task: "test" });
+      expect(args.agentOverride).toBe("grok");
+    });
+
+    test("getAllProviders returns all 8 built-in providers (including grok via ACP)", () => {
       const all = getAllProviders();
       const names = all.map((p) => p.name).sort();
-      expect(names).toEqual(["acp", "claude", "codex", "copilot", "gemini", "mock", "opencode"]);
+      expect(names).toEqual(["acp", "claude", "codex", "copilot", "gemini", "grok", "mock", "opencode"]);
     });
 
     test("unknown provider returns undefined", () => {

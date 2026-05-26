@@ -14,10 +14,11 @@
  * the same runner answers all three, but the step list differs. Keep those
  * separate.
  *
- * `--pre-push` and `--ci` resolve to the same CI step list (split tests
- * with #1004 retry, coverage with #1419 retry, `lint:check` — no
- * `--write`). The pre-push hook and the CI workflow share one definition
- * of done (#2345). `--pre-commit` is the fast static-only subset.
+ * `--pre-commit` is the fast static-only subset. `--pre-push` is the local
+ * gate: static checks + diff-aware tests (`bun test --changed`), no coverage,
+ * targeting a ~90s budget (#2393). `--ci` is the exhaustive gate the CI
+ * workflow runs: full split suites (#1004 retry) + coverage (#1419 retry).
+ * Same definition of done across hook and workflow for the CI tier (#2345).
  */
 
 import type { ExecutionContext } from "./types";

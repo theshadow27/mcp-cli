@@ -161,17 +161,27 @@ export function isDaemonFlockHeld(): boolean {
  * Uses an exclusive lock file to prevent concurrent startups (race condition).
  */
 export async function ensureDaemon(): Promise<void> {
-  // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
-  if (await isDaemonRunning()) {
-    verboseLog("daemon already running");
+  // Flock check FIRST — kernel-enforced, no side effects, no false negatives.
+  // isDaemonRunning() calls cleanStaleFiles() on failure, which unlinks the PID file.
+  // If flock runs after that, it opens a NEW inode and the original daemon's lock
+  // (held on the old inode) is invisible — defeating the guard. See #2370.
+  if (isDaemonFlockHeld()) {
+    // Flock-holder is alive. Still check protocol version — a version-mismatched
+    // daemon should fail fast, not wait indefinitely for a socket that speaks wrong protocol.
+    const pidData = readPidFileVersion();
+    // Absent protocolVersion (old PID file) is treated as a mismatch — consistent with
+    // isDaemonRunning(), which throws ProtocolMismatchError when the field is missing.
+    if (!pidData?.protocolVersion || pidData.protocolVersion !== PROTOCOL_VERSION) {
+      throw new ProtocolMismatchError(pidData?.protocolVersion ?? "unknown", PROTOCOL_VERSION);
+    }
+    verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
+    await waitForDaemon();
     return;
   }
 
-  // Check if the daemon holds the PID file flock — definitive kernel-level liveness.
-  // This catches sleep/wake scenarios where the daemon is suspended but alive.
-  if (isDaemonFlockHeld()) {
-    verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
-    await waitForDaemon();
+  // isDaemonRunning() throws ProtocolMismatchError if versions don't match — fail-fast.
+  if (await isDaemonRunning()) {
+    verboseLog("daemon already running");
     return;
   }
 
@@ -314,6 +324,15 @@ export async function stopDaemon(opts?: { force?: boolean }): Promise<void> {
   }
 
   cleanStaleFiles();
+}
+
+/** Read just the protocol version from the PID file. No liveness checks, no side effects. */
+function readPidFileVersion(): { protocolVersion?: string } | null {
+  try {
+    return JSON.parse(readFileSync(options.PID_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -459,17 +478,46 @@ async function startDaemon(): Promise<void> {
 
 /**
  * Compare a daemon's build version against the CLI's BUILD_VERSION.
- * Returns a warning string if they differ, null if they match.
- * Exported with underscore prefix for testing.
+ * Returns a direction-aware warning string if they differ, null if they match.
+ * Exported with underscore prefix for testing. The optional cliBuildVersion
+ * parameter exists solely to allow unit tests to exercise all branches
+ * (BUILD_VERSION is dev in tests).
  */
-export function _buildStaleDaemonWarning(daemonBuildVersion: string | undefined): string | null {
-  if (!daemonBuildVersion || daemonBuildVersion !== BUILD_VERSION) {
-    if (!daemonBuildVersion) {
-      return `Daemon predates build version tracking (CLI is ${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
-    }
-    return `Daemon is running a different build (${daemonBuildVersion}) than CLI (${BUILD_VERSION}). Run \`mcx shutdown\` to pick up the new binary.`;
+export function _buildStaleDaemonWarning(
+  daemonBuildVersion: string | undefined,
+  cliBuildVersion = BUILD_VERSION,
+): string | null {
+  if (!daemonBuildVersion) {
+    return `Daemon predates build version tracking (CLI is ${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
   }
-  return null;
+  if (daemonBuildVersion === cliBuildVersion) {
+    return null;
+  }
+
+  const daemonEpoch = _parseBuildEpoch(daemonBuildVersion);
+  const cliEpoch = _parseBuildEpoch(cliBuildVersion);
+
+  // Daemon is compiled, CLI is dev — daemon is the newer/authoritative side.
+  // Shutting down the daemon would be wrong and dangerous (#2370).
+  if (daemonEpoch !== null && cliEpoch === null) {
+    return `Daemon is a compiled build (${daemonBuildVersion}) but CLI is a dev build (${cliBuildVersion}). Use the build-matched client (\`dist/mcx\` or the installed \`mcx\` on PATH) instead of \`bun dev:mcx\`.`;
+  }
+
+  // CLI is compiled, daemon is dev — daemon is stale.
+  if (cliEpoch !== null && daemonEpoch === null) {
+    return `Daemon is running a dev build (${daemonBuildVersion}) but CLI is a compiled build (${cliBuildVersion}). Run \`mcx shutdown\` to restart with the compiled daemon.`;
+  }
+
+  // Both compiled — compare epochs to determine which is stale.
+  if (daemonEpoch !== null && cliEpoch !== null) {
+    if (daemonEpoch > cliEpoch) {
+      return `Daemon is running a newer build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Use the build-matched client: \`dist/mcx\` or the installed \`mcx\` on PATH.`;
+    }
+    return `Daemon is running an older build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
+  }
+
+  // Fallback: both dev or neither has epoch — can't determine direction.
+  return `Daemon is running a different build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
 }
 
 /**

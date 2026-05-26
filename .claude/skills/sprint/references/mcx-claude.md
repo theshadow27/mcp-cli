@@ -70,6 +70,7 @@ work identically across providers.
 | `claude` (default) | `mcx claude` | Standard Claude Code sessions |
 | `copilot` | `mcx copilot` | GitHub Copilot via ACP |
 | `gemini` | `mcx gemini` | Google Gemini via ACP |
+| `grok` | `mcx grok` (or `mcx acp --agent grok`) | Grok CLI via native `grok agent stdio` ACP support — first-class target for sprint orchestration and specialist reviews/nerd-snipes |
 | `acp:<agent>` | `mcx acp --agent <agent>` | Any custom ACP agent |
 
 ```bash
@@ -87,7 +88,16 @@ mcx acp spawn --agent my-agent --worktree -t "task" --allow Read Glob Grep Write
 ```
 
 Session management commands (ls, send, bye, wait, log, interrupt) use the same
-provider prefix. E.g., `mcx copilot bye <id>`, `mcx gemini wait --timeout 30000`.
+provider prefix. E.g., `mcx copilot bye <id>`, `mcx gemini wait --timeout 30000`, `mcx grok wait`.
+
+### Grok Auth in Harness / Sprint Context
+
+Grok sessions in automation (including sprints) should use one of:
+- `XAI_API_KEY` env var (highest precedence, ideal for CI/harness workers)
+- External auth provider command (`GROK_AUTH_PROVIDER_COMMAND`) — see Grok TUI docs for the stdout/stderr contract
+- Device code flow (`grok login --device-auth`) as a last resort
+
+The sprint orchestrator and phase scripts never trigger interactive browser login for workers. Pre-configure auth before running `/sprint` with Grok providers.
 
 ## Session Scoping
 

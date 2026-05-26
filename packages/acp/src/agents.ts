@@ -30,6 +30,13 @@ export const ACP_AGENTS: Record<string, AcpAgent> = {
     args: ["--acp"],
     installHint: "Install with: npm install -g @google/gemini-cli",
   },
+  grok: {
+    name: "grok",
+    command: "grok",
+    args: ["agent", "stdio"],
+    installHint:
+      "Install the Grok CLI (grok) — see console.x.ai or your package distribution. Supports native ACP via `grok agent stdio`.",
+  },
 };
 
 /**
