@@ -422,18 +422,70 @@ describe("_buildStaleDaemonWarning", () => {
     expect(_buildStaleDaemonWarning(BUILD_VERSION)).toBeNull();
   });
 
-  it("returns warning when daemon buildVersion differs from CLI", () => {
-    const warning = _buildStaleDaemonWarning("0.1.0-20250101");
-    expect(warning).toContain("different build");
-    expect(warning).toContain("0.1.0-20250101");
-    expect(warning).toContain(BUILD_VERSION);
-    expect(warning).toContain("mcx shutdown");
+  it("returns null when both versions match (explicit cliBuildVersion)", () => {
+    expect(_buildStaleDaemonWarning("1.0.0+1000", "1.0.0+1000")).toBeNull();
   });
 
   it("returns warning when daemon has no buildVersion (predates tracking)", () => {
     const warning = _buildStaleDaemonWarning(undefined);
     expect(warning).toContain("predates build version tracking");
     expect(warning).toContain(BUILD_VERSION);
+    expect(warning).toContain("mcx shutdown");
+  });
+
+  it("recommends dist/mcx when daemon is compiled and CLI is dev", () => {
+    // Compiled daemon (has epoch), dev CLI (no epoch) — daemon is the newer/authoritative side
+    const warning = _buildStaleDaemonWarning("1.11.2+1779669196", "1.11.2-dev");
+    expect(warning).not.toBeNull();
+    expect(warning).not.toContain("mcx shutdown");
+    expect(warning).toContain("1.11.2+1779669196");
+    expect(warning).toContain("1.11.2-dev");
+    expect(warning).toContain("dist/mcx");
+  });
+
+  it("recommends mcx shutdown when CLI is compiled and daemon is dev", () => {
+    // CLI compiled, daemon dev — daemon is stale
+    const warning = _buildStaleDaemonWarning("1.11.2-dev", "1.11.2+1779669196");
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("1.11.2-dev");
+    expect(warning).toContain("1.11.2+1779669196");
+    expect(warning).not.toContain("dist/mcx");
+  });
+
+  it("recommends mcx shutdown when daemon epoch is older than CLI epoch", () => {
+    const warning = _buildStaleDaemonWarning("1.0.0+1000000000", "1.0.0+2000000000");
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("1.0.0+1000000000");
+    expect(warning).toContain("1.0.0+2000000000");
+    expect(warning).not.toContain("dist/mcx");
+  });
+
+  it("recommends dist/mcx when daemon epoch is newer than CLI epoch", () => {
+    const warning = _buildStaleDaemonWarning("1.0.0+2000000000", "1.0.0+1000000000");
+    expect(warning).not.toBeNull();
+    expect(warning).not.toContain("mcx shutdown");
+    expect(warning).toContain("1.0.0+2000000000");
+    expect(warning).toContain("1.0.0+1000000000");
+    expect(warning).toContain("dist/mcx");
+  });
+
+  it("falls back to shutdown advice when both builds are dev with different versions", () => {
+    // Both dev (no epoch): can't determine direction → fallback recommends shutdown
+    const warning = _buildStaleDaemonWarning("0.1.0-dev", "0.2.0-dev");
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("0.1.0-dev");
+    expect(warning).toContain("0.2.0-dev");
+    expect(warning).toContain("mcx shutdown");
+  });
+
+  it("falls back to shutdown advice when neither version has an epoch", () => {
+    // Plain semver (no +epoch, no -dev): fallback
+    const warning = _buildStaleDaemonWarning("1.0.0", "1.1.0");
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("1.0.0");
+    expect(warning).toContain("1.1.0");
     expect(warning).toContain("mcx shutdown");
   });
 });
