@@ -7,19 +7,22 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { IpcResponse, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
+import type { IpcResponse, ManagedHandle, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
+import { spawnManaged } from "@mcp-cli/core";
 
 export interface MockServer {
-  proc: ReturnType<typeof Bun.spawn>;
+  handle: ManagedHandle;
   port: number;
   kill: () => Promise<void>;
 }
 
 export interface TestDaemon {
-  proc: ReturnType<typeof Bun.spawn>;
+  handle: ManagedHandle;
+  exitCode: Promise<number | null>;
   dir: string;
   socketPath: string;
   kill: () => Promise<void>;
+  stderrTail: () => string;
 }
 
 /** Create an isolated temp directory for a test daemon */
@@ -66,7 +69,7 @@ export async function startTestDaemon(
   // Production keeps the well-known port; only test daemons opt in to wsPort: 0.
   writeFileSync(join(dir, "config.json"), JSON.stringify({ wsPort: 0 }));
 
-  const proc = Bun.spawn(["bun", resolve("packages/daemon/src/main.ts")], {
+  const result = spawnManaged("bun", [resolve("packages/daemon/src/main.ts")], {
     stdout: "ignore",
     stderr: "pipe",
     env: {
@@ -78,6 +81,13 @@ export async function startTestDaemon(
     },
   });
 
+  if (!result.ok) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error("Failed to spawn daemon process");
+  }
+
+  const { handle } = result;
+
   // Wait for daemon to be ready by polling the socket file + ping.
   // This is more reliable than reading stdout (which has pipe buffering
   // issues on Linux CI runners).
@@ -86,7 +96,7 @@ export async function startTestDaemon(
 
   while (Date.now() < deadline) {
     // Check if process died
-    const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(50).then(() => false)]);
+    const exited = await Promise.race([handle.exited.then(() => true), Bun.sleep(50).then(() => false)]);
     if (exited) break;
 
     if (!existsSync(socketPath)) continue;
@@ -105,34 +115,24 @@ export async function startTestDaemon(
   }
 
   if (!ready) {
-    proc.kill();
-    const stderr = await new Response(proc.stderr).text();
+    await handle.kill();
+    const stderr = handle.stderrTail();
     rmSync(dir, { recursive: true, force: true });
     throw new Error(`Daemon failed to start within ${options?.timeout ?? 15_000}ms.\nstderr: ${stderr}`);
   }
 
+  const exitCode = handle.exited.then((s) => s.exitCode);
+
   return {
-    proc,
+    handle,
+    exitCode,
     dir,
     socketPath,
     kill: async () => {
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-      // Bounded wait: if SIGTERM doesn't work within 5s, escalate to SIGKILL
-      const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(5_000).then(() => false)]);
-      if (!exited) {
-        try {
-          proc.kill("SIGKILL");
-        } catch {
-          // already exited
-        }
-        await Promise.race([proc.exited, Bun.sleep(2_000)]);
-      }
+      await handle.kill();
       rmSync(dir, { recursive: true, force: true });
     },
+    stderrTail: () => handle.stderrTail(),
   };
 }
 
@@ -165,13 +165,23 @@ export async function pollUntil(
  * The server script must print the listening port as the first line of stdout.
  */
 export async function startMockServer(scriptPath: string): Promise<MockServer> {
-  const proc = Bun.spawn(["bun", resolve(scriptPath)], {
+  const result = spawnManaged("bun", [resolve(scriptPath)], {
     stdout: "pipe",
     stderr: "pipe",
   });
 
+  if (!result.ok) {
+    throw new Error(`Failed to spawn mock server: ${scriptPath}`);
+  }
+
+  const { handle } = result;
+
   // Read the port from the first line of stdout (bounded to 10s to prevent hangs under contention)
-  const reader = proc.stdout.getReader();
+  if (!handle.stdout) {
+    await handle.kill();
+    throw new Error("Mock server stdout stream unavailable");
+  }
+  const reader = handle.stdout.getReader();
   const readResult = await Promise.race([
     reader.read(),
     Bun.sleep(10_000).then(() => ({ value: undefined, done: true as const, timeout: true as const })),
@@ -188,28 +198,23 @@ export async function startMockServer(scriptPath: string): Promise<MockServer> {
   reader.releaseLock();
 
   if (!portLine) {
-    proc.kill();
-    const stderr = await new Response(proc.stderr).text();
+    await handle.kill();
+    const stderr = handle.stderrTail();
     const reason = "timeout" in readResult ? "timed out waiting for port" : "no output";
     throw new Error(`Mock server failed to start (${reason}): ${stderr}`);
   }
 
   const port = Number(portLine);
   if (!port || Number.isNaN(port)) {
-    proc.kill();
+    await handle.kill();
     throw new Error(`Mock server printed invalid port: ${JSON.stringify(portLine)}`);
   }
 
   return {
-    proc,
+    handle,
     port,
     kill: async () => {
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-      await Promise.race([proc.exited, Bun.sleep(3_000)]);
+      await handle.kill();
     },
   };
 }
