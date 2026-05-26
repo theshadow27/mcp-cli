@@ -72,6 +72,25 @@ describe("buildTurnResult", () => {
 });
 `;
 
+// expect(state.costPerToken) is a DIFFERENT field — must not count as evidence.
+const SPEC_WITH_COST_PER_TOKEN_ONLY = `
+test("session_info_update tracks cost per token", () => {
+  const state = createAcpEventMapState();
+  mapSessionUpdate({ update: { sessionUpdate: "session_info_update", costPerToken: 0.001 } }, state);
+  expect(state.costPerToken).toBe(0.001);
+});
+`;
+
+// A commented-out expect(state.cost) must not count as evidence.
+const SPEC_WITH_COMMENTED_OUT_COST = `
+test("session_info_update tracks tokens", () => {
+  const state = createAcpEventMapState();
+  mapSessionUpdate({ update: { sessionUpdate: "session_info_update" } }, state);
+  // expect(state.cost).toBe(0.005);
+  expect(state.totalTokens).toBe(0);
+});
+`;
+
 // Single-quoted variant of the session_info_update signal — biome may rewrite quotes.
 const SPEC_WITH_SINGLE_QUOTE_EVIDENCE = `
 test('session_info_update tracks cost', () => {
@@ -180,6 +199,28 @@ describe("acp-cost-tracking-evidence: cross-file evidence check", () => {
     ]);
     const violations = evaluateRule(rule, provider, files);
     expect(violations).toHaveLength(0);
+  });
+
+  it("flags when spec asserts state.costPerToken but not state.cost", () => {
+    const provider = makeFile(PROVIDER_PATH, PROVIDER_WITH_ACP_COST_TRACKING);
+    const spec = makeFile(SPEC_PATH, SPEC_WITH_COST_PER_TOKEN_ONLY);
+    const files = new Map([
+      [provider.path, provider],
+      [spec.path, spec],
+    ]);
+    const violations = evaluateRule(rule, provider, files);
+    expect(violations).toHaveLength(1);
+  });
+
+  it("flags when expect(state.cost) appears only in a comment", () => {
+    const provider = makeFile(PROVIDER_PATH, PROVIDER_WITH_ACP_COST_TRACKING);
+    const spec = makeFile(SPEC_PATH, SPEC_WITH_COMMENTED_OUT_COST);
+    const files = new Map([
+      [provider.path, provider],
+      [spec.path, spec],
+    ]);
+    const violations = evaluateRule(rule, provider, files);
+    expect(violations).toHaveLength(1);
   });
 
   it("evidence in spec clears violations for all _acp providers in the file", () => {

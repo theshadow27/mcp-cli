@@ -20,8 +20,9 @@
  *   two content signals:
  *     - ["']session_info_update["'] (a test exercises this event type; accepts
  *       any quote style so biome reformatting cannot trigger false failures)
- *     - expect(state.cost (an expect() call on state.cost — assignment lines
- *       like `state.cost = 0.01` in unrelated setup blocks do NOT count)
+ *     - /^\s*expect\s*\(\s*state\.cost\s*\)/ on a non-comment line — anchored
+ *       on the closing paren so state.costPerToken/costFoo don't match, and
+ *       lines starting with // or * are excluded to avoid commented-out code
  *   If either signal is absent, the costTracking: true line is flagged.
  *
  * Sources: #2419, flagged in #2391 adversarial review.
@@ -34,7 +35,13 @@ const PROVIDER_FILE = "packages/core/src/agent-provider.ts";
 const ACP_SPEC = "packages/acp/src/acp-event-map.spec.ts";
 
 function specHasCostEvidence(specContent: string): boolean {
-  return /["']session_info_update["']/.test(specContent) && specContent.includes("expect(state.cost");
+  if (!/["']session_info_update["']/.test(specContent)) return false;
+  const costAssertionRe = /^\s*expect\s*\(\s*state\.cost\s*\)/;
+  return specContent.split("\n").some((line) => {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return false;
+    return costAssertionRe.test(trimmed);
+  });
 }
 
 function findPropertyInit(obj: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
