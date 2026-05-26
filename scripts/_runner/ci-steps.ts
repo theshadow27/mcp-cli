@@ -24,7 +24,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,19 +41,69 @@ const LOG_DIR = "/tmp";
 interface RunOutcome {
   code: number;
   output: string;
+  /** Failure count from the junit XML written by --reporter junit, or null if unavailable. */
+  junitFailures: number | null;
+}
+
+/**
+ * Parse the `failures` attribute from a bun junit XML report.
+ * Returns null when the file is absent or unparseable.
+ */
+function parseJunitFailures(xmlPath: string): number | null {
+  try {
+    const xml = readFileSync(xmlPath, "utf8");
+    const m = xml.match(/failures="(\d+)"/);
+    return m ? Number.parseInt(m[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse the `{ failures: N }` JSON summary written by check-coverage.ts via --junit-outfile.
+ * Returns null when the file is absent or unparseable.
+ */
+function parseCoverageFailures(jsonPath: string): number | null {
+  try {
+    const raw = readFileSync(jsonPath, "utf8");
+    const parsed = JSON.parse(raw) as { failures?: unknown };
+    return typeof parsed.failures === "number" ? parsed.failures : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Generate a unique path under LOG_DIR for a junit XML file. */
+function junitTmpPath(stem: string): string {
+  return join(LOG_DIR, `junit_${stem}_${Date.now()}_${Math.random().toString(36).slice(2)}.xml`);
+}
+
+/**
+ * True when the junit report confirms zero test failures — the authoritative
+ * signal for crash-after-pass tolerance (#1004). Falls back to false when the
+ * junit file was not written (e.g. --pass-with-no-tests fired and no tests ran,
+ * but that case produces exit 0 so this helper is never called for it).
+ */
+function hasZeroJunitFailures(outcome: RunOutcome): boolean {
+  return outcome.junitFailures === 0;
 }
 
 async function runBun(
   args: string[],
   logger: Logger,
   env: Record<string, string | undefined> = process.env,
+  junitPath?: string,
 ): Promise<RunOutcome> {
   // spawn() rejects undefined env values — drop them so explicit `unset`
   // semantics aren't required upstream. Matches runShell() in runner.ts.
   const cleanEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined) cleanEnv[k] = v;
+  // Add junit reporter when a path is provided and this is a `bun test` invocation
+  // so classifiers can key off failures="N" rather than prose summary text (#2401).
+  const fullArgs =
+    junitPath && args[0] === "test" ? [...args, "--reporter", "junit", `--reporter-outfile=${junitPath}`] : args;
   const buf: string[] = [];
-  const child = spawn("bun", args, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("bun", fullArgs, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (d: string) => {
@@ -68,7 +118,8 @@ async function runBun(
     child.on("close", (c) => resolve(c ?? -1));
     child.on("error", () => resolve(-1));
   });
-  return { code, output: buf.join("") };
+  const junitFailures = junitPath ? parseJunitFailures(junitPath) : null;
+  return { code, output: buf.join(""), junitFailures };
 }
 
 function persistLog(logName: string, output: string): void {
@@ -79,9 +130,6 @@ function persistLog(logName: string, output: string): void {
   }
 }
 
-// Anchors the Bun test-summary line. A non-zero exit AFTER a clean
-// summary is treated as a #1004 post-test crash, not a real failure.
-const ZERO_FAIL_RE = /^ 0 fail$/m;
 const COVERAGE_PASS_RE = /PASS: All coverage thresholds met/;
 const FAIL_LINE_RE = /^FAIL:/m;
 
@@ -98,10 +146,10 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
   return async ({ logger, env }) => {
     const args = ["test", "--no-orphans", ...opts.paths];
 
-    const first = await runBun(args, logger, env);
+    const first = await runBun(args, logger, env, junitTmpPath(opts.logName));
     persistLog(opts.logName, first.output);
     if (first.code === 0) return { success: true };
-    if (ZERO_FAIL_RE.test(first.output)) {
+    if (hasZeroJunitFailures(first)) {
       logger.warn(`bun crash (exit ${first.code}) after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
@@ -110,10 +158,10 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
     }
 
     logger.warn("bun segfault (exit 132) — retrying once (#1004)");
-    const second = await runBun(args, logger, env);
+    const second = await runBun(args, logger, env, junitTmpPath(`${opts.logName}_retry`));
     persistLog(`${opts.logName}_retry`, second.output);
     if (second.code === 0) return { success: true };
-    if (ZERO_FAIL_RE.test(second.output)) {
+    if (hasZeroJunitFailures(second)) {
       logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
@@ -132,32 +180,41 @@ interface CoverageOpts {
 
 export function coverageWithCrashTolerance(opts: CoverageOpts): ScriptFunction {
   return async ({ logger, env }) => {
-    const args = ["scripts/check-coverage.ts", "--ci"];
+    const summaryPath = join(LOG_DIR, `coverage_summary_${opts.logName}_${Date.now()}.json`);
+    const args = ["scripts/check-coverage.ts", "--ci", `--junit-outfile=${summaryPath}`];
 
     const first = await runBun(args, logger, env);
     persistLog(opts.logName, first.output);
-    const firstVerdict = classifyCoverage(first, logger);
+    const firstVerdict = classifyCoverage({ ...first, junitFailures: parseCoverageFailures(summaryPath) }, logger);
     if (firstVerdict.success) return firstVerdict;
     if (first.code !== 132 && first.code !== 139) {
       return { success: false, error: `exit ${first.code}` };
     }
 
     logger.warn(`bun panic (exit ${first.code}) — retrying once`);
-    const second = await runBun(args, logger, env);
+    const retrySummaryPath = join(LOG_DIR, `coverage_summary_${opts.logName}_retry_${Date.now()}.json`);
+    const second = await runBun(
+      ["scripts/check-coverage.ts", "--ci", `--junit-outfile=${retrySummaryPath}`],
+      logger,
+      env,
+    );
     persistLog(`${opts.logName}_retry`, second.output);
-    const secondVerdict = classifyCoverage(second, logger);
+    const secondVerdict = classifyCoverage(
+      { ...second, junitFailures: parseCoverageFailures(retrySummaryPath) },
+      logger,
+    );
     if (secondVerdict.success) return secondVerdict;
     return { success: false, error: `exit ${second.code}` };
   };
 }
 
-function classifyCoverage({ code, output }: RunOutcome, logger: Logger): StepResult {
+function classifyCoverage({ code, output, junitFailures }: RunOutcome, logger: Logger): StepResult {
   if (code === 0) return { success: true };
   if (COVERAGE_PASS_RE.test(output)) {
     logger.warn(`bun crash (exit ${code}) after coverage check passed — treating as pass (#1419)`);
     return { success: true };
   }
-  if (ZERO_FAIL_RE.test(output) && !FAIL_LINE_RE.test(output)) {
+  if (junitFailures === 0 && !FAIL_LINE_RE.test(output)) {
     logger.warn(`bun crash (exit ${code}) after all coverage tests passed — treating as pass (#1419)`);
     return { success: true };
   }
@@ -225,6 +282,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
       ],
       logger,
       env,
+      junitTmpPath(opts.logName),
     );
     persistLog(opts.logName, main.output);
     const mainVerdict = classifyChangedTest(main, logger);
@@ -238,6 +296,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
       ["test", "--no-orphans", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
       logger,
       env,
+      junitTmpPath(`${opts.logName}_control`),
     );
     persistLog(`${opts.logName}_control`, control.output);
     const controlVerdict = classifyChangedTest(control, logger);
@@ -261,11 +320,11 @@ function defaultResolveBase(): string {
   return "HEAD~1";
 }
 
-function classifyChangedTest({ code, output }: RunOutcome, logger: Logger): StepResult {
-  if (code === 0) return { success: true };
-  if (ZERO_FAIL_RE.test(output)) {
-    logger.warn(`bun crash (exit ${code}) after all changed tests passed — treating as pass (#1004)`);
+function classifyChangedTest(outcome: RunOutcome, logger: Logger): StepResult {
+  if (outcome.code === 0) return { success: true };
+  if (hasZeroJunitFailures(outcome)) {
+    logger.warn(`bun crash (exit ${outcome.code}) after all changed tests passed — treating as pass (#1004)`);
     return { success: true };
   }
-  return { success: false, error: `exit ${code}` };
+  return { success: false, error: `exit ${outcome.code}` };
 }
