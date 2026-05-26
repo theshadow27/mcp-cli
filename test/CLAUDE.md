@@ -2,6 +2,36 @@
 
 These rules apply to all `*.spec.ts` files. Follow them to prevent intermittent CI failures.
 
+## Core philosophy — test the CONDITION, not TIME PASSING
+
+Adopted from Bun's upstream testing guidelines, the principle our enforcement rules
+mechanize (`poll-until-headroom`, `no-hardcoded-test-port`, `pollUntil` 1500ms default):
+
+> **CRITICAL: Do not write flaky tests. Do not use `setTimeout` in tests. Instead,
+> await the condition to be met. You are not testing the TIME PASSING, you are
+> testing the CONDITION.**
+
+> Unless explicitly asked, never wait for time to pass in tests. Always wait for
+> the condition to be met instead of waiting for an arbitrary amount of time.
+
+This is the *why* behind every rule below. Sleeping a fixed number of milliseconds
+encodes an assumption about machine speed; condition-polling does not. CI runners,
+loaded developer machines, and parallel test workers all break the assumption — a
+2026 M-series Mac at idle is not the same as a GitHub Actions runner with 4 vCPU
+under contention.
+
+## Per-test timeouts
+
+> **CRITICAL: Do not set a timeout on tests. Bun already has timeouts.**
+
+Use `setDefaultTimeout()` at file scope when a file's tests genuinely need longer
+than Bun's default (e.g. tests doing real subprocess startup, network polling, or
+filesystem-heavy work). Per-test `{ timeout: N }` overrides are a code smell —
+they hide a single slow test inside a fast file and make the slowdown invisible
+to the time-budget profiler. If one test in a file needs 30s and the rest run in
+under a second, the file's `setDefaultTimeout(30_000)` is the right knob; the
+profiler then surfaces the file as a candidate for splitting.
+
 ## Existing Test Helpers
 
 Before writing new helpers, check what already exists:
