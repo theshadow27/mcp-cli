@@ -3,26 +3,51 @@ import { describe, expect, it } from "bun:test";
 import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./ci-steps";
 import { createCaptureLogger } from "./logger";
 
-// The factories spawn `bun` and inspect exit codes + output. The regex
+// The factories spawn `bun` and inspect exit codes + output. The structured
 // classification — "is this a real failure or a #1004/#1419 crash-after-pass?"
-// — is the load-bearing logic. We exercise the factories against a stub
-// `bun` binary whose exit code and stdout/stderr we control via env vars,
-// then assert the returned StepResult matches the documented contract.
+// — is the load-bearing logic. We exercise the factories against a stub `bun`
+// binary whose exit code, stdout/stderr, and junit XML we control, then assert
+// the returned StepResult matches the documented contract.
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/**
+ * Derive the junit/coverage failures count from the stdout content.
+ * A stdout containing " 0 fail" is a clean-run signal → 0 failures.
+ */
+function deriveFailures(stdout: string | undefined): number {
+  return (stdout ?? "").includes(" 0 fail") ? 0 : 1;
+}
 
 function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string }): string {
   const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
   const path = join(dir, "bun");
   const stdout = (opts.stdout ?? "").replace(/'/g, "'\\''");
   const stderr = (opts.stderr ?? "").replace(/'/g, "'\\''");
+  const f = deriveFailures(opts.stdout);
   writeFileSync(
     path,
+    // Write structured output files when requested so classifiers key off
+    // machine-readable failure counts rather than prose (#2401):
+    //   --reporter-outfile=PATH  → junit XML (bun test direct invocations)
+    //   --junit-outfile=PATH     → { failures: N } JSON (check-coverage.ts path)
     `#!/usr/bin/env bash
 printf '%s' '${stdout}'
 printf '%s' '${stderr}' >&2
+for arg in "$@"; do
+  case "$arg" in
+    --reporter-outfile=*)
+      jpath="\${arg#--reporter-outfile=}"
+      printf '<?xml version="1.0"?><testsuites failures="${f}"></testsuites>' > "$jpath"
+      ;;
+    --junit-outfile=*)
+      cpath="\${arg#--junit-outfile=}"
+      printf '{"failures":${f}}' > "$cpath"
+      ;;
+  esac
+done
 exit ${opts.code}
 `,
     { mode: 0o755 },
@@ -43,6 +68,8 @@ function makeTwoPassFakeBun(
   const counterFile = join(dir, ".invocation_count");
   const s1 = (pass1.stdout ?? "").replace(/'/g, "'\\''");
   const s2 = (pass2.stdout ?? "").replace(/'/g, "'\\''");
+  const f1 = deriveFailures(pass1.stdout);
+  const f2 = deriveFailures(pass2.stdout);
   writeFileSync(
     join(dir, "bun"),
     `#!/usr/bin/env bash
@@ -50,11 +77,29 @@ count=0
 if [ -f '${counterFile}' ]; then count=$(cat '${counterFile}'); fi
 count=$((count + 1))
 echo "$count" > '${counterFile}'
+write_files() {
+  local failures="$1"
+  shift
+  for arg in "$@"; do
+    case "$arg" in
+      --reporter-outfile=*)
+        jpath="\${arg#--reporter-outfile=}"
+        printf '<?xml version="1.0"?><testsuites failures="%s"></testsuites>' "$failures" > "$jpath"
+        ;;
+      --junit-outfile=*)
+        cpath="\${arg#--junit-outfile=}"
+        printf '{"failures":%s}' "$failures" > "$cpath"
+        ;;
+    esac
+  done
+}
 if [ "$count" -eq 1 ]; then
   printf '%s' '${s1}'
+  write_files ${f1} "$@"
   exit ${pass1.code}
 else
   printf '%s' '${s2}'
+  write_files ${f2} "$@"
   exit ${pass2.code}
 fi
 `,
@@ -139,6 +184,31 @@ describe("bunTestWithCrashTolerance", () => {
       }),
     );
     // Both runs returned 132 — treated as pass per #1004 (known upstream bug).
+    expect(result).toEqual({ success: true });
+  });
+
+  it("post-test crash with no junit file falls back to stdout ' 0 fail' (#1004 hybrid)", async () => {
+    // The real #1004 scenario: bun crashes during teardown BEFORE flushing the
+    // junit reporter to disk. The ' 0 fail' stdout line is the durable fallback
+    // signal — it is written incrementally and survives a post-test crash even
+    // when the sidecar file does not (#2401).
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const ps = passingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${ps}'
+# Deliberately write NO --reporter-outfile — simulates bun crashing before flush.
+exit 139
+`,
+      { mode: 0o755 },
+    );
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_no_junit" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
     expect(result).toEqual({ success: true });
   });
 
@@ -243,6 +313,68 @@ describe("coverageWithCrashTolerance", () => {
   it("exit other than 132/139 with no passthrough is a hard fail (no retry)", async () => {
     const dir = makeFakeBun({ code: 1, stdout: "some unrelated failure\n" });
     const step = coverageWithCrashTolerance({ logName: "coverage_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("inner bun crash without junit summary falls back to stdout ' 0 fail' (#1419 hybrid)", async () => {
+    // Simulates the case where check-coverage.ts writes { failures: null } because
+    // an inner bun run crashed before flushing its junit XML. The outer classifier
+    // must fall back to the durable stdout signal — the inner bun's ' 0 fail' line
+    // piped through check-coverage.ts output (#2401).
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const ps = passingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${ps}'
+for arg in "$@"; do
+  case "$arg" in
+    --junit-outfile=*)
+      cpath="\${arg#--junit-outfile=}"
+      printf '{"failures":null}' > "$cpath"
+      ;;
+  esac
+done
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const step = coverageWithCrashTolerance({ logName: "coverage_null_junit" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("inner bun crash with null summary AND real failures is a hard fail", async () => {
+    // When there are real test failures (no ' 0 fail' in stdout), the null-summary
+    // fallback must NOT fire — the crash masked genuine failures.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const fs = failingSummary.replace(/'/g, "'\\''");
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${fs}'
+for arg in "$@"; do
+  case "$arg" in
+    --junit-outfile=*)
+      cpath="\${arg#--junit-outfile=}"
+      printf '{"failures":null}' > "$cpath"
+      ;;
+  esac
+done
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const step = coverageWithCrashTolerance({ logName: "coverage_null_junit_fail" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
