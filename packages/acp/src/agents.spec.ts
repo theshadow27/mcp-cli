@@ -17,6 +17,13 @@ describe("ACP_AGENTS registry", () => {
     expect(agent.installHint).toContain("@google/gemini-cli");
     expect(agent.installHint).not.toContain("@anthropic-ai/gemini-cli");
   });
+
+  test("grok uses native stdio protocol, not --acp", () => {
+    const agent = ACP_AGENTS.grok;
+    expect(agent.command).toBe("grok");
+    expect(agent.args).toEqual(["agent", "stdio"]);
+    expect(agent.installHint).toContain("grok");
+  });
 });
 
 describe("resolveAgentCommand", () => {
