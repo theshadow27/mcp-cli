@@ -75,8 +75,12 @@ async function probeSocket(socketPath: string): Promise<boolean> {
       unix: socketPath,
       signal: AbortSignal.timeout(SOCKET_PROBE_TIMEOUT_MS),
     } as RequestInit);
-    return res.ok;
+    // Any established HTTP response means a live daemon accepted the connection.
+    // A draining daemon returns 503 for non-shutdown methods — that still counts as live.
+    void res;
+    return true;
   } catch {
+    // Connect error or timeout — no live daemon on this socket.
     return false;
   }
 }

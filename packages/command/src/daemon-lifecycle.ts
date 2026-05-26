@@ -169,8 +169,10 @@ export async function ensureDaemon(): Promise<void> {
     // Flock-holder is alive. Still check protocol version — a version-mismatched
     // daemon should fail fast, not wait indefinitely for a socket that speaks wrong protocol.
     const pidData = readPidFileVersion();
-    if (pidData?.protocolVersion && pidData.protocolVersion !== PROTOCOL_VERSION) {
-      throw new ProtocolMismatchError(pidData.protocolVersion, PROTOCOL_VERSION);
+    // Absent protocolVersion (old PID file) is treated as a mismatch — consistent with
+    // isDaemonRunning(), which throws ProtocolMismatchError when the field is missing.
+    if (!pidData?.protocolVersion || pidData.protocolVersion !== PROTOCOL_VERSION) {
+      throw new ProtocolMismatchError(pidData?.protocolVersion ?? "unknown", PROTOCOL_VERSION);
     }
     verboseLog("daemon PID file flock is held — daemon is alive, waiting for socket");
     await waitForDaemon();

@@ -4241,6 +4241,24 @@ describe("socket theft prevention (#2370)", () => {
     expect(ping2.ok).toBe(true);
   });
 
+  test("start() refuses to unlink a draining server returning 503", async () => {
+    socketPath = tmpSocket();
+    // Minimal Bun server that always returns 503 (simulates a draining daemon).
+    const draining = Bun.serve({
+      unix: socketPath,
+      fetch() {
+        return new Response("draining", { status: 503 });
+      },
+    });
+
+    try {
+      serverB = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
+      await expect(serverB.start(socketPath)).rejects.toThrow("live daemon is already listening");
+    } finally {
+      draining.stop();
+    }
+  });
+
   test("start() reclaims a stale socket from a crashed server", async () => {
     socketPath = tmpSocket();
     serverA = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, opts());
