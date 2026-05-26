@@ -47,6 +47,18 @@ sprint_active_check() {
 
   local sprint_num
   sprint_num=$(tr -d '[:space:]' < "$sentinel" 2>/dev/null)
+
+  # Defense-in-depth (#2398): if the sentinel's sprint is already merged to
+  # main as a squash-merge commit, the sentinel is stale (retro failed to
+  # clear it). Auto-clear and allow the commit instead of silently blocking
+  # legitimate post-sprint work for hours/days until someone notices.
+  if [ -n "$sprint_num" ] && git log --oneline -n 100 HEAD 2>/dev/null \
+      | grep -qE "^[a-f0-9]+ sprint\(${sprint_num}\):"; then
+    echo "pre-commit: sentinel says sprint ${sprint_num} active, but its squash-merge is on HEAD — treating as stale and clearing (#2398)" >&2
+    rm -f "$sentinel"
+    return 0
+  fi
+
   echo "pre-commit: sprint ${sprint_num:-?} is active — refusing commit to main's checkout" >&2
   echo >&2
   echo "Workers must commit to their own worktree. A commit reaching main's" >&2

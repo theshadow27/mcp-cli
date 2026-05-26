@@ -242,12 +242,22 @@ the cadence. See `introspection.md` for the prompt + triage flow.
 
 ```bash
 rm -f .claude/sprints/.active
+# Verify it's gone — a stuck sentinel silently turns the main checkout
+# read-only for commits until someone notices (see #2398).
+test ! -e .claude/sprints/.active || { echo "FAILED to clear sentinel"; exit 1; }
 ```
 
 This lifts the pre-commit guard (#1443) so post-sprint maintenance commits
 on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the sprint PR
 merges and the worktree is removed — a stuck sentinel on a dead sprint
 still blocks commits.
+
+**Why a guaranteed terminal step**: in sprint 63 the retro ran and merged
+but the sentinel survived (mtime predated the retro commit), then blocked
+unrelated main-checkout commits days later. Defense-in-depth lives in
+`.git-hooks/sprint-active.sh` (auto-clears when the sentinel's sprint is
+already squash-merged on HEAD), but the retro must still actively clear
+to avoid relying on the safety net.
 
 ## Guidelines
 
