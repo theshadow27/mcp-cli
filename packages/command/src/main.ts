@@ -417,6 +417,8 @@ async function main(): Promise<void> {
       case "gemini":
       // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
       case "opencode":
+      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      case "grok":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
         break;

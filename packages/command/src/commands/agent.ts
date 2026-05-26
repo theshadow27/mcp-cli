@@ -1751,7 +1751,7 @@ Usage:
 
 Providers:
   ${providers.join(", ")}
-  Also: copilot, gemini, grok (ACP aliases)
+  Also: copilot, gemini (ACP aliases, deprecated — use "mcx agent <provider>")
 
 Examples:
   mcx agent claude spawn -t "fix the bug"

@@ -37,10 +37,6 @@ function commandForProvider(provider: Provider): string[] {
     const agent = provider.slice("acp:".length);
     return ["mcx", "acp", "spawn", "--agent", agent];
   }
-  if (provider === "grok") {
-    // Grok participates via the ACP server (grok agent stdio under the hood)
-    return ["mcx", "acp", "spawn", "--agent", "grok"];
-  }
   return ["mcx", provider, "spawn"];
 }
 
@@ -111,11 +107,12 @@ defineAlias({
     }
 
     const provider = input.provider;
+    const supportsWorktree = provider === "claude";
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
     const prompt = `/implement ${work.issueNumber}`;
     const command = [
       ...commandForProvider(provider),
-      "--worktree",
+      ...(supportsWorktree ? ["--worktree"] : []),
       "--model",
       model,
       "-t",

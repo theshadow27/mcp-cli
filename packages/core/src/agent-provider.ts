@@ -245,7 +245,7 @@ registerProvider({
     worktree: false,
     resume: false,
     repoScoped: false,
-    costTracking: true, // Grok reports via ACP extensions / session updates
+    costTracking: false,
     compactLog: false,
     afterSeq: false,
     headed: false,
