@@ -7,6 +7,11 @@ import { type UseAgentSessionsOptions, useAgentSessions } from "./use-agent-sess
 
 /* ---------- helpers ---------- */
 
+/** Backoff between poll-loop retries (acceptable per test guidelines — retry sleep inside a deadline loop). */
+const RETRY_SLEEP_MS = 10;
+/** Negative-assertion window: long enough to catch a rogue timer firing (acceptable per test guidelines — negative assertion sleep). */
+const NEG_ASSERT_SLEEP_MS = 100;
+
 /** Minimal AgentSessionInfo fixture */
 function session(id: string, provider: "claude" | "codex" = "claude"): AgentSessionInfo {
   return {
@@ -157,8 +162,11 @@ describe("useAgentSessions", () => {
       ipcCallFn: ipcCallFn as UseAgentSessionsOptions["ipcCallFn"],
     });
 
-    await flush(150);
-    // Each poll calls 2 providers, so callCount should be at least 6
+    // Poll until 6 calls arrive (3 cycles × 2 providers) instead of relying on wall-clock budget.
+    const deadline = Date.now() + 5000;
+    while (callCount < 6 && Date.now() < deadline) {
+      await Bun.sleep(RETRY_SLEEP_MS);
+    }
     expect(callCount).toBeGreaterThanOrEqual(6);
   });
 
@@ -174,12 +182,18 @@ describe("useAgentSessions", () => {
       ipcCallFn: ipcCallFn as UseAgentSessionsOptions["ipcCallFn"],
     });
 
-    await flush(50);
+    // Wait for at least one poll cycle before unmounting.
+    const deadline = Date.now() + 5000;
+    while (callCount < 2 && Date.now() < deadline) {
+      await Bun.sleep(RETRY_SLEEP_MS);
+    }
+
     instance.unmount();
     instances.pop();
     const countAtUnmount = callCount;
 
-    await flush(100);
+    // Negative assertion: verify polling has stopped (standalone sleep is acceptable here).
+    await Bun.sleep(NEG_ASSERT_SLEEP_MS);
     expect(callCount).toBe(countAtUnmount);
   });
 });
