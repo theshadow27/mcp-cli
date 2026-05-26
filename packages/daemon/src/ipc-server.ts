@@ -547,13 +547,16 @@ function toIpcError(err: unknown): IpcError {
     return { code: IPC_ERROR.INVALID_PARAMS, message: `Invalid params: ${detail}` };
   }
   if (err instanceof Error) {
-    const code = (err as unknown as { code?: number }).code;
+    const rawCode = (err as unknown as { code?: unknown }).code;
+    const code = typeof rawCode === "number" ? rawCode : IPC_ERROR.INTERNAL_ERROR;
+    const systemCode = typeof rawCode === "string" ? rawCode : undefined;
     const data = (err as unknown as { data?: unknown }).data;
     return {
-      code: typeof code === "number" ? code : IPC_ERROR.INTERNAL_ERROR,
+      code,
       message: err.message,
       ...(err.stack ? { stack: err.stack } : {}),
       ...(data !== undefined ? { data } : {}),
+      ...(systemCode !== undefined ? { systemCode } : {}),
     };
   }
   return { code: IPC_ERROR.INTERNAL_ERROR, message: String(err) };

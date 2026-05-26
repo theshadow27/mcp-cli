@@ -2886,7 +2886,7 @@ describe("claudeWait --mail-to", () => {
     const deps = makeDeps({
       callTool: mock(() => new Promise(() => {})) as unknown as ClaudeDeps["callTool"],
       pollMail: mock(async () => {
-        if (calls++ === 0) throw new Error("ECONNREFUSED");
+        if (calls++ === 0) throw Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
         return newMail;
       }),
       log: logSpy,

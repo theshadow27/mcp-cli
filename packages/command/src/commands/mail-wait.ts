@@ -1,4 +1,4 @@
-import { type MailMessage, ProtocolMismatchError } from "@mcp-cli/core";
+import { IpcCallError, type MailMessage, ProtocolMismatchError } from "@mcp-cli/core";
 
 /** Error codes considered transient — daemon blips, socket churn, restart races. */
 const TRANSIENT_ERROR_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "EPIPE", "EAGAIN", "ENOTCONN", "ENOENT"]);
@@ -10,14 +10,8 @@ function isTransientError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: unknown }).code;
   if (typeof code === "string" && TRANSIENT_ERROR_CODES.has(code)) return true;
-  // Some IPC paths surface the code only in the message string. This loop is a
-  // load-bearing fallback — the .code path above already handles structured codes,
-  // so do NOT replace this loop with getErrorCode(). The right fix is to patch the
-  // IPC transport to always emit a structured code field, then delete the loop.
-  for (const c of TRANSIENT_ERROR_CODES) {
-    // dotw-todo no-error-message-sniffing: patch IPC transport to surface structured codes on all paths — fix in #2354
-    if (err.message.includes(c)) return true;
-  }
+  if (err instanceof IpcCallError && err.systemCode !== undefined && TRANSIENT_ERROR_CODES.has(err.systemCode))
+    return true;
   return false;
 }
 

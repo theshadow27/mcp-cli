@@ -94,6 +94,8 @@ export interface IpcError {
   message: string;
   data?: unknown;
   stack?: string;
+  /** OS-level error code (e.g. "ECONNREFUSED") when the daemon wrapped a system error. */
+  systemCode?: string;
 }
 
 // -- Param schemas per method --

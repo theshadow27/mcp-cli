@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { Plan, PlanMetrics } from "@mcp-cli/core";
+import { IPC_ERROR, IpcCallError } from "@mcp-cli/core";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
@@ -754,21 +755,29 @@ describe("usePlans — Claude plan integration", () => {
 
   it("returns only server plans when _claude server is unavailable", async () => {
     const serverPlan = makePlan("server-plan", "test-server");
-    const ipcCallFn = async (method: string, params?: unknown) => {
-      if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+    const consoleErrors: unknown[][] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => consoleErrors.push(args);
+    try {
+      const ipcCallFn = async (method: string, params?: unknown) => {
+        if (method === "status") return daemonStatus([{ name: "test-server", hasList: true }]);
+        const p = params as { server?: string; tool?: string };
+        if (p.server === "test-server") return planToolResult([serverPlan]);
+        // Simulate _claude server not found — should be swallowed silently
+        throw new IpcCallError({ code: IPC_ERROR.SERVER_NOT_FOUND, message: 'Server "_claude" not found' });
+      };
 
-      const p = params as { server?: string; tool?: string };
-      if (p.server === "test-server") return planToolResult([serverPlan]);
-      // _claude calls throw
-      throw new Error("_claude not available");
-    };
+      const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
+      await waitFor(() => !stateRef.current.loading);
 
-    const { stateRef } = mount({ ipcCallFn: ipcCallFn as UsePlansOptions["ipcCallFn"] });
-    await waitFor(() => !stateRef.current.loading);
-
-    expect(stateRef.current.plans).toHaveLength(1);
-    expect(stateRef.current.plans[0].id).toBe("server-plan");
-    expect(stateRef.current.error).toBeNull();
+      expect(stateRef.current.plans).toHaveLength(1);
+      expect(stateRef.current.plans[0].id).toBe("server-plan");
+      expect(stateRef.current.error).toBeNull();
+      // SERVER_NOT_FOUND is expected — must not log any errors at all
+      expect(consoleErrors).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
   });
 
   it("returns empty Claude plans when claude_plans returns empty array", async () => {
