@@ -108,7 +108,7 @@ async function discoverSpecFiles(): Promise<string[]> {
 
 async function timeTestFile(file: string, timeoutSec: number): Promise<RunResult> {
   const start = Bun.nanoseconds();
-  const proc = Bun.spawn(["bun", "test", file], {
+  const proc = Bun.spawn(["bun", "test", "--no-orphans", file], {
     stdout: "ignore",
     stderr: "ignore",
   });

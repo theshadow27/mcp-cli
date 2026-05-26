@@ -94,7 +94,7 @@ interface TestOpts {
 
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
   return async ({ logger, env }) => {
-    const args = ["test", ...opts.paths];
+    const args = ["test", "--no-orphans", ...opts.paths];
 
     const first = await runBun(args, logger, env);
     persistLog(opts.logName, first.output);
@@ -196,7 +196,14 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel, #2362).
     // --pass-with-no-tests: a diff that touches no test-reachable code is a pass, not an error.
     const main = await runBun(
-      ["test", `--changed=${base}`, "--parallel", "--path-ignore-patterns=packages/control/**", "--pass-with-no-tests"],
+      [
+        "test",
+        "--no-orphans",
+        `--changed=${base}`,
+        "--parallel",
+        "--path-ignore-patterns=packages/control/**",
+        "--pass-with-no-tests",
+      ],
       logger,
       env,
     );
@@ -206,7 +213,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
 
     // control specs (sequential — yoga TDZ). Fast no-op when none changed.
     const control = await runBun(
-      ["test", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
+      ["test", "--no-orphans", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
       logger,
       env,
     );
