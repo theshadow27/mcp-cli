@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFINE_ALIAS_SENTINEL, extractContent, isDefineAlias } from "./alias";
+import { ToolResultError } from "./mcp-result";
 
 describe("DEFINE_ALIAS_SENTINEL", () => {
   test("is the expected string", () => {
@@ -102,5 +103,39 @@ describe("extractContent", () => {
   test("returns raw text when neither JSON nor Python repr", () => {
     const result = { content: [{ type: "text", text: "just plain text" }] };
     expect(extractContent(result)).toBe("just plain text");
+  });
+
+  test("throws ToolResultError when isError is true", () => {
+    const result = { content: [{ type: "text", text: "something broke" }], isError: true };
+    expect(() => extractContent(result)).toThrow(ToolResultError);
+    expect(() => extractContent(result)).toThrow("something broke");
+  });
+
+  test("throws ToolResultError with fallback message when content is absent", () => {
+    const result = { isError: true };
+    expect(() => extractContent(result)).toThrow(ToolResultError);
+    expect(() => extractContent(result)).toThrow("Unknown MCP tool error");
+  });
+
+  test("throws ToolResultError joining multiple error text blocks", () => {
+    const result = {
+      content: [
+        { type: "text", text: "Error A" },
+        { type: "text", text: "Error B" },
+      ],
+      isError: true,
+    };
+    expect(() => extractContent(result)).toThrow("Error A\nError B");
+  });
+
+  test("ToolResultError has correct name", () => {
+    const result = { content: [{ type: "text", text: "fail" }], isError: true };
+    try {
+      extractContent(result);
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolResultError);
+      expect((e as ToolResultError).name).toBe("ToolResultError");
+    }
   });
 });
