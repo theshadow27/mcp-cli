@@ -5,6 +5,7 @@
 import type { z } from "zod/v4";
 import type { EventFilterSpec } from "./event-filter";
 import type { GhClient } from "./gh-client";
+import { ToolResultError } from "./mcp-result";
 import type { MonitorEvent } from "./monitor-event";
 import { parsePythonRepr } from "./python-repr";
 
@@ -246,6 +247,15 @@ export interface MonitorDefinition {
  * This extracts the actual value, attempting JSON parse on text content.
  */
 export function extractContent(result: unknown): unknown {
+  if (result && typeof result === "object") {
+    if ((result as { isError?: boolean }).isError) {
+      const content = (result as { content?: Array<{ type: string; text?: string }> }).content;
+      const texts = Array.isArray(content)
+        ? content.filter((c) => c?.type === "text" && c.text).map((c) => c.text as string)
+        : [];
+      throw new ToolResultError(texts.join("\n") || "Unknown MCP tool error");
+    }
+  }
   if (result && typeof result === "object" && "content" in result) {
     const { content } = result as { content: Array<{ type: string; text?: string }> };
     if (Array.isArray(content) && content.length === 1 && content[0].type === "text" && content[0].text) {
