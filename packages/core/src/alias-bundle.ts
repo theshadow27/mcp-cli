@@ -619,7 +619,9 @@ export async function validateFreeformTsc(
   const tscBin = tscBinOverride !== undefined ? tscBinOverride : resolveTscBin();
   if (!tscBin) {
     return {
-      warnings: ["tsc not found on PATH — skipping type-check (install typescript: bun add -d typescript)"],
+      warnings: [
+        "tsc not found (checked PATH and node_modules) — skipping type-check (install typescript: bun add -d typescript)",
+      ],
       timedOut: false,
     };
   }

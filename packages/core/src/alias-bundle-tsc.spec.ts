@@ -152,7 +152,7 @@ describe("validateFreeformTsc", () => {
 
     expect(result.timedOut).toBe(false);
     expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toContain("tsc not found on PATH");
+    expect(result.warnings[0]).toContain("tsc not found");
     expect(result.warnings[0]).toContain("bun add -d typescript");
   });
 
