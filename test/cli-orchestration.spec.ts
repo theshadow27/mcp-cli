@@ -24,13 +24,14 @@ const MCX_SCRIPT = resolve("packages/command/src/main.ts");
 async function mcx(
   dir: string,
   args: string[],
-  opts?: { timeout?: number; cwd?: string },
+  opts?: { timeout?: number; cwd?: string; env?: Record<string, string | undefined> },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const baseEnv = opts?.env ?? process.env;
   const proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     cwd: opts?.cwd,
-    env: { ...process.env, MCP_CLI_DIR: dir },
+    env: { ...baseEnv, MCP_CLI_DIR: dir },
   });
 
   const timeout = opts?.timeout ?? 15_000;
@@ -274,21 +275,22 @@ describe("CLI→daemon orchestration (mock provider)", () => {
   describe("--worktree flag", () => {
     let gitDir: string;
 
+    // Strip inherited git env vars so git commands resolve to our temp repo,
+    // not whatever repo the test runner's cwd points at (#2388, #2400).
+    const gitSafeEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined };
+
     beforeAll(() => {
-      // Create a bare git repo in a temp directory for worktree tests
       gitDir = mkdtempSync(join(tmpdir(), "mcp-wt-test-"));
-      execSync('git init && git -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m init', {
-        cwd: gitDir,
-        stdio: "pipe",
-      });
-      // Enable worktree creation without branch prefix
+      execSync(
+        'git init && git -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m test-fixture-init',
+        { cwd: gitDir, stdio: "pipe", env: gitSafeEnv },
+      );
       writeFileSync(join(gitDir, ".mcx-worktree.json"), JSON.stringify({ worktree: { branchPrefix: false } }));
     });
 
     afterAll(() => {
-      // Clean up worktrees before removing the dir (git requires this order)
       try {
-        execSync("git worktree prune", { cwd: gitDir, stdio: "pipe" });
+        execSync("git worktree prune", { cwd: gitDir, stdio: "pipe", env: gitSafeEnv });
         // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
       } catch {
         // best-effort
@@ -301,7 +303,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const result = await mcx(
         daemon.dir,
         ["agent", "mock", "spawn", "--worktree", wtName, "--task", scriptPath, "--wait"],
-        { cwd: gitDir },
+        { cwd: gitDir, env: gitSafeEnv },
       );
 
       expect(result.stderr).toContain("Created worktree:");
