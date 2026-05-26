@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bundleAlias } from "@mcp-cli/core";
 
@@ -15,11 +15,13 @@ const executorPath = join(import.meta.dir, "alias-executor.ts");
 /** Spawn the executor subprocess with given stdin payload and return parsed stdout. */
 async function runExecutor(
   payload: Record<string, unknown>,
+  env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", executorPath], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    ...(env ? { env: { ...process.env, ...env } } : {}),
   });
 
   proc.stdin.write(JSON.stringify(payload));
@@ -108,52 +110,50 @@ describe("alias-executor subprocess protocol", () => {
   });
 
   test("cache() writes to disk and returns cached value on second call", async () => {
-    // Clean up BEFORE test to handle stale state from prior crashes (#1146)
-    const cacheDir = join(homedir(), ".mcp-cli", "cache", "alias", "executor-cache-test");
-    if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true });
+    // Isolated MCP_CLI_DIR per test run — no real ~/.mcp-cli touched, safe under --parallel
+    const mcpCliDir = join(tmpdir(), `alias-executor-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(mcpCliDir, { recursive: true });
 
-    const dir = makeTmpDir();
-    const scriptPath = join(dir, "cached.ts");
-    // Script uses cache() — on first call writes file, on second call reads it
-    writeFileSync(
-      scriptPath,
-      [
-        'import { defineAlias, z } from "mcp-cli";',
-        "defineAlias({",
-        '  name: "cached",',
-        "  input: z.object({ seed: z.string() }),",
-        "  fn: async (input, ctx) => {",
-        '    const val = await ctx.cache("test-key", () => input.seed);',
-        "    return val;",
-        "  },",
-        "});",
-      ].join("\n"),
-    );
+    try {
+      const dir = makeTmpDir();
+      const scriptPath = join(dir, "cached.ts");
+      // Script uses cache() — on first call writes file, on second call reads it
+      writeFileSync(
+        scriptPath,
+        [
+          'import { defineAlias, z } from "mcp-cli";',
+          "defineAlias({",
+          '  name: "cached",',
+          "  input: z.object({ seed: z.string() }),",
+          "  fn: async (input, ctx) => {",
+          '    const val = await ctx.cache("test-key", () => input.seed);',
+          "    return val;",
+          "  },",
+          "});",
+        ].join("\n"),
+      );
 
-    const { js } = await bundleAlias(scriptPath);
+      const { js } = await bundleAlias(scriptPath);
+      const env = { MCP_CLI_DIR: mcpCliDir };
 
-    // First call: producer runs, value cached
-    const first = await runExecutor({
-      bundledJs: js,
-      input: { seed: "original" },
-      isDefineAlias: true,
-      aliasName: "executor-cache-test",
-    });
-    expect(first.exitCode).toBe(0);
-    expect(JSON.parse(first.stdout).result).toBe("original");
+      // First call: producer runs, value cached
+      const first = await runExecutor(
+        { bundledJs: js, input: { seed: "original" }, isDefineAlias: true, aliasName: "executor-cache-test" },
+        env,
+      );
+      expect(first.exitCode).toBe(0);
+      expect(JSON.parse(first.stdout).result).toBe("original");
 
-    // Second call with different seed: should return cached "original"
-    const second = await runExecutor({
-      bundledJs: js,
-      input: { seed: "different" },
-      isDefineAlias: true,
-      aliasName: "executor-cache-test",
-    });
-    expect(second.exitCode).toBe(0);
-    expect(JSON.parse(second.stdout).result).toBe("original");
-
-    // Clean up cache files
-    if (existsSync(cacheDir)) rmSync(cacheDir, { recursive: true });
+      // Second call with different seed: should return cached "original"
+      const second = await runExecutor(
+        { bundledJs: js, input: { seed: "different" }, isDefineAlias: true, aliasName: "executor-cache-test" },
+        env,
+      );
+      expect(second.exitCode).toBe(0);
+      expect(JSON.parse(second.stdout).result).toBe("original");
+    } finally {
+      rmSync(mcpCliDir, { recursive: true, force: true });
+    }
   });
 
   test("cycle detection: errors when alias is already in callChain", async () => {
