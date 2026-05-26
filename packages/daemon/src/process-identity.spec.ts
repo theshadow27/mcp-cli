@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { SpawnResult } from "@mcp-cli/core";
 import {
   findDeadPids,
   getProcessStartTime,
@@ -60,6 +61,60 @@ describe("getProcessStartTime", () => {
     expect(t2).not.toBeNull();
     // etime has 1s granularity — two calls may straddle a boundary
     expect(Math.abs((t1 as number) - (t2 as number))).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("getProcessStartTime retry", () => {
+  const failResult: SpawnResult = {
+    ok: false,
+    exitCode: 1,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+  };
+  const successResult = (etime: string): SpawnResult => ({
+    ok: true,
+    exitCode: 0,
+    signal: null,
+    stdout: etime,
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+  });
+
+  test("returns second result when first call fails with !ok", () => {
+    let calls = 0;
+    const before = Date.now();
+    const result = getProcessStartTime(1, 1, (_cmd, _args) => {
+      calls++;
+      return calls === 1 ? failResult : successResult("00:10");
+    });
+    expect(calls).toBe(2);
+    expect(result).not.toBeNull();
+    // 10 seconds elapsed → startTime ≈ now - 10000
+    expect(Math.abs((result as number) - (before - 10_000))).toBeLessThanOrEqual(200);
+  });
+
+  test("returns second result when first call produces unparseable etime", () => {
+    let calls = 0;
+    const result = getProcessStartTime(1, 1, (_cmd, _args) => {
+      calls++;
+      return calls === 1 ? successResult("garbage") : successResult("01:00");
+    });
+    expect(calls).toBe(2);
+    expect(result).not.toBeNull();
+  });
+
+  test("returns null after exhausting all retries", () => {
+    let calls = 0;
+    const result = getProcessStartTime(1, 1, (_cmd, _args) => {
+      calls++;
+      return failResult;
+    });
+    expect(calls).toBe(2);
+    expect(result).toBeNull();
   });
 });
 
