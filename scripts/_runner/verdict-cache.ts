@@ -44,8 +44,14 @@ export function computeVerdictKey(resolveBase: () => string): string | null {
 
   // `git diff HEAD` captures both staged and unstaged changes in one shot.
   const diff = spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" });
-  const diffContent = diff.status === 0 ? diff.stdout : "";
-  const diffHash = Bun.hash(diffContent).toString(16);
+  if (diff.status !== 0) return null;
+
+  // Untracked files (new spec files, etc.) are invisible to `git diff HEAD`.
+  // Include their names so adding/removing an untracked file flips the key.
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8" });
+  const untrackedList = untracked.status === 0 ? untracked.stdout : "";
+
+  const diffHash = Bun.hash(diff.stdout + untrackedList).toString(16);
 
   return `${base}:${headSha}:${diffHash}`;
 }
