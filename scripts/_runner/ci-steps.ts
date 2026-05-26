@@ -23,7 +23,7 @@
  * — harmless.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -157,6 +157,83 @@ function classifyCoverage({ code, output }: RunOutcome, logger: Logger): StepRes
   }
   if (ZERO_FAIL_RE.test(output) && !FAIL_LINE_RE.test(output)) {
     logger.warn(`bun crash (exit ${code}) after all coverage tests passed — treating as pass (#1419)`);
+    return { success: true };
+  }
+  return { success: false, error: `exit ${code}` };
+}
+
+interface ChangedTestsOpts {
+  /** Stem used for `<TMP>/<logName>.txt` artefact preservation. */
+  logName: string;
+  /**
+   * Override for base-ref resolution. Defaults to the git merge-base resolver.
+   * Injected in tests so they don't depend on the repo's git state (DI per
+   * CLAUDE.md — `mock.module` pollutes Bun's global registry across files).
+   */
+  resolveBase?: () => string;
+}
+
+/**
+ * Diff-aware test step for the local `--pre-push` gate. Runs only the test
+ * files Bun's module graph says are affected by the diff (`bun test --changed`),
+ * not the whole suite — the local gate covers the 99% blast radius in seconds;
+ * the exhaustive suite + coverage ratchet stay in CI (`--ci`). See #2393.
+ *
+ * The safe subset runs `--parallel` (a quiet-machine sweep showed 0 flakes
+ * across 22k executions); `packages/control` runs sequentially in a second
+ * pass because of the yoga-layout TDZ crash under `--parallel` (#2362). Both
+ * carry the #1004 crash-after-pass tolerance — a non-zero exit AFTER a clean
+ * `0 fail` summary is a known post-test Bun crash, not a real failure. Note:
+ * unlike `bunTestWithCrashTolerance`, this step does NOT retry on SIGILL (exit
+ * 132) before the summary is printed — only post-summary crashes are tolerated.
+ */
+export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
+  const resolveBase = opts.resolveBase ?? defaultResolveBase;
+  return async ({ logger, env }) => {
+    const base = resolveBase();
+    logger.info(`diff-aware: running tests affected by changes since ${base} (bun test --changed)`);
+
+    // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel, #2362).
+    // --pass-with-no-tests: a diff that touches no test-reachable code is a pass, not an error.
+    const main = await runBun(
+      ["test", `--changed=${base}`, "--parallel", "--path-ignore-patterns=packages/control/**", "--pass-with-no-tests"],
+      logger,
+      env,
+    );
+    persistLog(opts.logName, main.output);
+    const mainVerdict = classifyChangedTest(main, logger);
+    if (!mainVerdict.success) return mainVerdict;
+
+    // control specs (sequential — yoga TDZ). Fast no-op when none changed.
+    const control = await runBun(
+      ["test", `--changed=${base}`, "packages/control", "--pass-with-no-tests"],
+      logger,
+      env,
+    );
+    persistLog(`${opts.logName}_control`, control.output);
+    return classifyChangedTest(control, logger);
+  };
+}
+
+// Resolve the ref to diff against. `origin/main` is the primary candidate —
+// it's the branch you're proposing to merge into and stable regardless of
+// whether your local branch has a tracking ref. `@{upstream}` is tried next
+// so that incremental pushes on a feature branch (where `@{upstream}` already
+// has your earlier commits) scope only to what's new. Falls through to the
+// local `main` and finally `HEAD~1`. Each candidate is validated by asking git
+// for a real merge-base — a missing or unreachable ref simply moves to the next.
+function defaultResolveBase(): string {
+  for (const ref of ["origin/main", "@{upstream}", "main"]) {
+    const r = spawnSync("git", ["merge-base", ref, "HEAD"], { encoding: "utf8" });
+    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  }
+  return "HEAD~1";
+}
+
+function classifyChangedTest({ code, output }: RunOutcome, logger: Logger): StepResult {
+  if (code === 0) return { success: true };
+  if (ZERO_FAIL_RE.test(output)) {
+    logger.warn(`bun crash (exit ${code}) after all changed tests passed — treating as pass (#1004)`);
     return { success: true };
   }
   return { success: false, error: `exit ${code}` };

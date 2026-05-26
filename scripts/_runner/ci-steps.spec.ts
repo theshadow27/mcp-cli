@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { bunTestWithCrashTolerance, coverageWithCrashTolerance } from "./ci-steps";
+import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./ci-steps";
 import { createCaptureLogger } from "./logger";
 
 // The factories spawn `bun` and inspect exit codes + output. The regex
@@ -24,6 +24,39 @@ function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string }): 
 printf '%s' '${stdout}'
 printf '%s' '${stderr}' >&2
 exit ${opts.code}
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
+// Two-pass fake bun: first invocation behaves as pass1, subsequent as pass2.
+// A counter file tracks invocations so changedTestsStep's main vs control
+// passes can have distinct exit codes and outputs — essential for verifying
+// short-circuit behavior (pass2 must differ from pass1 or removing the
+// early return can't flip the verdict).
+function makeTwoPassFakeBun(
+  pass1: { code: number; stdout?: string },
+  pass2: { code: number; stdout?: string },
+): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  const counterFile = join(dir, ".invocation_count");
+  const s1 = (pass1.stdout ?? "").replace(/'/g, "'\\''");
+  const s2 = (pass2.stdout ?? "").replace(/'/g, "'\\''");
+  writeFileSync(
+    join(dir, "bun"),
+    `#!/usr/bin/env bash
+count=0
+if [ -f '${counterFile}' ]; then count=$(cat '${counterFile}'); fi
+count=$((count + 1))
+echo "$count" > '${counterFile}'
+if [ "$count" -eq 1 ]; then
+  printf '%s' '${s1}'
+  exit ${pass1.code}
+else
+  printf '%s' '${s2}'
+  exit ${pass2.code}
+fi
 `,
     { mode: 0o755 },
   );
@@ -216,5 +249,93 @@ describe("coverageWithCrashTolerance", () => {
       }),
     );
     expect(result).toMatchObject({ success: false });
+  });
+});
+
+describe("changedTestsStep", () => {
+  // resolveBase is injected so the test never shells out to git — the step
+  // then spawns the fake `bun` (twice: safe subset + control pass), and we
+  // assert the #1004 classification on the combined verdict.
+  const stubBase = () => "STUB_BASE";
+
+  it("exit 0 on both passes → success", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
+    const dir = makeFakeBun({ code: 1, stdout: passingSummary });
+    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("real failure in the safe subset short-circuits before the control pass", async () => {
+    // Pass 1 (main) fails; pass 2 (control) would succeed — if the short-circuit
+    // is removed, control runs and flips the verdict to success, catching the bug.
+    const dir = makeTwoPassFakeBun({ code: 1, stdout: failingSummary }, { code: 0, stdout: passingSummary });
+    const step = changedTestsStep({ logName: "test_changed_sc", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("control pass failure is reported when the main pass succeeds", async () => {
+    // Pass 1 (main) succeeds; pass 2 (control) fails — exercises the second
+    // classifyChangedTest return and the control-fail code path.
+    const dir = makeTwoPassFakeBun({ code: 0, stdout: passingSummary }, { code: 1, stdout: failingSummary });
+    const step = changedTestsStep({ logName: "test_changed_ctrl_fail", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("passes the resolved base ref to bun via --changed", async () => {
+    // Fake bun echoes its own argv so we can prove --changed=<base> is forwarded.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+    const step = changedTestsStep({ logName: "test_changed_argv", resolveBase: stubBase });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+    expect(readFileSync("/tmp/test_changed_argv.txt", "utf8")).toContain("--changed=STUB_BASE");
+  });
+
+  it("main pass carries --path-ignore-patterns for control; control pass does not", async () => {
+    // Verifies the --path-ignore-patterns + --changed interaction: main pass
+    // must exclude packages/control via the flag; control pass targets it
+    // directly as a positional arg (no ignore flag needed).
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+    const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase });
+    await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    const mainLog = readFileSync("/tmp/test_changed_flags.txt", "utf8");
+    const controlLog = readFileSync("/tmp/test_changed_flags_control.txt", "utf8");
+    expect(mainLog).toContain("--path-ignore-patterns=packages/control/**");
+    expect(controlLog).not.toContain("--path-ignore-patterns");
+    expect(controlLog).toContain("packages/control");
   });
 });
