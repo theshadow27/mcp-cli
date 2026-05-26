@@ -50,7 +50,7 @@ export function parseEtime(etime: string): number | null {
  * Get the start time (epoch ms) of a process by PID.
  * Returns null if the process doesn't exist or the start time can't be determined.
  */
-export function getProcessStartTime(pid: number): number | null {
+export function getProcessStartTime(pid: number, retries = 0): number | null {
   try {
     const result = spawnCaptureSync("ps", ["-o", "etime=", "-p", String(pid)]);
     // Capture wall clock AFTER ps completes so the time reference is close to
@@ -58,11 +58,18 @@ export function getProcessStartTime(pid: number): number | null {
     // was called before spawnSync — under CI load ps can take 1-2s, shifting
     // the computed start time enough to trip isOurProcess's tolerance (#2255).
     const now = Date.now();
-    if (!result.ok) return null;
+    if (!result.ok) {
+      if (retries > 0) return getProcessStartTime(pid, retries - 1);
+      return null;
+    }
     const elapsedSeconds = parseEtime(result.stdout);
-    if (elapsedSeconds === null) return null;
+    if (elapsedSeconds === null) {
+      if (retries > 0) return getProcessStartTime(pid, retries - 1);
+      return null;
+    }
     return now - elapsedSeconds * 1000;
   } catch {
+    if (retries > 0) return getProcessStartTime(pid, retries - 1);
     return null;
   }
 }
@@ -120,7 +127,8 @@ export function getProcessStartTimesBatch(pids: number[]): Map<number, number> {
  * @returns true if confirmed ours, false if confirmed recycled (start time mismatch), null if indeterminate (ps failed or process dead)
  */
 export function isOurProcess(pid: number, storedStartTimeMs: number, toleranceMs = 2_000): boolean | null {
-  const currentStartTime = getProcessStartTime(pid);
+  // Retry once on null — transient ps failure under load is not a meaningful signal (#2383)
+  const currentStartTime = getProcessStartTime(pid, 1);
   if (currentStartTime === null) return null;
   return Math.abs(currentStartTime - storedStartTimeMs) <= toleranceMs;
 }
