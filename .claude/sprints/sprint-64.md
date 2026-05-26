@@ -1,6 +1,6 @@
 # Sprint 64
 
-> Planned 2026-05-26 03:23 EDT. Started 2026-05-26 11:16 EDT. Target: 13 work items (11 issues + 2 in-flight PRs).
+> Planned 2026-05-26 03:23 EDT. Started 2026-05-26 11:16 EDT. Ended 2026-05-26 12:30 EDT. Target: 13 work items (11 issues + 2 in-flight PRs).
 
 ## Goal
 
@@ -90,3 +90,44 @@ is automatic). #2396/#2362/#2394 are blocked on #2397 landing first (shared file
 
 ### Issues filed this session (context for reviewers)
 #2392 (MCP_CLI_AI=0 no-op), #2394, #2395, #2396, #2398.
+
+## Results
+
+**Outcome: 13/13 merged (100%).** Ran 11:16 EDT → 12:30 EDT (1h14m). Quota peaked at 19% / 16% (5h / 7d).
+
+### Already merged (planner ghost-included)
+- **#2248** — closed (PR #2278 merged 2026-05-24, pre-sprint); worker confirmed, untracked.
+- **#2362** — closed (PR #2379 merged 2026-05-25, pre-sprint); worker confirmed, untracked.
+
+### Sprint PRs
+| Issue | PR | Notes |
+|-------|----|-------|
+| PR #2397 | #2397 | review→repair→QA→merge. Reviewer self-repair: 4🟡 + 2🔵 + filed #2401 (ZERO_FAIL_RE follow-up). |
+| PR #2391 | #2391 | review→repair→QA→merge. Round-1 verdict: 3🔴+3🟡+filed #2407 (routing gap). Repair landed all 6. |
+| #2394 | #2405 | impl→QA→merge. QA fixed gap in `test:phases` invocation. |
+| #2370 | #2410 | impl→review→QA(fail)→repair→QA→merge. Reviewer ✅ approved; QA caught 2 follow-on bugs Copilot also flagged (probeSocket 503 case, ProtocolMismatchError consistency). |
+| #2330 | #2404 | impl→QA(fail, rule misread)→repair→QA→merge. Filed #2409 (rule-misapplication context for future workers). |
+| #2395 | #2402 | impl→QA→merge. Cleanest path. |
+| #2383 | #2412 | impl→QA(fail, missing retry test)→repair→QA→merge. |
+| #2388 | #2414 | impl→QA→merge. Bundled the **#2400** sandbox-escape fix (gitSafeEnv strips GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE) — #2400 closed via the same merge. |
+| #2253 | #2403 | impl→QA(missed Copilot finding)→QA-self-repair→merge. |
+| #2381 | #2418 | impl→QA→merge. |
+| #2396 | #2406 | impl(scope-split: verdict cache only, AST graph deferred)→review→repair-with-Copilot-bonus→QA→merge. |
+
+### Issues filed during the run
+- **#2400** — P1: cli-orchestration.spec.ts --worktree test escapes its temp git dir (closed by #2414 via gitSafeEnv).
+- **#2401** — follow-up: replace ZERO_FAIL_RE prose regex with structured bun test --reporter json.
+- **#2407** — follow-up: grok routing gap (caught during #2391 adversarial review).
+- **#2409** — follow-up: poll-until-headroom rule misapplication context (caught during #2330 QA).
+
+### Mid-run observations worth tracking
+- **The diff-aware pre-push (#2397) paid off immediately.** PRs landed after #2397 ran `am-i-done --pre-push` in 6–7s vs ~60s pre-change — visible in the impl worker logs.
+- **Reviewer self-repair worked well** for #2397 (6 findings) and #2396 (4 findings) — both stayed in scope. #2391's larger blocker set was correctly routed to fresh opus repair (no convergence-failure churn).
+- **QA caught real bugs adversarial review missed** twice: #2370 (probeSocket 503), #2253 (vacuous deadline-poll pass) — both via Copilot inline findings the QA initially missed and then addressed when prompted. The QA-self-repair pattern (re-running QA after a heads-up about an inline thread) is cheap and worked.
+- **Planner included items already merged** (#2248, #2362). Workers confirmed and untracked in ~30s each. Cheap mistake, but should be a planner pre-check.
+- **--no-verify needed once** for the docs-only sprint-meta timestamp commit (the flaky #2388 was blocking the gate — exactly the issue being fixed). User authorized explicitly; #2397's landing made this unnecessary for subsequent meta edits.
+
+### Deferred / not done
+- Plan's Step 1a meta change (#2333 — codify Bun's condition-based-waiting test philosophy in CLAUDE.md + test/CLAUDE.md) — deferred to user review per the plan's note. Apply via `meta/codify-waiting-philosophy` branch at retro or post-sprint.
+- Pending board hygiene (close #2334/#2339/#2245/#2260 as dups of #2330; #2343 as one-off) — defer to retro.
+- `git stash@{0}` drop — STASH CONTENT DIVERGED FROM PLAN (held 55 lines of `automation-dispatcher.spec.ts` test work, not the run-state doc the plan described). Did NOT drop. Saved the "don't end on passive wait" lesson to memory as a standalone file (feedback_dont_end_on_passive_wait.md).
