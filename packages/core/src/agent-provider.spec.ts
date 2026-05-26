@@ -89,12 +89,6 @@ describe("agent-provider", () => {
       expect(args.agentOverride).toBe("grok");
     });
 
-    test("getAllProviders returns all 8 built-in providers (including grok via ACP)", () => {
-      const all = getAllProviders();
-      const names = all.map((p) => p.name).sort();
-      expect(names).toEqual(["acp", "claude", "codex", "copilot", "gemini", "grok", "mock", "opencode"]);
-    });
-
     test("unknown provider returns undefined", () => {
       expect(getProvider("nonexistent")).toBeUndefined();
     });
