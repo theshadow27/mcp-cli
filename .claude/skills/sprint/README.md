@@ -126,6 +126,9 @@ Issues are batched (3 batches of 5) to avoid file conflicts between concurrent s
 - Git worktree support
 - `.mcx.yaml` + `.claude/phases/*.ts` defining the phase graph
 
+Supported agent harnesses for workers (via `provider` column or `mcx <provider> spawn`):
+`claude` (primary), `copilot`, `gemini`, `grok` (via native ACP `grok agent stdio`), generic `acp:*`, plus Codex/OpenCode where installed.
+
 ## Related skills
 
 - `/implement` — single-issue implementation (called by sprint workers)

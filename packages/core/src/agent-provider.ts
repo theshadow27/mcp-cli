@@ -233,6 +233,26 @@ registerProvider({
   },
 });
 
+/** Grok is an ACP variant via `grok agent stdio` — first-class harness integration target. */
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  toolPrefix: "acp",
+  buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown> {
+    return { ...passthrough(opts), agentOverride: "grok" };
+  },
+  native: {
+    worktree: false,
+    resume: false,
+    repoScoped: false,
+    costTracking: true, // Grok reports via ACP extensions / session updates
+    compactLog: false,
+    afterSeq: false,
+    headed: false,
+    agentSelect: true,
+  },
+});
+
 /** Mock agent — reads canned responses from a JSON file. For testing only. */
 registerProvider({
   name: "mock",

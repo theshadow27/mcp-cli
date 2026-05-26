@@ -24,18 +24,22 @@
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 
-type Provider = "claude" | "copilot" | "gemini" | `acp:${string}`;
+type Provider = "claude" | "copilot" | "gemini" | "grok" | `acp:${string}`;
 
 const ProviderSchema = z
   .string()
-  .refine((v): v is Provider => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"), {
-    message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"',
+  .refine((v): v is Provider => v === "claude" || v === "copilot" || v === "gemini" || v === "grok" || v.startsWith("acp:"), {
+    message: 'provider must be "claude", "copilot", "gemini", "grok", or "acp:<agent>"',
   });
 
 function commandForProvider(provider: Provider): string[] {
   if (provider.startsWith("acp:")) {
     const agent = provider.slice("acp:".length);
     return ["mcx", "acp", "spawn", "--agent", agent];
+  }
+  if (provider === "grok") {
+    // Grok participates via the ACP server (grok agent stdio under the hood)
+    return ["mcx", "acp", "spawn", "--agent", "grok"];
   }
   return ["mcx", provider, "spawn"];
 }
