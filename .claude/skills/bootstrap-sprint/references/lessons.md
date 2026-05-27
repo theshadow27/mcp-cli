@@ -396,3 +396,24 @@ in 7 of 8 siblings), not a type-layer abstraction that re-introduces
 coupling. Crucially, this constrains your lint rules: a rule must mechanize
 an invariant, never enforce DRY for its own sake. (mcp-cli writeup:
 `docs/architecture/duplication.md`.)
+
+**38. A small pre-existing gate failure on `main` becomes a duplicate
+cluster under parallel work.** When every fresh worktree runs the same
+whole-repo pre-merge gate (coverage ratchet, lint, `am-i-done`), a small
+*pre-existing* failure on `main` gets hit independently by every parallel
+session — and each one redundantly (a) files an issue for it and (b) bundles
+its own fix. Sprint 65 produced **five duplicate issues and three conflicting
+fix-PRs** for one 66.7%-coverage shortfall; the fixes then collided on the
+shared file. Two mechanizations: **workers** must search existing issues
+before filing and treat a failure that reproduces on clean `main` as a
+*shared gap to flag*, not a per-PR fix to bundle; the **orchestrator** must
+de-bundle the shared gap to a single fast-track owner the moment a *second*
+worktree hits it (one PR carries the fix, the rest rebase and drop their
+copies) instead of letting it sprawl. When bootstrapping a sprint skill,
+detect this risk by checking whether the project's pre-push gate is
+**whole-repo (vs diff-scoped)** and whether `main` is currently green under
+it — a whole-repo gate plus a near-threshold file is the setup for the
+cluster. (Related: the gate may also be *masked* — if the ratchet runs after
+a flaky-crash-prone step, a teardown segfault can abort the run before the
+gate executes, letting the under-covered file slip onto `main` in the first
+place.)
