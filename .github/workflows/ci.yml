@@ -156,6 +156,8 @@ jobs:
         run: echo "Docs-only PR — skipping pty-test"
       - uses: actions/checkout@v6
         if: needs.detect.outputs.docs_only != 'true'
+        with:
+          token: ${{ github.token }}
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
