@@ -787,7 +787,9 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ type: "ready", port });
     } catch (err) {
       // Clean up partially-initialized resources
-      await wsServer?.stop().catch(() => {});
+      await wsServer
+        ?.stop()
+        .catch((e) => console.warn("[claude-worker] wsServer.stop() failed during init cleanup:", e));
       wsServer = null;
       mcpServer = null;
       transport = null;

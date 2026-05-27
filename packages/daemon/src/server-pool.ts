@@ -139,7 +139,9 @@ export class ServerPool {
     // Disconnect existing connection if present
     const existing = this.connections.get(name);
     if (existing) {
-      existing.client?.close().catch(() => {});
+      existing.client
+        ?.close()
+        .catch((e) => this.logger.warn(`[pool] client.close() failed replacing virtual server "${name}": ${e}`));
     }
 
     const toolMap = tools ?? new Map();
@@ -267,7 +269,9 @@ export class ServerPool {
       if (conn.virtual) continue;
       if (!config.servers.has(name)) {
         removed.push(name);
-        this.disconnect(name).catch(() => {});
+        this.disconnect(name).catch((e) =>
+          this.logger.warn(`[pool] disconnect failed for removed server "${name}": ${e}`),
+        );
         this.connections.delete(name);
       }
     }
@@ -931,7 +935,8 @@ async function defaultConnect(
   // When the signal fires (timeout), force-close the transport to abort
   // hanging connections — especially SSE EventSource which retries internally.
   if (signal) {
-    const onAbort = () => transport.close().catch(() => {});
+    const onAbort = () =>
+      transport.close().catch((e) => console.warn(`[ServerPool] transport.close() failed on abort for "${name}":`, e));
     signal.addEventListener("abort", onAbort, { once: true });
   }
 
