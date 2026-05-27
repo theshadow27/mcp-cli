@@ -14,8 +14,11 @@ export interface PsEntry {
 
 const PS_TIMEOUT_MS = 5_000;
 
+// Patterns are intentionally specific to avoid matching live CI runners.
+// /bun\s+test\s+--test-worker\b/ targets only Bun's internal worker spawn,
+// not the top-level `bun test` command (which can have PPID=1 in containers).
 const ORPHAN_PATTERNS = [
-  /bun\s+test\b/,
+  /bun\s+test\s+--test-worker\b/,
   /echo-server\.ts/,
   /echo-http-server\.ts/,
   /echo-sse-server\.ts/,
@@ -40,21 +43,29 @@ export function findOrphans(entries: PsEntry[], selfPid: number): PsEntry[] {
   return entries.filter((e) => e.ppid === 1 && e.pid !== selfPid && ORPHAN_PATTERNS.some((p) => p.test(e.command)));
 }
 
-function sweep(): void {
-  const result = spawnSync("ps", ["-eo", "pid,ppid,command"], { encoding: "utf-8", timeout: PS_TIMEOUT_MS });
-  if (result.status !== 0 || !result.stdout) return;
-
-  const orphans = findOrphans(parsePs(result.stdout), process.pid);
-  if (orphans.length === 0) return;
-
+export function killOrphans(
+  orphans: PsEntry[],
+  killFn: (pid: number) => void = (pid) => process.kill(pid, "SIGKILL"),
+  log: (msg: string) => void = (msg) => process.stderr.write(msg),
+): void {
   for (const orphan of orphans) {
     try {
-      process.kill(orphan.pid, "SIGKILL");
-      process.stderr.write(`[orphan-sweep] killed pid ${orphan.pid}: ${orphan.command}\n`);
+      killFn(orphan.pid);
+      log(`[orphan-sweep] killed pid ${orphan.pid}: ${orphan.command}\n`);
     } catch {
       // Already dead or permission denied — either way, move on.
     }
   }
+}
+
+function sweep(): void {
+  // -A: all processes; -ww: unlimited command width (avoid macOS truncation at terminal width)
+  const result = spawnSync("ps", ["-A", "-ww", "-o", "pid,ppid,command"], {
+    encoding: "utf-8",
+    timeout: PS_TIMEOUT_MS,
+  });
+  if (result.status !== 0 || !result.stdout) return;
+  killOrphans(findOrphans(parsePs(result.stdout), process.pid));
 }
 
 sweep();

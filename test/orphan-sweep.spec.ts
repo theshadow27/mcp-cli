@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type PsEntry, findOrphans, parsePs } from "./orphan-sweep";
+import { type PsEntry, findOrphans, killOrphans, parsePs } from "./orphan-sweep";
 
 describe("parsePs", () => {
   test("parses ps -eo pid,ppid,command output", () => {
@@ -69,5 +69,85 @@ describe("findOrphans", () => {
       { pid: 200, ppid: 50, command: "bun test --test-worker" },
     ];
     expect(findOrphans(clean, SELF_PID)).toEqual([]);
+  });
+
+  // Verify the top-level `bun test` command is NOT selected — it can have PPID=1
+  // in container environments and is not a worker.
+  test("does not select plain 'bun test' invocation (only --test-worker variant)", () => {
+    const plain: PsEntry[] = [{ pid: 999, ppid: 1, command: "bun test packages/core/src" }];
+    expect(findOrphans(plain, SELF_PID)).toEqual([]);
+  });
+
+  test("selects bun test --test-worker via first pattern", () => {
+    const worker: PsEntry[] = [{ pid: 42, ppid: 1, command: "bun test --test-worker --timeout 5000" }];
+    expect(findOrphans(worker, SELF_PID)).toEqual(worker);
+  });
+
+  // Each fixture-server pattern tested independently (not relying on the first pattern).
+  test.each([
+    ["bun test/echo-server.ts", "echo-server.ts"],
+    ["bun test/echo-http-server.ts", "echo-http-server.ts"],
+    ["bun test/echo-sse-server.ts", "echo-sse-server.ts"],
+    ["bun test/slow-echo-server.ts", "slow-echo-server.ts"],
+    ["bun test/http-401-server.ts", "http-401-server.ts"],
+  ])("selects orphaned fixture server: %s", (command) => {
+    const fixture: PsEntry[] = [{ pid: 77, ppid: 1, command }];
+    expect(findOrphans(fixture, SELF_PID)).toEqual(fixture);
+  });
+});
+
+describe("killOrphans", () => {
+  test("fires killFn for each orphan", () => {
+    const orphans: PsEntry[] = [
+      { pid: 10, ppid: 1, command: "bun test --test-worker" },
+      { pid: 20, ppid: 1, command: "bun test/echo-server.ts" },
+    ];
+    const killed: number[] = [];
+    killOrphans(
+      orphans,
+      (pid) => killed.push(pid),
+      () => {},
+    );
+    expect(killed).toEqual([10, 20]);
+  });
+
+  test("writes log message for each killed process", () => {
+    const orphans: PsEntry[] = [{ pid: 55, ppid: 1, command: "bun test --test-worker" }];
+    const logs: string[] = [];
+    killOrphans(
+      orphans,
+      () => {},
+      (msg) => logs.push(msg),
+    );
+    expect(logs).toEqual(["[orphan-sweep] killed pid 55: bun test --test-worker\n"]);
+  });
+
+  test("catches kill errors and continues to next orphan", () => {
+    const orphans: PsEntry[] = [
+      { pid: 10, ppid: 1, command: "bun test --test-worker" },
+      { pid: 20, ppid: 1, command: "bun test/echo-server.ts" },
+    ];
+    const killed: number[] = [];
+    killOrphans(
+      orphans,
+      (pid) => {
+        if (pid === 10) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        killed.push(pid);
+      },
+      () => {},
+    );
+    expect(killed).toEqual([20]);
+  });
+
+  test("no-ops on empty list", () => {
+    let called = false;
+    killOrphans(
+      [],
+      () => {
+        called = true;
+      },
+      () => {},
+    );
+    expect(called).toBe(false);
   });
 });
