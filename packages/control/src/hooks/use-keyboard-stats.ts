@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: transitive member of use-keyboard-claude.ts ↔ use-keyboard.ts cycle
 import type { Key } from "ink";
 import type { StatsNav } from "./use-keyboard";
 

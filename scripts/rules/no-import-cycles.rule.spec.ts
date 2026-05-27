@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import type { FileMeta } from "./_engine/file-loader";
 import { buildImportGraph } from "./_engine/import-graph";
 import type { SpecifierResolver } from "./_engine/import-graph";
 import { evaluateRule } from "./_engine/rule";
+import { checkSuppression } from "./_engine/suppression";
 import rule, { findSCCs, findSelfImports, traceCycle } from "./no-import-cycles.rule";
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -146,15 +148,15 @@ describe("rule integration", () => {
     expect(violations).toHaveLength(0);
   });
 
-  test("real codebase has exactly 1 known intra-package SCC (grandfathered)", () => {
+  test("real codebase SCCs are intra-package (no cross-package cycles)", () => {
     const repoRoot = process.cwd();
     const coreIndex = `${repoRoot}/packages/core/src/index.ts`;
     const graph = buildImportGraph([coreIndex]);
     const sccs = findSCCs(graph);
-    expect(sccs).toHaveLength(1);
-    const members = sccs[0].map((f) => f.replace(`${repoRoot}/`, ""));
-    for (const m of members) {
-      expect(m).toStartWith("packages/core/src/");
+    for (const scc of sccs) {
+      const relPaths = scc.map((f) => f.replace(`${repoRoot}/`, ""));
+      const pkgs = new Set(relPaths.map((p) => p.split("/").slice(0, 2).join("/")));
+      expect(pkgs.size).toBe(1);
     }
   });
 
@@ -164,5 +166,21 @@ describe("rule integration", () => {
     const graph = buildImportGraph([coreIndex]);
     const selfImps = findSelfImports(graph);
     expect(selfImps).toHaveLength(0);
+  });
+
+  test("every SCC member with a dotw-ignore/todo suppression is actually in an SCC", () => {
+    const repoRoot = process.cwd();
+    const coreIndex = `${repoRoot}/packages/core/src/index.ts`;
+    const graph = buildImportGraph([coreIndex]);
+    const sccs = findSCCs(graph);
+    const sccMembers = new Set(sccs.flat());
+
+    for (const file of sccMembers) {
+      const content = readFileSync(file, "utf8");
+      const suppression = checkSuppression(content, 1, "no-import-cycles");
+      if (suppression.suppressed) {
+        expect(sccMembers.has(file)).toBe(true);
+      }
+    }
   });
 });

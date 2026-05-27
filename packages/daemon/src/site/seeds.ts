@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: seeds.ts imports type { Catalog } from catalog.ts; type-only back-edge
 /**
  * Statically-imported seed data — embedded in the compiled binary by Bun's bundler.
  *

@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * Kitty terminal adapter.
  * Uses the `kitten` CLI to launch tabs and OS windows.

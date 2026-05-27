@@ -12,7 +12,6 @@ import type { CheckRule } from "./_engine/rule";
 interface CycleInfo {
   cyclePath: string[];
   isCrossPackage: boolean;
-  canonical: string;
 }
 
 // ── Tarjan's SCC ───────────────────────────────────────────────────────
@@ -26,7 +25,7 @@ export function findSCCs(graph: ImportGraph): string[][] {
   let idx = 0;
 
   function ll(node: string): number {
-    return lowlink.get(node) ?? 0;
+    return lowlink.get(node) ?? -1;
   }
 
   function strongconnect(v: string): void {
@@ -79,6 +78,8 @@ export function findSelfImports(graph: ImportGraph): string[] {
 
 // ── Cycle path tracing ─────────────────────────────────────────────────
 
+const TRACE_ITERATION_CAP = 10_000;
+
 export function traceCycle(
   sccMembers: readonly string[],
   forward: ReadonlyMap<string, readonly ImportEdge[]>,
@@ -89,8 +90,10 @@ export function traceCycle(
   if (!start) return [];
   const visited = new Set<string>();
   const path: string[] = [];
+  let iterations = 0;
 
   function dfs(node: string): string[] | null {
+    if (++iterations > TRACE_ITERATION_CAP) return null;
     if (visited.has(node)) {
       const idx = path.indexOf(node);
       if (idx >= 0) return path.slice(idx);
@@ -149,11 +152,9 @@ function computeCycles(files: Map<string, FileMeta>): Map<string, CycleInfo> {
     const cyclePath = traceCycle(scc, graph.forward);
     const sorted = [...scc].sort();
     const pkgs = new Set(sorted.map((f) => getPackageForPath(repoRoot, f)));
-    const canonical = sorted.find((f) => files.has(f)) ?? sorted[0] ?? scc[0];
     const info: CycleInfo = {
       cyclePath,
       isCrossPackage: pkgs.size > 1,
-      canonical,
     };
     for (const file of scc) result.set(file, info);
   }
@@ -163,7 +164,6 @@ function computeCycles(files: Map<string, FileMeta>): Map<string, CycleInfo> {
     result.set(file, {
       cyclePath: [file],
       isCrossPackage: false,
-      canonical: file,
     });
   }
 
@@ -191,11 +191,6 @@ const rule: CheckRule = {
     const info = cycles.get(ctx.file.path);
 
     if (!info) {
-      ctx.checked();
-      return;
-    }
-
-    if (info.canonical !== ctx.file.path) {
       ctx.checked();
       return;
     }
