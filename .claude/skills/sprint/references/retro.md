@@ -226,7 +226,7 @@ git branch -D sprint-{N}   # local branch (remote was --delete-branch'd by gh pr
 
 ## Introspection cadence (sprints ending in 7)
 
-If the sprint number ends in 7 (17, 27, 37, 47, **57**, 67…), queue a
+If the sprint number ends in 7 (17, 27, 37, 47, ~~57~~ (skipped — see #2506), 67…), queue a
 code-first introspection round to feed the *next* sprint's plan. The round
 runs as part of this retro: spawn one Explore agent with the prompt template
 at `.claude/skills/sprint/references/introspection.md`, triage findings with
