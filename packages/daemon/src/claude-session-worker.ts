@@ -208,7 +208,15 @@ export async function handlePrompt(
     sessionId = crypto.randomUUID();
     const permissionMode = (args.permissionMode as PermissionStrategy) ?? "rules";
     const allowedTools = (args.allowedTools as string[]) ?? undefined;
-    const effectiveTools = permissionMode === "rules" ? (allowedTools ?? DEFAULT_SAFE_TOOLS) : undefined;
+    const allowOnly = (args.allowOnly as boolean) ?? false;
+    const effectiveTools =
+      permissionMode === "rules"
+        ? allowedTools
+          ? allowOnly
+            ? allowedTools
+            : [...new Set([...DEFAULT_SAFE_TOOLS, ...allowedTools])]
+          : [...DEFAULT_SAFE_TOOLS]
+        : undefined;
     const rules: PermissionRule[] | undefined = effectiveTools
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;

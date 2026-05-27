@@ -506,6 +506,8 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.exit(1);
   }
 
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
+
   if (!parsed.task && !parsed.resume) {
     d.printError('Usage: mcx claude spawn --task "description" [--worktree [name]] [--allow tools...]');
     d.printError('Run "mcx claude spawn --help" for details.');
@@ -557,6 +559,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
@@ -652,28 +655,44 @@ export interface ResumeArgs {
   /** Bypass the branch-merged pre-flight check. */
   force: boolean;
   allow: string[];
+  allowOnly: boolean;
   model: string | undefined;
   wait: boolean;
   timeout: number | undefined;
   error: string | undefined;
+  warnings: string[];
 }
 
 export function parseResumeArgs(args: string[]): ResumeArgs {
   const allow: string[] = [];
+  let allowOnly = false;
   let allowError: string | undefined;
+  const warnings: string[] = [];
   let model: string | undefined;
   let modelError: string | undefined;
   const remaining: string[] = [];
 
-  // Phase 1: extract --allow (greedy, no heuristic) and --model (unconditional consume)
+  // Phase 1: extract --allow/--allow-only (greedy, no heuristic) and --model (unconditional consume)
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--allow") {
+    if (arg === "--allow" || arg === "--allow-only") {
+      if (arg === "--allow-only") allowOnly = true;
       // dotw-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        const raw = args[++i]; // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        if (raw.includes(",")) {
+          warnings.push(
+            `Comma-separated --allow pattern "${raw}" was split into ${raw.split(",").length} patterns — use spaces instead`,
+          );
+          for (const part of raw.split(",")) {
+            const trimmed = part.trim();
+            if (trimmed) allow.push(trimmed);
+          }
+        } else {
+          allow.push(raw);
+        }
       }
-      if (allow.length === 0) allowError = "--allow requires at least one tool pattern";
+      if (allow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i]; // dotw-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values
       if (!val) {
@@ -724,7 +743,25 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
       "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
-  return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
+  // Mechanism B: detect dead patterns
+  for (const pattern of allow) {
+    const parenMatch = pattern.match(/^(\w+)\((.+)\)$/);
+    if (parenMatch) {
+      const toolName = parenMatch[1];
+      const inner = parenMatch[2];
+      if (inner === "*") {
+        warnings.push(
+          `"${pattern}" is a dead rule — bare (*) is not a wildcard. Use "${toolName}" (no parens) to allow all ${toolName} calls, or "${toolName}(:*)" for prefix matching`,
+        );
+      } else if (inner.endsWith("*") && !inner.endsWith(":*")) {
+        warnings.push(
+          `"${pattern}" may not match as expected — use ":*" suffix for prefix wildcards (e.g. "${toolName}(${inner.slice(0, -1)}:*)")`,
+        );
+      }
+    }
+  }
+
+  return { target, sessionId, all, fresh, force, allow, allowOnly, model, wait, timeout, error, warnings };
 }
 
 /** Extract issue number from branch name convention: feat/issue-N-slug, fix/issue-N-slug, etc. */
@@ -809,6 +846,8 @@ export async function claudeResume(args: string[], d: ClaudeDeps): Promise<void>
     d.printError(parsed.error);
     d.exit(1);
   }
+
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
 
   const cwd = process.cwd();
 
@@ -926,6 +965,7 @@ async function resumeWorktree(
 
   const toolArgs: Record<string, unknown> = { cwd: wt.path };
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.wait) toolArgs.wait = true;
