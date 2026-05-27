@@ -105,7 +105,9 @@ export function startCallbackServer(preferredPort?: number): CallbackServer {
   }, 120_000);
 
   // Clean up timeout when code is received (suppress floating rejection from .finally() chain)
-  waitForCode.finally(() => clearTimeout(timeout)).catch(() => {});
+  waitForCode
+    .finally(() => clearTimeout(timeout))
+    .catch((e) => console.warn("[OAuth] callback cleanup chain rejected:", e));
 
   return {
     url,

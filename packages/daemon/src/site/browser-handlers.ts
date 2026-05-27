@@ -150,7 +150,9 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
       try {
         await withDeadline(60_000, "browser auto-restart", eng.start(specs, sniffer.asEvents()));
       } catch {
-        await withDeadline(5_000, "browser stop on failed auto-restart", eng.stop()).catch(() => {});
+        await withDeadline(5_000, "browser stop on failed auto-restart", eng.stop()).catch((e) =>
+          console.warn("[browser] stop failed after auto-restart failure:", e),
+        );
         return false as false;
       }
 
@@ -210,7 +212,9 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
       try {
         startResults = await withDeadline(60_000, "browser start", eng.start(specs, sniffer.asEvents()));
       } catch (err) {
-        await withDeadline(5_000, "browser stop on failed start", eng.stop()).catch(() => {});
+        await withDeadline(5_000, "browser stop on failed start", eng.stop()).catch((e) =>
+          console.warn("[browser] stop failed after start failure:", e),
+        );
         throw err;
       }
       browser = eng;

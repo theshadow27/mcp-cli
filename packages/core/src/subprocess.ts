@@ -220,7 +220,7 @@ async function drainStream(stream: ReadableStream, maxBytes: number): Promise<{ 
       // block on a full pipe and hang; reader.cancel() cleans up on exit.
     }
   } finally {
-    reader.cancel().catch(() => {});
+    reader.cancel().catch((e) => console.warn("[subprocess] reader.cancel() failed:", e));
   }
   return { text: Buffer.concat(parts).toString("utf8"), truncated };
 }
