@@ -14,6 +14,8 @@ const KILL_TIMEOUT_MS = 5_000;
 const KILL_SIGKILL_GRACE_MS = 2_000;
 /** Interval (ms) between liveness checks while waiting for process exit. */
 const POLL_INTERVAL_MS = 100;
+/** Cache age (ms) below which PID-recycling is near-impossible — skip jittery isOurProcess (#2437). */
+const FRESH_CACHE_MS = 30_000;
 
 /**
  * Try to send a signal to a process. Returns true if the signal was sent
@@ -59,6 +61,10 @@ async function awaitExit(pid: number, deadlineMs: number): Promise<boolean> {
  * original process before sending any signals. This prevents killing an
  * unrelated process when the PID has been recycled by the OS.
  *
+ * If `cachedAtMs` is also provided and the cache is less than `FRESH_CACHE_MS`
+ * old, the ownership check is skipped — PID recycling within that window is
+ * near-impossible, and the `ps -o etime=` parser jitters under CI load (#2437).
+ *
  * Error handling:
  * - ESRCH (no such process) is silently swallowed — process already dead.
  * - EPERM (not permitted) is logged as a warning — we don't own this PID.
@@ -71,11 +77,8 @@ export async function killPid(
 ): Promise<void> {
   const killTimeoutMs = opts?.killTimeoutMs ?? KILL_TIMEOUT_MS;
 
-  // Verify PID ownership before sending signals.
-  // Skip for recently-cached PIDs: PID recycling in <30s is near-impossible,
-  // and the etime-based check jitters by seconds under CI load (#2437).
-  const FRESH_CACHE_MS = 30_000;
-  const isFreshCache = opts?.cachedAtMs != null && Date.now() - opts.cachedAtMs < FRESH_CACHE_MS;
+  const cacheAge = opts?.cachedAtMs != null ? Date.now() - opts.cachedAtMs : null;
+  const isFreshCache = cacheAge != null && cacheAge >= 0 && cacheAge < FRESH_CACHE_MS;
   if (opts?.pidStartTime != null && !isFreshCache) {
     const ownership = isOurProcess(pid, opts.pidStartTime);
     if (ownership === false) {

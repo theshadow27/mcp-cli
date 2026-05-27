@@ -323,6 +323,8 @@ interface WsSession {
   pid: number | null;
   /** Process start time (epoch ms) — used to detect PID reuse before sending signals. */
   pidStartTime: number | null;
+  /** When pid was captured (epoch ms) — fresh caches skip jittery isOurProcess (#2437). */
+  pidCachedAt: number | null;
   proc: { kill: (signal?: number) => void; exited: Promise<number> } | null;
   spawnAlive: boolean;
   worktree: string | null;
@@ -665,6 +667,7 @@ export class ClaudeWsServer {
         name: s.name ?? null,
         pid: s.pid,
         pidStartTime: s.pidStartTime ?? null,
+        pidCachedAt: null,
         proc: null,
         spawnAlive: false,
         worktree: s.worktree,
@@ -718,6 +721,7 @@ export class ClaudeWsServer {
     session.spawnAlive = false;
     session.pid = null;
     session.pidStartTime = null;
+    session.pidCachedAt = null;
 
     // Transition disconnected → connecting so handleOpen treats this as a fresh spawn
     // (sends session.config.prompt) rather than a WS reconnect (which skips the initial message).
@@ -759,6 +763,7 @@ export class ClaudeWsServer {
       name,
       pid: null,
       pidStartTime: null,
+      pidCachedAt: null,
       proc: null,
       spawnAlive: false,
       worktree: config.worktree ?? null,
@@ -866,6 +871,7 @@ export class ClaudeWsServer {
     });
 
     session.pid = proc.pid;
+    session.pidCachedAt = Date.now();
     session.proc = proc;
     session.spawnAlive = true;
 
@@ -1005,10 +1011,11 @@ export class ClaudeWsServer {
    * Kill a raw PID (no proc handle) with SIGTERM → SIGKILL escalation.
    * Delegates to the shared killPid utility.
    */
-  private async killRawPid(pid: number, pidStartTime?: number | null): Promise<void> {
+  private async killRawPid(pid: number, pidStartTime?: number | null, cachedAtMs?: number | null): Promise<void> {
     await killPid(pid, this.logger, {
       pidStartTime,
       killTimeoutMs: this.killTimeoutMs,
+      cachedAtMs: cachedAtMs ?? undefined,
     });
   }
 
@@ -2419,6 +2426,7 @@ export class ClaudeWsServer {
       const dying = session.proc;
       session.proc = null;
       session.pid = null;
+      session.pidCachedAt = null;
       session.spawnAlive = false;
       await this.killAndAwaitProc(dying);
     } else if (session.pid) {
@@ -2426,8 +2434,10 @@ export class ClaudeWsServer {
       // Use killRawPid for SIGTERM → SIGKILL escalation (matches killAndAwaitProc behavior).
       // Pass pidStartTime to verify the PID hasn't been recycled by the OS.
       const pid = session.pid;
+      const cachedAt = session.pidCachedAt;
       session.pid = null;
-      await this.killRawPid(pid, session.pidStartTime);
+      session.pidCachedAt = null;
+      await this.killRawPid(pid, session.pidStartTime, cachedAt);
     }
   }
 }
