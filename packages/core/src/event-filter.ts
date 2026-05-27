@@ -1,3 +1,4 @@
+// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Shared event filter predicate for monitor events.
  *

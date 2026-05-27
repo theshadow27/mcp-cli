@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * iTerm2 terminal adapter.
  * Uses AppleScript to create tabs/windows via iTerm2's scripting interface.

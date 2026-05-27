@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: transitive member of use-keyboard-claude.ts ↔ use-keyboard.ts cycle
 import { addServerToConfig, ipcCall, removeServerFromConfig } from "@mcp-cli/core";
 import type { ServeInstanceInfo } from "@mcp-cli/core";
 import type { ServerConfig } from "@mcp-cli/core";

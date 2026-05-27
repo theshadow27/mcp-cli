@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * tmux terminal adapter.
  * Uses tmux CLI to create windows (tabs) and sessions (windows).

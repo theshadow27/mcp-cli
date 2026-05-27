@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: type-only back-edge with use-keyboard-claude.ts (ClaudeNav type)
 import type { AgentSessionInfo, ServerStatus } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";

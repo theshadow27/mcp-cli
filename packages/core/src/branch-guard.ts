@@ -1,3 +1,4 @@
+// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Phase `runsOn` branch guard (epic #1286, issue #1294).
  *

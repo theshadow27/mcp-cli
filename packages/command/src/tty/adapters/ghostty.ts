@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * Ghostty terminal adapter.
  * Uses AppleScript to open tabs/windows in Ghostty.
