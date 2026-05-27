@@ -179,19 +179,17 @@ describe("parseSharedSpawnArgs", () => {
     expect(result.allow).toEqual(["Bash", "Write"]);
   });
 
-  // ── Mechanism B: dead pattern detection (#2074) ──
+  // ── Mechanism B: dead pattern detection (#2074) — dead patterns are errors ──
 
-  it("warns on Bash(*) dead pattern", () => {
+  it("errors on Bash(*) dead pattern", () => {
     const result = parseSharedSpawnArgs(["--allow", "Bash(*)", "--task", "x"]);
-    expect(result.warnings.length).toBe(1);
-    expect(result.warnings[0]).toContain("dead rule");
-    expect(result.warnings[0]).toContain('Use "Bash"');
+    expect(result.error).toContain("dead rule");
+    expect(result.error).toContain('Use "Bash"');
   });
 
-  it("warns on Write(*) dead pattern", () => {
+  it("errors on Write(*) dead pattern", () => {
     const result = parseSharedSpawnArgs(["--allow", "Write(*)", "--task", "x"]);
-    expect(result.warnings.length).toBe(1);
-    expect(result.warnings[0]).toContain("dead rule");
+    expect(result.error).toContain("dead rule");
   });
 
   it("warns on Bash(git*) missing colon wildcard", () => {
@@ -232,6 +230,18 @@ describe("parseSharedSpawnArgs", () => {
   it("errors on empty --allow-only", () => {
     const result = parseSharedSpawnArgs(["--allow-only", "--task", "x"]);
     expect(result.error).toBe("--allow-only requires at least one tool pattern");
+  });
+
+  // ── Mutual exclusivity (#2074) ──
+
+  it("errors when --allow and --allow-only both present", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Read", "--allow-only", "Bash", "--task", "x"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
+  });
+
+  it("errors when --allow-only then --allow both present", () => {
+    const result = parseSharedSpawnArgs(["--allow-only", "Bash", "--allow", "Read", "--task", "x"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
   });
 });
 

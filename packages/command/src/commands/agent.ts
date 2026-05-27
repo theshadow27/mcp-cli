@@ -11,7 +11,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
+import { type AgentFeatures, type AgentProvider, type MailMessage, validateAllowPatterns } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
@@ -1228,53 +1228,42 @@ interface AgentResumeArgs {
 }
 
 export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
-  const allow: string[] = [];
+  const rawAllow: string[] = [];
   let allowOnly = false;
+  let sawAllow = false;
+  let sawAllowOnly = false;
   let allowError: string | undefined;
-  const warnings: string[] = [];
   const remaining: string[] = [];
 
   // Phase 1: extract --allow/--allow-only with greedy looksLikeToolName heuristic
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--allow" || args[i] === "--allow-only") {
-      if (args[i] === "--allow-only") allowOnly = true;
+      if (args[i] === "--allow") sawAllow = true;
+      if (args[i] === "--allow-only") {
+        sawAllowOnly = true;
+        allowOnly = true;
+      }
       // dotw-ignore no-manual-arg-parsing: greedy multi-value --allow must run before parseFlags; parseFlags has no multi-value-with-heuristic mode
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        const raw = args[++i]; // dotw-ignore no-manual-arg-parsing: see above — greedy consume in pre-processing phase
-        if (raw.includes(",")) {
-          warnings.push(
-            `Comma-separated --allow pattern "${raw}" was split into ${raw.split(",").length} patterns — use spaces instead`,
-          );
-          for (const part of raw.split(",")) {
-            const trimmed = part.trim();
-            if (trimmed) allow.push(trimmed);
-          }
-        } else {
-          allow.push(raw);
-        }
+        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: see above — greedy consume in pre-processing phase
       }
-      if (allow.length === 0) allowError = `${args[i]} requires at least one tool pattern`;
+      if (rawAllow.length === 0) allowError = `${args[i]} requires at least one tool pattern`;
     } else {
       remaining.push(args[i]);
     }
   }
 
-  // Mechanism B: detect dead patterns
-  for (const pattern of allow) {
-    const parenMatch = pattern.match(/^(\w+)\((.+)\)$/);
-    if (parenMatch) {
-      const toolName = parenMatch[1];
-      const inner = parenMatch[2];
-      if (inner === "*") {
-        warnings.push(
-          `"${pattern}" is a dead rule — bare (*) is not a wildcard. Use "${toolName}" (no parens) to allow all ${toolName} calls, or "${toolName}(:*)" for prefix matching`,
-        );
-      } else if (inner.endsWith("*") && !inner.endsWith(":*")) {
-        warnings.push(
-          `"${pattern}" may not match as expected — use ":*" suffix for prefix wildcards (e.g. "${toolName}(${inner.slice(0, -1)}:*)")`,
-        );
-      }
-    }
+  // Mutual exclusivity
+  if (sawAllow && sawAllowOnly) {
+    allowError ??= "--allow and --allow-only are mutually exclusive";
+  }
+
+  // Validate: comma-split + dead-pattern detection via shared module
+  const validation = validateAllowPatterns(rawAllow);
+  const allow = validation.patterns;
+  const warnings = [...validation.warnings];
+  if (validation.errors.length > 0) {
+    allowError ??= validation.errors[0];
   }
 
   // Phase 2: parseFlags for standard flags
@@ -1302,7 +1291,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     if (val.startsWith("-")) {
       error ??= "--model requires a value";
     } else {
-      model = val; // RAW, no resolveModelName
+      model = val;
     }
   }
 
@@ -1329,7 +1318,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
+      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--allow-only tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
   }
 
   return { target, sessionId, all, fresh, force, allow, allowOnly, model, wait, timeout, error, warnings };

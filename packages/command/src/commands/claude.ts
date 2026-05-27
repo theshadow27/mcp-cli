@@ -24,12 +24,14 @@ import {
   loadManifest,
   parseWorktreeList,
   readWorktreeConfig,
+  resolveEffectiveTools,
   resolveModelName,
   resolveRealpath,
   resolveWorktreePath,
   spawnCapture,
   spawnCaptureSync,
   updatePatchedClaude,
+  validateAllowPatterns,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
@@ -431,7 +433,12 @@ export function buildHeadedCommand(parsed: SpawnArgs): string {
     parts.push("--model", shellQuote(parsed.model));
   }
   if (parsed.allow.length > 0) {
-    parts.push("--allowedTools", ...parsed.allow.map(shellQuote));
+    if (parsed.allowOnly) {
+      parts.push("--allowedTools", ...parsed.allow.map(shellQuote));
+    } else {
+      const { tools } = resolveEffectiveTools({ allowedTools: parsed.allow });
+      if (tools) parts.push("--allowedTools", ...tools.map(shellQuote));
+    }
   }
 
   return parts.join(" ");
@@ -664,35 +671,29 @@ export interface ResumeArgs {
 }
 
 export function parseResumeArgs(args: string[]): ResumeArgs {
-  const allow: string[] = [];
+  const rawAllow: string[] = [];
   let allowOnly = false;
+  let sawAllow = false;
+  let sawAllowOnly = false;
   let allowError: string | undefined;
-  const warnings: string[] = [];
   let model: string | undefined;
   let modelError: string | undefined;
   const remaining: string[] = [];
 
-  // Phase 1: extract --allow/--allow-only (greedy, no heuristic) and --model (unconditional consume)
+  // Phase 1: extract --allow/--allow-only (greedy, no heuristic — resume consumes all non-flags) and --model
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--allow" || arg === "--allow-only") {
-      if (arg === "--allow-only") allowOnly = true;
+      if (arg === "--allow") sawAllow = true;
+      if (arg === "--allow-only") {
+        sawAllowOnly = true;
+        allowOnly = true;
+      }
       // dotw-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        const raw = args[++i]; // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
-        if (raw.includes(",")) {
-          warnings.push(
-            `Comma-separated --allow pattern "${raw}" was split into ${raw.split(",").length} patterns — use spaces instead`,
-          );
-          for (const part of raw.split(",")) {
-            const trimmed = part.trim();
-            if (trimmed) allow.push(trimmed);
-          }
-        } else {
-          allow.push(raw);
-        }
+        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
       }
-      if (allow.length === 0) allowError = `${arg} requires at least one tool pattern`;
+      if (rawAllow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i]; // dotw-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values
       if (!val) {
@@ -703,6 +704,19 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     } else {
       remaining.push(arg);
     }
+  }
+
+  // Mutual exclusivity
+  if (sawAllow && sawAllowOnly) {
+    allowError ??= "--allow and --allow-only are mutually exclusive";
+  }
+
+  // Validate: comma-split + dead-pattern detection via shared module
+  const validation = validateAllowPatterns(rawAllow);
+  const allow = validation.patterns;
+  const warnings = [...validation.warnings];
+  if (validation.errors.length > 0) {
+    allowError ??= validation.errors[0];
   }
 
   // Phase 2: parseFlags for other flags
@@ -740,25 +754,7 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     error ??= "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error ??=
-      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
-  }
-
-  // Mechanism B: detect dead patterns
-  for (const pattern of allow) {
-    const parenMatch = pattern.match(/^(\w+)\((.+)\)$/);
-    if (parenMatch) {
-      const toolName = parenMatch[1];
-      const inner = parenMatch[2];
-      if (inner === "*") {
-        warnings.push(
-          `"${pattern}" is a dead rule — bare (*) is not a wildcard. Use "${toolName}" (no parens) to allow all ${toolName} calls, or "${toolName}(:*)" for prefix matching`,
-        );
-      } else if (inner.endsWith("*") && !inner.endsWith(":*")) {
-        warnings.push(
-          `"${pattern}" may not match as expected — use ":*" suffix for prefix wildcards (e.g. "${toolName}(${inner.slice(0, -1)}:*)")`,
-        );
-      }
-    }
+      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--allow-only tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
   return { target, sessionId, all, fresh, force, allow, allowOnly, model, wait, timeout, error, warnings };

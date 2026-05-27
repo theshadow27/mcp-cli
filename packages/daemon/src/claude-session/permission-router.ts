@@ -29,11 +29,7 @@ export type DelegateCallback = (request: CanUseToolRequest) => Promise<RouterDec
 
 // ── Defaults ──
 
-/**
- * Safe tools allowed by default when no explicit --allow is provided.
- * Permits file read/write but blocks shell execution and network access.
- */
-export const DEFAULT_SAFE_TOOLS: readonly string[] = Object.freeze(["Read", "Glob", "Grep", "Write", "Edit"]);
+export { DEFAULT_SAFE_TOOLS } from "@mcp-cli/core";
 
 // ── Router ──
 

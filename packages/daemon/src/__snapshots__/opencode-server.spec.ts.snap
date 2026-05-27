@@ -6,8 +6,12 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
     "description": "Start a new OpenCode agent session with a prompt, or send a follow-up prompt to an existing session. OpenCode is provider-agnostic: it wraps any LLM (Grok, Gemini, Bedrock, open-source) in a coding agent harness. Returns the session ID immediately by default. Set wait=true to block until the next actionable event (result, error, permission request, or ended).",
     "inputSchema": {
       "properties": {
+        "allowOnly": {
+          "description": "When true, allowedTools replaces DEFAULT_SAFE_TOOLS instead of extending them. Use for locked-down sessions that should only have the explicitly listed tools.",
+          "type": "boolean",
+        },
         "allowedTools": {
-          "description": "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
+          "description": "Tool patterns to auto-approve (e.g. 'Bash(git:*)', 'Read'). Added to DEFAULT_SAFE_TOOLS by default; set allowOnly=true to replace them instead.",
           "items": {
             "type": "string",
           },
