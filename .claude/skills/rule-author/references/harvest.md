@@ -1,13 +1,9 @@
----
-name: harvest-rules
-description: Mine merged-PR review comments for recurring author mistakes that could be caught by a doing-it-wrong rule. Use when the user wants to reduce review churn, asks "what should we lint for", "harvest rules", "mine PR comments for rules", or after a batch of PRs has merged. Surveys N PRs across parallel Sonnet agents, clusters findings, and proposes rules.
----
-
 # Harvest Rules
 
-Find mistakes that reviewers flag **more than twice** across merged PRs, then
-decide which deserve a mechanical `doing-it-wrong` rule. The goal is to spend
-review rounds on judgment, not on the same catchable mistake again and again.
+Invoked via `/rule-author harvest`. Find mistakes that reviewers flag **more than
+twice** across merged PRs, then decide which deserve a mechanical `doing-it-wrong`
+rule. The goal is to spend review rounds on judgment, not on the same catchable
+mistake again and again.
 
 ## Philosophy
 
@@ -34,7 +30,7 @@ The three stages the user cares about: **(1) survey → candidate list,
 gh pr list --state merged --limit 100 --json number --jq 'sort_by(.number) | reverse | .[].number' > build/harvest/pr-list.txt
 
 # Extract all in parallel (owner/repo auto-derived from gh context)
-xargs -P 6 -n 4 bun .claude/skills/harvest-rules/scripts/extract-pr.ts < build/harvest/pr-list.txt
+xargs -P 6 -n 4 bun .claude/skills/rule-author/scripts/extract-pr.ts < build/harvest/pr-list.txt
 ```
 
 `extract-pr.ts` writes `build/harvest/pr/<n>.md` per PR (description, changed
@@ -54,7 +50,7 @@ Launch one agent per group **in a single message** (parallel), `model:
 sonnet`, `subagent_type: general-purpose`. Keep the prompt tiny — point at the
 reference, don't inline it:
 
-> Follow the instructions at `.claude/skills/harvest-rules/references/extract.md`.
+> Follow the instructions at `.claude/skills/rule-author/references/extract.md`.
 > Your group is **aa**. Your PR files: `build/harvest/pr/2235.md` … (list the 10).
 > Write your table to `build/harvest/findings/group-aa.md`.
 

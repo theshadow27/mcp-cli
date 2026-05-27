@@ -3,7 +3,7 @@
 The orchestrator launches one agent per group with a short pointer instead of
 the full prompt:
 
-> Follow the instructions at `.claude/skills/harvest-rules/references/extract.md`.
+> Follow the instructions at `.claude/skills/rule-author/references/extract.md`.
 > Your group is **<group-id>**. Your PR files are:
 > `build/harvest/pr/<n>.md` (×10). Write to `build/harvest/findings/group-<id>.md`.
 
