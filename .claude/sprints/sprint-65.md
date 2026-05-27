@@ -130,3 +130,14 @@ capacity without overcommitting on theme.
   but post-sprint).
 - **Defer:** #1250 (sprint wind-down rebuild concurrent cross-repo —
   cross-cutting orchestrator concern, off-theme).
+
+## Results
+
+- **Released**: v1.12.1 (patch — internal tooling/rules/test-infra + fixes; no new top-level command)
+- **PRs merged**: 14 / 14 planned (100%)
+- **Issues closed**: 14 sprint issues + 5 verdict-cache duplicates consolidated to #2427 (#2428/#2432/#2434/#2442)
+- **Issues dropped**: 0
+- **New issues filed**: #2436 (upstream Ink ErrorOverview bug), #2438 (no-import-cycles rule, builds on #2408 graph), #2441 (mcx `pr comments resolve` GraphQL bug), #2443 (meta: search-before-filing), #2445 (verdict-cache determinism flaky), + #2408 deferred-polish follow-up (LRU eviction / graph-build benchmark)
+- **Crown jewel**: #2408 AST import-graph + per-file closure-hash test cache (via `Bun.resolveSync`) — shipped after the gate's NO-GO was overturned by data (only 20% of PRs touch core; the cache wins on the ~80% leaf/narrow majority)
+- **Incident (recovered)**: a #2354 session escaped its worktree into the main checkout (rebased + committed there), switching main off `main` and blocking phase commands; recovered by preserving the branch ref into a fresh worktree and restoring main. Plus an empty-`--cwd` QA mis-spawn into main checkout. Both retro items.
+- **Convergence saves**: #2419 evidence-detection churned 3 text-matching precision rounds → simplified to AST-based detection (ended the treadmill)
