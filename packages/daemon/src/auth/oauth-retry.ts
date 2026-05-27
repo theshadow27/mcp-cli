@@ -15,6 +15,21 @@ import { metrics } from "../metrics";
 import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, type OAuthProviderOpts } from "./oauth-provider";
 
+/** Tracks servers with an in-progress auth flow (intra-process async guard). */
+const activeAuthFlows = new Set<string>();
+
+export class AuthFlowInProgressError extends Error {
+  constructor(server: string) {
+    super(`Another auth flow is already in progress for server "${server}" — wait for it to complete or cancel it`);
+    this.name = "AuthFlowInProgressError";
+  }
+}
+
+/** @internal Reset for test isolation. */
+export function _resetActiveAuthFlows(): void {
+  activeAuthFlows.clear();
+}
+
 export interface OAuthRetryDeps {
   authFn?: (
     provider: OAuthClientProvider,
@@ -32,6 +47,24 @@ export interface OAuthRetryDeps {
  * valid, or "authenticated" after a successful code exchange.
  */
 export async function runOAuthFlowWithDcrRetry(
+  server: string,
+  serverUrl: string,
+  db: StateDb,
+  opts: Pick<OAuthProviderOpts, "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain">,
+  deps?: OAuthRetryDeps,
+): Promise<"already_authorized" | "authenticated"> {
+  if (activeAuthFlows.has(server)) {
+    throw new AuthFlowInProgressError(server);
+  }
+  activeAuthFlows.add(server);
+  try {
+    return await _runFlow(server, serverUrl, db, opts, deps);
+  } finally {
+    activeAuthFlows.delete(server);
+  }
+}
+
+async function _runFlow(
   server: string,
   serverUrl: string,
   db: StateDb,
