@@ -141,7 +141,7 @@ export class ServerPool {
     if (existing) {
       existing.client
         ?.close()
-        .catch((e) => console.warn(`[ServerPool] client.close() failed replacing virtual server "${name}":`, e));
+        .catch((e) => this.logger.warn(`[pool] client.close() failed replacing virtual server "${name}": ${e}`));
     }
 
     const toolMap = tools ?? new Map();
@@ -270,7 +270,7 @@ export class ServerPool {
       if (!config.servers.has(name)) {
         removed.push(name);
         this.disconnect(name).catch((e) =>
-          console.warn(`[ServerPool] disconnect failed for removed server "${name}":`, e),
+          this.logger.warn(`[pool] disconnect failed for removed server "${name}": ${e}`),
         );
         this.connections.delete(name);
       }

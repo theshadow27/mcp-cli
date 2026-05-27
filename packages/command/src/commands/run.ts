@@ -76,9 +76,7 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
   if (aliasInfo.expiresAt) {
     const config = d.readCliConfig();
     const ttlMs = config.ephemeralAliases?.ttlMs ?? coreOptions.EPHEMERAL_ALIAS_TTL_MS;
-    d.ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch((e) =>
-      console.warn(`[run] touchAlias IPC failed for "${aliasName}":`, e),
-    );
+    d.ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch(() => {});
   }
 
   // Record run and maybe suggest promotion (returned for testability)
@@ -96,7 +94,7 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
         }
       }
     })
-    .catch((e) => console.warn(`[run] recordAliasRun IPC failed for "${aliasName}":`, e));
+    .catch(() => {});
 
   await d.runAlias(aliasInfo.filePath, cliArgs, jsonInput);
 
