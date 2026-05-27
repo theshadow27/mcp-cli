@@ -199,6 +199,26 @@ describe("isDaemonRunning", () => {
     const result = await isDaemonRunning();
     expect(result).toBe(false);
   });
+
+  it("does not unlink PID file when flock is held (transient ping failure path)", async () => {
+    using opts = testOptions();
+    mkdirSync(dirname(opts.PID_PATH), { recursive: true });
+
+    // Simulate a daemon holding the flock on the PID file
+    const { tryFlockExclusive } = require("@mcp-cli/core");
+    const daemonFd = openSync(opts.PID_PATH, "w");
+    try {
+      expect(tryFlockExclusive(daemonFd)).toBe(true);
+      // Write invalid JSON so readLivePidData returns null → cleanStaleFiles is called
+      writeFileSync(daemonFd, "invalid json{{{");
+
+      expect(await isDaemonRunning()).toBe(false);
+      // Flock is held → cleanStaleFiles must not unlink the PID file
+      expect(existsSync(opts.PID_PATH)).toBe(true);
+    } finally {
+      closeSync(daemonFd);
+    }
+  });
 });
 
 // -- isDaemonInitializing --
