@@ -452,6 +452,22 @@ When it replies `needs opus repair`, spawn a fresh opus repair per the
 normal flow. When it pushes a fix and updates the sticky to ✅,
 transition to QA.
 
+**Precondition — the reviewer must be ON the PR branch, or self-repair
+silently breaks.** It can only push if it was spawned `--cwd` the worktree
+that holds the branch. The phase scripts emit `--worktree` (they don't know
+the impl worktree's path), so the orchestrator **must override review /
+repair / QA spawns with `--cwd <kept-impl-worktree>`** — never let a
+post-impl phase spawn a fresh `--worktree`. A reviewer in a fresh
+`--worktree` lands on a scratch branch and **cannot** check out the PR
+branch (it's locked in the kept impl worktree); it will then either edit
+the wrong tree via `git -C` while validating in the scratch tree (= main,
+meaningless) or hang. Sprint 66 lost two cycles (#2153, #2437) to exactly
+this. **Rule: one worktree per issue, `--cwd` through
+impl→review→repair→QA; fresh `--worktree` only for off-branch nerd-snipe
+gates.** Structural fix: `--track` / #1286 — have the spawn auto-persist
+`worktree_path` to the work item so phases emit `--cwd` without the
+orchestrator having to remember.
+
 ### Auto-merge re-arm after force-push
 
 The orchestrator drives merges directly. Force-push rebases silently
