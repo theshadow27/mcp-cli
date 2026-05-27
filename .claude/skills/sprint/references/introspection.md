@@ -17,7 +17,7 @@ for the kind of finding this round is meant to surface.
 ## Cadence
 
 **Run during the retro of sprints whose number ends in 7**: 17, 27, 37,
-47-done, **57**, 67, 77… The round's findings feed the *next* sprint's
+47-done, 57-**skipped** (never ran — see #2506), 67-done, 77… The round's findings feed the *next* sprint's
 plan (Bucket-1 candidates for sprint 58, 68, …). See `retro.md`
 "Introspection cadence" section for the trigger.
 
@@ -121,4 +121,5 @@ A round is "done" when:
 | Sprint | Date | Findings filed | Tracking issue |
 |--------|------|----------------|----------------|
 | 47 (pre-48 plan) | 2026-04-28 | #1856–#1866 | #1867 (this template) |
-| 57 | TBD | TBD | TBD |
+| 57 | — | **skipped** — round never ran, undetected (root cause: #2506) | — |
+| 67 (at sprint-67 plan) | 2026-05-27 | #2495–#2510 (code + transcript) | #2511 |
