@@ -200,7 +200,7 @@ describe("isDaemonRunning", () => {
     expect(result).toBe(false);
   });
 
-  it("does not unlink PID file when flock is held (transient ping failure path)", async () => {
+  it("does not unlink PID file when flock is held (invalid PID data path)", async () => {
     using opts = testOptions();
     mkdirSync(dirname(opts.PID_PATH), { recursive: true });
 
@@ -209,7 +209,9 @@ describe("isDaemonRunning", () => {
     const daemonFd = openSync(opts.PID_PATH, "w");
     try {
       expect(tryFlockExclusive(daemonFd)).toBe(true);
-      // Write invalid JSON so readLivePidData returns null → cleanStaleFiles is called
+      // Write invalid JSON so readLivePidData returns null → cleanStaleFiles is called.
+      // The isDaemonFlockHeld() guard at the top of cleanStaleFiles() fires here; the same
+      // guard also protects the ping-failure path since it runs before any path-specific logic.
       writeFileSync(daemonFd, "invalid json{{{");
 
       expect(await isDaemonRunning()).toBe(false);
