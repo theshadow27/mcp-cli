@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: seeds.ts imports type { Catalog } from this module; type-only back-edge
 /**
  * Named-call catalog: per-site JSON file mapping short names to HTTP requests.
  *

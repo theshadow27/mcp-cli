@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: barrel-induced intra-package cycle via dynamic import("./index") at L193; fix tracked in #2438-followup
 /**
  * Alias bundling and execution via Bun.build + AsyncFunction eval.
  *

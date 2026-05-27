@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: claude.ts dynamically imports agent.ts to share the dispatch loop; already broken at load time
 /**
  * `mcx agent <provider> <subcommand>` — unified command for all agent providers.
  *
