@@ -226,6 +226,15 @@ Examples of things that must be filed:
 - Bugs in adjacent code discovered while reading
 - Missing documentation or misleading help text
 
-**Search before filing.** Before opening an issue — especially for an `am-i-done` / coverage / lint / test failure — search existing issues first (`gh issue list --state all --search "<symptom keywords>"`, e.g. the failing file or test name). If a match exists, add a one-line data-point comment instead of filing a duplicate. If the failure reproduces on a clean `main` (or you can tell other sessions are hitting the same thing), it is a **pre-existing shared gap**: flag it rather than bundling a redundant fix into your PR — one PR owns the fix, the rest rebase. Blindly re-filing destroys the regression signal (N independent reports of one symptom = one main-level gap to fix once, not N issues) and the parallel re-fixes collide on the shared file. (Sprint 65 produced six duplicate issues and three conflicting fix-PRs for a single coverage gap by skipping this.)
+**Filing — delegate to `issue-author`, don't hand-search.** When you hit a problem (bug, test gap, flake, `am-i-done` / coverage / lint failure, DX papercut, edge case, missing docs), do **not** stop to search-and-file by hand. Launch the **`issue-author`** agent in the background and keep working:
+
+```
+Agent(subagent_type: "issue-author", run_in_background: true,
+      prompt: "<what you saw + any repro: commands, file:line, error>")
+```
+
+It validates labels, searches open **and** closed issues, adds a data-point comment or reopens a regression instead of filing a duplicate, and writes a repro-backed issue — all in its own context, off your budget. The URL arrives as a notification; you don't wait. *(Once the `mcx issue` mail funnel lands — epic #2485 — this becomes "fire `mcx issue`", same syntax as `gh issue`, which also works outside Agent-tool contexts. Until then, a context without the Agent tool falls back to `gh issue create` — but you still never owe a manual dedup-search.)*
+
+**Still true however you file:** if a failure reproduces on clean `main`, or you can see other sessions hitting the same thing, it's a **pre-existing shared gap** — flag it and rebase onto the one PR that owns the fix; don't bundle a redundant fix into your PR. N independent reports of one symptom = one main-level gap fixed once, not N issues, and parallel re-fixes collide on the shared file. (Sprint 65: six duplicate issues + three conflicting fix-PRs from skipping this.)
 
 Usability issues (daemon bugs, connection, etc) are P1 and take priority over all other work.
