@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { CapturedRequest } from "./browser/engine";
+import type { BrowserEngine, CapturedRequest, CookieEntry } from "./browser/engine";
 import { CredentialVault } from "./credentials";
-import { proxyCall } from "./proxy";
+import { cookieProxyCall, proxyCall } from "./proxy";
 import type { ResolvedCall } from "./resolver";
 
 function makeJwt(claims: Record<string, unknown>): string {
@@ -148,5 +148,179 @@ describe("proxyCall", () => {
       residualParams: [],
     };
     await expect(proxyCall(vault, { site: "demo", resolved })).rejects.toThrow(/No credentials available/);
+  });
+});
+
+function fakeBrowserEngine(impl?: {
+  getCookies?: BrowserEngine["getCookies"];
+}): BrowserEngine {
+  return {
+    start: async () => [],
+    stop: async () => {},
+    isRunning: () => true,
+    getSiteNames: () => ["demo"],
+    coldStart: async () => ({ cleared: [], reloaded: true }),
+    wiggle: async () => [],
+    evalInPage: async () => null,
+    getCookies: impl?.getCookies ?? (async () => [{ name: "session", value: "abc123", domain: ".example", path: "/" }]),
+    getUrl: async () => "https://demo.example",
+    getTitle: async () => "Demo",
+    getHtml: async () => "<html></html>",
+  };
+}
+
+describe("cookieProxyCall", () => {
+  test("extracts cookies from browser and fetches from daemon with cookie header", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedUrl = "";
+    let capturedBody: string | undefined;
+    globalThis.fetch = mock(async (url: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedHeaders = init?.headers;
+      capturedBody = init?.body as string | undefined;
+      return new Response(JSON.stringify({ items: [1, 2] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const cookies: CookieEntry[] = [
+      { name: "session", value: "abc123", domain: ".example", path: "/" },
+      { name: "csrf", value: "xyz", domain: ".example", path: "/" },
+    ];
+    const browser = fakeBrowserEngine({
+      getCookies: async () => cookies,
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api/data",
+      method: "POST",
+      body: '{"query":"test"}',
+      headers: { "content-type": "application/json" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    const result = await cookieProxyCall({ site: "demo", resolved, browser });
+
+    expect(result.status).toBe(200);
+    expect(result.usedAud).toBe("(cookie)");
+    expect(result.body).toEqual({ items: [1, 2] });
+    expect(result.url).toBe("https://intranet.example/api/data");
+    expect(result.method).toBe("POST");
+    expect(capturedUrl).toBe("https://intranet.example/api/data");
+    expect(capturedBody).toBe('{"query":"test"}');
+    const headerObj = capturedHeaders as Record<string, string>;
+    expect(headerObj.cookie).toBe("session=abc123; csrf=xyz");
+  });
+
+  test("strips authorization header case-insensitively before daemon fetch", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = init?.headers;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const browser = fakeBrowserEngine({
+      getCookies: async () => [{ name: "s", value: "v", domain: ".example", path: "/" }],
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: { authorization: "Bearer stale-token", "x-custom": "keep-this" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await cookieProxyCall({ site: "demo", resolved, browser });
+
+    const headerObj = capturedHeaders as Record<string, string>;
+    expect(headerObj.authorization).toBeUndefined();
+    expect(headerObj["x-custom"]).toBe("keep-this");
+  });
+
+  test("strips Authorization header with capital A (case-insensitive)", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = init?.headers;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const browser = fakeBrowserEngine({
+      getCookies: async () => [{ name: "s", value: "v", domain: ".example", path: "/" }],
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: { Authorization: "Bearer leaked-token", "X-Custom": "keep" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await cookieProxyCall({ site: "demo", resolved, browser });
+
+    const headerObj = capturedHeaders as Record<string, string>;
+    expect(headerObj.authorization).toBeUndefined();
+    expect(headerObj["x-custom"]).toBe("keep");
+  });
+
+  test("wraps browser errors with diagnostic message", async () => {
+    const browser = fakeBrowserEngine({
+      getCookies: async () => {
+        throw new Error("Target closed");
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await expect(cookieProxyCall({ site: "demo", resolved, browser })).rejects.toThrow(
+      /Cookie-mode fetch failed.*Target closed/,
+    );
+  });
+
+  test("throws when no cookies found for the target URL", async () => {
+    const browser = fakeBrowserEngine({
+      getCookies: async () => [],
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await expect(cookieProxyCall({ site: "demo", resolved, browser })).rejects.toThrow(/No cookies found/);
+  });
+
+  test("passes site name to browser getCookies", async () => {
+    let capturedSite: string | undefined;
+    globalThis.fetch = mock(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    const browser = fakeBrowserEngine({
+      getCookies: async (_url, site) => {
+        capturedSite = site;
+        return [{ name: "s", value: "v", domain: ".example", path: "/" }];
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await cookieProxyCall({ site: "mysite", resolved, browser });
+    expect(capturedSite).toBe("mysite");
   });
 });

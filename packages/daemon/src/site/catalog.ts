@@ -11,6 +11,8 @@ import { dirname } from "node:path";
 import { siteCatalogPath } from "./paths";
 import { BUILTIN_SEEDS } from "./seeds";
 
+export type AuthMode = "bearer" | "cookie" | "auto";
+
 export interface NamedCall {
   name: string;
   url: string;
@@ -32,6 +34,13 @@ export interface NamedCall {
    * e.g. "owa-urlpostdata" encodes the body into an x-owa-urlpostdata header.
    */
   fetchFilter?: string;
+  /**
+   * How this call authenticates. "bearer" (default) injects a vault-picked
+   * Bearer token daemon-side. "cookie" routes the fetch through the browser
+   * page context so cookies are included automatically. "auto" tries bearer
+   * first and falls back to cookie when the vault has no credentials.
+   */
+  authMode?: AuthMode;
 }
 
 export type Catalog = Record<string, NamedCall>;

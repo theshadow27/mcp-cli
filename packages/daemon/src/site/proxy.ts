@@ -7,6 +7,7 @@
  * but without a token-refresh hook.
  */
 
+import type { BrowserEngine } from "./browser/engine";
 import type { CredentialVault } from "./credentials";
 import type { ResolvedCall } from "./resolver";
 
@@ -53,14 +54,35 @@ function mergeHeaders(
   return merged;
 }
 
+const FETCH_TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5 MB
+
 async function doFetch(
   url: string,
   method: string,
   headers: Record<string, string>,
   body?: string,
 ): Promise<{ status: number; headers: Record<string, string>; parsed: unknown }> {
-  const r = await fetch(url, { method, headers, body });
-  const rawText = await r.text();
+  const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+
+  const declaredLength = r.headers.get("content-length");
+  if (declaredLength && Number(declaredLength) > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response too large (${declaredLength} bytes, limit ${MAX_RESPONSE_BYTES})`);
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  if (r.body) {
+    for await (const chunk of r.body) {
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        throw new Error(`Response exceeded ${MAX_RESPONSE_BYTES} byte limit`);
+      }
+      chunks.push(chunk);
+    }
+  }
+  const rawText = new TextDecoder().decode(Buffer.concat(chunks));
+
   let parsed: unknown = rawText;
   try {
     parsed = JSON.parse(rawText);
@@ -109,6 +131,47 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     url: resolved.url,
     method: resolved.method,
     usedAud,
+    responseHeaders: result.headers,
+    body: result.parsed,
+  };
+}
+
+export interface CookieProxyCallOptions {
+  site: string;
+  resolved: ResolvedCall;
+  browser: BrowserEngine;
+}
+
+export async function cookieProxyCall(opts: CookieProxyCallOptions): Promise<ProxyCallResult> {
+  const { site, resolved, browser } = opts;
+
+  const { authorization: _stripped, ...headers } = normalizeKeys(resolved.headers);
+
+  let cookies: import("./browser/engine").CookieEntry[];
+  try {
+    cookies = await browser.getCookies(resolved.url, site);
+  } catch (err) {
+    throw new Error(
+      `Cookie-mode fetch failed for site '${site}': ${err instanceof Error ? err.message : err}. Ensure the browser is running and authenticated (\`mcx site browser\`).`,
+    );
+  }
+
+  if (cookies.length === 0) {
+    throw new Error(
+      `No cookies found for '${resolved.url}' in site '${site}'. The browser session may have expired — run \`mcx site browser ${site}\` to re-authenticate.`,
+    );
+  }
+
+  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const fetchHeaders: Record<string, string> = { ...headers, cookie: cookieHeader };
+
+  const result = await doFetch(resolved.url, resolved.method, fetchHeaders, resolved.body);
+
+  return {
+    status: result.status,
+    url: resolved.url,
+    method: resolved.method,
+    usedAud: "(cookie)",
     responseHeaders: result.headers,
     body: result.parsed,
   };
