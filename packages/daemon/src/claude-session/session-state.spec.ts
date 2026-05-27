@@ -967,6 +967,45 @@ describe("SessionState", () => {
         retryAfterMs: 30000,
       });
     });
+
+    describe("rate_limit_event top-level message", () => {
+      test("emits session:rate_limited and sets rateLimited flag", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event" });
+
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: "session:rate_limited", sessionId: "sess-1" });
+        expect(session.rateLimited).toBe(true);
+      });
+
+      test("extracts retryAfterMs from retry_after_ms field", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event", retry_after_ms: 60000 });
+
+        expect(events[0]).toMatchObject({
+          type: "session:rate_limited",
+          sessionId: "sess-1",
+          retryAfterMs: 60000,
+        });
+      });
+
+      test("converts retry_after seconds to ms", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event", retry_after: 30 });
+
+        expect(events[0]).toMatchObject({
+          type: "session:rate_limited",
+          sessionId: "sess-1",
+          retryAfterMs: 30000,
+        });
+      });
+
+      test("does not set parseMismatch", () => {
+        const session = initSession();
+        session.handleMessage({ type: "rate_limit_event" });
+        expect(session.parseMismatch).toBe(false);
+      });
+    });
   });
 
   describe("parseMismatch lifecycle", () => {
