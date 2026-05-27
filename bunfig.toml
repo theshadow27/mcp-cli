@@ -7,7 +7,7 @@
 
 # Pin NO_COLOR=1 before any module loads so ANSI codes never leak into
 # assertions when bun test runs under a PTY. See #2016.
-preload = ["./test/preload-no-color.ts"]
+preload = ["./test/preload-no-color.ts", "./test/orphan-sweep.ts"]
 
 # Prune directories that should not be scanned for tests
 pathIgnorePatterns = [".claude/**", "dist/**", ".git-hooks/**"]
