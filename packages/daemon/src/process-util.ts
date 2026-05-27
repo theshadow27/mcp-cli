@@ -67,12 +67,16 @@ async function awaitExit(pid: number, deadlineMs: number): Promise<boolean> {
 export async function killPid(
   pid: number,
   logger: Logger,
-  opts?: { pidStartTime?: number | null; killTimeoutMs?: number },
+  opts?: { pidStartTime?: number | null; killTimeoutMs?: number; cachedAtMs?: number },
 ): Promise<void> {
   const killTimeoutMs = opts?.killTimeoutMs ?? KILL_TIMEOUT_MS;
 
-  // Verify PID ownership before sending signals
-  if (opts?.pidStartTime != null) {
+  // Verify PID ownership before sending signals.
+  // Skip for recently-cached PIDs: PID recycling in <30s is near-impossible,
+  // and the etime-based check jitters by seconds under CI load (#2437).
+  const FRESH_CACHE_MS = 30_000;
+  const isFreshCache = opts?.cachedAtMs != null && Date.now() - opts.cachedAtMs < FRESH_CACHE_MS;
+  if (opts?.pidStartTime != null && !isFreshCache) {
     const ownership = isOurProcess(pid, opts.pidStartTime);
     if (ownership === false) {
       logger.warn(`[process] PID ${pid} has been recycled (start time mismatch) — skipping kill`);
