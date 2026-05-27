@@ -111,6 +111,7 @@ export class SessionState {
     if (msg.type === "assistant") return this.handleAssistant(msg);
     if (msg.type === "result") return this.handleResult(msg);
     if (msg.type === "control_request") return this.handleControlRequest(msg);
+    if (msg.type === "rate_limit_event") return this.handleRateLimitEvent(msg);
 
     return [];
   }
@@ -405,6 +406,12 @@ export class SessionState {
         request,
       },
     ];
+  }
+
+  private handleRateLimitEvent(msg: NdjsonMessage): SessionEvent[] {
+    this.rateLimited = true;
+    const retryAfterMs = extractRetryAfterMs(msg);
+    return [{ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs }];
   }
 }
 

@@ -75,7 +75,13 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 const CONNECT_TIMEOUT_MS = 30_000;
 
 /** Message types handled by the state machine's dispatch. */
-const HANDLED_MSG_TYPES: ReadonlyArray<string> = ["system", "assistant", "result", "control_request"];
+const HANDLED_MSG_TYPES: ReadonlyArray<string> = [
+  "system",
+  "assistant",
+  "result",
+  "control_request",
+  "rate_limit_event",
+];
 
 /**
  * Message types that the daemon knows about (handled or intentionally ignored).
