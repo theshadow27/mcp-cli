@@ -118,8 +118,8 @@ export const ResultError = z
   .object({
     type: z.literal("result"),
     subtype: z.string(),
-    is_error: z.literal(true).optional(),
-    errors: z.array(z.string()),
+    is_error: z.literal(true),
+    errors: z.array(z.string()).optional(),
     duration_ms: z.number().optional(),
     num_turns: z.number(),
     total_cost_usd: z.number(),
@@ -137,6 +137,7 @@ export const ResultFallback = z
   .object({
     type: z.literal("result"),
     subtype: z.string().optional(),
+    is_error: z.boolean().optional(),
     result: z.string().optional(),
     errors: z.array(z.string()).optional(),
     num_turns: z.number().optional(),
