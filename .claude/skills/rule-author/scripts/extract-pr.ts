@@ -2,7 +2,7 @@
 /**
  * extract-pr.ts — Extract full PR context for rule harvesting.
  *
- * Usage: bun .claude/skills/harvest-rules/scripts/extract-pr.ts <pr> [<pr> ...]
+ * Usage: bun .claude/skills/rule-author/scripts/extract-pr.ts <pr> [<pr> ...]
  *
  * Writes build/harvest/pr/<pr>.md per PR with title, description, changed
  * files, and all review surfaces (issue comments, review bodies, inline

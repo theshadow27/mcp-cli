@@ -63,4 +63,4 @@ Run the **identical** command in both so local and CI share one definition of do
 3. Add `package.json` scripts: `"doing-it-wrong"` and `"am-i-done"` (one entry total — not one per rule).
 4. Wire `am-i-done --pre-commit` into the pre-commit hook and CI (see above).
 5. Write the first rule + a minimal fixture pair (`new-rule.md`), confirm `bun test scripts/rules` and `bun run doing-it-wrong` (exit 0) pass.
-6. Seed real rules from `harvest-rules` findings rather than inventing invariants speculatively.
+6. Seed real rules from `/rule-author harvest` findings rather than inventing invariants speculatively.

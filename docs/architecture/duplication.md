@@ -54,7 +54,7 @@ history: how often does a commit touch *all* of them together vs. one at a time?
 
 - **Co-change** (commits routinely touch all siblings together) → miscategorized
   duplication. The invariant wants to live in one place; extract it. The
-  recurring-bug clusters mined by `/harvest-rules` are exactly this signal — the
+  recurring-bug clusters mined by `/rule-author harvest` are exactly this signal — the
   same fix landing in many independent PRs means the concern changes in lockstep.
 - **Independent drift** (siblings evolve separately) → *validated* duplication.
   Leave it. An abstraction here would only add coupling.
@@ -79,7 +79,7 @@ duplication's locality and regenerability, but don't fly blind on drift.
   that has known mirror-siblings, ask explicitly *"did this fix get replayed
   across all siblings?"* See the `adversarial-review` Focus Areas.
 - **Co-change / drift detector (future, not built):** a git-history miner —
-  sibling of `/harvest-rules` — that flags commits touching some-but-not-all
+  sibling of `/rule-author harvest` — that flags commits touching some-but-not-all
   siblings. That is the security-fix-not-replayed detector. Documented here as
   the intended instrument; we run the manual check until it earns building.
 - **Hand-built invariant checks (today):** where a mirror set's parallelism is

@@ -101,7 +101,7 @@ in the skill files and fix them.
 
 After several sprints, patterns emerge — coding conventions that reviewers keep
 flagging, architectural decisions that keep causing merge conflicts, test patterns
-that keep breaking. If the project has a rules extraction skill (like `/harvest-rules`
+that keep breaking. If the project has a rules extraction skill (like `/rule-author harvest`
 or `/mine-rules`), run it during the review phase. The rules it finds should flow
 back into CLAUDE.md or the project's linting configuration, preventing the same
 review comments from recurring.
