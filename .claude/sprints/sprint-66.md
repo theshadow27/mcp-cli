@@ -1,6 +1,6 @@
 # Sprint 66
 
-> Planned 2026-05-26 21:00 EDT. Started 2026-05-27 10:48 EDT. Target: 15 work items.
+> Planned 2026-05-26 21:00 EDT. Started 2026-05-27 10:48 EDT. Ended 2026-05-27 12:47 EDT. Target: 15 work items.
 
 ## Goal
 
@@ -111,3 +111,14 @@ the #2408 gate named.
   upstream Bun patch or version bump. Still parked.
 - **#2439** (closed-done — fixed by #2417/#2435), **#2454** (closed-dup of #2437),
   **#2447** (closed — 6th verdict-cache dup, fixed by #2401).
+
+## Results
+
+- **Released**: v1.12.2 (patch — features/fixes, no new top-level command or package)
+- **PRs merged**: 13 (#2462 #2465 #2466 #2467 #2469 #2470 #2472 #2475 #2476 #2480 #2481 #2483 #2484)
+- **Issues closed**: 15/15 — all planned. 13 via PR; **#2135** closed as already-fixed-on-main (sprint 58 PR #2165 — planner picked up a stale-open issue); **#2436** resolved by filing upstream (vadimdemedes/ink#963) — ErrorOverview bug is Ink's code, local boundary already handled by closed #2351.
+- **Issues dropped**: 0
+- **Nerd-snipe gates**: 3/3 passed (#2074 `--allow`-replaces-defaults, #2437 `isOurProcess` etime jitter, #2445 verdict-cache cwd race) — all produced concrete root causes + fix plans; zero needs-attention.
+- **Adversarial reviews**: 4 high-scrutiny (#2153, #1595, #2074, #2438) — all Changes-Requested round 1, all converged. #1595 (CORS redesign) and #2074 (permission-resolution unification into `allow-patterns.ts`) needed holistic-refactor repairs.
+- **New issues filed**: #2463 (stale transition-log poisons `mcx phase` from-detect), #2471 (`/proc` jitter-free etime source), #2482 (codex spawn RPC -32600 regression), #2485 (epic: `mcx issue` mail funnel + issue-author agent), the alias-bundle import-cycle follow-up, + ink#963 (upstream).
+- **Shipped to sprint branch (lands on merge)**: `.claude/agents/issue-author.md` + the CLAUDE.md filing-rule swap (interim of #2485).
