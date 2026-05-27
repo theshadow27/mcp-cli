@@ -261,6 +261,10 @@ async function waitForDaemon(): Promise<void> {
 
 /** Remove stale PID and socket files so a fresh daemon can start */
 function cleanStaleFiles(): void {
+  // If the flock is still held on the existing PID inode, the daemon is alive — a ping
+  // timeout was transient. Unlinking would make the flock invisible to the next caller,
+  // causing duplicate daemon spawns. See #2411.
+  if (isDaemonFlockHeld()) return;
   try {
     unlinkSync(options.PID_PATH);
   } catch {

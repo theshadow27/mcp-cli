@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: claude.ts dynamically imports agent.ts to share the dispatch loop; already broken at load time
 /**
  * `mcx claude` commands — manage Claude Code sessions via the _claude virtual server.
  *
@@ -24,12 +25,14 @@ import {
   loadManifest,
   parseWorktreeList,
   readWorktreeConfig,
+  resolveEffectiveTools,
   resolveModelName,
   resolveRealpath,
   resolveWorktreePath,
   spawnCapture,
   spawnCaptureSync,
   updatePatchedClaude,
+  validateAllowPatterns,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
@@ -431,7 +434,12 @@ export function buildHeadedCommand(parsed: SpawnArgs): string {
     parts.push("--model", shellQuote(parsed.model));
   }
   if (parsed.allow.length > 0) {
-    parts.push("--allowedTools", ...parsed.allow.map(shellQuote));
+    if (parsed.allowOnly) {
+      parts.push("--allowedTools", ...parsed.allow.map(shellQuote));
+    } else {
+      const { tools } = resolveEffectiveTools({ allowedTools: parsed.allow });
+      if (tools) parts.push("--allowedTools", ...tools.map(shellQuote));
+    }
   }
 
   return parts.join(" ");
@@ -506,6 +514,8 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.exit(1);
   }
 
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
+
   if (!parsed.task && !parsed.resume) {
     d.printError('Usage: mcx claude spawn --task "description" [--worktree [name]] [--allow tools...]');
     d.printError('Run "mcx claude spawn --help" for details.');
@@ -557,6 +567,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
@@ -652,28 +663,38 @@ export interface ResumeArgs {
   /** Bypass the branch-merged pre-flight check. */
   force: boolean;
   allow: string[];
+  allowOnly: boolean;
   model: string | undefined;
   wait: boolean;
   timeout: number | undefined;
   error: string | undefined;
+  warnings: string[];
 }
 
 export function parseResumeArgs(args: string[]): ResumeArgs {
-  const allow: string[] = [];
+  const rawAllow: string[] = [];
+  let allowOnly = false;
+  let sawAllow = false;
+  let sawAllowOnly = false;
   let allowError: string | undefined;
   let model: string | undefined;
   let modelError: string | undefined;
   const remaining: string[] = [];
 
-  // Phase 1: extract --allow (greedy, no heuristic) and --model (unconditional consume)
+  // Phase 1: extract --allow/--allow-only (greedy, no heuristic — resume consumes all non-flags) and --model
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--allow") {
+    if (arg === "--allow" || arg === "--allow-only") {
+      if (arg === "--allow") sawAllow = true;
+      if (arg === "--allow-only") {
+        sawAllowOnly = true;
+        allowOnly = true;
+      }
       // dotw-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        allow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
       }
-      if (allow.length === 0) allowError = "--allow requires at least one tool pattern";
+      if (rawAllow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else if (arg === "--model" || arg === "-m") {
       const val = args[++i]; // dotw-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values
       if (!val) {
@@ -684,6 +705,19 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     } else {
       remaining.push(arg);
     }
+  }
+
+  // Mutual exclusivity
+  if (sawAllow && sawAllowOnly) {
+    allowError ??= "--allow and --allow-only are mutually exclusive";
+  }
+
+  // Validate: comma-split + dead-pattern detection via shared module
+  const validation = validateAllowPatterns(rawAllow);
+  const allow = validation.patterns;
+  const warnings = [...validation.warnings];
+  if (validation.errors.length > 0) {
+    allowError ??= validation.errors[0];
   }
 
   // Phase 2: parseFlags for other flags
@@ -721,10 +755,10 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
     error ??= "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error ??=
-      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
+      "Usage: mcx claude resume <worktree> [session-id] [--fresh] [--force] [--model M] [--allow tools...] [--allow-only tools...] [--wait] [--timeout ms]\n       mcx claude resume --all";
   }
 
-  return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
+  return { target, sessionId, all, fresh, force, allow, allowOnly, model, wait, timeout, error, warnings };
 }
 
 /** Extract issue number from branch name convention: feat/issue-N-slug, fix/issue-N-slug, etc. */
@@ -809,6 +843,8 @@ export async function claudeResume(args: string[], d: ClaudeDeps): Promise<void>
     d.printError(parsed.error);
     d.exit(1);
   }
+
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
 
   const cwd = process.cwd();
 
@@ -926,6 +962,7 @@ async function resumeWorktree(
 
   const toolArgs: Record<string, unknown> = { cwd: wt.path };
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.wait) toolArgs.wait = true;

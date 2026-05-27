@@ -60,6 +60,9 @@ function makePausableEngine(): { engine: BrowserEngine; controls: FakeEngineCont
     evalInPage(_code: string, _site?: string): Promise<unknown> {
       return Promise.resolve(null);
     },
+    getCookies(_url: string, _site?: string) {
+      return Promise.resolve([]);
+    },
     coldStart(_site?: string) {
       return Promise.resolve({ cleared: [], reloaded: false });
     },

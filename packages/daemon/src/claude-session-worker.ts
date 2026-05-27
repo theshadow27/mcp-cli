@@ -20,6 +20,7 @@ import {
   type LiveSpan,
   type SessionInfo,
   type WorkItemEvent,
+  resolveEffectiveTools,
   resolveModelName,
   silentLogger,
   startSpan,
@@ -27,7 +28,7 @@ import {
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resolver";
-import { DEFAULT_SAFE_TOOLS, type PermissionRule, type PermissionStrategy } from "./claude-session/permission-router";
+import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
 import {
@@ -208,7 +209,20 @@ export async function handlePrompt(
     sessionId = crypto.randomUUID();
     const permissionMode = (args.permissionMode as PermissionStrategy) ?? "rules";
     const allowedTools = (args.allowedTools as string[]) ?? undefined;
-    const effectiveTools = permissionMode === "rules" ? (allowedTools ?? DEFAULT_SAFE_TOOLS) : undefined;
+    const allowOnly = (args.allowOnly as boolean) ?? false;
+
+    const resolved = resolveEffectiveTools({
+      allowedTools,
+      allowOnly,
+      permissionMode,
+    });
+    if (resolved.error) {
+      return {
+        content: [{ type: "text", text: `Error: ${resolved.error}` }],
+        isError: true,
+      };
+    }
+    const effectiveTools = resolved.tools;
     const rules: PermissionRule[] | undefined = effectiveTools
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
@@ -221,7 +235,7 @@ export async function handlePrompt(
         cwd: args.cwd as string | undefined,
         permissionStrategy: permissionMode,
         permissionRules: rules,
-        allowedTools,
+        allowedTools: effectiveTools,
         worktree: args.worktree as string | undefined,
         model: args.model ? resolveModelName(args.model as string) : undefined,
         resumeSessionId: args.resumeSessionId as string | undefined,
@@ -787,7 +801,9 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ type: "ready", port });
     } catch (err) {
       // Clean up partially-initialized resources
-      await wsServer?.stop().catch(() => {});
+      await wsServer
+        ?.stop()
+        .catch((e) => console.warn("[claude-worker] wsServer.stop() failed during init cleanup:", e));
       wsServer = null;
       mcpServer = null;
       transport = null;

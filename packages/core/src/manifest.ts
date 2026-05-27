@@ -1,3 +1,4 @@
+// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Project-level orchestration manifest: `.mcx.{yaml,yml,json}`.
  *

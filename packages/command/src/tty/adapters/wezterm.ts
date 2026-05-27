@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * WezTerm terminal adapter.
  * Uses the `wezterm` CLI to spawn panes in tabs or new windows.

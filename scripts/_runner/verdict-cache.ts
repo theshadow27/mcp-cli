@@ -36,19 +36,19 @@ interface VerdictCacheFile {
  * Any code change — commit, amend, stage, edit — flips at least one of
  * these, invalidating the cache.
  */
-export function computeVerdictKey(resolveBase: () => string): string | null {
+export function computeVerdictKey(resolveBase: () => string, cwd?: string): string | null {
   const base = resolveBase();
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd });
   if (head.status !== 0) return null;
   const headSha = head.stdout.trim();
 
   // `git diff HEAD` captures both staged and unstaged changes in one shot.
-  const diff = spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" });
+  const diff = spawnSync("git", ["diff", "HEAD"], { encoding: "utf8", cwd });
   if (diff.status !== 0) return null;
 
   // Untracked files (new spec files, etc.) are invisible to `git diff HEAD`.
   // Include their names so adding/removing an untracked file flips the key.
-  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8" });
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8", cwd });
   const untrackedList = untracked.status === 0 ? untracked.stdout : "";
 
   const diffHash = Bun.hash(diff.stdout + untrackedList).toString(16);

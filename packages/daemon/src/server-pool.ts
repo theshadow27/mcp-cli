@@ -64,6 +64,8 @@ interface ServerConnection {
   cachedChildPid?: number | null;
   /** Start time of cachedChildPid (epoch ms), for PID-recycling protection. */
   cachedChildPidStartTime?: number | null;
+  /** When cachedChildPid was recorded (epoch ms) — used to skip jittery isOurProcess for fresh caches. */
+  cachedChildPidAt?: number;
 }
 
 /**
@@ -139,7 +141,9 @@ export class ServerPool {
     // Disconnect existing connection if present
     const existing = this.connections.get(name);
     if (existing) {
-      existing.client?.close().catch(() => {});
+      existing.client
+        ?.close()
+        .catch((e) => this.logger.warn(`[pool] client.close() failed replacing virtual server "${name}": ${e}`));
     }
 
     const toolMap = tools ?? new Map();
@@ -267,7 +271,9 @@ export class ServerPool {
       if (conn.virtual) continue;
       if (!config.servers.has(name)) {
         removed.push(name);
-        this.disconnect(name).catch(() => {});
+        this.disconnect(name).catch((e) =>
+          this.logger.warn(`[pool] disconnect failed for removed server "${name}": ${e}`),
+        );
         this.connections.delete(name);
       }
     }
@@ -369,6 +375,7 @@ export class ServerPool {
             }
             conn.cachedChildPid = pid;
             conn.cachedChildPidStartTime = pid != null ? getProcessStartTime(pid) : null;
+            conn.cachedChildPidAt = pid != null ? Date.now() : undefined;
           }
 
           // Detect server crashes / transport close to reset stale "connected" state
@@ -656,6 +663,7 @@ export class ServerPool {
         : childPid != null
           ? getProcessStartTime(childPid)
           : null;
+    const cachedAtMs = conn.cachedChildPidAt;
 
     // Flush and detach stderr listener
     if (conn.stderrCleanup) {
@@ -674,7 +682,7 @@ export class ServerPool {
     // (e.g. keepalive intervals) won't exit, causing process leaks (#940).
     // Uses SIGTERM → poll → SIGKILL escalation with PID ownership verification.
     if (childPid != null) {
-      await killPid(childPid, this.logger, { pidStartTime });
+      await killPid(childPid, this.logger, { pidStartTime, cachedAtMs });
     } else if (isStdioConfig(conn.resolved.config) && !conn.virtual) {
       this.logger.warn(`[pool] Server "${name}": no PID available — cannot verify stdio child cleanup`);
     }
@@ -683,6 +691,7 @@ export class ServerPool {
     conn.transport = null;
     conn.cachedChildPid = null;
     conn.cachedChildPidStartTime = null;
+    conn.cachedChildPidAt = undefined;
     conn.state = "disconnected";
     conn.tools.clear();
   }
@@ -931,7 +940,8 @@ async function defaultConnect(
   // When the signal fires (timeout), force-close the transport to abort
   // hanging connections — especially SSE EventSource which retries internally.
   if (signal) {
-    const onAbort = () => transport.close().catch(() => {});
+    const onAbort = () =>
+      transport.close().catch((e) => console.warn(`[ServerPool] transport.close() failed on abort for "${name}":`, e));
     signal.addEventListener("abort", onAbort, { once: true });
   }
 

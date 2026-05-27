@@ -222,6 +222,21 @@ describe("Result schemas", () => {
       expect(result.subtype).toBe(subtype);
     }
   });
+
+  test("parses interrupt result — is_error:true with no errors[]", () => {
+    // Claude 2.1.150+: control_request/interrupt produces this shape — no errors array.
+    const interruptResult = {
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      num_turns: 1,
+      total_cost_usd: 0.01,
+      session_id: "abc-123",
+    };
+    const result = ResultError.parse(interruptResult);
+    expect(result.is_error).toBe(true);
+    expect(result.errors).toBeUndefined();
+  });
 });
 
 describe("CanUseTool schema", () => {

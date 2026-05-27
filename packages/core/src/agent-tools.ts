@@ -192,7 +192,15 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             allowedTools: {
               type: "array",
               items: { type: "string" },
-              description: "Tool patterns to auto-approve (e.g. 'Bash(git *)', 'Read')",
+              description:
+                "Tool patterns to auto-approve (e.g. 'Bash(git:*)', 'Read'). " +
+                "Added to DEFAULT_SAFE_TOOLS by default; set allowOnly=true to replace them instead.",
+            },
+            allowOnly: {
+              type: "boolean",
+              description:
+                "When true, allowedTools replaces DEFAULT_SAFE_TOOLS instead of extending them. " +
+                "Use for locked-down sessions that should only have the explicitly listed tools.",
             },
             worktree: { type: "string", description: "Git worktree name for isolation" },
             name: {

@@ -7,7 +7,7 @@ import { metrics } from "../metrics";
 import { OAuthCallbackTimeoutError } from "./callback-server";
 import type { CallbackServer } from "./callback-server";
 import type { KeychainTokens } from "./keychain";
-import { runOAuthFlowWithDcrRetry } from "./oauth-retry";
+import { AuthFlowInProgressError, _resetActiveAuthFlows, runOAuthFlowWithDcrRetry } from "./oauth-retry";
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-retry-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -333,6 +333,134 @@ describe("runOAuthFlowWithDcrRetry", () => {
     expect(authCallCount).toBe(2);
     // Client info untouched
     expect(db.getClientInfo(SERVER)?.client_id).toBe("live-client");
+    db.close();
+  });
+});
+
+// -- Per-server concurrency guard (#1624) --
+
+describe("per-server auth concurrency guard", () => {
+  const dbPaths: string[] = [];
+
+  function createDb(): StateDb {
+    const p = tmpDb();
+    dbPaths.push(p);
+    return new StateDb(p);
+  }
+
+  afterEach(() => {
+    _resetActiveAuthFlows();
+    for (const p of dbPaths) cleanup(p);
+    dbPaths.length = 0;
+  });
+
+  test("rejects concurrent auth for the same server with AuthFlowInProgressError", async () => {
+    const db = createDb();
+    let resolveFirstFlow!: (code: string) => void;
+    const firstFlowCode = new Promise<string>((r) => {
+      resolveFirstFlow = r;
+    });
+
+    const first = runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, opts) => (opts.authorizationCode ? "AUTHORIZED" : "REDIRECT"),
+        startCallbackServer: () => makeCallback(firstFlowCode),
+      },
+    );
+
+    // Second call for the same server while first is in progress
+    await expect(
+      runOAuthFlowWithDcrRetry(
+        SERVER,
+        SERVER_URL,
+        db,
+        {},
+        {
+          authFn: async () => "AUTHORIZED",
+          startCallbackServer: () => makeCallback(Promise.resolve("code")),
+        },
+      ),
+    ).rejects.toBeInstanceOf(AuthFlowInProgressError);
+
+    // Complete the first flow
+    resolveFirstFlow("code-abc");
+    const result = await first;
+    expect(result).toBe("authenticated");
+    db.close();
+  });
+
+  test("allows concurrent auth for different servers", async () => {
+    const db = createDb();
+    let resolveA!: (code: string) => void;
+    const codeA = new Promise<string>((r) => {
+      resolveA = r;
+    });
+
+    const flowA = runOAuthFlowWithDcrRetry(
+      "server-a",
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, opts) => (opts.authorizationCode ? "AUTHORIZED" : "REDIRECT"),
+        startCallbackServer: () => makeCallback(codeA),
+      },
+    );
+
+    // Different server — should not be blocked
+    const flowB = runOAuthFlowWithDcrRetry(
+      "server-b",
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, opts) => (opts.authorizationCode ? "AUTHORIZED" : "REDIRECT"),
+        startCallbackServer: () => makeCallback(Promise.resolve("code-b")),
+      },
+    );
+
+    const resultB = await flowB;
+    expect(resultB).toBe("authenticated");
+
+    resolveA("code-a");
+    const resultA = await flowA;
+    expect(resultA).toBe("authenticated");
+    db.close();
+  });
+
+  test("guard is released after flow failure, allowing retry", async () => {
+    const db = createDb();
+
+    // First flow fails
+    await expect(
+      runOAuthFlowWithDcrRetry(
+        SERVER,
+        SERVER_URL,
+        db,
+        {},
+        {
+          authFn: async () => "REDIRECT",
+          startCallbackServer: () => makeCallback(Promise.reject(new Error("provider error"))),
+        },
+      ),
+    ).rejects.toThrow("provider error");
+
+    // Second flow for same server should succeed (guard released)
+    const result = await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, opts) => (opts.authorizationCode ? "AUTHORIZED" : "REDIRECT"),
+        startCallbackServer: () => makeCallback(Promise.resolve("code-retry")),
+      },
+    );
+    expect(result).toBe("authenticated");
     db.close();
   });
 });

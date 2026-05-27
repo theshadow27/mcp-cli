@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: transitive member of catalog.ts ↔ seeds.ts cycle
 /**
  * Site configuration loader.
  *
@@ -67,6 +68,13 @@ export interface SiteConfig {
   /** Built-in seed name to fall back to if local files are missing. Defaults to the site name. */
   seed?: string;
   browser?: BrowserConfig;
+  /**
+   * Default auth mode for calls that don't specify their own. "bearer"
+   * (default) injects vault-picked tokens daemon-side. "cookie" routes
+   * fetches through the browser page context. "auto" tries bearer first,
+   * falls back to cookie when the vault is empty.
+   */
+  defaultAuthMode?: "bearer" | "cookie" | "auto";
 }
 
 export type PartialSiteConfig = Partial<SiteConfig>;
@@ -106,6 +114,7 @@ function mergeConfig(name: string, seed: PartialSiteConfig, user: PartialSiteCon
       chromeProfile: merged.browser?.chromeProfile ?? "default",
       ...(merged.browser?.profileDir !== undefined ? { profileDir: merged.browser.profileDir } : {}),
     },
+    defaultAuthMode: merged.defaultAuthMode,
   };
 }
 

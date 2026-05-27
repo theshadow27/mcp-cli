@@ -820,6 +820,52 @@ describe("parseAgentResumeArgs", () => {
     expect(result.allow).toEqual(["Read", "Write"]);
     expect(result.target).toBe("my-worktree");
   });
+
+  // ── Comma-split via shared validateAllowPatterns (#2074) ──
+
+  test("splits comma-separated --allow patterns", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow", "Bash,Write,Read"]);
+    expect(result.allow).toEqual(["Bash", "Write", "Read"]);
+  });
+
+  test("warns on comma-separated patterns", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow", "Bash,Write"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("Comma-separated");
+  });
+
+  // ── Dead pattern detection via shared validateAllowPatterns (#2074) ──
+
+  test("errors on Bash(*) dead pattern", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow", "Bash(*)"]);
+    expect(result.error).toContain("dead rule");
+  });
+
+  test("warns on Bash(git*) missing colon wildcard", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow", "Bash(git*)"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("may not match");
+  });
+
+  // ── --allow-only (#2074) ──
+
+  test("sets allowOnly=true with --allow-only flag", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow-only", "Bash"]);
+    expect(result.allowOnly).toBe(true);
+    expect(result.allow).toEqual(["Bash"]);
+  });
+
+  test("errors on empty --allow-only", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow-only"]);
+    expect(result.error).toBe("--allow-only requires at least one tool pattern");
+  });
+
+  // ── Mutual exclusivity (#2074) ──
+
+  test("errors when --allow and --allow-only both present", () => {
+    const result = parseAgentResumeArgs(["my-wt", "--allow", "Read", "--allow-only", "Bash"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
+  });
 });
 
 // ── Resume (shimmed provider — codex) ──

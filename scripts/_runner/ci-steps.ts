@@ -249,7 +249,7 @@ interface ChangedTestsOpts {
   /** Override repo root for verdict cache location. DI for tests. */
   repoRoot?: string;
   /** Override verdict-key computation. DI for tests. */
-  computeKey?: (resolveBase: () => string) => string | null;
+  computeKey?: (resolveBase: () => string, cwd?: string) => string | null;
   /** Override spec-file discovery. DI for tests. */
   findSpecFiles?: (repoRoot: string) => string[];
   /** Override import-graph builder. DI for tests. */
@@ -344,7 +344,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     const base = resolveBase();
 
     // Verdict cache: skip tests when the worktree state is unchanged (#2396).
-    const key = getKey(() => base);
+    const key = getKey(() => base, repoRoot);
     if (key) {
       const cached = lookupVerdict(repoRoot, key);
       if (cached === true) {

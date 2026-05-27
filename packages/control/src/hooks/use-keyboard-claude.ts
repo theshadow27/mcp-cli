@@ -1,3 +1,4 @@
+// dotw-ignore no-import-cycles: type-only back-edge (ClaudeNav type from use-keyboard.ts); extract to shared types module to break
 import { ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
 import { entryKey } from "../components/agent-session-detail";

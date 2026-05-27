@@ -77,12 +77,28 @@ describe("extractContent", () => {
 
   test("handles content without text field", () => {
     const result = { content: [{ type: "text" }] };
-    expect(extractContent(result)).toEqual([]);
+    // toEqual passes for [undefined] in Bun — use toHaveLength to catch the real bug
+    const extracted = extractContent(result) as unknown[];
+    expect(extracted).toHaveLength(0);
+  });
+
+  test("handles multiple content blocks where some lack text field", () => {
+    const result = { content: [{ type: "text", text: "hello" }, { type: "text" }, { type: "image" }] };
+    expect(extractContent(result)).toEqual(["hello"]);
   });
 
   test("handles empty content array", () => {
     const result = { content: [] };
     expect(extractContent(result)).toEqual([]);
+  });
+
+  test("returns result unchanged when content exists but is not an array", () => {
+    const result = { content: undefined };
+    expect(extractContent(result)).toEqual(result);
+    const result2 = { content: "not an array" };
+    expect(extractContent(result2)).toEqual(result2);
+    const result3 = { content: 42 };
+    expect(extractContent(result3)).toEqual(result3);
   });
 
   test("auto-parses Python repr text when JSON.parse fails", () => {

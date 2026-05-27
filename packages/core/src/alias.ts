@@ -1,3 +1,4 @@
+// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Alias definition types for structured defineAlias() aliases.
  */
@@ -269,8 +270,10 @@ export function extractContent(result: unknown): unknown {
         return text;
       }
     }
-    // Multiple content items — return array of text
-    return content.filter((c) => c.type === "text").map((c) => c.text);
+    if (!Array.isArray(content)) return result;
+    return content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
+      .map((c) => c.text);
   }
   return result;
 }

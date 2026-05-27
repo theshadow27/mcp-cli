@@ -243,6 +243,29 @@ describe("SessionState", () => {
       ]);
     });
 
+    test("interrupt result (is_error:true, no errors[]) emits session:error not session:result", () => {
+      // Regression for #2233: Claude 2.1.150+ interrupt produces result with
+      // is_error:true but no errors[] — must route to session:error, not session:result.
+      const session = activeSession();
+      const interruptResult = {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 1,
+        total_cost_usd: 0.01,
+        session_id: "sess-1",
+      };
+      const events = session.handleMessage(interruptResult);
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:error");
+      if (events[0].type === "session:error") {
+        expect(events[0].errors).toEqual([]);
+        expect(events[0].cost).toBe(0.01);
+      }
+    });
+
     test("sets cumulative cost from SDK (not additive)", () => {
       const session = activeSession();
       session.handleMessage(RESULT_SUCCESS); // total_cost_usd=0.05, num_turns=3
@@ -965,6 +988,45 @@ describe("SessionState", () => {
         type: "session:rate_limited",
         sessionId: "sess-1",
         retryAfterMs: 30000,
+      });
+    });
+
+    describe("rate_limit_event top-level message", () => {
+      test("emits session:rate_limited and sets rateLimited flag", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event" });
+
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: "session:rate_limited", sessionId: "sess-1" });
+        expect(session.rateLimited).toBe(true);
+      });
+
+      test("extracts retryAfterMs from retry_after_ms field", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event", retry_after_ms: 60000 });
+
+        expect(events[0]).toMatchObject({
+          type: "session:rate_limited",
+          sessionId: "sess-1",
+          retryAfterMs: 60000,
+        });
+      });
+
+      test("converts retry_after seconds to ms", () => {
+        const session = initSession();
+        const events = session.handleMessage({ type: "rate_limit_event", retry_after: 30 });
+
+        expect(events[0]).toMatchObject({
+          type: "session:rate_limited",
+          sessionId: "sess-1",
+          retryAfterMs: 30000,
+        });
+      });
+
+      test("does not set parseMismatch", () => {
+        const session = initSession();
+        session.handleMessage({ type: "rate_limit_event" });
+        expect(session.parseMismatch).toBe(false);
       });
     });
   });

@@ -1,39 +1,28 @@
 /**
  * Shared spawn argument parsing for `mcx claude spawn` and `mcx codex spawn`.
  *
- * Common flags: --task/-t, --allow, --cwd, --timeout, --model/-m, --wait
+ * Common flags: --task/-t, --allow, --allow-only, --cwd, --timeout, --model/-m, --wait
  * Provider-specific flags are handled by callers via the `extra` hook.
  */
 
 import { resolve } from "node:path";
-import { resolveModelName } from "@mcp-cli/core";
+import { looksLikeToolName, resolveModelName, validateAllowPatterns } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 
-/**
- * Heuristic: does a string look like a tool name / pattern for --allow?
- * Tool names are PascalCase (Read, WebSearch), MCP-style (mcp__echo__add),
- * or contain wildcards (*). Worktree names and session IDs are typically
- * lowercase-kebab or hex strings.
- */
-export function looksLikeToolName(s: string): boolean {
-  if (s.startsWith("-")) return false;
-  // Wildcards are always tool patterns
-  if (s.includes("*")) return true;
-  // MCP-style tool names
-  if (s.startsWith("mcp_")) return true;
-  // PascalCase: starts with uppercase letter
-  if (/^[A-Z]/.test(s)) return true;
-  return false;
-}
+export { looksLikeToolName } from "@mcp-cli/core";
 
 export interface SharedSpawnArgs {
   task: string | undefined;
   allow: string[];
+  /** When true, --allow replaces DEFAULT_SAFE_TOOLS instead of extending them. */
+  allowOnly: boolean;
   cwd: string | undefined;
   timeout: number | undefined;
   model: string | undefined;
   wait: boolean;
   error: string | undefined;
+  /** Non-fatal warnings (footgun patterns detected in --allow). */
+  warnings: string[];
 }
 
 /**
@@ -48,11 +37,14 @@ export function parseSharedSpawnArgs(
   args: string[],
   extra?: (arg: string, allArgs: string[], index: number) => number | undefined,
 ): SharedSpawnArgs {
-  const allow: string[] = [];
+  const rawAllow: string[] = [];
+  let allowOnly = false;
+  let sawAllow = false;
+  let sawAllowOnly = false;
   let allowError: string | undefined;
   const remaining: string[] = [];
 
-  // Phase 1: extract --allow (greedy looksLikeToolName) and handle extra callback
+  // Phase 1: extract --allow/--allow-only (greedy looksLikeToolName) and handle extra callback
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
@@ -65,15 +57,35 @@ export function parseSharedSpawnArgs(
       }
     }
 
-    if (arg === "--allow") {
+    if (arg === "--allow" || arg === "--allow-only") {
+      if (arg === "--allow") sawAllow = true;
+      if (arg === "--allow-only") {
+        sawAllowOnly = true;
+        allowOnly = true;
+      }
       // dotw-ignore no-manual-arg-parsing: greedy multi-value consume with looksLikeToolName heuristic cannot be expressed in parseFlags
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        allow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
       }
-      if (allow.length === 0) allowError = "--allow requires at least one tool pattern";
+      if (rawAllow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else {
       remaining.push(arg);
     }
+  }
+
+  // Mutual exclusivity
+  if (sawAllow && sawAllowOnly) {
+    allowError ??= "--allow and --allow-only are mutually exclusive";
+  }
+
+  // Validate: comma-split + dead-pattern detection via shared module
+  const validation = validateAllowPatterns(rawAllow);
+  const allow = validation.patterns;
+  const warnings = [...validation.warnings];
+
+  // Dead patterns are errors
+  if (validation.errors.length > 0) {
+    allowError ??= validation.errors[0];
   }
 
   // Phase 2: parseFlags for standard flags
@@ -139,5 +151,5 @@ export function parseSharedSpawnArgs(
   const task = (flags.task as string | undefined) ?? positionals.find((p) => p !== "-") ?? undefined;
   const wait = (flags.wait as boolean | undefined) ?? false;
 
-  return { task, allow, cwd, timeout, model, wait, error };
+  return { task, allow, allowOnly, cwd, timeout, model, wait, error, warnings };
 }

@@ -281,7 +281,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
   const shouldWait = (args.wait as boolean) ?? false;
   if (!shouldWait) {
     // Don't await — let it run in the background
-    scriptPromise.catch(() => {});
+    scriptPromise.catch((e) => console.warn("[mock-worker] background script rejected:", e));
     return { content: [{ type: "text", text: JSON.stringify({ sessionId }) }] };
   }
 

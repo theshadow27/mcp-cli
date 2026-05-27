@@ -470,12 +470,12 @@ async function checkCopilotReady(prNumber: number, repoRoot: string, d: PrDeps):
 
   if (!hasCopilot) return false;
 
-  if (!snapshot.pushedAt) return false;
+  if (!snapshot.updatedAt) return false;
 
-  const pushedAt = new Date(snapshot.pushedAt).getTime();
-  if (Number.isNaN(pushedAt)) return false;
+  const updatedAt = new Date(snapshot.updatedAt).getTime();
+  if (Number.isNaN(updatedAt)) return false;
 
-  return Date.now() - pushedAt >= 90_000;
+  return Date.now() - updatedAt >= 90_000;
 }
 
 // ── XML formatter ──

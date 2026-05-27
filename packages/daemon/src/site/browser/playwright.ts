@@ -435,6 +435,12 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     return this.withPage(site, (page) => page.evaluate(code));
   }
 
+  async getCookies(url: string, _site?: string): Promise<import("./engine").CookieEntry[]> {
+    if (!this.context) throw new Error("Browser not started");
+    const raw = await this.context.cookies(url);
+    return raw.map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path }));
+  }
+
   async getUrl(site?: string): Promise<string> {
     return this.withPage(site, async (page) => page.url());
   }
