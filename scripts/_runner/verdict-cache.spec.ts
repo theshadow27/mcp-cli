@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { lookupVerdict, storeVerdict } from "./verdict-cache";
+import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
 
 function makeTmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "verdict-cache-test-"));
@@ -82,5 +82,39 @@ describe("verdict-cache", () => {
     expect(lookupVerdict(root, "anything")).toBeNull();
     storeVerdict(root, "after-bad-shape", true);
     expect(lookupVerdict(root, "after-bad-shape")).toBe(true);
+  });
+});
+
+describe("computeVerdictKey", () => {
+  // Tests run inside the mcp-cli worktree — a valid git repo with a HEAD commit.
+  // computeVerdictKey runs git commands in process.cwd() so there's no need to
+  // create a temporary repo.
+
+  it("returns a non-null string with three colon-separated parts in a valid git repo", () => {
+    const key = computeVerdictKey(() => "HEAD~1");
+    expect(key).not.toBeNull();
+    const parts = (key as string).split(":");
+    // Format: <base>:<headSha>:<diffHash> — three non-empty segments.
+    expect(parts).toHaveLength(3);
+    for (const p of parts) expect(p.length).toBeGreaterThan(0);
+  });
+
+  it("is stable across identical invocations (same state → same key)", () => {
+    const base = "HEAD~1";
+    const key1 = computeVerdictKey(() => base);
+    const key2 = computeVerdictKey(() => base);
+    expect(key1).not.toBeNull();
+    expect(key2).not.toBeNull();
+    expect(key1).toEqual(key2);
+  });
+
+  it("changes when the base ref changes", () => {
+    // Two different base refs produce different keys because the first
+    // key segment (the resolved base SHA) changes.
+    const key1 = computeVerdictKey(() => "HEAD~1");
+    const key2 = computeVerdictKey(() => "HEAD~2");
+    // HEAD~2 may not exist in a shallow repo — skip gracefully.
+    if (key1 === null || key2 === null) return;
+    expect(key1).not.toEqual(key2);
   });
 });

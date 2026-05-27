@@ -32,6 +32,8 @@ export class IpcCallError extends Error {
   readonly code: number;
   readonly data: unknown;
   readonly remoteStack: string | undefined;
+  /** OS-level error code (e.g. "ECONNREFUSED") when the daemon wrapped a system error. */
+  readonly systemCode: string | undefined;
 
   constructor(err: IpcError) {
     super(err.message);
@@ -39,6 +41,7 @@ export class IpcCallError extends Error {
     this.code = err.code;
     this.data = err.data;
     this.remoteStack = err.stack;
+    this.systemCode = err.systemCode;
   }
 }
 

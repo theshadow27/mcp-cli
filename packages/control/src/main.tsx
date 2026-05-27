@@ -11,6 +11,7 @@ import { render } from "ink";
 assertBunVersion();
 import React from "react";
 import { App } from "./app";
+import { ErrorBoundary } from "./components/error-boundary";
 
 if (import.meta.main) {
   if (!process.stdout.isTTY) {
@@ -18,9 +19,14 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  const { waitUntilExit } = render(<App />, {
-    exitOnCtrlC: true,
-  });
+  const { waitUntilExit } = render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>,
+    {
+      exitOnCtrlC: true,
+    },
+  );
 
   await waitUntilExit();
 }

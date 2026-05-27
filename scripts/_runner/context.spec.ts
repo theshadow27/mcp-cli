@@ -15,6 +15,19 @@ describe("detectContext", () => {
     expect(detectContext({ MCP_CLI_AI: "1" })).toBe("ai");
   });
 
+  it("MCP_CLI_AI=0 or MCP_CLI_AI=false opts out of ai", () => {
+    expect(detectContext({ MCP_CLI_AI: "0" })).not.toBe("ai");
+    expect(detectContext({ MCP_CLI_AI: "false" })).not.toBe("ai");
+  });
+
+  it("MCP_CLI_AI=0 opt-out overrides CLAUDECODE and AGENT", () => {
+    // The documented escape hatch: explicit opt-out wins even when other AI
+    // vars are set (e.g. a non-Claude agent running inside a Claude session).
+    expect(detectContext({ MCP_CLI_AI: "0", CLAUDECODE: "1" })).not.toBe("ai");
+    expect(detectContext({ MCP_CLI_AI: "0", AGENT: "grok" })).not.toBe("ai");
+    expect(detectContext({ MCP_CLI_AI: "false", CLAUDECODE: "1", AGENT: "x" })).not.toBe("ai");
+  });
+
   it("returns 'ai' when both CI and CLAUDECODE are set (agent-driven CI)", () => {
     // Without this precedence, an agent-driven CI run streams to the
     // workflow log instead of capturing to file — defeating the whole

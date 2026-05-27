@@ -121,7 +121,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 // --- Main ---
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
@@ -219,6 +219,12 @@ const nonDaemonPaths = [
 
 const testStart = Date.now();
 
+// --junit-outfile: structured test-failure summary for ci-steps.ts crash-after-pass
+// detection (#2401). When provided, junit XML is written for each inner bun test
+// run, then aggregated into a single JSON { failures: N } at the specified path.
+const junitOutfile = process.argv.find((a) => a.startsWith("--junit-outfile="))?.slice("--junit-outfile=".length);
+const junit1Path = junitOutfile ? `/tmp/coverage-junit-run1-${Date.now()}.xml` : undefined;
+
 // Run 1: non-daemon tests with --coverage (produces the coverage table we parse).
 // NOTE: --parallel cannot be combined with --coverage — Bun's parallel workers
 // each emit their own coverage table and `bun test` reports only the worker
@@ -227,7 +233,9 @@ const testStart = Date.now();
 // 35 files falsely flagged below the 80% per-file floor. The dev `bun test`
 // command uses --parallel for speed (no --coverage there), and this script
 // stays sequential for accurate coverage aggregation.
-const proc1 = Bun.spawn(["bun", "test", "--no-orphans", "--coverage", ...nonDaemonPaths], {
+const run1Args = ["bun", "test", "--no-orphans", "--coverage", ...nonDaemonPaths];
+if (junit1Path) run1Args.push("--reporter", "junit", `--reporter-outfile=${junit1Path}`);
+const proc1 = Bun.spawn(run1Args, {
   stdout: "pipe",
   stderr: "pipe",
 });
@@ -245,6 +253,10 @@ const skipRun2 = !forceRun2;
 let stdout2 = "";
 let stderr2 = "";
 let exitCode2 = 0;
+// Declared here so the junit aggregation block below can read it regardless of
+// whether skipRun2 is true — block-scoped const inside the else {} would not be
+// visible at the aggregation site.
+let junit2Path: string | undefined = undefined;
 
 if (skipRun2) {
   console.log("Skipping run-2 (daemon tests) — pre-commit fast path (#1125). Use --ci or --force-run2 for full suite.");
@@ -254,13 +266,22 @@ if (skipRun2) {
     .map((f) => `test/${f}`);
   // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
   // and ws-server's port-retry tax has been reduced (see ws-server.ts).
-  const proc2 = Bun.spawn(
-    ["bun", "test", "--no-orphans", "--parallel", "--timeout", "60000", "packages/daemon/src", ...daemonTestFiles],
-    {
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+  junit2Path = junitOutfile ? `/tmp/coverage-junit-run2-${Date.now()}.xml` : undefined;
+  const run2Args = [
+    "bun",
+    "test",
+    "--no-orphans",
+    "--parallel",
+    "--timeout",
+    "60000",
+    "packages/daemon/src",
+    ...daemonTestFiles,
+  ];
+  if (junit2Path) run2Args.push("--reporter", "junit", `--reporter-outfile=${junit2Path}`);
+  const proc2 = Bun.spawn(run2Args, {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   // Process-level deadline: if run-2 hangs (e.g. daemon teardown bug), kill it
   // rather than blocking pre-commit indefinitely. 300s is generous enough for
@@ -293,6 +314,39 @@ const stderr = stderr1 + stderr2;
 // in CI. See #1870.
 await Bun.write(Bun.stdout, stdout);
 await Bun.write(Bun.stderr, stderr);
+
+// Write aggregated junit summary for ci-steps.ts crash-after-pass detection (#2401).
+// Counts failures from each run's junit XML and writes { failures: N } to --junit-outfile.
+// Written before the exit so ci-steps.ts can read it regardless of whether this
+// process exits cleanly or with an error code.
+if (junitOutfile) {
+  try {
+    // Returns null when the junit file is absent or unparseable — mirrors
+    // parseJunitFailures() in ci-steps.ts. A missing file means the inner bun
+    // run crashed before flushing the reporter; returning 0 would fabricate a
+    // false "clean" signal. The outer classifyCoverage falls back to the durable
+    // stdout signal instead (#2401 hybrid).
+    const readJunitFailures = (xmlPath: string | undefined): number | null => {
+      if (!xmlPath) return null;
+      try {
+        const xml = readFileSync(xmlPath, "utf8");
+        const m = xml.match(/failures="(\d+)"/);
+        return m ? Number.parseInt(m[1], 10) : null;
+      } catch {
+        return null;
+      }
+    };
+    const f1 = readJunitFailures(junit1Path);
+    // run-2 was skipped → no tests ran in that phase, treat as 0 failures.
+    const f2 = skipRun2 ? 0 : readJunitFailures(junit2Path);
+    // Any missing junit file → write null so the outer classifier uses the
+    // durable stdout fallback instead of trusting a fabricated zero.
+    const totalFailures = f1 === null || f2 === null ? null : f1 + f2;
+    writeFileSync(junitOutfile, JSON.stringify({ failures: totalFailures }));
+  } catch {
+    /* best-effort — crash tolerance is non-essential */
+  }
+}
 
 // Fail if either run failed
 const exitCode = exitCode1 !== 0 ? exitCode1 : exitCode2;

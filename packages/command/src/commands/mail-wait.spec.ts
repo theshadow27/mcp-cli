@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { type MailMessage, ProtocolMismatchError } from "@mcp-cli/core";
+import { IpcCallError, type IpcError, type MailMessage, ProtocolMismatchError } from "@mcp-cli/core";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 function makeMail(overrides: Partial<MailMessage> = {}): MailMessage {
@@ -45,7 +45,10 @@ describe("pollMailUntil", () => {
     let calls = 0;
     const d = {
       pollMail: mock(async () => {
-        if (calls++ === 0) throw new Error("ECONNREFUSED");
+        if (calls++ === 0) {
+          const err = Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
+          throw err;
+        }
         return msg;
       }),
     };
@@ -143,8 +146,7 @@ describe("pollMailUntil", () => {
     test("logs a warning after N consecutive transient failures", async () => {
       const d = {
         pollMail: mock(async () => {
-          const err = new Error("ECONNREFUSED");
-          throw err;
+          throw Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" });
         }),
       };
       // Short timeout — will burn through ~15 polls at 1ms interval
@@ -152,6 +154,34 @@ describe("pollMailUntil", () => {
       const warnings = errorSpy.mock.calls.filter((c) => String((c as unknown[])[0]).includes("consecutive transient"));
       // Logs exactly once (warnedTransient latch) regardless of how many more transient errors fire
       expect(warnings.length).toBe(1);
+    });
+
+    test("retries on IpcCallError with systemCode matching transient code", async () => {
+      const msg = makeMail();
+      let calls = 0;
+      const d = {
+        pollMail: mock(async () => {
+          if (calls++ === 0) {
+            const ipcErr: IpcError = { code: -32603, message: "connect failed", systemCode: "ECONNRESET" };
+            throw new IpcCallError(ipcErr);
+          }
+          return msg;
+        }),
+      };
+      const result = await pollMailUntil(d, "bob", 5000, Date.now() - 1, 10);
+      expect(result).toBe(msg);
+      expect(calls).toBe(2);
+    });
+
+    test("does not retry on IpcCallError without systemCode", async () => {
+      const d = {
+        pollMail: mock(async () => {
+          const ipcErr: IpcError = { code: -32603, message: "Internal error" };
+          throw new IpcCallError(ipcErr);
+        }),
+      };
+      await expect(pollMailUntil(d, "bob", 5000, Date.now(), 10)).rejects.toBeInstanceOf(IpcCallError);
+      expect(d.pollMail).toHaveBeenCalledTimes(1);
     });
   });
 

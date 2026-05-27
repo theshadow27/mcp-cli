@@ -112,11 +112,12 @@ const rule: CheckRule = {
   id: "poll-until-headroom",
   kind: "check",
   scold:
-    "pollUntil() called with a timeout ≥ Bun's 5000ms test watchdog — the watchdog fires first, so this deadline never surfaces its own error (flaky under CI pressure)",
+    "pollUntil() called with a timeout ≥ the file's effective test watchdog (Bun's 5000ms default, or setDefaultTimeout(N) when the file raises it) — the watchdog fires first, so this deadline never surfaces its own error (flaky under CI pressure)",
   guidance: [
     "drop the explicit timeout and rely on the 1500ms harness default — it already has ample headroom under the watchdog",
     "a condition should resolve in milliseconds, not seconds; if you need ≥5s the test waits on time, not a condition",
     "if a suite is genuinely slow, raise the file's setDefaultTimeout above the deadline — a deadline ≥ the test timeout is a no-op",
+    "if the file sets setDefaultTimeout(N) where N > 5000ms, the effective watchdog is N (not 5000ms) — explicit pollUntil timeouts below N are valid; the rule only flags timeouts ≥ the effective watchdog",
     'quote from Bun\'s own test discipline: "You are not testing the TIME PASSING, you are testing the CONDITION"',
     "cross-reference test/CLAUDE.md flaky-prevention patterns",
   ],
