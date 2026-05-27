@@ -1059,9 +1059,17 @@ describe("buildHeadedCommand", () => {
     expect(result).toBe("claude -p x --model claude-sonnet-4-6");
   });
 
-  test("includes allowedTools", () => {
-    const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--allow", "Read", "Glob"]));
-    expect(result).toBe("claude -p x --allowedTools Read Glob");
+  test("includes resolved allowedTools (additive with defaults)", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--allow", "Bash"]));
+    expect(result).toContain("--allowedTools");
+    expect(result).toContain("Bash");
+    expect(result).toContain("Read");
+    expect(result).toContain("Write");
+  });
+
+  test("--allow-only passes exact tools without defaults", () => {
+    const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--allow-only", "Bash"]));
+    expect(result).toBe("claude -p x --allowedTools Bash");
   });
 
   test("handles task with special characters", () => {
@@ -4439,6 +4447,52 @@ describe("parseResumeArgs", () => {
   test("errors when --fresh and explicit session ID are both set", () => {
     const result = parseResumeArgs(["my-wt", "abc-session-uuid", "--fresh"]);
     expect(result.error).toBe("--fresh cannot be combined with an explicit session ID");
+  });
+
+  // ── Comma-split via shared validateAllowPatterns (#2074) ──
+
+  test("splits comma-separated --allow patterns", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Bash,Write,Read"]);
+    expect(result.allow).toEqual(["Bash", "Write", "Read"]);
+  });
+
+  test("warns on comma-separated patterns", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Bash,Write"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("Comma-separated");
+  });
+
+  // ── Dead pattern detection via shared validateAllowPatterns (#2074) ──
+
+  test("errors on Bash(*) dead pattern", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Bash(*)"]);
+    expect(result.error).toContain("dead rule");
+  });
+
+  test("warns on Bash(git*) missing colon wildcard", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Bash(git*)"]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("may not match");
+  });
+
+  // ── --allow-only (#2074) ──
+
+  test("sets allowOnly=true with --allow-only flag", () => {
+    const result = parseResumeArgs(["my-wt", "--allow-only", "Bash"]);
+    expect(result.allowOnly).toBe(true);
+    expect(result.allow).toEqual(["Bash"]);
+  });
+
+  test("errors on empty --allow-only", () => {
+    const result = parseResumeArgs(["my-wt", "--allow-only"]);
+    expect(result.error).toBe("--allow-only requires at least one tool pattern");
+  });
+
+  // ── Mutual exclusivity (#2074) ──
+
+  test("errors when --allow and --allow-only both present", () => {
+    const result = parseResumeArgs(["my-wt", "--allow", "Read", "--allow-only", "Bash"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
   });
 });
 

@@ -154,6 +154,95 @@ describe("parseSharedSpawnArgs", () => {
     const result = parseSharedSpawnArgs(["--allow", "mcp__echo__add", "Read", "--task", "x"]);
     expect(result.allow).toEqual(["mcp__echo__add", "Read"]);
   });
+
+  // ── Mechanism C: comma-separated patterns (#2074) ──
+
+  it("splits comma-separated --allow patterns into individual entries", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash,Write,Read", "--task", "x"]);
+    expect(result.allow).toEqual(["Bash", "Write", "Read"]);
+  });
+
+  it("warns when comma-separated patterns are detected", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash,Write", "--task", "x"]);
+    expect(result.warnings.length).toBe(1);
+    expect(result.warnings[0]).toContain("Comma-separated");
+    expect(result.warnings[0]).toContain("Bash,Write");
+  });
+
+  it("handles mixed comma and space-separated patterns", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Read", "Bash,Write", "--task", "x"]);
+    expect(result.allow).toEqual(["Read", "Bash", "Write"]);
+  });
+
+  it("ignores empty segments in comma-separated patterns", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash,,Write,", "--task", "x"]);
+    expect(result.allow).toEqual(["Bash", "Write"]);
+  });
+
+  // ── Mechanism B: dead pattern detection (#2074) — dead patterns are errors ──
+
+  it("errors on Bash(*) dead pattern", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash(*)", "--task", "x"]);
+    expect(result.error).toContain("dead rule");
+    expect(result.error).toContain('Use "Bash"');
+  });
+
+  it("errors on Write(*) dead pattern", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Write(*)", "--task", "x"]);
+    expect(result.error).toContain("dead rule");
+  });
+
+  it("warns on Bash(git*) missing colon wildcard", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash(git*)", "--task", "x"]);
+    expect(result.warnings.length).toBe(1);
+    expect(result.warnings[0]).toContain("may not match");
+    expect(result.warnings[0]).toContain(":*");
+  });
+
+  it("does not warn on valid Bash(git:*) pattern", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash(git:*)", "--task", "x"]);
+    expect(result.warnings.length).toBe(0);
+  });
+
+  it("does not warn on bare tool name", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash", "--task", "x"]);
+    expect(result.warnings.length).toBe(0);
+  });
+
+  it("does not warn on exact command pattern", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash(bun test)", "--task", "x"]);
+    expect(result.warnings.length).toBe(0);
+  });
+
+  // ── --allow-only (#2074) ──
+
+  it("sets allowOnly=false by default", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Bash", "--task", "x"]);
+    expect(result.allowOnly).toBe(false);
+  });
+
+  it("sets allowOnly=true with --allow-only flag", () => {
+    const result = parseSharedSpawnArgs(["--allow-only", "Bash", "--task", "x"]);
+    expect(result.allowOnly).toBe(true);
+    expect(result.allow).toEqual(["Bash"]);
+  });
+
+  it("errors on empty --allow-only", () => {
+    const result = parseSharedSpawnArgs(["--allow-only", "--task", "x"]);
+    expect(result.error).toBe("--allow-only requires at least one tool pattern");
+  });
+
+  // ── Mutual exclusivity (#2074) ──
+
+  it("errors when --allow and --allow-only both present", () => {
+    const result = parseSharedSpawnArgs(["--allow", "Read", "--allow-only", "Bash", "--task", "x"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
+  });
+
+  it("errors when --allow-only then --allow both present", () => {
+    const result = parseSharedSpawnArgs(["--allow-only", "Bash", "--allow", "Read", "--task", "x"]);
+    expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
+  });
 });
 
 describe("looksLikeToolName", () => {

@@ -12,7 +12,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { AgentFeatures, AgentProvider, MailMessage } from "@mcp-cli/core";
+import { type AgentFeatures, type AgentProvider, type MailMessage, validateAllowPatterns } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
@@ -345,6 +345,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
 interface AgentSpawnArgs {
   task: string | undefined;
   allow: string[];
+  allowOnly: boolean;
   cwd: string | undefined;
   timeout: number | undefined;
   model: string | undefined;
@@ -356,6 +357,7 @@ interface AgentSpawnArgs {
   provider: string | undefined;
   resume: string | undefined;
   error: string | undefined;
+  warnings: string[];
 }
 
 export function parseAgentSpawnArgs(
@@ -463,6 +465,8 @@ async function agentSpawn(
     d.exit(1);
   }
 
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
+
   // ACP requires --agent
   if (hasFeature(provider, "agentSelect") && !parsed.agent) {
     d.printError("--agent is required for ACP. Specify which agent to spawn (e.g. copilot, gemini, grok).");
@@ -504,6 +508,7 @@ async function agentSpawn(
   const toolArgs: Record<string, unknown> = { prompt: task };
   if (parsed.resume) toolArgs.sessionId = parsed.resume;
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
@@ -1215,28 +1220,51 @@ interface AgentResumeArgs {
   /** Bypass the branch-merged pre-flight check. */
   force: boolean;
   allow: string[];
+  allowOnly: boolean;
   model: string | undefined;
   wait: boolean;
   timeout: number | undefined;
   error: string | undefined;
+  warnings: string[];
 }
 
 export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
-  const allow: string[] = [];
+  const rawAllow: string[] = [];
+  let allowOnly = false;
+  let sawAllow = false;
+  let sawAllowOnly = false;
   let allowError: string | undefined;
   const remaining: string[] = [];
 
-  // Phase 1: extract --allow with greedy looksLikeToolName heuristic
+  // Phase 1: extract --allow/--allow-only with greedy looksLikeToolName heuristic
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--allow") {
+    if (args[i] === "--allow" || args[i] === "--allow-only") {
+      if (args[i] === "--allow") sawAllow = true;
+      if (args[i] === "--allow-only") {
+        sawAllowOnly = true;
+        allowOnly = true;
+      }
       // dotw-ignore no-manual-arg-parsing: greedy multi-value --allow must run before parseFlags; parseFlags has no multi-value-with-heuristic mode
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        allow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: see above — greedy consume in pre-processing phase
+        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: see above — greedy consume in pre-processing phase
       }
-      if (allow.length === 0) allowError = "--allow requires at least one tool pattern";
+      if (rawAllow.length === 0) allowError = `${args[i]} requires at least one tool pattern`;
     } else {
       remaining.push(args[i]);
     }
+  }
+
+  // Mutual exclusivity
+  if (sawAllow && sawAllowOnly) {
+    allowError ??= "--allow and --allow-only are mutually exclusive";
+  }
+
+  // Validate: comma-split + dead-pattern detection via shared module
+  const validation = validateAllowPatterns(rawAllow);
+  const allow = validation.patterns;
+  const warnings = [...validation.warnings];
+  if (validation.errors.length > 0) {
+    allowError ??= validation.errors[0];
   }
 
   // Phase 2: parseFlags for standard flags
@@ -1264,7 +1292,7 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     if (val.startsWith("-")) {
       error ??= "--model requires a value";
     } else {
-      model = val; // RAW, no resolveModelName
+      model = val;
     }
   }
 
@@ -1291,10 +1319,10 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
     error = "--fresh cannot be combined with an explicit session ID";
   } else if (!all && !target) {
     error =
-      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
+      "Usage: mcx agent <provider> resume <worktree> [--fresh] [--force] [--model M] [--allow tools...] [--allow-only tools...] [--wait] [--timeout ms]\n       mcx agent <provider> resume --all";
   }
 
-  return { target, sessionId, all, fresh, force, allow, model, wait, timeout, error };
+  return { target, sessionId, all, fresh, force, allow, allowOnly, model, wait, timeout, error, warnings };
 }
 
 async function agentResume(
@@ -1309,6 +1337,8 @@ async function agentResume(
     d.printError(parsed.error);
     d.exit(1);
   }
+
+  for (const w of parsed.warnings) d.printError(`warning: ${w}`);
 
   const P = provider.toolPrefix;
   const cwd = d.getCwd();
@@ -1457,6 +1487,7 @@ async function resumeAgentWorktree(
 
   const toolArgs: Record<string, unknown> = { cwd: wt.path };
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
+  if (parsed.allowOnly) toolArgs.allowOnly = true;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
 
