@@ -226,4 +226,6 @@ Examples of things that must be filed:
 - Bugs in adjacent code discovered while reading
 - Missing documentation or misleading help text
 
+**Search before filing.** Before opening an issue — especially for an `am-i-done` / coverage / lint / test failure — search existing issues first (`gh issue list --state all --search "<symptom keywords>"`, e.g. the failing file or test name). If a match exists, add a one-line data-point comment instead of filing a duplicate. If the failure reproduces on a clean `main` (or you can tell other sessions are hitting the same thing), it is a **pre-existing shared gap**: flag it rather than bundling a redundant fix into your PR — one PR owns the fix, the rest rebase. Blindly re-filing destroys the regression signal (N independent reports of one symptom = one main-level gap to fix once, not N issues) and the parallel re-fixes collide on the shared file. (Sprint 65 produced six duplicate issues and three conflicting fix-PRs for a single coverage gap by skipping this.)
+
 Usability issues (daemon bugs, connection, etc) are P1 and take priority over all other work.
