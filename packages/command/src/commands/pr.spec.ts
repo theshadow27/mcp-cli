@@ -27,7 +27,7 @@ const emptySnapshot: PrThreadSnapshot = {
   reviews: [],
   topLevelComments: [],
   fetchedAt: "2026-05-23T00:00:00.000Z",
-  pushedAt: null,
+  updatedAt: null,
   truncated: false,
 };
 
@@ -442,7 +442,7 @@ describe("prWaitForCopilot", () => {
   test("exits 0 immediately when Copilot has posted and push is old", async () => {
     const copilotSnapshot: PrThreadSnapshot = {
       ...emptySnapshot,
-      pushedAt: new Date(Date.now() - 120_000).toISOString(),
+      updatedAt: new Date(Date.now() - 120_000).toISOString(),
       threads: [
         {
           threadId: "T1",
@@ -493,7 +493,7 @@ describe("prWaitForCopilot", () => {
   test("exits 0 when event stream dies but final check finds Copilot ready", async () => {
     const copilotSnapshot: PrThreadSnapshot = {
       ...emptySnapshot,
-      pushedAt: new Date(Date.now() - 120_000).toISOString(),
+      updatedAt: new Date(Date.now() - 120_000).toISOString(),
       reviews: [{ id: 1, user: "Copilot", state: "COMMENTED", body: "LGTM" }],
     };
 
@@ -536,10 +536,10 @@ describe("prWaitForCopilot", () => {
     expect(errors.some((e: string) => e.includes("Timed out"))).toBe(true);
   });
 
-  test("returns false when Copilot posted but pushedAt is null", async () => {
+  test("returns false when Copilot posted but updatedAt is null", async () => {
     const snapshot: PrThreadSnapshot = {
       ...emptySnapshot,
-      pushedAt: null,
+      updatedAt: null,
       threads: [
         {
           threadId: "T1",
@@ -572,7 +572,7 @@ describe("prWaitForCopilot", () => {
   test("returns false when Copilot posted but push is too recent", async () => {
     const snapshot: PrThreadSnapshot = {
       ...emptySnapshot,
-      pushedAt: new Date(Date.now() - 10_000).toISOString(),
+      updatedAt: new Date(Date.now() - 10_000).toISOString(),
       threads: [
         {
           threadId: "T1",

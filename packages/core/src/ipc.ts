@@ -831,7 +831,7 @@ export interface PrThreadSnapshot {
   reviews: PrReviewEntry[];
   topLevelComments: PrCommentEntry[];
   fetchedAt: string;
-  pushedAt: string | null;
+  updatedAt: string | null;
   truncated: boolean;
 }
 

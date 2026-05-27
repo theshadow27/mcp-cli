@@ -57,7 +57,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
         }
       }
       headRefOid
-      pushedAt
+      updatedAt
     }
   }
 }
@@ -104,7 +104,7 @@ interface GqlResponse {
       reviews: { pageInfo: GqlPageInfo; nodes: GqlReview[] };
       comments: { pageInfo: GqlPageInfo; nodes: GqlComment[] };
       headRefOid: string;
-      pushedAt: string | null;
+      updatedAt: string | null;
     };
   };
 }
@@ -209,7 +209,7 @@ export class PrThreadHandlers {
       reviews,
       topLevelComments,
       fetchedAt: new Date().toISOString(),
-      pushedAt: pr.pushedAt,
+      updatedAt: pr.updatedAt,
       truncated,
     };
   }
