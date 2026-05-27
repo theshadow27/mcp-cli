@@ -119,6 +119,33 @@ describe("killPid", () => {
     }
   });
 
+  test("skips ownership check when cachedAtMs is fresh (#2437)", async () => {
+    const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
+    const pid = proc.pid;
+    try {
+      // pidStartTime is wrong (would trigger recycled-PID skip), but cachedAtMs is fresh
+      await killPid(pid, silentLogger, { pidStartTime: 1_000_000, cachedAtMs: Date.now() });
+      await awaitDeath(pid);
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      forceKill(pid);
+    }
+  });
+
+  test("still checks ownership when cachedAtMs is stale (#2437)", async () => {
+    const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
+    const pid = proc.pid;
+    try {
+      const logger = capturingLogger();
+      // pidStartTime is wrong AND cachedAtMs is >30s ago — should skip kill
+      await killPid(pid, logger, { pidStartTime: 1_000_000, cachedAtMs: Date.now() - 60_000 });
+      expect(isAlive(pid)).toBe(true);
+      expect(logger.warns.some((w) => w.includes("recycled"))).toBe(true);
+    } finally {
+      forceKill(pid);
+    }
+  });
+
   test("proceeds without ownership check when pidStartTime is null", async () => {
     const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
     const pid = proc.pid;

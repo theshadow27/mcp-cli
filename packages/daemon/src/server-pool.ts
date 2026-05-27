@@ -64,6 +64,8 @@ interface ServerConnection {
   cachedChildPid?: number | null;
   /** Start time of cachedChildPid (epoch ms), for PID-recycling protection. */
   cachedChildPidStartTime?: number | null;
+  /** When cachedChildPid was recorded (epoch ms) — used to skip jittery isOurProcess for fresh caches. */
+  cachedChildPidAt?: number;
 }
 
 /**
@@ -373,6 +375,7 @@ export class ServerPool {
             }
             conn.cachedChildPid = pid;
             conn.cachedChildPidStartTime = pid != null ? getProcessStartTime(pid) : null;
+            conn.cachedChildPidAt = pid != null ? Date.now() : undefined;
           }
 
           // Detect server crashes / transport close to reset stale "connected" state
@@ -660,6 +663,7 @@ export class ServerPool {
         : childPid != null
           ? getProcessStartTime(childPid)
           : null;
+    const cachedAtMs = conn.cachedChildPidAt;
 
     // Flush and detach stderr listener
     if (conn.stderrCleanup) {
@@ -678,7 +682,7 @@ export class ServerPool {
     // (e.g. keepalive intervals) won't exit, causing process leaks (#940).
     // Uses SIGTERM → poll → SIGKILL escalation with PID ownership verification.
     if (childPid != null) {
-      await killPid(childPid, this.logger, { pidStartTime });
+      await killPid(childPid, this.logger, { pidStartTime, cachedAtMs });
     } else if (isStdioConfig(conn.resolved.config) && !conn.virtual) {
       this.logger.warn(`[pool] Server "${name}": no PID available — cannot verify stdio child cleanup`);
     }
@@ -687,6 +691,7 @@ export class ServerPool {
     conn.transport = null;
     conn.cachedChildPid = null;
     conn.cachedChildPidStartTime = null;
+    conn.cachedChildPidAt = undefined;
     conn.state = "disconnected";
     conn.tools.clear();
   }
