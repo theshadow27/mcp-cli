@@ -325,7 +325,7 @@ export class SessionState {
       this.cost = r.total_cost_usd;
       this.numTurns = r.num_turns;
       this.state = "idle";
-      return [{ type: "session:error", errors: r.errors, cost: this.cost }];
+      return [{ type: "session:error", errors: r.errors ?? [], cost: this.cost }];
     }
 
     // Fallback: transition to idle for any result message, even if neither
@@ -342,8 +342,8 @@ export class SessionState {
       if (r.num_turns != null) this.numTurns = r.num_turns;
       this.state = "idle";
 
-      const errors = r.errors;
-      if (r.subtype !== "success" && Array.isArray(errors) && errors.length > 0) {
+      const errors = r.errors ?? [];
+      if (r.subtype !== "success" && (r.is_error === true || errors.length > 0)) {
         return [{ type: "session:error", errors, cost: this.cost }];
       }
       return [

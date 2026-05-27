@@ -243,6 +243,29 @@ describe("SessionState", () => {
       ]);
     });
 
+    test("interrupt result (is_error:true, no errors[]) emits session:error not session:result", () => {
+      // Regression for #2233: Claude 2.1.150+ interrupt produces result with
+      // is_error:true but no errors[] — must route to session:error, not session:result.
+      const session = activeSession();
+      const interruptResult = {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        num_turns: 1,
+        total_cost_usd: 0.01,
+        session_id: "sess-1",
+      };
+      const events = session.handleMessage(interruptResult);
+
+      expect(session.state).toBe("idle");
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:error");
+      if (events[0].type === "session:error") {
+        expect(events[0].errors).toEqual([]);
+        expect(events[0].cost).toBe(0.01);
+      }
+    });
+
     test("sets cumulative cost from SDK (not additive)", () => {
       const session = activeSession();
       session.handleMessage(RESULT_SUCCESS); // total_cost_usd=0.05, num_turns=3
