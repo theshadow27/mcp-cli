@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -86,35 +87,61 @@ describe("verdict-cache", () => {
 });
 
 describe("computeVerdictKey", () => {
-  // Tests run inside the mcp-cli worktree — a valid git repo with a HEAD commit.
-  // computeVerdictKey runs git commands in process.cwd() so there's no need to
-  // create a temporary repo.
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function initGitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), "verdict-key-test-"));
+    dirs.push(dir);
+    spawnSync("git", ["init"], { cwd: dir });
+    spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init"], {
+      cwd: dir,
+    });
+    return dir;
+  }
 
   it("returns a non-null string with three colon-separated parts in a valid git repo", () => {
-    const key = computeVerdictKey(() => "HEAD~1");
+    const dir = initGitRepo();
+    const key = computeVerdictKey(() => "HEAD", dir);
     expect(key).not.toBeNull();
     const parts = (key as string).split(":");
-    // Format: <base>:<headSha>:<diffHash> — three non-empty segments.
     expect(parts).toHaveLength(3);
     for (const p of parts) expect(p.length).toBeGreaterThan(0);
   });
 
   it("is stable across identical invocations (same state → same key)", () => {
-    const base = "HEAD~1";
-    const key1 = computeVerdictKey(() => base);
-    const key2 = computeVerdictKey(() => base);
+    const dir = initGitRepo();
+    const key1 = computeVerdictKey(() => "HEAD", dir);
+    const key2 = computeVerdictKey(() => "HEAD", dir);
+    expect(key1).not.toBeNull();
+    expect(key2).not.toBeNull();
+    expect(key1).toEqual(key2);
+  });
+
+  it("is stable even when untracked files change in a different cwd", () => {
+    const dir = initGitRepo();
+    const probe = join(process.cwd(), `verdict-key-probe-${Date.now()}.tmp`);
+    const key1 = computeVerdictKey(() => "HEAD", dir);
+    writeFileSync(probe, "noise");
+    const key2 = computeVerdictKey(() => "HEAD", dir);
+    if (existsSync(probe)) unlinkSync(probe);
     expect(key1).not.toBeNull();
     expect(key2).not.toBeNull();
     expect(key1).toEqual(key2);
   });
 
   it("changes when the base ref changes", () => {
-    // Two different base refs produce different keys because the first
-    // key segment (the resolved base SHA) changes.
-    const key1 = computeVerdictKey(() => "HEAD~1");
-    const key2 = computeVerdictKey(() => "HEAD~2");
-    // HEAD~2 may not exist in a shallow repo — skip gracefully.
-    if (key1 === null || key2 === null) return;
+    const dir = initGitRepo();
+    spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "second"], {
+      cwd: dir,
+    });
+    const key1 = computeVerdictKey(() => "HEAD~1", dir);
+    const key2 = computeVerdictKey(() => "HEAD", dir);
+    expect(key1).not.toBeNull();
+    expect(key2).not.toBeNull();
     expect(key1).not.toEqual(key2);
   });
 });
