@@ -247,18 +247,50 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
   }
 
   const effectiveMode = resolveAuthMode(call.authMode, site.defaultAuthMode);
-  const hasVaultCreds = vault.getAll(site.name).length > 0;
-
-  const useCookie = effectiveMode === "cookie" || (effectiveMode === "auto" && !hasVaultCreds);
 
   try {
     let result: ProxyCallResult;
-    if (useCookie) {
+
+    if (effectiveMode === "cookie") {
+      console.error(`[site] call=${callName} site=${site.name} authMode=cookie`);
       if (!browserSnapshot) {
         return error(`Cookie-mode auth requires a running browser session. Run 'mcx site browser ${site.name}' first.`);
       }
       result = await cookieProxyCall({ site: site.name, resolved, browser: browserSnapshot });
+    } else if (effectiveMode === "auto") {
+      const hasVaultCreds = vault.getAll(site.name).length > 0;
+      if (hasVaultCreds) {
+        console.error(
+          `[site] call=${callName} site=${site.name} authMode=auto selected=bearer (vault has credentials)`,
+        );
+        result = await proxyCall(vault, {
+          site: site.name,
+          resolved,
+          audHints: call.audHints,
+          onWiggle: browserSnapshot
+            ? async () => {
+                const current = await snapshotBrowser();
+                if (current) await current.wiggle(site.name);
+              }
+            : undefined,
+        });
+        if (result.status === 401 && browserSnapshot) {
+          console.error(
+            `[site] call=${callName} site=${site.name} authMode=auto bearer returned 401, falling back to cookie`,
+          );
+          result = await cookieProxyCall({ site: site.name, resolved, browser: browserSnapshot });
+        }
+      } else if (browserSnapshot) {
+        console.error(`[site] call=${callName} site=${site.name} authMode=auto selected=cookie (no vault credentials)`);
+        result = await cookieProxyCall({ site: site.name, resolved, browser: browserSnapshot });
+      } else {
+        return error(
+          `No credentials available for site '${site.name}' and no browser session running. ` +
+            `Run 'mcx site browser ${site.name}' to start a browser session.`,
+        );
+      }
     } else {
+      console.error(`[site] call=${callName} site=${site.name} authMode=bearer`);
       result = await proxyCall(vault, {
         site: site.name,
         resolved,

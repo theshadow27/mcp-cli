@@ -435,35 +435,10 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     return this.withPage(site, (page) => page.evaluate(code));
   }
 
-  async fetchInPage(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: string | undefined,
-    site?: string,
-  ): Promise<import("./engine").FetchInPageResult> {
-    return this.withPage(site, (page) =>
-      page.evaluate(
-        async ([u, m, h, b]) => {
-          const init: RequestInit = { method: m, headers: h, credentials: "include" };
-          if (b !== undefined) init.body = b;
-          const resp = await fetch(u, init);
-          const text = await resp.text();
-          let parsed: unknown = text;
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            // non-JSON response returned as string
-          }
-          const respHeaders: Record<string, string> = {};
-          resp.headers.forEach((v, k) => {
-            respHeaders[k] = v;
-          });
-          return { status: resp.status, headers: respHeaders, body: parsed };
-        },
-        [url, method, headers, body] as const,
-      ),
-    );
+  async getCookies(url: string, _site?: string): Promise<import("./engine").CookieEntry[]> {
+    if (!this.context) throw new Error("Browser not started");
+    const raw = await this.context.cookies(url);
+    return raw.map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path }));
   }
 
   async getUrl(site?: string): Promise<string> {

@@ -71,6 +71,13 @@ export interface FetchInPageResult {
   body: unknown;
 }
 
+export interface CookieEntry {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+}
+
 export interface BrowserEngine {
   /**
    * Idempotent; if already running, returns each pinned site with status `already-running`.
@@ -88,17 +95,11 @@ export interface BrowserEngine {
   /** Evaluate an expression in the page's JS context. Results must be JSON-serializable. */
   evalInPage(code: string, site?: string): Promise<unknown>;
   /**
-   * Execute a fetch inside the browser page context so cookies are included
-   * automatically. Used by the cookie auth mode. The fetch runs same-origin
-   * to the page — the browser handles cookie scoping.
+   * Extract cookies from the browser context for a target URL.
+   * Used by cookie auth mode to attach cookies to daemon-side fetches,
+   * avoiding CORS restrictions that would apply to in-page fetches.
    */
-  fetchInPage(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: string | undefined,
-    site?: string,
-  ): Promise<FetchInPageResult>;
+  getCookies(url: string, site?: string): Promise<CookieEntry[]>;
   getUrl(site?: string): Promise<string>;
   getTitle(site?: string): Promise<string>;
   getHtml(site?: string): Promise<string>;

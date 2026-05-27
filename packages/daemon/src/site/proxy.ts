@@ -7,7 +7,7 @@
  * but without a token-refresh hook.
  */
 
-import type { BrowserEngine, FetchInPageResult } from "./browser/engine";
+import type { BrowserEngine } from "./browser/engine";
 import type { CredentialVault } from "./credentials";
 import type { ResolvedCall } from "./resolver";
 
@@ -54,14 +54,35 @@ function mergeHeaders(
   return merged;
 }
 
+const FETCH_TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5 MB
+
 async function doFetch(
   url: string,
   method: string,
   headers: Record<string, string>,
   body?: string,
 ): Promise<{ status: number; headers: Record<string, string>; parsed: unknown }> {
-  const r = await fetch(url, { method, headers, body });
-  const rawText = await r.text();
+  const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+
+  const declaredLength = r.headers.get("content-length");
+  if (declaredLength && Number(declaredLength) > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response too large (${declaredLength} bytes, limit ${MAX_RESPONSE_BYTES})`);
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  if (r.body) {
+    for await (const chunk of r.body) {
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        throw new Error(`Response exceeded ${MAX_RESPONSE_BYTES} byte limit`);
+      }
+      chunks.push(chunk);
+    }
+  }
+  const rawText = new TextDecoder().decode(Buffer.concat(chunks));
+
   let parsed: unknown = rawText;
   try {
     parsed = JSON.parse(rawText);
@@ -124,16 +145,27 @@ export interface CookieProxyCallOptions {
 export async function cookieProxyCall(opts: CookieProxyCallOptions): Promise<ProxyCallResult> {
   const { site, resolved, browser } = opts;
 
-  const { authorization: _stripped, ...headers } = resolved.headers;
+  const { authorization: _stripped, ...headers } = normalizeKeys(resolved.headers);
 
-  let result: FetchInPageResult;
+  let cookies: import("./browser/engine").CookieEntry[];
   try {
-    result = await browser.fetchInPage(resolved.url, resolved.method, headers, resolved.body, site);
+    cookies = await browser.getCookies(resolved.url, site);
   } catch (err) {
     throw new Error(
       `Cookie-mode fetch failed for site '${site}': ${err instanceof Error ? err.message : err}. Ensure the browser is running and authenticated (\`mcx site browser\`).`,
     );
   }
+
+  if (cookies.length === 0) {
+    throw new Error(
+      `No cookies found for '${resolved.url}' in site '${site}'. The browser session may have expired — run \`mcx site browser ${site}\` to re-authenticate.`,
+    );
+  }
+
+  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const fetchHeaders: Record<string, string> = { ...headers, cookie: cookieHeader };
+
+  const result = await doFetch(resolved.url, resolved.method, fetchHeaders, resolved.body);
 
   return {
     status: result.status,
@@ -141,6 +173,6 @@ export async function cookieProxyCall(opts: CookieProxyCallOptions): Promise<Pro
     method: resolved.method,
     usedAud: "(cookie)",
     responseHeaders: result.headers,
-    body: result.body,
+    body: result.parsed,
   };
 }
