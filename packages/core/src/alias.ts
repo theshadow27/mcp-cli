@@ -269,8 +269,8 @@ export function extractContent(result: unknown): unknown {
         return text;
       }
     }
-    // Multiple content items — return array of text
-    return content.filter((c) => c.type === "text").map((c) => c.text);
+    // Multiple content items — return array of text strings (exclude blocks with no text)
+    return content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text as string);
   }
   return result;
 }

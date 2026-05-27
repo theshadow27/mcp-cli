@@ -77,7 +77,14 @@ describe("extractContent", () => {
 
   test("handles content without text field", () => {
     const result = { content: [{ type: "text" }] };
-    expect(extractContent(result)).toEqual([]);
+    // toEqual passes for [undefined] in Bun — use toHaveLength to catch the real bug
+    const extracted = extractContent(result) as unknown[];
+    expect(extracted).toHaveLength(0);
+  });
+
+  test("handles multiple content blocks where some lack text field", () => {
+    const result = { content: [{ type: "text", text: "hello" }, { type: "text" }, { type: "image" }] };
+    expect(extractContent(result)).toEqual(["hello"]);
   });
 
   test("handles empty content array", () => {
