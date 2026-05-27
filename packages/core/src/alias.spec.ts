@@ -92,6 +92,15 @@ describe("extractContent", () => {
     expect(extractContent(result)).toEqual([]);
   });
 
+  test("returns result unchanged when content exists but is not an array", () => {
+    const result = { content: undefined };
+    expect(extractContent(result)).toEqual(result);
+    const result2 = { content: "not an array" };
+    expect(extractContent(result2)).toEqual(result2);
+    const result3 = { content: 42 };
+    expect(extractContent(result3)).toEqual(result3);
+  });
+
   test("auto-parses Python repr text when JSON.parse fails", () => {
     const result = {
       content: [{ type: "text", text: "{'key': 'value', 'active': True}" }],
