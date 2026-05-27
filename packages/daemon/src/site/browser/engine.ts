@@ -65,6 +65,12 @@ export interface StartSiteResult {
   error?: string;
 }
 
+export interface FetchInPageResult {
+  status: number;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
 export interface BrowserEngine {
   /**
    * Idempotent; if already running, returns each pinned site with status `already-running`.
@@ -81,6 +87,18 @@ export interface BrowserEngine {
   wiggle(site?: string): Promise<string[]>;
   /** Evaluate an expression in the page's JS context. Results must be JSON-serializable. */
   evalInPage(code: string, site?: string): Promise<unknown>;
+  /**
+   * Execute a fetch inside the browser page context so cookies are included
+   * automatically. Used by the cookie auth mode. The fetch runs same-origin
+   * to the page — the browser handles cookie scoping.
+   */
+  fetchInPage(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | undefined,
+    site?: string,
+  ): Promise<FetchInPageResult>;
   getUrl(site?: string): Promise<string>;
   getTitle(site?: string): Promise<string>;
   getHtml(site?: string): Promise<string>;

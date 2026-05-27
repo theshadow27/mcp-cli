@@ -26,7 +26,12 @@ import type { ToolResult } from "./site/browser-handlers";
 export { shouldAutoRestart, parseSitesArg } from "./site/browser-handlers";
 export type { LastBrowserSession } from "./site/browser-handlers";
 import type { SiteSpec } from "./site/browser/engine";
-import { removeCall as catalogRemoveCall, upsertCall as catalogUpsertCall, loadCatalog } from "./site/catalog";
+import {
+  type AuthMode,
+  removeCall as catalogRemoveCall,
+  upsertCall as catalogUpsertCall,
+  loadCatalog,
+} from "./site/catalog";
 import {
   type SiteConfig,
   getBuiltinWiggleSource,
@@ -40,7 +45,7 @@ import {
 } from "./site/config";
 import { CredentialVault, summarizeCredential } from "./site/credentials";
 import { siteBrowserProfileDir, sitePath } from "./site/paths";
-import { proxyCall } from "./site/proxy";
+import { type ProxyCallResult, cookieProxyCall, proxyCall } from "./site/proxy";
 import { resolve as resolveCall } from "./site/resolver";
 import { Sniffer } from "./site/sniffer";
 import { SITE_TOOLS, SITE_TOOL_NAMES } from "./site/tools";
@@ -167,6 +172,7 @@ function handleAdd(args: Record<string, unknown>): ToolResult {
     ...(args.blockProtocols !== undefined ? { blockProtocols: args.blockProtocols } : {}),
     ...(args.wiggle !== undefined ? { wiggle: args.wiggle } : {}),
     ...(args.seed !== undefined ? { seed: args.seed } : {}),
+    ...(args.defaultAuthMode !== undefined ? { defaultAuthMode: args.defaultAuthMode } : {}),
   };
   if (args.browserEngine !== undefined || args.chromeProfile !== undefined || args.profileDir !== undefined) {
     merged.browser = {
@@ -209,6 +215,10 @@ function handleDescribe(args: Record<string, unknown>): ToolResult {
   return ok(call);
 }
 
+function resolveAuthMode(callMode: AuthMode | undefined, siteDefault: AuthMode | undefined): AuthMode {
+  return callMode ?? siteDefault ?? "bearer";
+}
+
 async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
   let browserSnapshot = await snapshotBrowser();
   const site = requireSite(args.site as string);
@@ -236,18 +246,31 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
     return error(err instanceof Error ? err.message : String(err));
   }
 
+  const effectiveMode = resolveAuthMode(call.authMode, site.defaultAuthMode);
+  const hasVaultCreds = vault.getAll(site.name).length > 0;
+
+  const useCookie = effectiveMode === "cookie" || (effectiveMode === "auto" && !hasVaultCreds);
+
   try {
-    let result = await proxyCall(vault, {
-      site: site.name,
-      resolved,
-      audHints: call.audHints,
-      onWiggle: browserSnapshot
-        ? async () => {
-            const current = await snapshotBrowser();
-            if (current) await current.wiggle(site.name);
-          }
-        : undefined,
-    });
+    let result: ProxyCallResult;
+    if (useCookie) {
+      if (!browserSnapshot) {
+        return error(`Cookie-mode auth requires a running browser session. Run 'mcx site browser ${site.name}' first.`);
+      }
+      result = await cookieProxyCall({ site: site.name, resolved, browser: browserSnapshot });
+    } else {
+      result = await proxyCall(vault, {
+        site: site.name,
+        resolved,
+        audHints: call.audHints,
+        onWiggle: browserSnapshot
+          ? async () => {
+              const current = await snapshotBrowser();
+              if (current) await current.wiggle(site.name);
+            }
+          : undefined,
+      });
+    }
     result = await applyJqOutput(call, result);
     return ok(result);
   } catch (err) {
@@ -267,6 +290,7 @@ function handleAddCall(args: Record<string, unknown>): ToolResult {
     description: args.description as string | undefined,
     headers: args.headers as Record<string, string> | undefined,
     audHints: args.audHints as string[] | undefined,
+    authMode: args.authMode as AuthMode | undefined,
   };
   catalogUpsertCall(site.name, call, site.seed ?? site.name);
   return ok({ ok: true, call });
@@ -305,6 +329,17 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
   });
 }
 
+function handleCredentials(args: Record<string, unknown>): ToolResult {
+  const site = requireSite(args.site as string);
+  const creds = vault.getAll(site.name);
+  return ok({
+    site: site.name,
+    hasBearerTokens: creds.length > 0,
+    count: creds.length,
+    credentials: creds.map(summarizeCredential),
+  });
+}
+
 async function dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   if (!SITE_TOOL_NAMES.has(name)) return error(`Unknown tool: ${name}`);
   try {
@@ -339,6 +374,8 @@ async function dispatch(name: string, args: Record<string, unknown>): Promise<To
         return await handleEval(args);
       case "site_cold_start":
         return await handleColdStart(args);
+      case "site_credentials":
+        return handleCredentials(args);
       default:
         return error(`Unhandled tool: ${name}`);
     }

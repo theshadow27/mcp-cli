@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { CapturedRequest } from "./browser/engine";
+import type { BrowserEngine, CapturedRequest, FetchInPageResult } from "./browser/engine";
 import { CredentialVault } from "./credentials";
-import { proxyCall } from "./proxy";
+import { cookieProxyCall, proxyCall } from "./proxy";
 import type { ResolvedCall } from "./resolver";
 
 function makeJwt(claims: Record<string, unknown>): string {
@@ -148,5 +148,120 @@ describe("proxyCall", () => {
       residualParams: [],
     };
     await expect(proxyCall(vault, { site: "demo", resolved })).rejects.toThrow(/No credentials available/);
+  });
+});
+
+function fakeBrowserEngine(impl?: {
+  fetchInPage?: BrowserEngine["fetchInPage"];
+}): BrowserEngine {
+  return {
+    start: async () => [],
+    stop: async () => {},
+    isRunning: () => true,
+    getSiteNames: () => ["demo"],
+    coldStart: async () => ({ cleared: [], reloaded: true }),
+    wiggle: async () => [],
+    evalInPage: async () => null,
+    fetchInPage: impl?.fetchInPage ?? (async () => ({ status: 200, headers: {}, body: {} })),
+    getUrl: async () => "https://demo.example",
+    getTitle: async () => "Demo",
+    getHtml: async () => "<html></html>",
+  };
+}
+
+describe("cookieProxyCall", () => {
+  test("routes fetch through browser and returns result with usedAud '(cookie)'", async () => {
+    let capturedUrl = "";
+    let capturedBody: string | undefined;
+    const browser = fakeBrowserEngine({
+      fetchInPage: async (url, _method, _headers, body, _site) => {
+        capturedUrl = url;
+        capturedBody = body;
+        return { status: 200, headers: { "content-type": "application/json" }, body: { items: [1, 2] } };
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api/data",
+      method: "POST",
+      body: '{"query":"test"}',
+      headers: { "content-type": "application/json" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    const result = await cookieProxyCall({ site: "demo", resolved, browser });
+
+    expect(result.status).toBe(200);
+    expect(result.usedAud).toBe("(cookie)");
+    expect(result.body).toEqual({ items: [1, 2] });
+    expect(result.url).toBe("https://intranet.example/api/data");
+    expect(result.method).toBe("POST");
+    expect(capturedUrl).toBe("https://intranet.example/api/data");
+    expect(capturedBody).toBe('{"query":"test"}');
+  });
+
+  test("strips authorization header before sending to browser", async () => {
+    let capturedHeaders: Record<string, string> = {};
+    const browser = fakeBrowserEngine({
+      fetchInPage: async (_url, _method, headers) => {
+        capturedHeaders = headers;
+        return { status: 200, headers: {}, body: {} };
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: { authorization: "Bearer stale-token", "x-custom": "keep-this" },
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await cookieProxyCall({ site: "demo", resolved, browser });
+
+    expect(capturedHeaders.authorization).toBeUndefined();
+    expect(capturedHeaders["x-custom"]).toBe("keep-this");
+  });
+
+  test("wraps browser errors with diagnostic message", async () => {
+    const browser = fakeBrowserEngine({
+      fetchInPage: async () => {
+        throw new Error("Target closed");
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await expect(cookieProxyCall({ site: "demo", resolved, browser })).rejects.toThrow(
+      /Cookie-mode fetch failed.*Target closed/,
+    );
+  });
+
+  test("passes site name to browser fetchInPage for correct page selection", async () => {
+    let capturedSite: string | undefined;
+    const browser = fakeBrowserEngine({
+      fetchInPage: async (_url, _method, _headers, _body, site) => {
+        capturedSite = site;
+        return { status: 200, headers: {}, body: {} };
+      },
+    });
+
+    const resolved: ResolvedCall = {
+      url: "https://intranet.example/api",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    await cookieProxyCall({ site: "mysite", resolved, browser });
+    expect(capturedSite).toBe("mysite");
   });
 });

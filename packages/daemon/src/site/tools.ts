@@ -69,6 +69,14 @@ export const SITE_TOOLS: SiteToolDef[] = [
         },
         wiggle: { type: "string", description: "Path (relative to site dir) to a wiggle.js keep-alive module" },
         seed: { type: "string", description: "Built-in seed name to inherit from" },
+        defaultAuthMode: {
+          type: "string",
+          enum: ["bearer", "cookie", "auto"],
+          description:
+            "Default auth mode for calls that don't specify their own. " +
+            "'bearer' (default) injects vault-picked tokens. 'cookie' routes fetches through the browser page context. " +
+            "'auto' tries bearer first, falls back to cookie when the vault is empty.",
+        },
       },
       required: ["name"],
     },
@@ -136,6 +144,14 @@ export const SITE_TOOLS: SiteToolDef[] = [
           type: "array",
           items: { type: "string" },
           description: "Substrings to prefer when selecting a credential by aud",
+        },
+        authMode: {
+          type: "string",
+          enum: ["bearer", "cookie", "auto"],
+          description:
+            "How this call authenticates. 'bearer' (default) injects a vault-picked Bearer token. " +
+            "'cookie' routes the fetch through the browser page context so cookies are included automatically. " +
+            "'auto' tries bearer first, falls back to cookie when the vault is empty.",
         },
       },
       required: ["site", "name", "url"],
@@ -210,6 +226,18 @@ export const SITE_TOOLS: SiteToolDef[] = [
     inputSchema: {
       type: "object",
       properties: { site: { type: "string" } },
+    },
+  },
+  {
+    name: "site_credentials",
+    description:
+      "Inspect captured credentials for a site. Shows what the vault has observed " +
+      "(Bearer tokens with decoded JWT metadata). Useful for diagnosing 'No credentials available' — " +
+      "if hasBearerTokens is false, the site likely uses cookie-only auth and needs authMode: 'cookie'.",
+    inputSchema: {
+      type: "object",
+      properties: { site: { type: "string", description: "Site name" } },
+      required: ["site"],
     },
   },
 ];

@@ -60,6 +60,15 @@ function makePausableEngine(): { engine: BrowserEngine; controls: FakeEngineCont
     evalInPage(_code: string, _site?: string): Promise<unknown> {
       return Promise.resolve(null);
     },
+    fetchInPage(
+      _url: string,
+      _method: string,
+      _headers: Record<string, string>,
+      _body: string | undefined,
+      _site?: string,
+    ) {
+      return Promise.resolve({ status: 200, headers: {}, body: {} });
+    },
     coldStart(_site?: string) {
       return Promise.resolve({ cleared: [], reloaded: false });
     },

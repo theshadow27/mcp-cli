@@ -7,6 +7,7 @@
  * but without a token-refresh hook.
  */
 
+import type { BrowserEngine, FetchInPageResult } from "./browser/engine";
 import type { CredentialVault } from "./credentials";
 import type { ResolvedCall } from "./resolver";
 
@@ -111,5 +112,35 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
     usedAud,
     responseHeaders: result.headers,
     body: result.parsed,
+  };
+}
+
+export interface CookieProxyCallOptions {
+  site: string;
+  resolved: ResolvedCall;
+  browser: BrowserEngine;
+}
+
+export async function cookieProxyCall(opts: CookieProxyCallOptions): Promise<ProxyCallResult> {
+  const { site, resolved, browser } = opts;
+
+  const { authorization: _stripped, ...headers } = resolved.headers;
+
+  let result: FetchInPageResult;
+  try {
+    result = await browser.fetchInPage(resolved.url, resolved.method, headers, resolved.body, site);
+  } catch (err) {
+    throw new Error(
+      `Cookie-mode fetch failed for site '${site}': ${err instanceof Error ? err.message : err}. Ensure the browser is running and authenticated (\`mcx site browser\`).`,
+    );
+  }
+
+  return {
+    status: result.status,
+    url: resolved.url,
+    method: resolved.method,
+    usedAud: "(cookie)",
+    responseHeaders: result.headers,
+    body: result.body,
   };
 }
