@@ -42,6 +42,7 @@ The `WorkerClientTransport` (main thread) and `WorkerServerTransport` (worker) h
 | `packages/daemon/src/opencode-session-worker.ts` | OpenCode control messages (minimal `InitMessage`) |
 | `packages/daemon/src/mock-session-worker.ts` | Mock control messages (minimal `InitMessage`) |
 | `packages/daemon/src/claude-server.ts` | Claude-specific `monitor:event` extension |
+| `packages/daemon/src/claude-session/session-state.ts` | Claude-specific `SessionEvent` union (superset of `AgentSessionEvent`) |
 | `packages/core/src/agent-session.ts` | `AgentSessionEvent` union, session state types |
 
 ---
@@ -222,9 +223,9 @@ Signals the worker failed during initialization.
 
 ## 4. DB Event Messages (worker → daemon)
 
-Workers emit DB events to persist session state in the daemon's SQLite database. These are defined as the `BaseWorkerEvent` union in `abstract-worker-server.ts:82-90`.
+Workers emit DB events to persist session state in the daemon's SQLite database. These are defined as the `BaseWorkerEvent` union in `abstract-worker-server.ts`.
 
-All providers emit the same set of DB events. The daemon dispatches them uniformly regardless of provider.
+All providers emit the same set of DB event *types*. The daemon dispatches them uniformly via `handleWorkerEvent()` regardless of provider. However, the session-event-to-DB-event *mapping* varies slightly between providers — see §6 for per-provider differences.
 
 ### 4.1 `db:upsert`
 
@@ -430,9 +431,14 @@ A message on the postMessage channel is JSON-RPC if and only if it has a `jsonrp
 
 ## 6. Session Events
 
-The `AgentSessionEvent` union (`packages/core/src/agent-session.ts:67-74`) defines the lifecycle events that agent adapters emit. These events are **not sent directly over the postMessage channel** — instead, workers translate them into DB events (§4) for persistence, and either buffer them (codex/acp/opencode) or forward them via WebSocket (claude) for consumer access.
+Session events are lifecycle events emitted by agent adapters. They are **not sent directly over the postMessage channel** — instead, each worker's `forwardSessionEvent` function translates them into DB events (§4) for persistence. Additionally, non-Claude providers buffer them for `afterSeq` consumers, while Claude forwards them via WebSocket.
 
-### Event types
+There are two session event types in play:
+
+- **`AgentSessionEvent`** (`packages/core/src/agent-session.ts`) — the shared, provider-neutral union used by codex, acp, opencode, and mock workers.
+- **`SessionEvent`** (`packages/daemon/src/claude-session/session-state.ts`) — Claude's richer superset, which includes all `AgentSessionEvent` members plus Claude-specific lifecycle events.
+
+### Shared event types (`AgentSessionEvent`)
 
 ```typescript
 type AgentSessionEvent =
@@ -444,6 +450,29 @@ type AgentSessionEvent =
   | { type: "session:disconnected"; reason: string }
   | { type: "session:ended" };
 ```
+
+### Claude-specific event types (`SessionEvent`)
+
+Claude's `SessionEvent` union extends the shared events with additional members. The following Claude-specific events produce `postMessage` calls (i.e., they cross the wire):
+
+```typescript
+// Claude-specific events that produce DB/metrics messages:
+| { type: "session:cleared" }
+| { type: "session:rate_limited"; sessionId: string; retryAfterMs?: number }
+| { type: "session:model_changed"; model: string }
+
+// Claude-specific events that do NOT produce postMessage calls
+// (handled internally by the WebSocket server):
+| { type: "session:containment_warning"; toolName: string; reason: string; strikes: number }
+| { type: "session:containment_denied"; toolName: string; reason: string; strikes: number }
+| { type: "session:containment_escalated"; toolName: string; reason: string; strikes: number }
+| { type: "session:containment_reset"; toolName: string; reason: string; strikes: number }
+```
+
+Note: Claude's `SessionEvent` also differs structurally from `AgentSessionEvent` for shared event types:
+- `session:init` has `state: SessionStateEnum` instead of `provider: AgentProviderName`
+- `session:result` has flat fields `{cost, tokens, numTurns, result}` instead of `{result: AgentResult}`
+- `session:error` has `cost: number` (non-nullable) instead of `cost: number | null`
 
 ### Supporting types
 
@@ -468,15 +497,20 @@ interface AgentResult {
 
 ### Event → DB event mapping
 
-| Session event | DB events emitted | State transition |
-|---|---|---|
-| `session:init` | `db:upsert` (create session) | → `"init"` |
-| `session:response` | (buffered or WS-forwarded) | no state change |
-| `session:permission_request` | `db:state` → `"waiting_permission"` | → `"waiting_permission"` |
-| `session:result` | `db:cost`, `db:state` → `"idle"` | → `"idle"` |
-| `session:error` | `db:cost` (tokens: 0), `db:state` → `"idle"` | → `"idle"` |
-| `session:disconnected` | `db:disconnected` | → `"disconnected"` |
-| `session:ended` | `db:end` | (session removed) |
+The mapping from session events to DB events varies by provider. The table below documents the full mapping; provider-specific differences are noted.
+
+| Session event | DB events emitted | State transition | Notes |
+|---|---|---|---|
+| `session:init` | `db:upsert` (create session) | → `"init"` | |
+| `session:response` | (buffered or WS-forwarded) | no state change | |
+| `session:permission_request` | `db:state` → `"waiting_permission"` | → `"waiting_permission"` | |
+| `session:result` | `db:cost`, `db:state` → `"idle"` | → `"idle"` | |
+| `session:error` | `db:cost` (tokens: 0), `db:state` → `"idle"` | → `"idle"` | **mock omits `db:cost`** — only emits `db:state`. All other providers emit both. |
+| `session:disconnected` | `db:disconnected` | → `"disconnected"` | |
+| `session:ended` | `db:end` | (session removed) | |
+| `session:cleared` | `db:state` → `"connecting"` | → `"connecting"` | **Claude only.** Emitted when session history is cleared; resets state machine. |
+| `session:rate_limited` | `metrics:inc` `"mcpd_session_rate_limited_total"` | no state change | **Claude only.** |
+| `session:model_changed` | `db:upsert` `{sessionId, model}` | no state change | **Claude only.** Emitted when the model is changed mid-session. |
 
 ### Buffering (codex, acp, opencode, mock)
 
