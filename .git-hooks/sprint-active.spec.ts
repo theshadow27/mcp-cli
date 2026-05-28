@@ -7,6 +7,16 @@ const SPRINT_ACTIVE_SH = resolve(import.meta.dir, "sprint-active.sh");
 
 type RunResult = { code: number; stdout: string; stderr: string };
 
+/** Strip GIT_* env vars so git ops in temp repos don't inherit GIT_DIR/GIT_INDEX_FILE
+ *  from an outer `git commit` invocation and commit into the developer's branch. */
+function cleanGitEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
+  }
+  return { ...env, ...extra };
+}
+
 async function runCheck(cwd: string, env: Record<string, string> = {}): Promise<RunResult> {
   const script = `
     set -u
@@ -21,7 +31,7 @@ async function runCheck(cwd: string, env: Record<string, string> = {}): Promise<
   `;
   const proc = Bun.spawn(["bash", "-c", script], {
     cwd,
-    env: { ...process.env, ...env },
+    env: cleanGitEnv(env),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -31,7 +41,7 @@ async function runCheck(cwd: string, env: Record<string, string> = {}): Promise<
 }
 
 async function sh(cwd: string, cmd: string[]): Promise<void> {
-  const proc = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(cmd, { cwd, env: cleanGitEnv(), stdout: "pipe", stderr: "pipe" });
   const code = await proc.exited;
   if (code !== 0) {
     const err = await new Response(proc.stderr).text();

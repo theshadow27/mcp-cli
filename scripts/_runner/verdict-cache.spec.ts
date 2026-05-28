@@ -3,8 +3,18 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
+
+/** Strip GIT_* env vars so git operations in temp repos don't inherit GIT_DIR /
+ *  GIT_INDEX_FILE from an outer `git commit` invocation (e.g. the pre-commit hook)
+ *  and accidentally commit into the developer's working branch. */
+function cleanGitEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
+  }
+  return env;
+}
 
 function makeTmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "verdict-cache-test-"));
@@ -96,10 +106,13 @@ describe("computeVerdictKey", () => {
   function initGitRepo(): string {
     const dir = mkdtempSync(join(tmpdir(), "verdict-key-test-"));
     dirs.push(dir);
-    spawnSync("git", ["init"], { cwd: dir });
-    spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init"], {
-      cwd: dir,
-    });
+    const gitOpts = { cwd: dir, env: cleanGitEnv() };
+    spawnSync("git", ["init"], gitOpts);
+    spawnSync(
+      "git",
+      ["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init"],
+      gitOpts,
+    );
     return dir;
   }
 
@@ -137,6 +150,7 @@ describe("computeVerdictKey", () => {
     const dir = initGitRepo();
     spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "second"], {
       cwd: dir,
+      env: cleanGitEnv(),
     });
     const key1 = computeVerdictKey(() => "HEAD~1", dir);
     const key2 = computeVerdictKey(() => "HEAD", dir);

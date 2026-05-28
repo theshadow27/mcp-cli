@@ -76,6 +76,13 @@ if $has_source; then
   echo "  am-i-done (static gate: typecheck, lint, rules)..."
   bun run am-i-done --pre-commit
 
+  # Unset git hook environment variables before running the test suite.
+  # The outer `git commit` sets GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE, etc.
+  # Tests that spawn git commands without clearing these vars would otherwise
+  # accidentally commit into the developer's branch (#2527).
+  unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX \
+        GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+
   echo "  test + coverage..."
   if ! bun run test:coverage; then
     echo "  (test failures logged to ~/.mcp-cli/test-failures.log)"
