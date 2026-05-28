@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
+import { spawnCaptureSync } from "@mcp-cli/core";
 import { isOurProcess } from "./process-identity";
 
 /** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
@@ -16,6 +17,8 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 const POLL_INTERVAL_MS = 100;
 /** Cache age (ms) below which PID-recycling is near-impossible — skip jittery isOurProcess (#2437). */
 const FRESH_CACHE_MS = 30_000;
+/** Timeout (ms) for lsof scan when finding processes by cwd. */
+const LSOF_TIMEOUT_MS = 5_000;
 
 /**
  * Try to send a signal to a process. Returns true if the signal was sent
@@ -98,4 +101,55 @@ export async function killPid(
 
   // Wait briefly for SIGKILL to take effect
   await awaitExit(pid, Date.now() + KILL_SIGKILL_GRACE_MS);
+}
+
+/**
+ * Find PIDs of processes whose cwd is under `dirPath`.
+ * Uses `lsof -a -d cwd +D <dir>` to match any process with a cwd
+ * at or under the given directory. Returns only PIDs that differ from
+ * the current process (we never self-kill).
+ */
+export function findProcessesByCwd(dirPath: string, logger: Logger): number[] {
+  const myPid = process.pid;
+  try {
+    const result = spawnCaptureSync("lsof", ["-a", "-d", "cwd", "+D", dirPath, "-t"], {
+      timeoutMs: LSOF_TIMEOUT_MS,
+    });
+    const stdout = result.stdout.trim();
+    if (!stdout) return [];
+    const pids: number[] = [];
+    for (const line of stdout.split("\n")) {
+      const pid = Number.parseInt(line.trim(), 10);
+      if (Number.isFinite(pid) && pid > 0 && pid !== myPid) {
+        pids.push(pid);
+      }
+    }
+    return pids;
+  } catch (err) {
+    logger.warn(`[process] lsof scan for cwd under ${dirPath} failed: ${err}`);
+    return [];
+  }
+}
+
+/**
+ * Kill all processes whose cwd is under the given worktree directory.
+ * Intended for post-bye cleanup: detached grandchild processes (bun test
+ * workers, am-i-done runners) that reparent to PID 1 when the session
+ * process is killed. SIGKILL is used directly since these are already
+ * orphaned — no point in a graceful SIGTERM handshake.
+ *
+ * Returns the count of processes killed.
+ */
+export function reapWorktreeProcesses(worktreePath: string, logger: Logger): number {
+  const pids = findProcessesByCwd(worktreePath, logger);
+  if (pids.length === 0) return 0;
+
+  logger.info(`[process] Reaping ${pids.length} orphaned process(es) under ${worktreePath}: ${pids.join(", ")}`);
+  let killed = 0;
+  for (const pid of pids) {
+    if (trySendSignal(pid, "SIGKILL", logger)) {
+      killed++;
+    }
+  }
+  return killed;
 }
