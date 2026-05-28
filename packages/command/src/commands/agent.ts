@@ -12,7 +12,15 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type AgentFeatures, type AgentProvider, type MailMessage, validateAllowPatterns } from "@mcp-cli/core";
+import {
+  type AgentFeatures,
+  type AgentProvider,
+  type LookupResult,
+  type MailMessage,
+  isLookupFailure,
+  lookupFailure,
+  validateAllowPatterns,
+} from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
@@ -67,13 +75,13 @@ import { ttyOpen } from "./tty";
 export interface AgentDeps extends SharedSessionDeps {
   getStaleDaemonWarning: () => string | null;
   /** Resolve the git repo root for the current working directory. */
-  getGitRoot: () => string | null;
+  getGitRoot: () => LookupResult<string | null>;
   /** Get the current working directory. */
   getCwd: () => string;
   /** Get diff stats for a worktree path. */
-  getDiffStats: (worktreePath: string) => Promise<string | null>;
+  getDiffStats: (worktreePath: string) => Promise<LookupResult<string | null>>;
   /** Get PR status for a worktree path. */
-  getPrStatus: (worktreePath: string) => Promise<{ number: number; state: string } | null>;
+  getPrStatus: (worktreePath: string) => Promise<LookupResult<{ number: number; state: string } | null>>;
   /** Open a command in a terminal tab/window. */
   ttyOpen: (args: string[]) => Promise<void>;
   /** Write to stdout (default: console.log). Injected for testability. */
@@ -101,7 +109,7 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
   };
 }
 
-function getGitRoot(): string | null {
+function getGitRoot(): LookupResult<string | null> {
   try {
     const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
     if (!result.ok) return null;
@@ -109,12 +117,12 @@ function getGitRoot(): string | null {
     if (!commonDir) return null;
     const resolved = resolve(commonDir);
     return resolved.endsWith(".git") ? dirname(resolved) : resolved;
-  } catch {
-    return null;
+  } catch (e) {
+    return lookupFailure(`git rev-parse failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-async function defaultGetDiffStats(worktreePath: string): Promise<string | null> {
+async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
   try {
     const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
     const trimmed = result.stdout.trim();
@@ -127,12 +135,14 @@ async function defaultGetDiffStats(worktreePath: string): Promise<string | null>
     const deletions = deleteMatch ? Number(deleteMatch[1]) : 0;
     if (files === 0 && insertions === 0 && deletions === 0) return null;
     return `+${insertions}/-${deletions} (${files}f)`;
-  } catch {
-    return null;
+  } catch (e) {
+    return lookupFailure(`git diff failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-async function defaultGetPrStatus(worktreePath: string): Promise<{ number: number; state: string } | null> {
+async function defaultGetPrStatus(
+  worktreePath: string,
+): Promise<LookupResult<{ number: number; state: string } | null>> {
   try {
     const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
     const branch = branchResult.stdout.trim();
@@ -151,8 +161,8 @@ async function defaultGetPrStatus(worktreePath: string): Promise<{ number: numbe
     if (!Array.isArray(prs) || prs.length === 0) return null;
     const pr = prs[0];
     return { number: pr.number, state: pr.state.toLowerCase() };
-  } catch {
-    return null;
+  } catch (e) {
+    return lookupFailure(`PR status lookup failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -600,7 +610,9 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
   // Prefer getGitRoot() over getCwd(): it resolves to the main repo even when
   // invoked from a worktree, and works when core.bare=true is set on the
   // ambient repo (see #1243, #1206).
-  const repoRoot = d.getGitRoot() ?? d.getCwd();
+  const gitRoot = d.getGitRoot();
+  if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
+  const repoRoot = isLookupFailure(gitRoot) || gitRoot === null ? d.getCwd() : gitRoot;
   const wtConfig = readWorktreeConfig(repoRoot);
 
   if (hasWorktreeHooks(wtConfig)) {
@@ -658,7 +670,8 @@ async function agentList(
   // Repo-scoped filtering (Claude only, unless --all)
   if (hasFeature(provider, "repoScoped") && !showAll) {
     const gitRoot = d.getGitRoot();
-    if (gitRoot) toolArgs.repoRoot = gitRoot;
+    if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
+    else if (gitRoot) toolArgs.repoRoot = gitRoot;
   }
 
   // Agent filter for ACP variants
@@ -704,8 +717,10 @@ async function agentList(
       : Promise.resolve(sessions.map(() => null)),
   ]);
 
-  const hasAnyDiff = diffStats.some((stat) => stat !== null);
-  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+  for (const stat of diffStats) if (isLookupFailure(stat)) d.printError(stat.message);
+  for (const pr of prStatuses) if (isLookupFailure(pr)) d.printError(pr.message);
+  const hasAnyDiff = diffStats.some((stat) => stat !== null && !isLookupFailure(stat));
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null && !isLookupFailure(pr));
   const showAgent = hasFeature(provider, "agentSelect") && !agentOverride;
 
   // Build header
@@ -727,8 +742,10 @@ async function agentList(
         ? `$${costVal.toFixed(4)}`.padEnd(8)
         : (hasFeature(provider, "costTracking") ? "—" : "N/A").padEnd(8);
     const tokens = (s.tokens as number) > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
-    const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
-    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
+    const rawDiff = diffStats[i];
+    const diff = hasAnyDiff ? ` ${(isLookupFailure(rawDiff) || rawDiff === null ? "—" : rawDiff).padEnd(16)}` : "";
+    const rawPr = prStatuses[i];
+    const pr = hasAnyPr ? ` ${formatPrStatus(isLookupFailure(rawPr) ? null : rawPr).padEnd(12)}` : "";
     const cwd = String(s.cwd ?? "—");
     const age = formatAge(s.createdAt as number | null | undefined);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
@@ -1068,7 +1085,9 @@ async function agentWait(
   let repoFilter: string | undefined;
   if (hasFeature(provider, "repoScoped") && !all && !sessionPrefix) {
     const gitRoot = d.getGitRoot();
-    if (gitRoot) {
+    if (isLookupFailure(gitRoot)) {
+      d.printError(gitRoot.message);
+    } else if (gitRoot) {
       toolArgs.repoRoot = gitRoot;
       repoFilter = gitRoot;
     }
@@ -1518,7 +1537,9 @@ async function resumeAgentWorktree(
 
     let prInfo: string | null = null;
     const prStatus = await d.getPrStatus(wt.path);
-    if (prStatus) {
+    if (isLookupFailure(prStatus)) {
+      d.printError(prStatus.message);
+    } else if (prStatus) {
       prInfo = `#${prStatus.number} (${prStatus.state})`;
     }
 
@@ -1618,7 +1639,9 @@ async function agentWorktrees(args: string[], provider: AgentProvider, d: AgentD
     const statusLabel = isActive ? "active" : "orphaned";
     const statusColor = isActive ? c.green : c.yellow;
     const status = `${statusColor}${statusLabel.padEnd(10)}${c.reset}`;
-    const diff = diffStats[i] ?? "—";
+    const rawWtDiff = diffStats[i];
+    if (isLookupFailure(rawWtDiff)) d.printError(rawWtDiff.message);
+    const diff = isLookupFailure(rawWtDiff) || rawWtDiff === null ? "—" : rawWtDiff;
     console.log(`${c.cyan}${wtName.padEnd(30)}${c.reset} ${branch.padEnd(30)} ${status} ${c.dim}${diff}${c.reset}`);
   }
 }

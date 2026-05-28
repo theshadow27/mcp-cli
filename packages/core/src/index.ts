@@ -58,3 +58,4 @@ export * from "./claude-patch";
 export * from "./automation";
 export * from "./subprocess";
 export * from "./mcp-result";
+export * from "./lookup-result";

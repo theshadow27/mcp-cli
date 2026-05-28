@@ -182,11 +182,12 @@ export interface SprintStatsDeps {
 }
 
 function gitRoot(): string {
-  try {
-    const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
-    if (r.ok) return r.stdout.trim();
-  } catch {} // dotw-todo prod-empty-catch: fallback to cwd is intentional but should log — fix in #2535
-  return process.cwd();
+  const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
+  if (!r.ok) {
+    console.error(`[sprint-stats] git rev-parse failed (exit ${r.exitCode}), falling back to cwd: ${r.stderr.trim()}`);
+    return process.cwd();
+  }
+  return r.stdout.trim();
 }
 
 const defaultDeps: SprintStatsDeps = {
