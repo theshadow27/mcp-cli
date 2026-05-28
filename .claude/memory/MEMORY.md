@@ -9,6 +9,7 @@
 
 ## Feedback (general — sprint-specific guidance lives in `.claude/skills/sprint/`)
 - [Codex retro learnings](feedback_codex_retro.md) — stale binaries, partial branches, protocol drift
+- [Codex broken (#2482)](codex_broken_2482.md) — codex spawn fully broken (RPC -32600) as of sprint 66; don't route to codex, use opus
 - [Git HTTPS push](feedback_git_https_push.md) — when agents get stuck pushing, tell them to use HTTPS
 - [Review context in PRs](feedback_review_pr_comments.md) — reviewers post to PR, repairers read PR comments first
 - [Open bun.report links](feedback_bun_report.md) — always `open` bun.report URLs to submit crash telemetry
