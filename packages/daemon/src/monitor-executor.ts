@@ -41,9 +41,6 @@ async function main(): Promise<void> {
 
   const gen = monitor.subscribe({
     signal: ac.signal,
-    bus: {
-      publish: (event) => process.stdout.write(`${JSON.stringify(event)}\n`),
-    },
     logger: {
       info: (msg) => process.stderr.write(`[monitor:${aliasName}] info: ${msg}\n`),
       warn: (msg) => process.stderr.write(`[monitor:${aliasName}] warn: ${msg}\n`),
