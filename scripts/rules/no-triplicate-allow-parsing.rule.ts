@@ -20,17 +20,23 @@ const CANONICAL_PATH = "packages/core/src/allow-patterns.ts";
 
 const EXEMPT_PREFIXES = ["packages/permissions/"];
 
+const IN_SCOPE_PREFIXES = ["packages/", ".claude/phases/"];
+
 const REIMPLEMENT_SIGNALS: readonly { pattern: RegExp; label: string }[] = [
   {
-    pattern: /\(\w\+\)\\\((\.\+|\\\.)\\\)\$/,
-    label: "paren-match regex (dead-pattern detection)",
+    pattern: /\/[^/]*\(\\w\+\)\\\([^/]*\//,
+    label: "paren-match regex literal (dead-pattern detection)",
   },
   {
-    pattern: /\.match\(\s*\/\^\(\\w\+\)\\\(/,
-    label: "paren-match regex (dead-pattern detection)",
+    pattern: /(?:\.match|\.test|\.exec)\(\s*\/[^/]*\(\\w\+\)\\\(/,
+    label: "paren-match regex via .match/.test/.exec (dead-pattern detection)",
   },
   {
-    pattern: /\.split\s*\(\s*["'`,]\s*\)\s*.*(?:dead|paren|allow)/i,
+    pattern: /new\s+RegExp\(\s*["'`][^"'`]*\(\\\\w\+\)\\\\\(/,
+    label: "paren-match regex via new RegExp() constructor",
+  },
+  {
+    pattern: /\.split\s*\(\s*["'`],["'`]\s*\)\s*.*(?:dead|paren|allow)/i,
     label: "comma-split with allow-pattern handling",
   },
 ];
@@ -50,7 +56,7 @@ const rule: CheckRule = {
   documentation: "#2491",
   check({ file, violated, checked }) {
     if (file.relPath === CANONICAL_PATH) return;
-    if (!file.relPath.startsWith("packages/")) return;
+    if (!IN_SCOPE_PREFIXES.some((p) => file.relPath.startsWith(p))) return;
     if (EXEMPT_PREFIXES.some((p) => file.relPath.startsWith(p))) return;
     if (file.relPath.endsWith(".spec.ts") || file.relPath.endsWith(".test.ts")) return;
 
@@ -61,6 +67,7 @@ const rule: CheckRule = {
       for (const signal of REIMPLEMENT_SIGNALS) {
         if (signal.pattern.test(line)) {
           violated(i + 1, 1, line.trim());
+          break;
         }
       }
     }
