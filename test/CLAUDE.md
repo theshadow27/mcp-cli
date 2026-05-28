@@ -44,6 +44,7 @@ Before writing new helpers, check what already exists:
 1. **Never use `setTimeout` for waiting** — await the condition directly
 2. **Never hardcode ports** — use `port: 0` for OS-assigned ports
 3. **Prefer Bun's default test timeout** — only override when a test genuinely needs longer (e.g., integration tests with polling)
+4. **Tests must pass without claude on PATH** — the `check-no-claude` CI job runs `bun test` with claude stripped from PATH and `MCX_CLAUDE_BINARY` unset. Tests that exercise claude-session behavior must inject a synthetic claude binary via `startTestDaemon`'s `pathPrefix` option (see `test/harness.ts`) pointing to `test/mock-claude.ts`. Never rely on the real `claude` binary being available.
 
 ## Subprocess Spawning
 

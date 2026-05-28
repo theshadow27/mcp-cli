@@ -76,6 +76,9 @@ export interface EphemeralAliasConfig {
   promotionThreshold?: number;
 }
 
+/** Transport mode for Claude CLI sessions. */
+export type ClaudeTransport = "auto" | "stdio" | "sdk-url";
+
 /** mcp-cli config file (~/.mcp-cli/config.json) */
 export interface CliConfig {
   trustClaude?: boolean;
@@ -107,6 +110,13 @@ export interface CliConfig {
       enabled?: boolean;
     };
   };
+  /**
+   * Transport for Claude CLI sessions.
+   * - `"auto"` (default): version-gated — ≤2.1.122 uses sdk-url WS, >2.1.122 uses stdio.
+   * - `"stdio"`: force stdio pipes (--print, no --sdk-url).
+   * - `"sdk-url"`: force legacy WS + patcher path.
+   */
+  transport?: ClaudeTransport;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

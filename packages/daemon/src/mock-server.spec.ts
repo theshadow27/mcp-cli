@@ -1,8 +1,14 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { MOCK_SERVER_NAME, silentLogger } from "@mcp-cli/core";
+import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MOCK_SERVER_NAME, NdjsonRecorder, type RecordingEntry, silentLogger } from "@mcp-cli/core";
+import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import { MockServer, buildMockToolCache, isWorkerEvent } from "./mock-server";
+
+setDefaultTimeout(10_000);
 
 // ── isWorkerEvent ──
 
@@ -329,5 +335,401 @@ describe("MockServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
     const row = db.getSession("stale-1");
     expect(row?.state).toBe("ended");
+  });
+});
+
+// ── Extended mock-script DSL integration tests ──
+
+describe("Mock script DSL (extended entries)", () => {
+  let server: MockServer | undefined;
+  let db: StateDb | undefined;
+  let client: Awaited<ReturnType<MockServer["start"]>>["client"];
+  let opts: ReturnType<typeof testOptions>;
+  let scriptDir: string;
+
+  async function setup(): Promise<void> {
+    opts = testOptions();
+    scriptDir = join(opts.dir, "scripts");
+    mkdirSync(scriptDir, { recursive: true });
+    db = new StateDb(opts.DB_PATH);
+    server = new MockServer(db, undefined, undefined, silentLogger);
+    const { client: c } = await server.start();
+    client = c;
+  }
+
+  afterEach(async () => {
+    await server?.stop();
+    db?.close();
+    server = undefined;
+    db = undefined;
+    opts?.[Symbol.dispose]();
+  });
+
+  function writeScript(name: string, entries: unknown[]): string {
+    const path = join(scriptDir, name);
+    writeFileSync(path, JSON.stringify(entries));
+    return path;
+  }
+
+  async function runScript(path: string): Promise<string> {
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: true } });
+    const content = result.content as Array<{ type: string; text: string }>;
+    return content[0].text;
+  }
+
+  test("legacy format still works", async () => {
+    await setup();
+    const path = writeScript("legacy.json", [
+      { delay: 0, text: "Hello" },
+      { delay: 0, text: "World" },
+    ]);
+    const text = await runScript(path);
+    const parsed = JSON.parse(text);
+    expect(parsed.type).toBe("session:result");
+    expect(parsed.result.tokens).toBe(2);
+  });
+
+  test("emit:init sets session_id", async () => {
+    await setup();
+    const path = writeScript("init.json", [
+      { emit: "init", session_id: "custom-id" },
+      { emit: "response", text: "after init" },
+    ]);
+    const text = await runScript(path);
+    const parsed = JSON.parse(text);
+    expect(parsed.type).toBe("session:result");
+  });
+
+  test("emit:response emits session:response event", async () => {
+    await setup();
+    const path = writeScript("response.json", [{ emit: "response", text: "Hello from DSL" }]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const content = result.content as Array<{ type: string; text: string }>;
+    const { sessionId } = JSON.parse(content[0].text);
+
+    const waitResult = await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+    const waitContent = waitResult.content as Array<{ type: string; text: string }>;
+    const waitParsed = JSON.parse(waitContent[0].text);
+    expect(waitParsed.type).toBe("session:result");
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const transcriptContent = transcript.content as Array<{ type: string; text: string }>;
+    const entries = JSON.parse(transcriptContent[0].text);
+    expect(entries.some((e: { text: string }) => e.text === "Hello from DSL")).toBe(true);
+  });
+
+  test("emit:tool_call appears in transcript", async () => {
+    await setup();
+    const path = writeScript("tool_call.json", [{ emit: "tool_call", name: "Read", args: { path: "/tmp/foo" } }]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text?.includes("[tool_call] Read"))).toBe(true);
+  });
+
+  test("emit:cost accumulates in result", async () => {
+    await setup();
+    const path = writeScript("cost.json", [
+      { emit: "cost", usd: 0.001, tokens_in: 100, tokens_out: 50 },
+      { emit: "cost", usd: 0.002, tokens_in: 200, tokens_out: 100 },
+    ]);
+    const text = await runScript(path);
+    const parsed = JSON.parse(text);
+    expect(parsed.type).toBe("session:result");
+    expect(parsed.result.cost).toBeCloseTo(0.003);
+    expect(parsed.result.tokens).toBe(450);
+  });
+
+  test("emit:error terminates with session:error", async () => {
+    await setup();
+    const path = writeScript("error.json", [
+      { emit: "response", text: "before error" },
+      { emit: "error", message: "something broke" },
+    ]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text?.includes("something broke"))).toBe(true);
+  });
+
+  test("emit:disconnect emits session:disconnected", async () => {
+    await setup();
+    const path = writeScript("disconnect.json", [{ emit: "disconnect", reason: "network failure" }]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await pollUntil(() => db?.getSession(sessionId)?.state === "disconnected", 5000);
+    expect(db?.getSession(sessionId)?.state).toBe("disconnected");
+  });
+
+  test("emit:end terminates the session", async () => {
+    await setup();
+    const path = writeScript("end.json", [{ emit: "response", text: "bye" }, { emit: "end" }]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+    const status = db?.getSession(sessionId);
+    expect(status?.state).toBe("ended");
+  });
+
+  test("emit:result with custom text", async () => {
+    await setup();
+    const path = writeScript("result.json", [{ emit: "result", text: "custom done message" }]);
+    const text = await runScript(path);
+    const parsed = JSON.parse(text);
+    expect(parsed.type).toBe("session:result");
+    expect(parsed.result.result).toBe("custom done message");
+  });
+
+  test("permission_request + approve round-trip", async () => {
+    await setup();
+    const path = writeScript("perm-approve.json", [
+      { emit: "permission_request", tool: "Write", args: { path: "/tmp/x" }, request_id: "req-1" },
+      { wait_for: "approve", timeout_ms: 5000 },
+      { emit: "response", text: "approved and continuing" },
+    ]);
+
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
+    expect(db?.getSession(sessionId)?.state).toBe("waiting_permission");
+
+    // Approve the permission
+    const approveResult = await client.callTool({
+      name: "mock_approve",
+      arguments: { sessionId, requestId: "req-1" },
+    });
+    expect(approveResult.isError).toBeFalsy();
+
+    // Wait for the script to finish
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text === "approved and continuing")).toBe(true);
+  });
+
+  test("permission_request + deny round-trip", async () => {
+    await setup();
+    const path = writeScript("perm-deny.json", [
+      { emit: "permission_request", tool: "Bash", args: { command: "rm -rf /" }, request_id: "req-deny" },
+      { wait_for: "deny", timeout_ms: 5000 },
+      { emit: "response", text: "denied and continuing" },
+    ]);
+
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
+
+    const denyResult = await client.callTool({
+      name: "mock_deny",
+      arguments: { sessionId, requestId: "req-deny" },
+    });
+    expect(denyResult.isError).toBeFalsy();
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text === "denied and continuing")).toBe(true);
+  });
+
+  test("approve returns error for unknown request", async () => {
+    await setup();
+    const path = writeScript("perm-unknown.json", [
+      { emit: "permission_request", tool: "Write", request_id: "req-x" },
+      { wait_for: "approve", timeout_ms: 5000 },
+    ]);
+
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
+
+    const approveResult = await client.callTool({
+      name: "mock_approve",
+      arguments: { sessionId, requestId: "wrong-id" },
+    });
+    expect(approveResult.isError).toBe(true);
+    const text = (approveResult.content as Array<{ type: string; text: string }>)[0].text;
+    expect(text).toContain("No pending permission");
+    expect(text).toContain("req-x");
+  });
+
+  test("approve resolves even if sent before wait_for executes", async () => {
+    await setup();
+    const path = writeScript("early-approve.json", [
+      { emit: "permission_request", tool: "Write", args: { path: "/tmp/x" }, request_id: "early-1" },
+      { wait_for: "approve", timeout_ms: 5000 },
+      { emit: "response", text: "continued after early approve" },
+    ]);
+
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
+    expect(db?.getSession(sessionId)?.state).toBe("waiting_permission");
+
+    const approveResult = await client.callTool({
+      name: "mock_approve",
+      arguments: { sessionId, requestId: "early-1" },
+    });
+    expect(approveResult.isError).toBeFalsy();
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text === "continued after early approve")).toBe(true);
+    expect(entries.some((e: { text: string }) => e.text === "permission approve")).toBe(true);
+  });
+
+  test("mixed legacy + emit entries in same script", async () => {
+    await setup();
+    const path = writeScript("mixed.json", [
+      { delay: 0, text: "legacy line" },
+      { emit: "response", text: "new line" },
+      { emit: "cost", usd: 0.001, tokens_in: 10, tokens_out: 5 },
+    ]);
+    const text = await runScript(path);
+    const parsed = JSON.parse(text);
+    expect(parsed.type).toBe("session:result");
+    expect(parsed.result.cost).toBeCloseTo(0.001);
+  });
+
+  test("delay on emit entries preserves ordering", async () => {
+    await setup();
+    const path = writeScript("delay.json", [
+      { emit: "response", text: "first", delay: 0 },
+      { emit: "response", text: "second", delay: 10 },
+    ]);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    const texts = entries.filter((e: { role: string }) => e.role === "assistant").map((e: { text: string }) => e.text);
+    expect(texts).toEqual(["first", "second"]);
+  });
+});
+
+// ── NDJSON recording integration ──
+
+describe("MockServer NDJSON recording", () => {
+  const recDir = join(tmpdir(), `rec-test-${process.pid}`);
+  let server: MockServer | undefined;
+  let db: StateDb | undefined;
+  let recorder: NdjsonRecorder | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    await recorder?.close();
+    db?.close();
+    server = undefined;
+    db = undefined;
+    recorder = undefined;
+    rmSync(recDir, { recursive: true, force: true });
+  });
+
+  test("records init → ready → MCP initialize → tool call sequence", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const recPath = join(recDir, "trace.ndjson");
+    recorder = new NdjsonRecorder(recPath);
+
+    server = new MockServer(db, "test-daemon", undefined, silentLogger);
+    server.recorder = recorder;
+
+    const { client } = await server.start();
+
+    // Exercise a tool call through the MCP client
+    await client.callTool({ name: "mock_session_list", arguments: {} });
+    await server.stop();
+    server = undefined;
+    await recorder.close();
+
+    const lines = readFileSync(recPath, "utf-8").trim().split("\n");
+    const entries = lines.map((l) => JSON.parse(l) as RecordingEntry);
+
+    // Verify we have a substantial recording
+    expect(entries.length).toBeGreaterThanOrEqual(5);
+
+    // 1. init message (daemon→worker, control)
+    const init = entries.find(
+      (e) => e.dir === "daemon->worker" && e.kind === "control" && (e.payload as { type?: string })?.type === "init",
+    );
+    expect(init).toBeDefined();
+
+    // 2. ready message (worker→daemon, control)
+    const ready = entries.find(
+      (e) => e.dir === "worker->daemon" && e.kind === "control" && (e.payload as { type?: string })?.type === "ready",
+    );
+    expect(ready).toBeDefined();
+
+    // 3. MCP initialize request (daemon→worker, mcp)
+    const initReq = entries.find(
+      (e) =>
+        e.dir === "daemon->worker" && e.kind === "mcp" && (e.payload as { method?: string })?.method === "initialize",
+    );
+    expect(initReq).toBeDefined();
+
+    // 4. MCP initialize response (worker→daemon, mcp) — this was the blocker
+    const initResp = entries.find(
+      (e) =>
+        e.dir === "worker->daemon" &&
+        e.kind === "mcp" &&
+        "result" in (e.payload as Record<string, unknown>) &&
+        (e.payload as { id?: unknown })?.id === (initReq?.payload as { id?: unknown })?.id,
+    );
+    expect(initResp).toBeDefined();
+
+    // 5. Tool call (daemon→worker, mcp)
+    const toolCall = entries.find(
+      (e) =>
+        e.dir === "daemon->worker" && e.kind === "mcp" && (e.payload as { method?: string })?.method === "tools/call",
+    );
+    expect(toolCall).toBeDefined();
+
+    // 6. Tool response (worker→daemon, mcp)
+    // The response comes through the post-connect worker.onmessage wrapper (which
+    // records DB events) and then falls through to the raw transport handler
+    // (which the setupRecording wrapper records). Look for any mcp response
+    // matching the tool call ID.
+    const toolCallId = (toolCall?.payload as { id?: unknown })?.id;
+    const toolResp = entries.find(
+      (e) =>
+        e.dir === "worker->daemon" &&
+        e.kind === "mcp" &&
+        (e.payload as { id?: unknown })?.id === toolCallId &&
+        !("method" in (e.payload as Record<string, unknown>)),
+    );
+    expect(toolResp).toBeDefined();
+
+    // Verify ordering: init before ready, ready before initialize, initialize before tool call
+    const initIdx = entries.indexOf(init as RecordingEntry);
+    const readyIdx = entries.indexOf(ready as RecordingEntry);
+    const initReqIdx = entries.indexOf(initReq as RecordingEntry);
+    const toolCallIdx = entries.indexOf(toolCall as RecordingEntry);
+    expect(initIdx).toBeLessThan(readyIdx);
+    expect(readyIdx).toBeLessThan(initReqIdx);
+    expect(initReqIdx).toBeLessThan(toolCallIdx);
+
+    // Timestamps are monotonically increasing
+    for (let i = 1; i < entries.length; i++) {
+      expect(entries[i].t).toBeGreaterThanOrEqual(entries[i - 1].t);
+    }
   });
 });

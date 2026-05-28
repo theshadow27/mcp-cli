@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { silentLogger } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
-import { killPid } from "./process-util";
+import { findProcessesByCwd, killPid, reapWorktreeProcesses } from "./process-util";
 
 const POLL_MS = 10;
 
@@ -156,5 +156,114 @@ describe("killPid", () => {
     } finally {
       forceKill(pid);
     }
+  });
+});
+
+/** Poll until findProcessesByCwd sees the expected PID (or deadline). */
+async function awaitLsofVisibility(dir: string, targetPid: number, deadlineMs = 5_000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const pids = await findProcessesByCwd(dir, silentLogger);
+    if (pids.includes(targetPid)) return;
+    await Bun.sleep(POLL_MS);
+  }
+}
+
+describe("findProcessesByCwd", () => {
+  test("finds a process whose cwd is under the given directory", async () => {
+    const tmpDir = `${import.meta.dir}/__test-cwd-${process.pid}`;
+    const { mkdirSync, rmdirSync } = require("node:fs");
+    mkdirSync(tmpDir, { recursive: true });
+    const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
+    try {
+      await awaitLsofVisibility(tmpDir, proc.pid);
+      const pids = await findProcessesByCwd(tmpDir, silentLogger);
+      expect(pids).toContain(proc.pid);
+    } finally {
+      forceKill(proc.pid);
+      try {
+        rmdirSync(tmpDir);
+        // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+      } catch {
+        /* noop */
+      }
+    }
+  });
+
+  test("excludes current process from results", async () => {
+    const pids = await findProcessesByCwd(import.meta.dir, silentLogger);
+    expect(pids).not.toContain(process.pid);
+  });
+
+  test("returns empty array for nonexistent directory", async () => {
+    const pids = await findProcessesByCwd("/tmp/__nonexistent-dir-test-2493", silentLogger);
+    expect(pids).toEqual([]);
+  });
+
+  test("warns and returns empty when lsof times out", async () => {
+    const logger = capturingLogger();
+    const timedOutResult = async () => ({
+      ok: false as const,
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      truncated: false,
+    });
+    const pids = await findProcessesByCwd("/some/dir", logger, timedOutResult);
+    expect(pids).toEqual([]);
+    expect(logger.warns.some((w) => w.includes("timed out"))).toBe(true);
+  });
+
+  test("warns and returns empty when lsof is unavailable", async () => {
+    const logger = capturingLogger();
+    const missingBinaryResult = async () => ({
+      ok: false as const,
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    });
+    const pids = await findProcessesByCwd("/some/dir", logger, missingBinaryResult);
+    expect(pids).toEqual([]);
+    expect(logger.warns.some((w) => w.includes("unavailable"))).toBe(true);
+  });
+});
+
+describe("reapWorktreeProcesses", () => {
+  test("kills processes under the given directory and returns count", async () => {
+    const tmpDir = `${import.meta.dir}/__test-reap-${process.pid}`;
+    const { mkdirSync, rmdirSync } = require("node:fs");
+    mkdirSync(tmpDir, { recursive: true });
+    const proc1 = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
+    const proc2 = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
+    try {
+      await awaitLsofVisibility(tmpDir, proc1.pid);
+      await awaitLsofVisibility(tmpDir, proc2.pid);
+      const logger = capturingLogger();
+      const killed = await reapWorktreeProcesses(tmpDir, logger);
+      expect(killed).toBeGreaterThanOrEqual(2);
+      await awaitDeath(proc1.pid);
+      await awaitDeath(proc2.pid);
+      expect(isAlive(proc1.pid)).toBe(false);
+      expect(isAlive(proc2.pid)).toBe(false);
+    } finally {
+      forceKill(proc1.pid);
+      forceKill(proc2.pid);
+      try {
+        rmdirSync(tmpDir);
+        // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+      } catch {
+        /* noop */
+      }
+    }
+  });
+
+  test("returns 0 when no processes found", async () => {
+    const killed = await reapWorktreeProcesses("/tmp/__nonexistent-dir-test-2493", silentLogger);
+    expect(killed).toBe(0);
   });
 });

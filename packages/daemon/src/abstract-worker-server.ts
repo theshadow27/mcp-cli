@@ -1,10 +1,11 @@
 import { resolve } from "node:path";
-import type { Logger } from "@mcp-cli/core";
-import { consoleLogger, resolveRealpath } from "@mcp-cli/core";
+import type { Logger, NdjsonRecorder } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { type MetricsCollector, metrics as defaultMetrics } from "./metrics";
+import { setupRecording } from "./recording-hooks";
 import {
   DEFAULT_RESTART_POLICY,
   type RestartPolicy,
@@ -146,6 +147,7 @@ export abstract class AbstractWorkerServer {
   protected readonly restartPolicy: RestartPolicy = DEFAULT_RESTART_POLICY;
   protected readonly handshakeTimeoutMs: number;
   protected static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000;
+  recorder: NdjsonRecorder | null = null;
 
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
   onActivity?: () => void;
@@ -197,11 +199,21 @@ export abstract class AbstractWorkerServer {
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
+          const raw = event.data.supported_protocol_version;
+          const supported = typeof raw === "number" ? raw : undefined;
+          if (supported !== undefined && supported !== AGENT_PROTOCOL_VERSION) {
+            clearTimeout(timeout);
+            cleanup();
+            reject(new ProtocolVersionMismatchError(AGENT_PROTOCOL_VERSION, supported));
+            return;
+          }
           settled = true;
           clearTimeout(timeout);
+          this.recorder?.record("worker->daemon", "control", event.data);
           this.onWorkerReady(event.data);
           resolve();
         } else if (event.data?.type === "error") {
+          this.recorder?.record("worker->daemon", "control", event.data);
           clearTimeout(timeout);
           cleanup();
           reject(new Error(`${d.displayName} session worker init failed: ${event.data.message}`));
@@ -212,12 +224,22 @@ export abstract class AbstractWorkerServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`${d.displayName} session worker error: ${msg}`));
       };
-      worker.postMessage(this.buildInitMessage());
+      const initMsg = this.buildInitMessage();
+      this.recorder?.record("daemon->worker", "control", initMsg);
+      worker.postMessage(initMsg);
     });
 
     try {
       this.transport = new WorkerClientTransport(this.worker);
       this.client = this.clientFactory();
+
+      // Install recording hooks BEFORE connect so the MCP initialize
+      // handshake is captured in both directions.
+      let rawHandler: (() => ((this: Worker, event: MessageEvent) => void) | null) | undefined;
+      if (this.recorder) {
+        const hooks = setupRecording(worker, this.transport, this.recorder);
+        rawHandler = hooks.rawTransportHandler;
+      }
 
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       let connectResolved = false;
@@ -236,9 +258,13 @@ export abstract class AbstractWorkerServer {
       ]);
       clearTimeout(handshakeTimer);
 
-      const transportHandler = worker.onmessage;
+      // Post-connect: replaces the setupRecording handshake wrapper.
+      // Record ALL inbound messages here (the handshake wrapper only
+      // lived during connect and is now gone — no double-record).
+      const transportFwd = rawHandler?.() ?? worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
+        this.recorder?.recordMessage("worker->daemon", data);
         if (isBaseWorkerEvent(data)) {
           this.handleWorkerEvent(data);
           return;
@@ -247,7 +273,7 @@ export abstract class AbstractWorkerServer {
           this.handleProviderEvent(data);
           return;
         }
-        transportHandler?.call(worker, event);
+        (transportFwd as ((this: Worker, event: MessageEvent) => void) | null)?.call(worker, event);
       };
 
       worker.onerror = null;
@@ -340,7 +366,12 @@ export abstract class AbstractWorkerServer {
   // ── Protected hooks (override in subclasses) ──
 
   protected buildInitMessage(): Record<string, unknown> {
-    return { type: "init", daemonId: this.daemonId };
+    return { type: "init", daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION };
+  }
+
+  protected sendControlMessage(msg: Record<string, unknown>): void {
+    this.recorder?.record("daemon->worker", "control", msg);
+    this.worker?.postMessage(msg);
   }
 
   protected onWorkerReady(_data: unknown): void {}
@@ -472,7 +503,7 @@ export abstract class AbstractWorkerServer {
           }
           this.metrics.gauge(d.metrics.activeSessions).set(this.activeSessions.size);
 
-          (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
+          this.sendControlMessage({ type: "tools_changed" });
           this.onRestarted?.(client, transport);
           return;
         } catch (err) {

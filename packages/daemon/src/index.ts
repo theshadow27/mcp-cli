@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { NdjsonRecorder } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -556,6 +557,21 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Mock server: always available (no external binary needed)
   const mockServer = new MockServer(db, daemonId, undefined, logger);
+
+  // NDJSON protocol recording — enabled by MCX_RECORD_SESSION env var.
+  // A single NdjsonRecorder instance is shared across all providers so
+  // writes to the file are serialized (no interleaved partial lines).
+  const recordingPath = process.env.MCX_RECORD_SESSION || null;
+  let recorder: NdjsonRecorder | null = null;
+  if (recordingPath) {
+    recorder = new NdjsonRecorder(recordingPath);
+    claudeServer.recorder = recorder;
+    if (codexServer) codexServer.recorder = recorder;
+    if (acpServer) acpServer.recorder = recorder;
+    if (opencodeServer) opencodeServer.recorder = recorder;
+    mockServer.recorder = recorder;
+    logger.info(`[daemon] NDJSON protocol recording enabled → ${recordingPath}`);
+  }
 
   // Site server: always started. The worker itself is lightweight — Playwright (and its ~200MB install)
   // is only loaded via dynamic import the first time a browser-dependent tool runs. Users with no
@@ -1372,6 +1388,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         }
       }
       logger.info(`[mcpd] Shutdown: all virtual servers took ${Math.round(performance.now() - phase)}ms`);
+      // Close the shared NDJSON recorder AFTER all servers stop so final
+      // messages emitted during client.close() are captured.
+      if (recorder) {
+        try {
+          await recorder.close();
+        } catch (err) {
+          logger.error(`[mcpd] Error closing NDJSON recorder: ${err}`);
+        }
+      }
       phase = performance.now();
       try {
         await withPhaseTimeout(pool.closeAll(), SHUTDOWN_PHASE_TIMEOUT_MS, "pool.closeAll", logger);

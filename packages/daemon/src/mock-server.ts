@@ -10,12 +10,19 @@
  * since this is a testing-only provider.
  */
 
-import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
-import { MOCK_SERVER_NAME, consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import type { JsonSchema, Logger, NdjsonRecorder, ToolInfo } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  MOCK_SERVER_NAME,
+  ProtocolVersionMismatchError,
+  consoleLogger,
+  formatToolSignature,
+} from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { MOCK_TOOLS } from "./mock-session/tools";
+import { setupRecording } from "./recording-hooks";
 import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -100,6 +107,7 @@ export class MockServer {
 
   /** Called on worker activity — lets the daemon reset its idle timer. */
   onActivity?: () => void;
+  recorder: NdjsonRecorder | null = null;
 
   constructor(
     db: StateDb,
@@ -138,10 +146,19 @@ export class MockServer {
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
+          const raw = event.data.supported_protocol_version;
+          const supported = typeof raw === "number" ? raw : undefined;
+          if (supported !== undefined && supported !== AGENT_PROTOCOL_VERSION) {
+            clearTimeout(timeout);
+            if (cleanup()) reject(new ProtocolVersionMismatchError(AGENT_PROTOCOL_VERSION, supported));
+            return;
+          }
           settled = true;
           clearTimeout(timeout);
+          this.recorder?.record("worker->daemon", "control", event.data);
           resolve();
         } else if (event.data?.type === "error") {
+          this.recorder?.record("worker->daemon", "control", event.data);
           clearTimeout(timeout);
           reject(new Error(`Mock session worker init failed: ${event.data.message}`));
         }
@@ -151,13 +168,23 @@ export class MockServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`Mock session worker error: ${msg}`));
       };
-      worker.postMessage({ type: "init", daemonId: this.daemonId });
+      const initMsg = { type: "init" as const, daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION };
+      this.recorder?.record("daemon->worker", "control", initMsg);
+      worker.postMessage(initMsg);
     });
 
     // Set up MCP transport and connect
     try {
       this.transport = new WorkerClientTransport(this.worker);
       this.client = this.clientFactory();
+
+      // Install recording hooks BEFORE connect so the MCP initialize
+      // handshake is captured in both directions.
+      let rawHandler: (() => ((this: Worker, event: MessageEvent) => void) | null) | undefined;
+      if (this.recorder) {
+        const hooks = setupRecording(worker, this.transport, this.recorder);
+        rawHandler = hooks.rawTransportHandler;
+      }
 
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       let connectResolved = false;
@@ -175,15 +202,18 @@ export class MockServer {
       ]);
       clearTimeout(handshakeTimer);
 
-      // Wrap worker.onmessage to intercept DB event messages
-      const transportHandler = worker.onmessage;
+      // Post-connect: replaces the setupRecording handshake wrapper.
+      // Record ALL inbound messages here (the handshake wrapper only
+      // lived during connect and is now gone — no double-record).
+      const transportFwd = rawHandler?.() ?? worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
+        this.recorder?.recordMessage("worker->daemon", data);
         if (isWorkerEvent(data)) {
           this.handleWorkerEvent(data);
           return;
         }
-        transportHandler?.call(worker, event);
+        (transportFwd as ((this: Worker, event: MessageEvent) => void) | null)?.call(worker, event);
       };
 
       worker.onerror = null;
