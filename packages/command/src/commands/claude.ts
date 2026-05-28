@@ -29,7 +29,6 @@ import {
   resolveModelName,
   resolveRealpath,
   resolveWorktreePath,
-  spawnCapture,
   spawnCaptureSync,
   updatePatchedClaude,
   validateAllowPatterns,
@@ -51,7 +50,8 @@ import type { SharedSpawnArgs } from "./spawn-args";
 import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
-import type { MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
+import type { LookupResult, MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
+import { isLookupFailure, lookupFailure, resolveGitRootOrCwd, runOrLookupFailure } from "@mcp-cli/core";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
@@ -81,12 +81,12 @@ export interface SharedSessionDeps {
 
 export interface ClaudeDeps extends SharedSessionDeps {
   log: (...args: unknown[]) => void;
-  getDiffStats: (worktreePath: string) => Promise<string | null>;
-  getPrStatus: (worktreePath: string) => Promise<PrStatus | null>;
+  getDiffStats: (worktreePath: string) => Promise<LookupResult<string | null>>;
+  getPrStatus: (worktreePath: string) => Promise<LookupResult<PrStatus | null>>;
   /** Open a command in a terminal tab/window. Used for --headed spawn. */
   ttyOpen: (args: string[]) => Promise<void>;
   /** Resolve the git repo root for the current working directory. Returns null if not in a git repo. */
-  getGitRoot: () => string | null;
+  getGitRoot: () => LookupResult<string | null>;
   /** Return a warning string if the running daemon is a stale build, null otherwise. */
   getStaleDaemonWarning: () => string | null;
   /**
@@ -129,38 +129,39 @@ export function parseDiffShortstat(output: string): string | null {
   return `+${insertions}/-${deletions} (${files}f)`;
 }
 
-async function defaultGetDiffStats(worktreePath: string): Promise<string | null> {
-  try {
-    const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
-    return parseDiffShortstat(result.stdout);
-  } catch {
-    return null;
-  }
+export async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
+  const stdout = await runOrLookupFailure("git", ["diff", "--shortstat"], { cwd: worktreePath });
+  if (isLookupFailure(stdout)) return stdout;
+  return parseDiffShortstat(stdout);
 }
 
-export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus | null> {
-  try {
-    const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
-    const branch = branchResult.stdout.trim();
-    if (!branch) return null;
+export async function defaultGetPrStatus(worktreePath: string): Promise<LookupResult<PrStatus | null>> {
+  const branchOut = await runOrLookupFailure("git", ["branch", "--show-current"], { cwd: worktreePath });
+  if (isLookupFailure(branchOut)) return branchOut;
+  const branch = branchOut.trim();
+  if (!branch) return null;
 
-    const prResult = await spawnCapture("gh", [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--json",
-      "number,state",
-      "--limit",
-      "1",
-    ]);
-    const prs = JSON.parse(prResult.stdout.trim()) as Array<{ number: number; state: string }>;
-    if (!Array.isArray(prs) || prs.length === 0) return null;
-    const pr = prs[0];
-    return { number: pr.number, state: pr.state.toLowerCase() };
+  const prOut = await runOrLookupFailure("gh", [
+    "pr",
+    "list",
+    "--head",
+    branch,
+    "--json",
+    "number,state",
+    "--limit",
+    "1",
+  ]);
+  if (isLookupFailure(prOut)) return prOut;
+
+  let prs: Array<{ number: number; state: string }>;
+  try {
+    prs = JSON.parse(prOut.trim()) as Array<{ number: number; state: string }>;
   } catch {
-    return null;
+    return lookupFailure(`Failed to parse gh pr list output for ${worktreePath}: ${prOut.slice(0, 100)}`);
   }
+  if (!Array.isArray(prs) || prs.length === 0) return null;
+  const pr = prs[0];
+  return { number: pr.number, state: pr.state.toLowerCase() };
 }
 
 /**
@@ -168,21 +169,15 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<PrStatus
  * Uses --git-common-dir to resolve to the main repo root, not a worktree.
  * Returns null if not inside a git repo.
  */
-function getGitRoot(): string | null {
-  try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
-    if (!result.ok) return null;
-    const commonDir = result.stdout.trim();
-    if (!commonDir) return null;
-    // --git-common-dir returns the .git dir (e.g. /repo/.git or /repo/.git/worktrees/foo/../../)
-    // Resolve to the parent to get the repo root
-    const resolved = resolve(commonDir);
-    // If it ends with .git, take the parent; otherwise it's already the repo root
-    const root = resolved.endsWith(".git") ? dirname(resolved) : resolved;
-    return resolveRealpath(root);
-  } catch {
-    return null;
-  }
+function getGitRoot(): LookupResult<string | null> {
+  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
+  if (!result.ok)
+    return lookupFailure(`git rev-parse --git-common-dir failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  const commonDir = result.stdout.trim();
+  if (!commonDir) return null;
+  const resolved = resolve(commonDir);
+  const root = resolved.endsWith(".git") ? dirname(resolved) : resolved;
+  return resolveRealpath(root);
 }
 
 export const defaultDeps: ClaudeDeps = {
@@ -582,9 +577,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   let worktreeResult: { path: string } | undefined;
   if (parsed.worktree) {
     try {
-      // Prefer getGitRoot() so repoRoot resolves to the main repo even when
-      // invoked from a worktree or when core.bare=true is set (#1243).
-      const repoRoot = d.getGitRoot() ?? process.cwd();
+      const repoRoot = resolveGitRootOrCwd(d.getGitRoot, d.printError);
       const wt = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "claude/" }, d);
       Object.assign(toolArgs, wt.toolArgs);
       worktreeResult = wt;
@@ -613,7 +606,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // Write null → initial transition so downstream phases can infer "from"
   // from the log rather than the Tier-3 work_items.phase fallback (#1623).
   if (parsed.workItemId) {
-    tryWriteInitialTransition(parsed.workItemId, d.getGitRoot() ?? process.cwd());
+    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d.getGitRoot, d.printError));
   }
 }
 
@@ -631,7 +624,7 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   let cwd = parsed.cwd;
   if (parsed.worktree) {
     try {
-      const repoRoot = d.getGitRoot() ?? process.cwd();
+      const repoRoot = resolveGitRootOrCwd(d.getGitRoot, d.printError);
       const result = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "headed/" }, d);
       cwd = result.path;
     } catch (e) {
@@ -647,7 +640,7 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
 
   // Write null → initial transition after the terminal opens (#1623).
   if (parsed.workItemId) {
-    tryWriteInitialTransition(parsed.workItemId, d.getGitRoot() ?? process.cwd());
+    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d.getGitRoot, d.printError));
   }
 }
 
@@ -976,7 +969,9 @@ async function resumeWorktree(
 
     let prInfo: string | null = null;
     const prStatus = await d.getPrStatus(wt.path);
-    if (prStatus) {
+    if (isLookupFailure(prStatus)) {
+      d.printError(prStatus.message);
+    } else if (prStatus) {
       prInfo = `#${prStatus.number} (${prStatus.state})`;
     }
 
@@ -1033,7 +1028,9 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
       activeFilter = scope.root;
     } else {
       const gitRoot = d.getGitRoot();
-      if (gitRoot) {
+      if (isLookupFailure(gitRoot)) {
+        d.printError(gitRoot.message);
+      } else if (gitRoot) {
         toolArgs.repoRoot = gitRoot;
         activeFilter = gitRoot;
       }
@@ -1124,8 +1121,10 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
       : Promise.resolve(sessions.map(() => null)),
   ]);
 
-  const hasAnyDiff = diffStats.some((stat) => stat !== null);
-  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null);
+  for (const stat of diffStats) if (isLookupFailure(stat)) d.printError(stat.message);
+  for (const pr of prStatuses) if (isLookupFailure(pr)) d.printError(pr.message);
+  const hasAnyDiff = diffStats.some((stat) => stat !== null && !isLookupFailure(stat));
+  const hasAnyPr = showPr && prStatuses.some((pr) => pr !== null && !isLookupFailure(pr));
 
   // Quota warning banner (stderr, before table)
   if (quotaBanner) console.error(quotaBanner);
@@ -1148,8 +1147,10 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);
-    const diff = hasAnyDiff ? ` ${(diffStats[i] ?? "—").padEnd(16)}` : "";
-    const pr = hasAnyPr ? ` ${formatPrStatus(prStatuses[i]).padEnd(12)}` : "";
+    const rawDiff = diffStats[i];
+    const diff = hasAnyDiff ? ` ${(isLookupFailure(rawDiff) || rawDiff === null ? "—" : rawDiff).padEnd(16)}` : "";
+    const rawPr = prStatuses[i];
+    const pr = hasAnyPr ? ` ${formatPrStatus(isLookupFailure(rawPr) ? null : rawPr).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
@@ -1887,7 +1888,9 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       scopeFilter = scope.root;
     } else {
       const gitRoot = d.getGitRoot();
-      if (gitRoot) {
+      if (isLookupFailure(gitRoot)) {
+        d.printError(gitRoot.message);
+      } else if (gitRoot) {
         toolArgs.repoRoot = gitRoot;
         repoFilter = gitRoot;
       }

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { lookupFailure } from "@mcp-cli/core";
 import type { AuditResult, CmdMemoryDeps, MemoryDeps } from "./memory";
 import { buildPrompt, cmdMemory, defaultDeps, findMemoryDir, parseHaikuResponse, runMemoryAudit } from "./memory";
 
@@ -11,6 +12,7 @@ describe("findMemoryDir", () => {
       getGitRoot: () => "/repo",
       cwd: () => "/repo/sub",
       dirExists: () => true,
+      logError: mock(() => {}),
     };
     expect(findMemoryDir(deps)).toBe("/repo/.claude/memory");
   });
@@ -20,6 +22,7 @@ describe("findMemoryDir", () => {
       getGitRoot: () => "/repo",
       cwd: () => "/repo",
       dirExists: () => false,
+      logError: mock(() => {}),
     };
     expect(findMemoryDir(deps)).toBeNull();
   });
@@ -29,8 +32,21 @@ describe("findMemoryDir", () => {
       getGitRoot: () => null,
       cwd: () => "/myproject",
       dirExists: (path: string) => path === "/myproject/.claude/memory",
+      logError: mock(() => {}),
     };
     expect(findMemoryDir(deps)).toBe("/myproject/.claude/memory");
+  });
+
+  test("falls back to cwd and logs on LookupFailure from getGitRoot", () => {
+    const logError = mock(() => {});
+    const deps = {
+      getGitRoot: () => lookupFailure("git not found"),
+      cwd: () => "/fallback",
+      dirExists: (path: string) => path === "/fallback/.claude/memory",
+      logError,
+    };
+    expect(findMemoryDir(deps)).toBe("/fallback/.claude/memory");
+    expect(logError).toHaveBeenCalledWith("git not found");
   });
 });
 
