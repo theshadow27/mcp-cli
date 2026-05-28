@@ -112,7 +112,7 @@ export function resolveEffectiveTools(opts: ResolveEffectiveToolsOpts): {
   if (allowOnly) {
     if (!allowedTools || allowedTools.length === 0) {
       return {
-        tools: [],
+        tools: undefined,
         error: "allowOnly requires at least one tool in allowedTools",
       };
     }
