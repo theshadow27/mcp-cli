@@ -198,6 +198,17 @@ const TEST_CHANGED: Step = {
   ],
 };
 
+const STALE_TODOS_CI: Step = {
+  name: "stale-todos",
+  description: "dotw-todo stale-issue check — shells out to gh per unique issue number (CI only; fixes #2533)",
+  command: "bun scripts/check-stale-todos.ts",
+  onFailure: [
+    "a dotw-todo comment references a closed GitHub issue",
+    "fix: remove the underlying violation (and its dotw-todo suppression)",
+    "or reopen / file a successor issue and update the #NNN reference",
+  ],
+};
+
 // ===== Step lists per mode =====
 //
 // Pre-commit: fast feedback during `git commit`. Skips tests entirely
@@ -221,7 +232,16 @@ const TEST_CHANGED: Step = {
 const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES];
 const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, TEST_CHANGED];
 const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
-const CI: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, TEST_NON_DAEMON_CI, TEST_DAEMON_CI, COVERAGE_CI];
+const CI: Step[] = [
+  INSTALL,
+  TYPECHECK,
+  LINT_CHECK,
+  RULES,
+  STALE_TODOS_CI,
+  TEST_NON_DAEMON_CI,
+  TEST_DAEMON_CI,
+  COVERAGE_CI,
+];
 
 function selectSteps(): { steps: Step[]; label: string } {
   if (isPreCommit) return { steps: PRE_COMMIT, label: "pre-commit" };
