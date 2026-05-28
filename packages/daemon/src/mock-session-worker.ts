@@ -426,18 +426,20 @@ async function runScript(session: MockSession): Promise<void> {
     }
   }
 
-  if (!emittedTerminal && !session.interrupted) {
+  if (!emittedTerminal) {
     session.state = "idle";
-    session.lastResultText = "Mock script completed";
-    forwardSessionEvent(session.sessionId, {
-      type: "session:result",
-      result: {
-        result: session.lastResultText,
-        cost: session.totalCost,
-        tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
-        numTurns: 1,
-      },
-    });
+    if (!session.interrupted) {
+      session.lastResultText = "Mock script completed";
+      forwardSessionEvent(session.sessionId, {
+        type: "session:result",
+        result: {
+          result: session.lastResultText,
+          cost: session.totalCost,
+          tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
+          numTurns: 1,
+        },
+      });
+    }
   }
 
   for (const waiter of session.pendingPermissions.values()) {
