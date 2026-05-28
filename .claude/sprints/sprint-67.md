@@ -1,6 +1,6 @@
 # Sprint 67
 
-> Planned 2026-05-27. Started 2026-05-27. Target: ~16 PRs. Theme: **Rules + tech-debt mop-up** (introspection sprint, ends in 7).
+> Planned 2026-05-27. Started 2026-05-27. Ended 2026-05-28. Target: ~16 PRs. Theme: **Rules + tech-debt mop-up** (introspection sprint, ends in 7).
 
 ## Goal
 
@@ -49,6 +49,16 @@ All Provider = `claude` (codex spawn is broken — #2482; never route codex this
 - Rule-adds (#2488/#2455/#2474/#2491/#2496) each create their own `scripts/rules/*.rule.ts`; the engine discovers by glob (no central registry), so no dispatch-table collision.
 - #2495 supersedes the *urgency* of #2489 — once the ratchet is diff-scoped, a pre-existing file-loader gap no longer fails unrelated worktrees. #2489 stays as a quick coverage backfill, not a blocker.
 - #2343 and #2464 hit the **nerd-snipe investigation gate** (`references/investigations.md`) before impl — `mcx claude spawn` with persona inlined, NOT the Agent tool (#2009). Hard-fail outcome = `needs-attention`; accept it as a possible result.
+
+## Results
+
+- **Released**: v1.12.3 (patch)
+- **PRs merged**: 14 (#2514, #2515, #2516, #2517, #2518, #2521, #2523, #2524, #2525, #2526, #2528, #2530, #2531, #2532)
+- **Issues closed**: 16 of 16 (14 PR-merged + 2 closed-as-already-fixed: #2455 by #2452, #2489 by #2484)
+- **Issues dropped**: 0
+- **New issues filed**: 8 (#2519 containment for non-Claude providers, #2520 ContainmentGuard fail-open for unknown tools, #2522 alias-bundle drift hazard inversion, #2527 pre-commit hook test-commit pollution, #2533 dotw-todo-stale-issue rule, #2534 string-literal-aware pattern matching, #2536 noGraph stub `as` cast → `satisfies`, plus a comment on #2210 for Bun crash telemetry)
+- **Convergence-failure / simplify passes**: 2 (#2343 worktree-containment hit twice — round 1 missed NotebookEdit, round 2 missed MultiEdit + arg-form patterns; #2498 silent-catch hit once — round 1 fix exposed adjacent dead-catch sites). Both resolved by stepping back and writing a canonical helper + enumerating the full tool set, not by patching the flagged lines.
+- **Sprint anchor**: #2495 diff-scope coverage ratchet landed first batch, eliminated the "shared gap fails my unrelated PR" failure mode that drove sprints 64–66's duplicate-issue storms.
 
 ## Context
 
