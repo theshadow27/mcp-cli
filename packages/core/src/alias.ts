@@ -1,9 +1,9 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Alias definition types for structured defineAlias() aliases.
  */
 
 import type { z } from "zod/v4";
+export type { AliasType } from "./alias-bundle-types";
 import type { EventFilterSpec } from "./event-filter";
 import type { GhClient } from "./gh-client";
 import { ToolResultError } from "./mcp-result";
@@ -214,9 +214,6 @@ export interface AliasDefinition<I = unknown, O = unknown> {
   output?: z.ZodType<O>;
   fn: (input: I, ctx: AliasContext) => O | Promise<O>;
 }
-
-/** Alias type discriminant for DB and IPC */
-export type AliasType = "freeform" | "defineAlias" | "defineMonitor";
 
 /** Context passed to a defineMonitor subscribe function */
 export interface MonitorContext {

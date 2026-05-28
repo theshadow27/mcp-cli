@@ -1,7 +1,11 @@
+// Re-exports all of @mcp-cli/core except alias-bundle itself.
+// Used as __mcp_core__ inside evalBundledJs so that phase scripts that write
+//   import { X } from "@mcp-cli/core"
+// can resolve X at eval time without creating the barrel-induced import cycle.
 export * from "./alias";
+export * from "./alias-bundle-types";
 export * from "./alias-dry-run";
 export * from "./alias-state";
-export * from "./alias-bundle";
 export * from "./allow-patterns";
 export * from "./cache";
 export * from "./ipc";
