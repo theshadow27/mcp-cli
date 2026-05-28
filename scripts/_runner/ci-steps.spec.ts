@@ -9,7 +9,7 @@ import { createCaptureLogger } from "./logger";
 // binary whose exit code, stdout/stderr, and junit XML we control, then assert
 // the returned StepResult matches the documented contract.
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -676,5 +676,76 @@ describe("changedTestsStep", () => {
     expect(updatedCache.entries[relA]).toBeDefined();
     expect(updatedCache.entries[relA]?.passed).toBe(true);
     expect(updatedCache.entries[relB]).toBeDefined();
+  });
+
+  it("closure cache: controlSkipPatterns only forwards packages/control/ entries to the control pass", async () => {
+    // Verifies that when closure-cached skipped files include both packages/control/
+    // paths and non-control paths, the control pass receives only the control-prefixed
+    // skip patterns — non-control skip patterns must not leak into the control invocation.
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-ctrl-skip-"));
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+
+    // One spec under packages/control/ (will appear in controlSkipPatterns).
+    // One spec at root level (must NOT appear in controlSkipPatterns).
+    const controlSpecDir = join(cacheRoot, "packages", "control");
+    mkdirSync(controlSpecDir, { recursive: true });
+    const specControl = join(controlSpecDir, "c.spec.ts");
+    const specOther = join(cacheRoot, "other.spec.ts");
+    writeFileSync(specControl, 'test("c", () => {});');
+    writeFileSync(specOther, 'test("other", () => {});');
+
+    const { buildImportGraph } = await import("../rules/_engine/import-graph");
+    const { readFileCache, storeFileVerdicts, computeClosureHash, writeFileCache } = await import("./file-cache");
+    const { relative } = await import("node:path");
+
+    const specFiles = [specControl, specOther];
+    const trivialBuild = (files: string[]) =>
+      buildImportGraph(files, {
+        readFile: (p) => readFileSync(p, "utf8"),
+        resolve: () => {
+          throw new Error("no deps");
+        },
+      });
+
+    const graph = trivialBuild(specFiles);
+    const hashControl = computeClosureHash(specControl, graph, (p) => readFileSync(p, "utf8"));
+    const hashOther = computeClosureHash(specOther, graph, (p) => readFileSync(p, "utf8"));
+
+    const cache = readFileCache(cacheRoot);
+    storeFileVerdicts(cache, [
+      { relPath: relative(cacheRoot, specControl), closureHash: hashControl, passed: true },
+      { relPath: relative(cacheRoot, specOther), closureHash: hashOther, passed: true },
+    ]);
+    writeFileCache(cacheRoot, cache);
+
+    const step = changedTestsStep({
+      logName: "test_ctrl_skip_patterns",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: noCache,
+      findSpecFiles: () => specFiles,
+      buildGraph: trivialBuild,
+    });
+
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+
+    const mainLog = readFileSync("/tmp/test_ctrl_skip_patterns.txt", "utf8");
+    const controlLog = readFileSync("/tmp/test_ctrl_skip_patterns_control.txt", "utf8");
+    const relControl = relative(cacheRoot, specControl); // "packages/control/c.spec.ts"
+    const relOther = relative(cacheRoot, specOther); // "other.spec.ts"
+
+    // Main pass gets skip patterns for both closure-cached files.
+    expect(mainLog).toContain(`--path-ignore-patterns=${relControl}`);
+    expect(mainLog).toContain(`--path-ignore-patterns=${relOther}`);
+
+    // Control pass gets only the packages/control/ skip pattern — not the root-level one.
+    expect(controlLog).toContain(`--path-ignore-patterns=${relControl}`);
+    expect(controlLog).not.toContain(`--path-ignore-patterns=${relOther}`);
   });
 });
