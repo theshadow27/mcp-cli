@@ -240,10 +240,14 @@ function extractBashWriteTargets(command: string): string[] {
   return targets;
 }
 
+// ── Containment-gated tool sets ──
+
+export const CONTAINMENT_WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "NotebookEdit"]);
+
 // ── File path extraction ──
 
 function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName === "Write" || toolName === "Edit" || toolName === "Read") {
+  if (toolName === "Write" || toolName === "Edit" || toolName === "Read" || toolName === "NotebookEdit") {
     const fp = input.file_path;
     return typeof fp === "string" ? fp : null;
   }

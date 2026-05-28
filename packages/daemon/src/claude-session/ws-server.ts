@@ -56,7 +56,7 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
-import { ContainmentGuard } from "./containment";
+import { CONTAINMENT_WRITE_TOOLS, ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -826,8 +826,7 @@ export class ClaudeWsServer {
     }
     let cliAllowedTools = session.config.allowedTools;
     if (session.config.worktree && cliAllowedTools?.length) {
-      const CONTAINMENT_GATED = new Set(["Write", "Edit"]);
-      cliAllowedTools = cliAllowedTools.filter((t) => !CONTAINMENT_GATED.has(t));
+      cliAllowedTools = cliAllowedTools.filter((t) => !CONTAINMENT_WRITE_TOOLS.has(t));
     }
     if (cliAllowedTools?.length) {
       cmd.push("--allowedTools", ...cliAllowedTools);

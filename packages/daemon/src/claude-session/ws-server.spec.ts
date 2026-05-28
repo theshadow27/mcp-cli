@@ -321,14 +321,14 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastCmd).toContain("my-tree");
   });
 
-  test("spawnClaude strips Write/Edit from --allowedTools for worktree sessions", async () => {
+  test("spawnClaude strips Write/Edit/NotebookEdit from --allowedTools for worktree sessions", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     await server.start();
 
     server.prepareSession("wt-session", {
       prompt: "Hello",
-      allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(git:*)"],
+      allowedTools: ["Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep", "Bash(git:*)"],
       worktree: "my-tree",
     });
     server.spawnClaude("wt-session");
@@ -340,6 +340,7 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastCmd).toContain("Bash(git:*)");
     expect(ms.lastCmd).not.toContain("Write");
     expect(ms.lastCmd).not.toContain("Edit");
+    expect(ms.lastCmd).not.toContain("NotebookEdit");
   });
 
   test("spawnClaude keeps Write/Edit in --allowedTools for non-worktree sessions", async () => {
@@ -356,6 +357,23 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastCmd).toContain("--allowedTools");
     expect(ms.lastCmd).toContain("Write");
     expect(ms.lastCmd).toContain("Edit");
+  });
+
+  test("spawnClaude omits --allowedTools when all tools are containment-gated in worktree session", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("wt-only-write", {
+      prompt: "Hello",
+      allowedTools: ["Write", "Edit"],
+      worktree: "my-tree",
+    });
+    server.spawnClaude("wt-only-write");
+
+    expect(ms.lastCmd).not.toContain("--allowedTools");
+    expect(ms.lastCmd).not.toContain("Write");
+    expect(ms.lastCmd).not.toContain("Edit");
   });
 
   test("spawnClaude passes --model flag when model is set in config", async () => {
