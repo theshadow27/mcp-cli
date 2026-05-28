@@ -11,7 +11,13 @@
  */
 
 import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
-import { MOCK_SERVER_NAME, consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  MOCK_SERVER_NAME,
+  ProtocolVersionMismatchError,
+  consoleLogger,
+  formatToolSignature,
+} from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
@@ -138,6 +144,13 @@ export class MockServer {
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
+          const raw = event.data.supported_protocol_version;
+          const supported = typeof raw === "number" ? raw : undefined;
+          if (supported !== undefined && supported !== AGENT_PROTOCOL_VERSION) {
+            clearTimeout(timeout);
+            if (cleanup()) reject(new ProtocolVersionMismatchError(AGENT_PROTOCOL_VERSION, supported));
+            return;
+          }
           settled = true;
           clearTimeout(timeout);
           resolve();
@@ -151,7 +164,7 @@ export class MockServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`Mock session worker error: ${msg}`));
       };
-      worker.postMessage({ type: "init", daemonId: this.daemonId });
+      worker.postMessage({ type: "init", daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION });
     });
 
     // Set up MCP transport and connect

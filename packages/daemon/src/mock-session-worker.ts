@@ -31,6 +31,7 @@
 
 import { resolve } from "node:path";
 import {
+  AGENT_PROTOCOL_VERSION,
   type AgentPermissionRequest,
   type AgentSessionEvent,
   DEFAULT_TIMEOUT_MS,
@@ -48,6 +49,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
 }
 
 interface ToolsChangedMessage {
@@ -832,7 +834,7 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     try {
       await startServer();
-      self.postMessage({ type: "ready" });
+      self.postMessage({ type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       mcpServer = null;
       transport = null;

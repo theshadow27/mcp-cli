@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
-import { consoleLogger, resolveRealpath } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
@@ -197,6 +197,14 @@ export abstract class AbstractWorkerServer {
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
+          const raw = event.data.supported_protocol_version;
+          const supported = typeof raw === "number" ? raw : undefined;
+          if (supported !== undefined && supported !== AGENT_PROTOCOL_VERSION) {
+            clearTimeout(timeout);
+            cleanup();
+            reject(new ProtocolVersionMismatchError(AGENT_PROTOCOL_VERSION, supported));
+            return;
+          }
           settled = true;
           clearTimeout(timeout);
           this.onWorkerReady(event.data);
@@ -340,7 +348,7 @@ export abstract class AbstractWorkerServer {
   // ── Protected hooks (override in subclasses) ──
 
   protected buildInitMessage(): Record<string, unknown> {
-    return { type: "init", daemonId: this.daemonId };
+    return { type: "init", daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION };
   }
 
   protected onWorkerReady(_data: unknown): void {}

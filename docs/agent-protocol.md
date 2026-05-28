@@ -1,6 +1,6 @@
 # Agent Protocol Specification
 
-**Version:** 1 (pre-negotiation — `protocol_version` field lands with version negotiation story)
+**Version:** 1
 
 **Status:** Normative. This document is the single source of truth for every message type that crosses the mcpd daemon ↔ agent worker boundary.
 
@@ -60,16 +60,18 @@ Sent once at worker startup. Worker must reply with `ready` (§3.1) or `error` (
 ```typescript
 {
   type: "init";
-  daemonId?: string;   // daemon instance identifier
+  daemonId?: string;            // daemon instance identifier
+  protocol_version?: number;    // version of this protocol the daemon speaks (see §8)
 }
 ```
 
-**Claude-only extensions** (`claude-session-worker.ts:48-56`):
+**Claude-only extensions** (`claude-session-worker.ts:48-57`):
 
 ```typescript
 {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
   wsPort?: number;       // port hint for WebSocket server
   quiet?: boolean;       // suppress worker-side console logging (tests)
   traceparent?: string;  // W3C Trace Context — worker span becomes child
@@ -81,6 +83,7 @@ Sent once at worker startup. Worker must reply with `ready` (§3.1) or `error` (
 | Field | claude | codex | acp | opencode | mock |
 |---|---|---|---|---|---|
 | `daemonId` | optional | optional | optional | optional | optional |
+| `protocol_version` | optional | optional | optional | optional | optional |
 | `wsPort` | optional | — | — | — | — |
 | `quiet` | optional | — | — | — | — |
 | `traceparent` | optional | — | — | — | — |
@@ -88,7 +91,7 @@ Sent once at worker startup. Worker must reply with `ready` (§3.1) or `error` (
 **Example:**
 
 ```json
-{ "type": "init", "daemonId": "mcpd-a1b2c3", "wsPort": 0, "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }
+{ "type": "init", "daemonId": "mcpd-a1b2c3", "protocol_version": 1, "wsPort": 0, "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }
 ```
 
 ### 2.2 `tools_changed`
@@ -180,24 +183,25 @@ Signals the worker is initialized and ready to accept MCP JSON-RPC messages.
 ```typescript
 {
   type: "ready";
-  [key: string]: unknown;  // provider-specific extensions allowed
+  supported_protocol_version?: number;  // version of this protocol the worker speaks (see §8)
+  [key: string]: unknown;               // provider-specific extensions allowed
 }
 ```
 
 **Claude extension:** includes `port: number` — the actual WebSocket server port.
 
-**Semantics:** The daemon awaits `ready` before wiring up the MCP `Client` transport. If `ready` is not received within the startup timeout, the daemon treats it as a spawn failure.
+**Semantics:** The daemon awaits `ready` before wiring up the MCP `Client` transport. If `ready` is not received within the startup timeout, the daemon treats it as a spawn failure. If `supported_protocol_version` is present and does not match `protocol_version` from init, the daemon rejects the worker with a `ProtocolVersionMismatchError`.
 
 **Example (Claude):**
 
 ```json
-{ "type": "ready", "port": 49152 }
+{ "type": "ready", "port": 49152, "supported_protocol_version": 1 }
 ```
 
 **Example (all others):**
 
 ```json
-{ "type": "ready" }
+{ "type": "ready", "supported_protocol_version": 1 }
 ```
 
 ### 3.2 `error`
@@ -582,14 +586,25 @@ If a future version aligns more closely with either protocol (e.g., adopting ACP
 
 ### Scheme
 
-Semver for the protocol version number (`protocol_version` field, added by the version-negotiation story):
+The protocol version is an integer. Bump semantics:
 
-- **Major:** breaking changes (removing fields, renaming message types, changing semantics)
-- **Minor:** additive changes (new optional fields, new message types)
+- **Major bump (N → N+1):** breaking changes (removing fields, renaming message types, changing semantics). All workers must be rebuilt before the daemon is upgraded.
+- Within a major version, additive changes (new optional fields, new message types) do not require a version bump.
 
 ### Current version
 
-**v1** — documents today's behavior. The `protocol_version` field does not yet exist in messages; it will be added by the version-negotiation story. Until then, absence of the field implies v1.
+**v1** — `AGENT_PROTOCOL_VERSION` is exported from `@mcp-cli/core` and used as the canonical source of truth for both daemon and workers.
+
+### Version assertion
+
+This is a hard gate, not a downgrade negotiation. There is no "accept N and N-1" grace window.
+
+1. Daemon sends `protocol_version: AGENT_PROTOCOL_VERSION` in the `init` message (§2.1).
+2. Worker echoes `supported_protocol_version: AGENT_PROTOCOL_VERSION` in the `ready` message (§3.1).
+3. If `supported_protocol_version` is present and does not match the daemon's `protocol_version`, the daemon rejects the worker with a `ProtocolVersionMismatchError` containing `{requested, supported, docUrl}`.
+4. If `supported_protocol_version` is absent (pre-negotiation worker), the daemon accepts the worker (backwards-compatible). A future major version may remove this fallback.
+
+**Upgrade procedure:** rebuild all worker binaries (`bun build`) before bumping `AGENT_PROTOCOL_VERSION` in the daemon. A stale worker binary will be rejected on its first spawn attempt.
 
 ### Back-compat rules
 
@@ -604,7 +619,7 @@ Within a major version:
 
 | Version | Date | Changes |
 |---|---|---|
-| 1 | 2026-05-28 | Initial formal specification of existing protocol. |
+| 1 | 2026-05-28 | Initial formal specification of existing protocol. Version negotiation via `protocol_version`/`supported_protocol_version` fields + `ProtocolVersionMismatchError`. |
 
 ---
 

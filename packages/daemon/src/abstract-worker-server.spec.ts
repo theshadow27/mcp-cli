@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import {
@@ -365,6 +365,96 @@ describe("AbstractWorkerServer", () => {
       expect(() => {
         internals(s).handleWorkerEvent({ type: "unknown:future:type" } as never);
       }).not.toThrow();
+    });
+  });
+
+  // ── Protocol version negotiation ──
+
+  describe("protocol version negotiation", () => {
+    test("buildInitMessage includes protocol_version", async () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      server = makeServer(StubWorkerServer, db);
+
+      await server.start();
+
+      const worker = internals(server).worker;
+      expect(worker).not.toBeNull();
+      const postMessage = (worker as unknown as { postMessage: ReturnType<typeof mock> }).postMessage;
+      const initCall = postMessage.mock.calls[0];
+      expect(initCall[0]).toMatchObject({
+        type: "init",
+        protocol_version: AGENT_PROTOCOL_VERSION,
+      });
+    });
+
+    test("accepts ready with matching supported_protocol_version", async () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      const factory = () => {
+        const w = {
+          postMessage: mock((_msg: unknown) => {
+            queueMicrotask(() => {
+              w.onmessage?.({
+                data: { type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION },
+              } as MessageEvent);
+            });
+          }),
+          terminate: mock(() => {}),
+          addEventListener: mock(() => {}),
+          removeEventListener: mock(() => {}),
+          onmessage: null as ((event: MessageEvent) => void) | null,
+          onerror: null as ((event: ErrorEvent | Event) => void) | null,
+        };
+        return w as unknown as Worker;
+      };
+      server = makeServer(StubWorkerServer, db, { workerFactory: factory });
+
+      await expect(server.start()).resolves.toBeDefined();
+    });
+
+    test("accepts ready without supported_protocol_version (backwards-compatible)", async () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      // Default mockWorkerFactory sends { type: "ready" } with no version — must still work
+      server = makeServer(StubWorkerServer, db);
+
+      await expect(server.start()).resolves.toBeDefined();
+    });
+
+    test("rejects ready with mismatched supported_protocol_version", async () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      const mismatchedVersion = AGENT_PROTOCOL_VERSION + 1;
+      const factory = () => {
+        const w = {
+          postMessage: mock((_msg: unknown) => {
+            queueMicrotask(() => {
+              w.onmessage?.({
+                data: { type: "ready", supported_protocol_version: mismatchedVersion },
+              } as MessageEvent);
+            });
+          }),
+          terminate: mock(() => {}),
+          addEventListener: mock(() => {}),
+          removeEventListener: mock(() => {}),
+          onmessage: null as ((event: MessageEvent) => void) | null,
+          onerror: null as ((event: ErrorEvent | Event) => void) | null,
+        };
+        return w as unknown as Worker;
+      };
+      server = makeServer(StubWorkerServer, db, { workerFactory: factory });
+
+      try {
+        await server.start();
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ProtocolVersionMismatchError);
+        const pErr = err as ProtocolVersionMismatchError;
+        expect(pErr.requested).toBe(AGENT_PROTOCOL_VERSION);
+        expect(pErr.supported).toBe(mismatchedVersion);
+        expect(pErr.message).toContain("agent-protocol.md");
+      }
     });
   });
 });
