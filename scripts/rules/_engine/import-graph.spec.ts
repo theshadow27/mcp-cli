@@ -89,6 +89,55 @@ describe("extractEdges", () => {
     expect(edges).toHaveLength(0);
   });
 
+  test("droppedEdges counts unresolvable specifiers in buildImportGraph", () => {
+    const resolve: SpecifierResolver = (spec) => {
+      if (spec === "./good") return "/test/good.ts";
+      throw new Error("not found");
+    };
+    const graph = buildImportGraph(["/test/root.ts"], {
+      readFile: (p) => {
+        if (p === "/test/root.ts") return `import "./good"; import "./missing";`;
+        return "";
+      },
+      resolve,
+    });
+    expect(graph.droppedEdges).toBe(1);
+  });
+
+  test("droppedEdges is zero when all specifiers resolve", () => {
+    const resolve: SpecifierResolver = (spec, _dir) => {
+      const target = spec.replace("./", "/test/").concat(".ts");
+      return target;
+    };
+    const graph = buildImportGraph(["/test/a.ts"], {
+      readFile: (p) => {
+        if (p === "/test/a.ts") return `import "./b";`;
+        return "";
+      },
+      resolve,
+    });
+    expect(graph.droppedEdges).toBe(0);
+  });
+
+  test("onUnresolvable callback is called for each dropped edge", () => {
+    const dropped: { specifier: string; fromFile: string }[] = [];
+    const resolve: SpecifierResolver = (spec) => {
+      if (spec === "./good") return "/test/good.ts";
+      throw new Error("not found");
+    };
+    buildImportGraph(["/test/root.ts"], {
+      readFile: (p) => {
+        if (p === "/test/root.ts") return `import "./good"; import "./bad1"; import "./bad2";`;
+        return "";
+      },
+      resolve,
+      onUnresolvable: (specifier, fromFile) => dropped.push({ specifier, fromFile }),
+    });
+    expect(dropped).toHaveLength(2);
+    expect(dropped[0]).toEqual({ specifier: "./bad1", fromFile: "/test/root.ts" });
+    expect(dropped[1]).toEqual({ specifier: "./bad2", fromFile: "/test/root.ts" });
+  });
+
   test("works with real Bun.resolveSync on actual files", () => {
     const repoRoot = process.cwd();
     const src = `import { IpcMethod } from "./ipc";`;

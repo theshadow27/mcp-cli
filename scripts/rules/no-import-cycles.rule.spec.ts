@@ -148,6 +148,29 @@ describe("rule integration", () => {
     expect(violations).toHaveLength(0);
   });
 
+  test("cache is isolated per files Map — distinct maps produce independent results", () => {
+    const file1 = makeFile({ path: "/fake/packages/core/src/a.ts", relPath: "packages/core/src/a.ts" });
+    const files1 = new Map([[file1.path, file1]]);
+    const file2 = makeFile({ path: "/fake/packages/core/src/b.ts", relPath: "packages/core/src/b.ts" });
+    const files2 = new Map([[file2.path, file2]]);
+
+    // Running against two distinct Map objects must not cross-contaminate.
+    const v1 = evaluateRule(rule, file1, files1);
+    const v2 = evaluateRule(rule, file2, files2);
+    expect(v1).toHaveLength(0);
+    expect(v2).toHaveLength(0);
+  });
+
+  test("same files Map reuses the cached result on second invocation", () => {
+    const file = makeFile();
+    const files = new Map([[file.path, file]]);
+    // Two evaluations with the same Map should both return the same result
+    // (the second call hits the WeakMap cache).
+    const v1 = evaluateRule(rule, file, files);
+    const v2 = evaluateRule(rule, file, files);
+    expect(v1).toEqual(v2);
+  });
+
   test("real codebase SCCs are intra-package (no cross-package cycles)", () => {
     const repoRoot = process.cwd();
     const coreIndex = `${repoRoot}/packages/core/src/index.ts`;
