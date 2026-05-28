@@ -63,7 +63,7 @@ packages/
 - **Auth**: macOS Keychain reader (Claude Code tokens) → SQLite → env vars
 - **Event bus**: unified per-daemon stream (`event-bus.ts`, `event-stream.ts`) fan-outs server / session / work-item / PR / CI / cost / quota events. Consumed by `mcx monitor`, phase scripts via `ctx.waitForEvent`, and automation modules. Payloads come pre-enriched by the producers so consumers don't need a hydration loop.
 - **Work items**: `work_items` SQLite table — every tracked issue/PR has a row with phase, branch, PR number, scrutiny, session bindings, round counters. Phase scripts read/write via `_work_items` MCP tools and `ctx.state`. `work_item.phase_changed` is emitted on every transition.
-- **Agent sessions**: daemon hosts Claude / Codex / ACP / OpenCode / Copilot / Gemini / Mock sessions as workers. WS protocol for Claude; subprocess wrappers for the others. Unified session-state machine; `mcx claude` and `mcx agent <provider>` share the same surface.
+- **Agent sessions**: daemon hosts Claude / Codex / ACP / OpenCode / Copilot / Gemini / Mock sessions as workers. WS protocol for Claude; subprocess wrappers for the others. Unified session-state machine; `mcx claude` and `mcx agent <provider>` share the same surface. The daemon↔worker protocol is formally specified in [`docs/agent-protocol.md`](docs/agent-protocol.md).
 - **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed via Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Two modes:
   - **defineAlias**: structured definitions with Zod input/output schemas, typed handler function. Virtual module provides `defineAlias`, `z`.
   - **Freeform** (legacy): side-effect scripts; `import { mcp, args, file, json }` auto-prepended if missing.
