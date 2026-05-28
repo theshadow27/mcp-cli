@@ -18,7 +18,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
-import { SITE_SERVER_NAME } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createBrowserHandlers, toolError as error, toolOk as ok, shouldAutoRestart } from "./site/browser-handlers";
@@ -60,6 +60,7 @@ void shouldAutoRestart; // re-exported above; suppress unused warning
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
 }
 
 interface ToolsChangedMessage {
@@ -460,7 +461,7 @@ self.onmessage = async (event: MessageEvent): Promise<void> => {
   if (isControlMessage(data) && data.type === "init") {
     try {
       await startServer();
-      self.postMessage({ type: "ready" });
+      self.postMessage({ type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       mcpServer = null;
       transport = null;

@@ -1,5 +1,7 @@
 export const AGENT_PROTOCOL_VERSION = 1;
 
+// Repo-relative path — not a URL. Consumers outside this repo should refer to
+// the agent-protocol.md file in the mcp-cli repository.
 export const AGENT_PROTOCOL_SPEC_URL = "docs/agent-protocol.md";
 
 export class ProtocolVersionMismatchError extends Error {

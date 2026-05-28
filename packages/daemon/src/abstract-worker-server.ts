@@ -1,12 +1,6 @@
 import { resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
-import {
-  AGENT_PROTOCOL_SPEC_URL,
-  AGENT_PROTOCOL_VERSION,
-  ProtocolVersionMismatchError,
-  consoleLogger,
-  resolveRealpath,
-} from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
@@ -203,7 +197,8 @@ export abstract class AbstractWorkerServer {
       }, 10_000);
       worker.onmessage = (event: MessageEvent) => {
         if (event.data?.type === "ready") {
-          const supported = event.data.supported_protocol_version as number | undefined;
+          const raw = event.data.supported_protocol_version;
+          const supported = typeof raw === "number" ? raw : undefined;
           if (supported !== undefined && supported !== AGENT_PROTOCOL_VERSION) {
             clearTimeout(timeout);
             cleanup();

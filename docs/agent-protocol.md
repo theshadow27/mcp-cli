@@ -61,7 +61,7 @@ Sent once at worker startup. Worker must reply with `ready` (§3.1) or `error` (
 {
   type: "init";
   daemonId?: string;            // daemon instance identifier
-  protocol_version?: number;    // version of this protocol the daemon speaks (see §7)
+  protocol_version?: number;    // version of this protocol the daemon speaks (see §8)
 }
 ```
 
@@ -183,7 +183,7 @@ Signals the worker is initialized and ready to accept MCP JSON-RPC messages.
 ```typescript
 {
   type: "ready";
-  supported_protocol_version?: number;  // version of this protocol the worker speaks (see §7)
+  supported_protocol_version?: number;  // version of this protocol the worker speaks (see §8)
   [key: string]: unknown;               // provider-specific extensions allowed
 }
 ```
@@ -586,21 +586,25 @@ If a future version aligns more closely with either protocol (e.g., adopting ACP
 
 ### Scheme
 
-Semver for the protocol version number (`protocol_version` field in `init`, `supported_protocol_version` field in `ready`):
+The protocol version is an integer. Bump semantics:
 
-- **Major:** breaking changes (removing fields, renaming message types, changing semantics)
-- **Minor:** additive changes (new optional fields, new message types)
+- **Major bump (N → N+1):** breaking changes (removing fields, renaming message types, changing semantics). All workers must be rebuilt before the daemon is upgraded.
+- Within a major version, additive changes (new optional fields, new message types) do not require a version bump.
 
 ### Current version
 
 **v1** — `AGENT_PROTOCOL_VERSION` is exported from `@mcp-cli/core` and used as the canonical source of truth for both daemon and workers.
 
-### Version negotiation
+### Version assertion
+
+This is a hard gate, not a downgrade negotiation. There is no "accept N and N-1" grace window.
 
 1. Daemon sends `protocol_version: AGENT_PROTOCOL_VERSION` in the `init` message (§2.1).
 2. Worker echoes `supported_protocol_version: AGENT_PROTOCOL_VERSION` in the `ready` message (§3.1).
-3. If `supported_protocol_version` is present and does not match the daemon's `protocol_version`, the daemon rejects the worker with a `ProtocolVersionMismatchError` containing `{requested, supported, doc_url}`.
-4. If `supported_protocol_version` is absent (pre-negotiation worker), the daemon accepts the worker (backwards-compatible).
+3. If `supported_protocol_version` is present and does not match the daemon's `protocol_version`, the daemon rejects the worker with a `ProtocolVersionMismatchError` containing `{requested, supported, docUrl}`.
+4. If `supported_protocol_version` is absent (pre-negotiation worker), the daemon accepts the worker (backwards-compatible). A future major version may remove this fallback.
+
+**Upgrade procedure:** rebuild all worker binaries (`bun build`) before bumping `AGENT_PROTOCOL_VERSION` in the daemon. A stale worker binary will be rejected on its first spawn attempt.
 
 ### Back-compat rules
 

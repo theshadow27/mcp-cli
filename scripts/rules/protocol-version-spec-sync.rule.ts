@@ -23,6 +23,7 @@ const SPEC_VERSION = /^\*\*Version:\*\*\s*(\d+)/m;
 const rule: CheckRule = {
   id: "protocol-version-spec-sync",
   kind: "check",
+  anchors: [CORE_REL_PATH],
   scold: "AGENT_PROTOCOL_VERSION and docs/agent-protocol.md version line are out of sync",
   guidance: [
     "The version number in AGENT_PROTOCOL_VERSION (packages/core/src/agent-protocol.ts)",
