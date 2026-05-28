@@ -5,7 +5,22 @@
  * it reads a JSON script file and emits canned responses with configurable delays.
  * No external binary, no network, fully deterministic.
  *
- * Script format: [{ "delay": 100, "text": "Hello" }, { "delay": 0, "text": "Done" }]
+ * Extended script format (discriminated union on `emit` or `wait_for`):
+ *
+ *   [
+ *     {"emit": "init", "session_id": "..."},
+ *     {"delay": 100, "emit": "response", "text": "Hello"},
+ *     {"emit": "tool_call", "name": "Read", "args": {"path": "/tmp/foo"}},
+ *     {"emit": "permission_request", "tool": "Write", "args": {}},
+ *     {"wait_for": "approve", "timeout_ms": 1000},
+ *     {"emit": "cost", "usd": 0.0012, "tokens_in": 100, "tokens_out": 50},
+ *     {"emit": "result", "text": "done"},
+ *     {"emit": "error", "message": "something broke"},
+ *     {"emit": "disconnect", "reason": "network"},
+ *     {"emit": "end"}
+ *   ]
+ *
+ * Legacy format still supported: [{"delay": 100, "text": "Hello"}]
  *
  * Protocol:
  *   1. Parent sends: { type: "init" }
@@ -15,7 +30,12 @@
  */
 
 import { resolve } from "node:path";
-import { type AgentSessionEvent, DEFAULT_TIMEOUT_MS, MOCK_SERVER_NAME } from "@mcp-cli/core";
+import {
+  type AgentPermissionRequest,
+  type AgentSessionEvent,
+  DEFAULT_TIMEOUT_MS,
+  MOCK_SERVER_NAME,
+} from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { MOCK_TOOLS } from "./mock-session/tools";
@@ -46,14 +66,97 @@ declare const self: Worker;
 let mcpServer: Server | null = null;
 let transport: WorkerServerTransport | null = null;
 
-// ── Script entry type ──
+// ── Script entry types (discriminated union) ──
 
-interface ScriptEntry {
+interface EmitInit {
+  emit: "init";
+  session_id?: string;
+  delay?: number;
+}
+
+interface EmitResponse {
+  emit: "response";
+  text: string;
+  delay?: number;
+}
+
+interface EmitToolCall {
+  emit: "tool_call";
+  name: string;
+  args?: Record<string, unknown>;
+  delay?: number;
+}
+
+interface EmitPermissionRequest {
+  emit: "permission_request";
+  tool: string;
+  args?: Record<string, unknown>;
+  request_id?: string;
+  delay?: number;
+}
+
+interface EmitCost {
+  emit: "cost";
+  usd?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  delay?: number;
+}
+
+interface EmitResult {
+  emit: "result";
+  text?: string;
+  delay?: number;
+}
+
+interface EmitError {
+  emit: "error";
+  message?: string;
+  messages?: string[];
+  delay?: number;
+}
+
+interface EmitDisconnect {
+  emit: "disconnect";
+  reason?: string;
+  delay?: number;
+}
+
+interface EmitEnd {
+  emit: "end";
+  delay?: number;
+}
+
+interface WaitForEntry {
+  wait_for: "approve" | "deny";
+  timeout_ms?: number;
+}
+
+interface LegacyEntry {
   delay: number;
   text: string;
 }
 
+type ScriptEntry =
+  | EmitInit
+  | EmitResponse
+  | EmitToolCall
+  | EmitPermissionRequest
+  | EmitCost
+  | EmitResult
+  | EmitError
+  | EmitDisconnect
+  | EmitEnd
+  | WaitForEntry
+  | LegacyEntry;
+
 // ── Session type ──
+
+interface PermissionWaiter {
+  requestId: string;
+  resolve: (verdict: "approve" | "deny") => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 interface MockSession {
   sessionId: string;
@@ -64,6 +167,10 @@ interface MockSession {
   interrupted: boolean;
   transcript: Array<{ role: string; text: string }>;
   createdAt: number;
+  pendingPermissions: Map<string, PermissionWaiter>;
+  totalCost: number;
+  totalTokens: number;
+  lastResultText: string | null;
   /** Resolves when the script finishes or is interrupted. */
   done: Promise<void>;
   resolveDone: () => void;
@@ -118,6 +225,9 @@ function forwardSessionEvent(sessionId: string, event: AgentSessionEvent): void 
         session: { sessionId, state: "init", model: event.model, cwd: event.cwd },
       });
       break;
+    case "session:permission_request":
+      self.postMessage({ type: "db:state", sessionId, state: "waiting_permission" });
+      break;
     case "session:result":
       self.postMessage({
         type: "db:cost",
@@ -142,44 +252,195 @@ function forwardSessionEvent(sessionId: string, event: AgentSessionEvent): void 
 
 // ── Script execution ──
 
-async function runScript(session: MockSession): Promise<void> {
-  session.state = "running";
-  self.postMessage({ type: "db:state", sessionId: session.sessionId, state: "active" });
+function isLegacyEntry(entry: ScriptEntry): entry is LegacyEntry {
+  return "text" in entry && "delay" in entry && !("emit" in entry) && !("wait_for" in entry);
+}
 
+function isWaitForEntry(entry: ScriptEntry): entry is WaitForEntry {
+  return "wait_for" in entry;
+}
+
+function getDelay(entry: ScriptEntry): number {
+  if ("delay" in entry && typeof entry.delay === "number") return entry.delay;
+  return 0;
+}
+
+async function applyDelay(session: MockSession, entry: ScriptEntry): Promise<boolean> {
+  const delay = getDelay(entry);
+  if (delay > 0) await Bun.sleep(delay);
+  return !session.interrupted;
+}
+
+let nextRequestId = 1;
+
+function emitInit(session: MockSession, sessionIdOverride?: string): void {
   forwardSessionEvent(session.sessionId, {
     type: "session:init",
-    sessionId: session.sessionId,
+    sessionId: sessionIdOverride ?? session.sessionId,
     provider: "mock",
     model: "mock",
     cwd: session.cwd,
   });
+}
+
+async function runScript(session: MockSession): Promise<void> {
+  session.state = "running";
+  self.postMessage({ type: "db:state", sessionId: session.sessionId, state: "active" });
+
+  let emittedTerminal = false;
+
+  // Auto-emit init unless the first entry is an explicit init
+  const firstEntry = session.entries[0];
+  const firstIsExplicitInit = firstEntry && "emit" in firstEntry && firstEntry.emit === "init";
+  if (!firstIsExplicitInit) {
+    emitInit(session);
+  }
 
   for (let i = 0; i < session.entries.length; i++) {
     if (session.interrupted) break;
 
     const entry = session.entries[i];
-    if (entry.delay > 0) {
-      await Bun.sleep(entry.delay);
-    }
-    if (session.interrupted) break;
 
-    session.transcript.push({ role: "assistant", text: entry.text });
+    if (isLegacyEntry(entry)) {
+      if (!(await applyDelay(session, entry))) break;
+      session.transcript.push({ role: "assistant", text: entry.text });
+      forwardSessionEvent(session.sessionId, { type: "session:response", text: entry.text });
+      continue;
+    }
+
+    if (isWaitForEntry(entry)) {
+      const lastPermission = [...session.pendingPermissions.values()].at(-1);
+      if (!lastPermission) continue;
+
+      const timeoutMs = entry.timeout_ms ?? 5000;
+      const verdict = await new Promise<"approve" | "deny" | "timeout">((res) => {
+        const timer = safeSetTimeout(() => res("timeout"), timeoutMs);
+        lastPermission.resolve = (v) => {
+          clearTimeout(timer);
+          res(v);
+        };
+      });
+
+      if (verdict === "timeout") {
+        session.transcript.push({ role: "system", text: `permission timeout (expected ${entry.wait_for})` });
+      } else {
+        session.transcript.push({ role: "system", text: `permission ${verdict}` });
+      }
+
+      session.pendingPermissions.delete(lastPermission.requestId);
+      self.postMessage({ type: "db:state", sessionId: session.sessionId, state: "active" });
+      continue;
+    }
+
+    if (!(await applyDelay(session, entry))) break;
+
+    switch (entry.emit) {
+      case "init": {
+        emitInit(session, entry.session_id);
+        break;
+      }
+
+      case "response": {
+        session.transcript.push({ role: "assistant", text: entry.text });
+        forwardSessionEvent(session.sessionId, { type: "session:response", text: entry.text });
+        break;
+      }
+
+      case "tool_call": {
+        const text = `[tool_call] ${entry.name}(${JSON.stringify(entry.args ?? {})})`;
+        session.transcript.push({ role: "assistant", text });
+        forwardSessionEvent(session.sessionId, { type: "session:response", text });
+        break;
+      }
+
+      case "permission_request": {
+        const requestId = entry.request_id ?? `mock-perm-${nextRequestId++}`;
+        const request: AgentPermissionRequest = {
+          requestId,
+          toolName: entry.tool,
+          input: entry.args ?? {},
+          inputSummary: `${entry.tool}(${JSON.stringify(entry.args ?? {})})`,
+        };
+
+        const waiter: PermissionWaiter = {
+          requestId,
+          resolve: () => {},
+          timer: safeSetTimeout(() => {}, 0),
+        };
+        clearTimeout(waiter.timer);
+        session.pendingPermissions.set(requestId, waiter);
+
+        forwardSessionEvent(session.sessionId, { type: "session:permission_request", request });
+        break;
+      }
+
+      case "cost": {
+        const cost = entry.usd ?? 0;
+        const tokens = (entry.tokens_in ?? 0) + (entry.tokens_out ?? 0);
+        session.totalCost += cost;
+        session.totalTokens += tokens;
+        self.postMessage({ type: "db:cost", sessionId: session.sessionId, cost, tokens });
+        break;
+      }
+
+      case "result": {
+        emittedTerminal = true;
+        session.state = "idle";
+        session.lastResultText = entry.text ?? "Mock script completed";
+        forwardSessionEvent(session.sessionId, {
+          type: "session:result",
+          result: {
+            result: session.lastResultText,
+            cost: session.totalCost,
+            tokens: session.totalTokens,
+            numTurns: 1,
+          },
+        });
+        break;
+      }
+
+      case "error": {
+        emittedTerminal = true;
+        const errors = entry.messages ?? (entry.message ? [entry.message] : ["mock error"]);
+        session.transcript.push({ role: "system", text: `error: ${errors.join("; ")}` });
+        forwardSessionEvent(session.sessionId, { type: "session:error", errors, cost: session.totalCost });
+        break;
+      }
+
+      case "disconnect": {
+        emittedTerminal = true;
+        const reason = entry.reason ?? "mock disconnect";
+        forwardSessionEvent(session.sessionId, { type: "session:disconnected", reason });
+        break;
+      }
+
+      case "end": {
+        emittedTerminal = true;
+        session.state = "ended";
+        forwardSessionEvent(session.sessionId, { type: "session:ended" });
+        break;
+      }
+    }
+  }
+
+  if (!emittedTerminal && !session.interrupted) {
+    session.state = "idle";
+    session.lastResultText = "Mock script completed";
     forwardSessionEvent(session.sessionId, {
-      type: "session:response",
-      text: entry.text,
+      type: "session:result",
+      result: {
+        result: session.lastResultText,
+        cost: session.totalCost,
+        tokens: session.totalTokens || session.entries.length,
+        numTurns: 1,
+      },
     });
   }
 
-  session.state = "idle";
-  forwardSessionEvent(session.sessionId, {
-    type: "session:result",
-    result: {
-      result: "Mock script completed",
-      cost: 0,
-      tokens: session.entries.length,
-      numTurns: 1,
-    },
-  });
+  for (const waiter of session.pendingPermissions.values()) {
+    clearTimeout(waiter.timer);
+  }
+  session.pendingPermissions.clear();
   session.resolveDone();
 }
 
@@ -205,9 +466,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       case "mock_wait":
         return await handleWait(args);
       case "mock_approve":
-        return { content: [{ type: "text", text: "Mock sessions do not generate permission requests" }] };
+        return handleApprove(args);
       case "mock_deny":
-        return { content: [{ type: "text", text: "Mock sessions do not generate permission requests" }] };
+        return handleDeny(args);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -264,6 +525,10 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
     interrupted: false,
     transcript: [{ role: "user", text: prompt }],
     createdAt: Date.now(),
+    pendingPermissions: new Map(),
+    totalCost: 0,
+    totalTokens: 0,
+    lastResultText: null,
     done,
     resolveDone,
   };
@@ -294,7 +559,12 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
         text: JSON.stringify({
           type: "session:result",
           sessionId,
-          result: { cost: 0, tokens: session.entries.length, numTurns: 1 },
+          result: {
+            result: session.lastResultText ?? "Mock script completed",
+            cost: session.totalCost,
+            tokens: session.totalTokens || session.entries.length,
+            numTurns: 1,
+          },
         }),
       },
     ],
@@ -465,6 +735,35 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
   await Promise.race([...waiters, Bun.sleep(timeoutMs)]);
   const list = [...sessions.values()].map((s) => ({ sessionId: s.sessionId, state: s.state }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
+}
+
+function resolvePermission(args: Record<string, unknown>, verdict: "approve" | "deny"): ToolResult {
+  const sessionId = args.sessionId as string;
+  const requestId = args.requestId as string;
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return { content: [{ type: "text", text: `Unknown session: ${sessionId}` }], isError: true };
+  }
+  const waiter = session.pendingPermissions.get(requestId);
+  if (!waiter) {
+    const pending = [...session.pendingPermissions.keys()];
+    return {
+      content: [{ type: "text", text: `No pending permission ${requestId}. Pending: [${pending.join(", ")}]` }],
+      isError: true,
+    };
+  }
+  clearTimeout(waiter.timer);
+  waiter.resolve(verdict);
+  session.pendingPermissions.delete(requestId);
+  return { content: [{ type: "text", text: JSON.stringify({ [`${verdict}d`]: true, requestId }) }] };
+}
+
+function handleApprove(args: Record<string, unknown>): ToolResult {
+  return resolvePermission(args, "approve");
+}
+
+function handleDeny(args: Record<string, unknown>): ToolResult {
+  return resolvePermission(args, "deny");
 }
 
 // ── Server startup ──

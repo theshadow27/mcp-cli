@@ -15,7 +15,8 @@ export const MOCK_TOOLS = buildAgentTools({
     prompt: {
       description:
         "Start a mock session with a task (JSON script file path), or send a follow-up prompt to an existing session. " +
-        "The mock reads canned responses from the JSON file and emits them with configurable delays. " +
+        "The mock reads a script of emit entries (response, tool_call, permission_request, cost, error, etc.) " +
+        "and replays them with configurable delays. See mock-session/CLAUDE.md for the DSL reference. " +
         "Returns the session ID immediately by default. Set wait=true to block until the script completes.",
       omitProperties: ["name"],
     },
@@ -41,10 +42,14 @@ export const MOCK_TOOLS = buildAgentTools({
         "If sessionId is provided, waits for that session only. Otherwise waits for any session.",
     },
     approve: {
-      description: "Approve a pending permission request (mock sessions do not generate permission requests).",
+      description:
+        "Approve a pending permission request from a mock session. " +
+        'The script must contain a {"emit": "permission_request"} entry followed by {"wait_for": "approve"}.',
     },
     deny: {
-      description: "Deny a pending permission request (mock sessions do not generate permission requests).",
+      description:
+        "Deny a pending permission request from a mock session. " +
+        'The script must contain a {"emit": "permission_request"} entry followed by {"wait_for": "deny"}.',
     },
   },
 });
