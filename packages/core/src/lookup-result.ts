@@ -14,6 +14,16 @@ export function isLookupFailure(value: unknown): value is LookupFailure {
     typeof value === "object" &&
     value !== null &&
     "_tag" in value &&
-    (value as Record<string, unknown>)._tag === "lookup-failure"
+    (value as { _tag: unknown })._tag === "lookup-failure"
   );
+}
+
+export function resolveGitRootOrCwd(
+  getGitRoot: () => LookupResult<string | null>,
+  printError: (msg: string) => void,
+  cwd: () => string = () => process.cwd(),
+): string {
+  const gitRoot = getGitRoot();
+  if (isLookupFailure(gitRoot)) printError(gitRoot.message);
+  return isLookupFailure(gitRoot) || gitRoot === null ? cwd() : gitRoot;
 }

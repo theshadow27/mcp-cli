@@ -19,6 +19,7 @@ import {
   type MailMessage,
   isLookupFailure,
   lookupFailure,
+  resolveGitRootOrCwd,
   validateAllowPatterns,
 } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
@@ -610,9 +611,7 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
   // Prefer getGitRoot() over getCwd(): it resolves to the main repo even when
   // invoked from a worktree, and works when core.bare=true is set on the
   // ambient repo (see #1243, #1206).
-  const gitRoot = d.getGitRoot();
-  if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-  const repoRoot = isLookupFailure(gitRoot) || gitRoot === null ? d.getCwd() : gitRoot;
+  const repoRoot = resolveGitRootOrCwd(d.getGitRoot, d.printError, d.getCwd);
   const wtConfig = readWorktreeConfig(repoRoot);
 
   if (hasWorktreeHooks(wtConfig)) {

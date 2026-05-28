@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { isLookupFailure, lookupFailure } from "./lookup-result";
+import { describe, expect, mock, test } from "bun:test";
+import { isLookupFailure, lookupFailure, resolveGitRootOrCwd } from "./lookup-result";
 
 describe("lookupFailure", () => {
   test("creates a tagged failure object", () => {
@@ -32,5 +32,35 @@ describe("isLookupFailure", () => {
 
   test("returns false for objects with wrong _tag", () => {
     expect(isLookupFailure({ _tag: "something-else", message: "hi" })).toBe(false);
+  });
+});
+
+describe("resolveGitRootOrCwd", () => {
+  test("returns git root on success", () => {
+    const result = resolveGitRootOrCwd(
+      () => "/repo",
+      mock(() => {}),
+    );
+    expect(result).toBe("/repo");
+  });
+
+  test("falls back to cwd when git root is null", () => {
+    const result = resolveGitRootOrCwd(
+      () => null,
+      mock(() => {}),
+      () => "/fallback",
+    );
+    expect(result).toBe("/fallback");
+  });
+
+  test("logs and falls back to cwd on LookupFailure", () => {
+    const printError = mock(() => {});
+    const result = resolveGitRootOrCwd(
+      () => lookupFailure("git not found"),
+      printError,
+      () => "/fallback",
+    );
+    expect(result).toBe("/fallback");
+    expect(printError).toHaveBeenCalledWith("git not found");
   });
 });

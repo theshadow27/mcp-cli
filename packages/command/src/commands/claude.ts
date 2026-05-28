@@ -52,7 +52,7 @@ import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { LookupResult, MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
-import { isLookupFailure, lookupFailure } from "@mcp-cli/core";
+import { isLookupFailure, lookupFailure, resolveGitRootOrCwd } from "@mcp-cli/core";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
@@ -181,12 +181,6 @@ function getGitRoot(): LookupResult<string | null> {
   } catch (e) {
     return lookupFailure(`git rev-parse failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-}
-
-function resolveGitRootOrCwd(d: Pick<ClaudeDeps, "getGitRoot" | "printError">): string {
-  const gitRoot = d.getGitRoot();
-  if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-  return isLookupFailure(gitRoot) || gitRoot === null ? process.cwd() : gitRoot;
 }
 
 export const defaultDeps: ClaudeDeps = {
@@ -586,9 +580,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   let worktreeResult: { path: string } | undefined;
   if (parsed.worktree) {
     try {
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-      const repoRoot = isLookupFailure(gitRoot) || gitRoot === null ? process.cwd() : gitRoot;
+      const repoRoot = resolveGitRootOrCwd(d.getGitRoot, d.printError);
       const wt = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "claude/" }, d);
       Object.assign(toolArgs, wt.toolArgs);
       worktreeResult = wt;
@@ -617,7 +609,7 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // Write null → initial transition so downstream phases can infer "from"
   // from the log rather than the Tier-3 work_items.phase fallback (#1623).
   if (parsed.workItemId) {
-    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d));
+    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d.getGitRoot, d.printError));
   }
 }
 
@@ -635,7 +627,7 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   let cwd = parsed.cwd;
   if (parsed.worktree) {
     try {
-      const repoRoot = resolveGitRootOrCwd(d);
+      const repoRoot = resolveGitRootOrCwd(d.getGitRoot, d.printError);
       const result = createWorktree({ name: parsed.worktree, repoRoot, branchPrefix: "headed/" }, d);
       cwd = result.path;
     } catch (e) {
@@ -651,7 +643,7 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
 
   // Write null → initial transition after the terminal opens (#1623).
   if (parsed.workItemId) {
-    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d));
+    tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d.getGitRoot, d.printError));
   }
 }
 

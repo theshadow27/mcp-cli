@@ -1406,6 +1406,45 @@ describe("mcx claude ls", () => {
     }
   });
 
+  test("logs LookupFailure from getGitRoot to stderr and falls back", async () => {
+    const { lookupFailure } = await import("@mcp-cli/core");
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(SESSION_LIST)),
+      getGitRoot: mock(() => lookupFailure("git not on PATH")),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      expect(deps.printError).toHaveBeenCalledWith("git not on PATH");
+      expect(logSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("logs LookupFailure from getDiffStats as dash in display", async () => {
+    const { lookupFailure } = await import("@mcp-cli/core");
+    const sessions = [{ ...SESSION_LIST[0], worktree: "/tmp/wt" }];
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(sessions)),
+      getDiffStats: mock(async () => lookupFailure("git diff failed")),
+      getGitRoot: mock(() => "/repo"),
+    });
+
+    const logSpy = mock(() => {});
+    const origLog = console.log;
+    console.log = logSpy;
+    try {
+      await cmdClaude(["ls"], deps);
+      expect(deps.printError).toHaveBeenCalledWith("git diff failed");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
   test("accepts 'list' alias", async () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult([])),

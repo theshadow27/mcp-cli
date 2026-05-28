@@ -325,6 +325,57 @@ describe("agent codex ls", () => {
   });
 });
 
+describe("agent LookupFailure handling", () => {
+  const claudeSessions = [
+    {
+      sessionId: "lf-1111-2222-3333-444444444444",
+      state: "active",
+      model: "opus-4",
+      cwd: "/tmp",
+      cost: 0,
+      tokens: 100,
+      numTurns: 1,
+      pendingPermissions: 0,
+      pendingPermissionDetails: [],
+      worktree: "/tmp/wt",
+      processAlive: true,
+    },
+  ];
+
+  test("logs LookupFailure from getGitRoot to printError and falls back", async () => {
+    const { lookupFailure } = await import("@mcp-cli/core");
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(claudeSessions)),
+      getGitRoot: mock(() => lookupFailure("git not on PATH")),
+    });
+    const con = mockConsole();
+    try {
+      await cmdAgent(["claude", "ls"], deps);
+    } finally {
+      con.restore();
+    }
+    const calls = (deps.printError as Mock<(...a: unknown[]) => void>).mock.calls;
+    expect(calls.some((c) => String(c[0]).includes("git not on PATH"))).toBe(true);
+  });
+
+  test("logs LookupFailure from getDiffStats to printError", async () => {
+    const { lookupFailure } = await import("@mcp-cli/core");
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult(claudeSessions)),
+      getDiffStats: mock(async () => lookupFailure("git diff failed")),
+      getGitRoot: mock(() => "/repo"),
+    });
+    const con = mockConsole();
+    try {
+      await cmdAgent(["claude", "ls"], deps);
+    } finally {
+      con.restore();
+    }
+    const calls = (deps.printError as Mock<(...a: unknown[]) => void>).mock.calls;
+    expect(calls.some((c) => String(c[0]).includes("git diff failed"))).toBe(true);
+  });
+});
+
 describe("agent codex send", () => {
   test("calls codex_prompt with sessionId and prompt", async () => {
     const deps = makeDeps({
