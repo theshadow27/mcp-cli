@@ -185,7 +185,7 @@ function gitRoot(): string {
   try {
     const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
     if (r.ok) return r.stdout.trim();
-  } catch {}
+  } catch {} // dotw-todo prod-empty-catch: fallback to cwd is intentional but should log — fix in #2535
   return process.cwd();
 }
 

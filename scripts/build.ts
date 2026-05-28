@@ -237,7 +237,7 @@ if (releaseMode) {
   for (const p of bundleCleanup) {
     try {
       unlinkSync(p);
-    } catch {}
+    } catch {} // dotw-ignore prod-empty-catch: best-effort cleanup of temp files
   }
   console.log("Release build complete.");
 } else {
@@ -255,7 +255,7 @@ if (releaseMode) {
   for (const p of bundleCleanup) {
     try {
       unlinkSync(p);
-    } catch {}
+    } catch {} // dotw-ignore prod-empty-catch: best-effort cleanup of temp files
   }
   console.log("Built: dist/mcpd, dist/mcx, dist/mcpctl");
 }

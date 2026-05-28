@@ -78,7 +78,7 @@ export class StateDb {
   /**
    * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
    *
-   * Replaces the legacy bare `try { ALTER TABLE } catch {}` pattern that silently
+   * Replaces the legacy bare try/catch-discard pattern that
    * swallowed ALL exceptions (disk-full, permissions, corruption). Each migration
    * step and its version bump are atomic (single transaction); failures bubble up.
    *
