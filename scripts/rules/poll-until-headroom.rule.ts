@@ -66,6 +66,31 @@ function collectCall(lines: string[], startLine: number, parenOffset: number): s
 }
 
 /**
+ * Find the start of a real line-comment `//` on a line, ignoring `//` that
+ * appears inside a string literal. Returns -1 if there is no line comment.
+ */
+function realCommentStart(line: string): number {
+  let inStr: '"' | "'" | "`" | null = null;
+  for (let i = 0; i < line.length - 1; i++) {
+    const ch = line[i];
+    if (inStr !== null) {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inStr = ch;
+    } else if (ch === "/" && line[i + 1] === "/") {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * Find the index of the first comma at depth 0 (top-level) within `s`,
  * correctly skipping over nested parens, brackets, braces, and string literals.
  * Returns -1 if none found.
@@ -132,9 +157,9 @@ const rule: CheckRule = {
       const pollIdx = line.indexOf("pollUntil(");
       if (pollIdx === -1) continue;
 
-      // Skip commented-out calls: if "//" appears before pollUntil on the line,
-      // the call is dead code — not a live violation (#2293).
-      const commentStart = line.indexOf("//");
+      // Skip commented-out calls: if a real "//" (not inside a string literal)
+      // appears before pollUntil on the line, the call is dead code (#2293, #2371).
+      const commentStart = realCommentStart(line);
       if (commentStart !== -1 && commentStart < pollIdx) continue;
 
       // parenOffset points to the '(' of the call

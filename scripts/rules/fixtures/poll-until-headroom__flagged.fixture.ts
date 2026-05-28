@@ -1,6 +1,6 @@
 /**
  * @rule poll-until-headroom
- * @expect 5
+ * @expect 6
  * @path packages/daemon/src/ipc-server.spec.ts
  *
  * An explicit deadline ≥ the 5000ms watchdog can never fire its own error —
@@ -32,3 +32,7 @@ await pollUntil(
   () => condition(),
   10_000 // needs time for daemon startup
 );
+
+// URL string earlier on the same line — "//" is inside a string, not a comment;
+// the call is live and the deadline ≥ watchdog — must still be flagged (#2371)
+const url = "http://localhost"; await pollUntil(condition, 10_000);
