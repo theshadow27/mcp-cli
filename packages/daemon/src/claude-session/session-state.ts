@@ -92,6 +92,13 @@ export class SessionState {
    */
   parseMismatch = false;
 
+  /**
+   * True after the first `session:init` event has been emitted. Subsequent
+   * `system/init` messages (stdio re-emits one every turn) still update
+   * model/cwd but suppress the event to avoid downstream noise.
+   */
+  private initEmitted = false;
+
   constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
     this.sessionId = sessionId;
     this.state = "connecting";
@@ -184,12 +191,14 @@ export class SessionState {
   reconnect(): void {
     if (this.state !== "disconnected") return;
     this.state = "connecting";
+    this.initEmitted = false;
   }
 
   /** Reset state for a /clear (kill+respawn). Preserves cumulative cost/tokens. */
   resetForClear(): SessionEvent[] {
     if (this.state === "ended") return [];
     this.state = "connecting";
+    this.initEmitted = false;
     this.pendingPermissions.clear();
     return [{ type: "session:cleared" }];
   }
@@ -242,6 +251,13 @@ export class SessionState {
     if (this.state === "connecting") {
       this.state = "init";
     }
+
+    // Stdio re-emits system/init every turn. Suppress the event after the
+    // first to avoid spurious downstream noise (model/cwd are still updated).
+    if (this.initEmitted) {
+      return [];
+    }
+    this.initEmitted = true;
 
     return [
       {

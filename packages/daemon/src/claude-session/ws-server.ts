@@ -119,6 +119,12 @@ export interface SessionConfig {
   resumeSessionId?: string;
   /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
   repoRoot?: string;
+  /**
+   * Resolved transport for this session: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
+   * Resolved from CliConfig.transport + claude version at spawn time.
+   * Default: `"ws"` (preserves legacy behavior).
+   */
+  transport?: "ws" | "stdio";
 }
 
 export interface TranscriptEntry {
@@ -244,6 +250,10 @@ export type SpawnFn = (
   kill: (signal?: number) => void;
   stderr?: ReadableStream<Uint8Array> | null;
   stderrTail?: () => string;
+  /** Readable stdout stream — present when opts.stdout === "pipe". Used by stdio transport. */
+  stdout?: ReadableStream<Uint8Array> | null;
+  /** Writable stdin sink — present when opts.stdin === "pipe". Used by stdio transport. */
+  stdin?: { write(data: string | Uint8Array): number | Promise<number>; flush(): number | Promise<number> } | null;
 };
 
 interface ResultWaiter {
@@ -342,6 +352,10 @@ interface WsSession {
   traceparent: string | null;
   /** Per-session idle watchdog — detects stalled sessions (#1585). */
   stuckDetector: StuckDetector | null;
+  /** Transport mode for this session. "ws" = WebSocket (sdk-url), "stdio" = pipes. */
+  transport: "ws" | "stdio";
+  /** Writable stdin sink for stdio transport. Null for WS sessions. */
+  stdioWriter: { write(data: string | Uint8Array): number | Promise<number>; flush(): number | Promise<number> } | null;
   /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
@@ -683,6 +697,8 @@ export class ClaudeWsServer {
         pendingInterruptReason: null,
         traceparent: null,
         stuckDetector: null,
+        transport: "ws",
+        stdioWriter: null,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -779,6 +795,8 @@ export class ClaudeWsServer {
       pendingInterruptReason: null,
       traceparent: null,
       stuckDetector: null,
+      transport: config.transport ?? "ws",
+      stdioWriter: null,
     });
     return name;
   }
@@ -792,88 +810,30 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     // Store traceparent so respawn after clear can reuse it
     if (traceparent) session.traceparent = traceparent;
-    const port = this.port;
-    if (!port) throw new Error("WS server not started");
 
     if (this.spawnDisabledReason !== null) {
       throw new Error(this.spawnDisabledReason);
     }
 
-    // When TLS is active, the spawn URL must use `wss://` and an IPv6 host
-    // that maps onto a hostname in claude's allowlist (post-2.1.120). The
-    // patcher (#1808) rewrites `claude-staging.fedstart.com` so that the
-    // allowlist contains the canonicalized form of `[::1]`.
-    const sdkUrl = this.tlsConfig
-      ? `wss://[::1]:${port}/session/${sessionId}`
-      : `ws://localhost:${port}/session/${sessionId}`;
-    const cmd = [
-      this.binaryPath,
-      "--sdk-url",
-      sdkUrl,
-      "--permission-mode",
-      "default",
-      "-p",
-      "",
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--input-format",
-      "stream-json",
-    ];
+    const useStdio = session.transport === "stdio";
 
-    if (session.config.model) {
-      cmd.push("--model", session.config.model);
-    }
-    let cliAllowedTools = session.config.allowedTools;
-    if (session.config.worktree && cliAllowedTools?.length) {
-      cliAllowedTools = cliAllowedTools.filter((t) => {
-        const baseName = t.split("(")[0] ?? t;
-        return !CONTAINMENT_WRITE_TOOLS.has(baseName);
-      });
-    }
-    if (cliAllowedTools?.length) {
-      cmd.push("--allowedTools", ...cliAllowedTools);
-    }
-    if (session.config.worktree && !session.config.cwd) {
-      // Only pass --worktree when cwd is not set. When both are present,
-      // the worktree was pre-created by a lifecycle hook and cwd already
-      // points to it — passing --worktree would make Claude try to create
-      // another worktree.
-      cmd.push("--worktree", session.config.worktree);
-    }
-    if (session.config.resumeSessionId) {
-      if (session.config.resumeSessionId === "continue") {
-        cmd.push("--continue");
-      } else {
-        cmd.push("--resume", session.config.resumeSessionId);
-      }
-    }
+    const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
 
     const envOverrides: Record<string, string | undefined> = {};
     if (traceparent) envOverrides.TRACEPARENT = traceparent;
-    // Pin GIT_DIR/GIT_WORK_TREE so the worker cannot escape its worktree via
-    // git even if cwd drifts. Only applies when a pre-created worktree is in
-    // use (both cwd and worktree name are set — see comment at --worktree flag
-    // above).
     if (session.config.cwd && session.config.worktree) {
       envOverrides.GIT_DIR = `${session.config.cwd}/.git`;
       envOverrides.GIT_WORK_TREE = session.config.cwd;
     }
-    // In TLS mode the spawn URL is `wss://[::1]:...` against our self-signed
-    // cert. Bun's WebSocket client doesn't honor NODE_EXTRA_CA_CERTS or per-
-    // request `rejectUnauthorized: false`, so we widen trust globally for the
-    // spawned process. This also disables CA validation for any HTTPS the
-    // spawned claude makes (Anthropic API, web search). Issue #1829 tracks
-    // the strict-mode upgrade that detects when our cert is in the system
-    // keychain and uses `NODE_USE_SYSTEM_CA=1` instead.
-    if (this.tlsConfig) {
+    // TLS env only needed for WS transport (sdk-url against self-signed cert)
+    if (!useStdio && this.tlsConfig) {
       envOverrides.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     }
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
-      stdout: "ignore",
+      stdout: useStdio ? "pipe" : "ignore",
       stderr: "pipe",
-      stdin: "ignore",
+      stdin: useStdio ? "pipe" : "ignore",
       env: Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
     });
 
@@ -882,19 +842,22 @@ export class ClaudeWsServer {
     session.proc = proc;
     session.spawnAlive = true;
 
-    // Start connect timeout — if no WS connection arrives within the deadline,
-    // kill the stuck process and transition to disconnected. This prevents sessions
-    // from being stuck in "connecting" forever when the Claude CLI fails to establish
-    // a WebSocket connection (e.g., race after daemon auto-start, #837).
+    if (useStdio) {
+      session.stdioWriter = proc.stdin ?? null;
+      this.startStdioReader(sessionId, session, proc);
+    }
+
+    // Connect timeout — for WS: no WS connection within deadline.
+    // For stdio: no stdout line within deadline.
     if (session.connectTimer) clearTimeout(session.connectTimer);
     session.connectTimer = safeSetTimeout(() => {
       session.connectTimer = null;
-      // Only act if still in connecting state with no WS
-      if (session.ws !== null || session.state.state !== "connecting") return;
+      if (session.state.state !== "connecting") return;
+      // For WS, also check ws presence
+      if (!useStdio && session.ws !== null) return;
       this.logger.error(
-        `[_claude] Connect timeout for session ${sessionId} — Claude CLI did not connect within ${this.connectTimeoutMs}ms`,
+        `[_claude] Connect timeout for session ${sessionId} — Claude CLI did not connect within ${this.connectTimeoutMs}ms (transport: ${session.transport})`,
       );
-      // Kill the stuck process
       if (session.proc) {
         try {
           session.proc.kill();
@@ -902,7 +865,6 @@ export class ClaudeWsServer {
           /* already dead */
         }
       }
-      // Transition to disconnected so callers see a clear state
       const events = session.state.disconnect("connect timeout");
       for (const event of events) {
         this.onSessionEvent?.(sessionId, event);
@@ -993,16 +955,191 @@ export class ClaudeWsServer {
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
     session.pendingInterruptReason = null;
-    this.sendToWs(session, outbound);
+    this.sendToSession(session, outbound);
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
+  }
+
+  /**
+   * Build the CLI command array for spawning claude.
+   * WS transport: includes --sdk-url pointing at our WS server.
+   * Stdio transport: no --sdk-url, no empty -p; initial prompt delivered via stdin.
+   */
+  private buildSpawnCmd(sessionId: string, session: WsSession, useStdio: boolean): string[] {
+    const cmd = [this.binaryPath];
+
+    if (!useStdio) {
+      const port = this.port;
+      if (!port) throw new Error("WS server not started");
+      const sdkUrl = this.tlsConfig
+        ? `wss://[::1]:${port}/session/${sessionId}`
+        : `ws://localhost:${port}/session/${sessionId}`;
+      cmd.push("--sdk-url", sdkUrl);
+      // WS transport needs an empty prompt placeholder; the real prompt
+      // is delivered via the first WS message in handleOpen.
+      cmd.push("-p", "");
+    }
+
+    cmd.push(
+      "--permission-mode",
+      "default",
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+    );
+
+    if (session.config.model) {
+      cmd.push("--model", session.config.model);
+    }
+    let cliAllowedTools = session.config.allowedTools;
+    if (session.config.worktree && cliAllowedTools?.length) {
+      cliAllowedTools = cliAllowedTools.filter((t) => {
+        const baseName = t.split("(")[0] ?? t;
+        return !CONTAINMENT_WRITE_TOOLS.has(baseName);
+      });
+    }
+    if (cliAllowedTools?.length) {
+      cmd.push("--allowedTools", ...cliAllowedTools);
+    }
+    if (session.config.worktree && !session.config.cwd) {
+      cmd.push("--worktree", session.config.worktree);
+    }
+    if (session.config.resumeSessionId) {
+      if (session.config.resumeSessionId === "continue") {
+        cmd.push("--continue");
+      } else {
+        cmd.push("--resume", session.config.resumeSessionId);
+      }
+    }
+    return cmd;
+  }
+
+  /**
+   * Start the stdout reader loop for a stdio-transport session.
+   * Reads NDJSON lines from the process stdout and dispatches them through
+   * the same handleMessage/handleSessionEvent path as the WS transport.
+   * Also sends the initial user message via stdin to kick off the conversation.
+   */
+  private startStdioReader(sessionId: string, session: WsSession, proc: ReturnType<SpawnFn>): void {
+    const stdout = proc.stdout;
+    if (!stdout) {
+      this.logger.error(`[_claude] stdio transport but stdout is null for session ${sessionId}`);
+      return;
+    }
+
+    // Send initial user message via stdin — this is the equivalent of
+    // handleOpen's ws.send(userMessage) for WS transport.
+    const prompt = session.config.prompt;
+    const outbound = userMessage(prompt, sessionId);
+    this.sendToSession(session, outbound);
+    this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
+
+    const reader = stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const drain = async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          for (let nlIdx = buffer.indexOf("\n"); nlIdx !== -1; nlIdx = buffer.indexOf("\n")) {
+            const line = buffer.slice(0, nlIdx).trim();
+            buffer = buffer.slice(nlIdx + 1);
+            if (!line) continue;
+
+            // First line clears the connect timeout — equivalent of WS open
+            if (session.connectTimer) {
+              clearTimeout(session.connectTimer);
+              session.connectTimer = null;
+            }
+
+            this.handleStdioLine(sessionId, session, line);
+          }
+        }
+      } catch {
+        // stream closed — expected on kill
+      }
+      // Flush remaining buffer
+      const tail = decoder.decode();
+      if (tail) buffer += tail;
+      const remaining = buffer.trim();
+      if (remaining) {
+        this.handleStdioLine(sessionId, session, remaining);
+      }
+    };
+
+    drain();
+  }
+
+  /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
+  private handleStdioLine(sessionId: string, session: WsSession, line: string): void {
+    let messages: NdjsonMessage[];
+    try {
+      messages = parseFrame(line);
+    } catch {
+      this.logger.error(`[_claude] Failed to parse stdio NDJSON from session ${sessionId}`);
+      return;
+    }
+
+    for (const msg of messages) {
+      this.addTranscript(session, "inbound", msg);
+      const events = session.state.handleMessage(msg);
+
+      if (session.state.parseMismatch) {
+        this.logger.error(
+          `[_claude] Schema mismatch for session ${sessionId}: ${msg.type}` +
+            `${msg.subtype ? `/${msg.subtype}` : ""} used fallback parsing ` +
+            `(state: "${session.state.state}", keys: ${Object.keys(msg).join(", ")})`,
+        );
+      }
+
+      if (msg.type === "tool_progress" || msg.type === "stream_event") {
+        this.recordSessionProgress(sessionId, session);
+      }
+
+      if (events.length === 0 && !session.state.parseMismatch && !KNOWN_MSG_TYPES.has(msg.type)) {
+        this.logger.error(
+          `[_claude] Unrecognized message type "${msg.type}" from session ${sessionId} — ` +
+            `message was silently dropped. Keys: ${Object.keys(msg).join(", ")}`,
+        );
+      }
+
+      if (msg.type === "result" && events.length === 0) {
+        this.logger.error(
+          `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
+            `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
+        );
+      }
+
+      for (const event of events) {
+        try {
+          this.onSessionEvent?.(sessionId, event);
+        } catch (err) {
+          this.logger.error(
+            `[_claude] onSessionEvent callback threw for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
+        try {
+          this.handleSessionEvent(sessionId, session, event);
+        } catch (err) {
+          this.logger.error(
+            `[_claude] handleSessionEvent failed for session ${sessionId}, event ${event.type}: ${err instanceof Error ? err.stack : err}`,
+          );
+        }
+      }
+    }
   }
 
   /** Respond to a pending permission request. */
   respondToPermission(sessionId: string, requestId: string, allow: boolean, message?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.respondToPermission(requestId, allow, message);
-    this.sendToWs(session, outbound);
+    this.sendToSession(session, outbound);
     this.recordSessionProgress(sessionId, session);
   }
 
@@ -1010,7 +1147,7 @@ export class ClaudeWsServer {
   interrupt(sessionId: string, reason?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
-    this.sendToWs(session, outbound);
+    this.sendToSession(session, outbound);
     session.pendingInterruptReason = reason ?? null;
   }
 
@@ -1109,6 +1246,7 @@ export class ClaudeWsServer {
       }
     }
     session.ws = null;
+    session.stdioWriter = null;
 
     // Kill process and wait for exit before respawning.
     // Null the ref first so the proc.exited handler (which checks session.proc !== proc)
@@ -1140,7 +1278,7 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const requestId = `mcpd-model-${this.nextRequestId++}`;
     const outbound = setModelRequest(requestId, model);
-    this.sendToWs(session, outbound);
+    this.sendToSession(session, outbound);
 
     // Update tracked model in state
     const events = session.state.setModel(model);
@@ -2044,7 +2182,7 @@ export class ClaudeWsServer {
       }
       if (result.action === "deny") {
         session.state.respondToPermission(requestId, false, result.reason);
-        this.sendToWs(
+        this.sendToSession(
           session,
           permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
         );
@@ -2070,7 +2208,7 @@ export class ClaudeWsServer {
       : permissionDeny(requestId, decision.message ?? "Denied");
 
     session.state.respondToPermission(requestId, decision.allow, decision.message);
-    this.sendToWs(session, outbound);
+    this.sendToSession(session, outbound);
   }
 
   // ── Stuck detection (#1585) ──
@@ -2302,13 +2440,24 @@ export class ClaudeWsServer {
     return generateSessionName(usedNames);
   }
 
-  private sendToWs(session: WsSession, message: string): void {
+  private sendToSession(session: WsSession, message: string): void {
+    if (session.transport === "stdio") {
+      if (session.stdioWriter) {
+        try {
+          session.stdioWriter.write(`${message}\n`);
+          session.stdioWriter.flush();
+        } catch (err) {
+          this.logger.error(`[_claude] stdio write failed: ${err}`);
+        }
+      }
+      return;
+    }
+    // WS transport
     if (session.ws?.readyState === WS_OPEN) {
       try {
         session.ws.send(message);
       } catch (err) {
         this.logger.error(`[_claude] WebSocket send failed: ${err}`);
-        // Find sessionId for this session
         for (const [sid, s] of this.sessions) {
           if (s === session) {
             this.disconnectSessionWs(sid, session, "WebSocket send failed");
@@ -2422,6 +2571,7 @@ export class ClaudeWsServer {
       }
     }
     session.ws = null;
+    session.stdioWriter = null;
 
     // Remove from map before any await so concurrent bye() or terminateSession()
     // calls that start after the next microtask turn won't find the session in the
@@ -2602,13 +2752,7 @@ function defaultSpawn(
     stdin?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
   },
-): {
-  pid: number;
-  exited: Promise<number>;
-  kill: (signal?: number) => void;
-  stderr?: ReadableStream<Uint8Array> | null;
-  stderrTail?: () => string;
-} {
+): ReturnType<SpawnFn> {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
   // it's a nested session and refuse to start.
   const env = { ...process.env, ...opts.env };
@@ -2640,5 +2784,7 @@ function defaultSpawn(
       else r.handle.kill();
     },
     stderrTail: () => r.handle.stderrTail(),
+    stdout: r.handle.stdout,
+    stdin: r.handle.stdin ?? null,
   };
 }

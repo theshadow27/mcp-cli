@@ -136,9 +136,10 @@ describe("SessionState", () => {
       ]);
     });
 
-    test("does not regress state when CLI re-sends system/init after reconnect", () => {
-      // Simulate: session completes work (idle), WS drops, CLI reconnects
-      // and re-sends system/init — state should NOT regress to "init"
+    test("does not regress state when CLI re-sends system/init without reconnect", () => {
+      // Simulate: session completes work (idle), CLI re-sends system/init
+      // (stdio per-turn behavior). State should NOT regress; event is suppressed
+      // by initEmitted dedupe.
       const session = new SessionState("sess-1");
       session.handleMessage(SYSTEM_INIT);
       session.handleMessage(ASSISTANT_MSG);
@@ -146,7 +147,7 @@ describe("SessionState", () => {
       expect(session.state).toBe("idle");
       expect(session.cost).toBe(0.05);
 
-      // CLI reconnects and re-sends system/init
+      // CLI re-sends system/init (without reconnect cycle)
       const events = session.handleMessage(SYSTEM_INIT);
 
       // State stays "idle" — no regression
@@ -154,11 +155,28 @@ describe("SessionState", () => {
       // Model/cwd still updated
       expect(session.model).toBe("claude-sonnet-4-6");
       expect(session.cwd).toBe("/home/user/project");
-      // Event carries the actual state, not "init"
-      expect(events[0].type).toBe("session:init");
-      expect((events[0] as { state: string }).state).toBe("idle");
+      // Subsequent init is suppressed (dedupe)
+      expect(events).toHaveLength(0);
       // Cost preserved
       expect(session.cost).toBe(0.05);
+    });
+
+    test("re-emits init after reconnect cycle", () => {
+      // WS reconnect resets initEmitted, so the next system/init fires the event
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      session.handleMessage(RESULT_SUCCESS);
+      expect(session.state).toBe("idle");
+
+      session.disconnect("test");
+      session.reconnect();
+
+      const events = session.handleMessage(SYSTEM_INIT);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:init");
+      // State transitions from connecting → init (reconnect resets to connecting)
+      expect((events[0] as { state: string }).state).toBe("init");
     });
 
     test("transitions to init after reconnect (disconnected → connecting → init)", () => {
@@ -1272,6 +1290,46 @@ describe("SessionState", () => {
         session_id: "sess-1",
       });
       expect(session.hasActiveToolCall).toBe(false);
+    });
+  });
+
+  describe("system/init dedupe", () => {
+    test("first init emits session:init, subsequent inits are suppressed", () => {
+      const session = new SessionState("sess-1");
+      const first = session.handleMessage(SYSTEM_INIT);
+      expect(first).toHaveLength(1);
+      expect(first[0].type).toBe("session:init");
+      expect(session.state).toBe("init");
+
+      // Second init — same message, should be suppressed
+      const second = session.handleMessage(SYSTEM_INIT);
+      expect(second).toHaveLength(0);
+      // model/cwd still updated
+      expect(session.model).toBe("claude-sonnet-4-6");
+      expect(session.cwd).toBe("/home/user/project");
+    });
+
+    test("init emits again after resetForClear", () => {
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+
+      session.resetForClear();
+      const events = session.handleMessage(SYSTEM_INIT);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:init");
+    });
+
+    test("init emits again after reconnect", () => {
+      const session = new SessionState("sess-1");
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      session.handleMessage(RESULT_SUCCESS);
+
+      session.disconnect("test");
+      session.reconnect();
+      const events = session.handleMessage(SYSTEM_INIT);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:init");
     });
   });
 });
