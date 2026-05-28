@@ -123,6 +123,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { coveragePathInDiff, resolveChangedSourceFiles } from "./coverage-diff";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -395,16 +396,30 @@ for (const source of [coverageRun1, stdout2 + stderr2]) {
   }
 }
 
+// --- Diff-scoping: only fail on files the current branch touches (#2495) ---
+// On a feature branch, pre-existing gaps in untouched files warn but don't fail.
+// On main (or when git state is indeterminate), full enforcement applies.
+const changedFiles = resolveChangedSourceFiles();
+const isDiffScoped = changedFiles !== null;
+
+function isFileInDiff(coveragePath: string): boolean {
+  return coveragePathInDiff(coveragePath, changedFiles);
+}
+
 const failures: { file: string; lines: number }[] = [];
+const preExistingGaps: { file: string; lines: number }[] = [];
 
 for (const [file, { lines }] of bestCoverage) {
   if (lines >= PER_FILE_MIN_LINES) continue;
 
-  // Check exclusions (suffix match)
   const excluded = Object.keys(EXCLUSIONS).some((pattern) => file.endsWith(pattern));
   if (excluded) continue;
 
-  failures.push({ file, lines });
+  if (isDiffScoped && !isFileInDiff(file)) {
+    preExistingGaps.push({ file, lines });
+  } else {
+    failures.push({ file, lines });
+  }
 }
 
 // --- Check test output noise ---
@@ -416,7 +431,9 @@ const noiseLines = detectTestNoise(output);
 console.log("\n--- Coverage Report ---");
 console.log(`Global:    ${globalFuncs}% functions, ${globalLines}% lines`);
 console.log(`Threshold: ${GLOBAL_THRESHOLDS.functions}% functions, ${GLOBAL_THRESHOLDS.lines}% lines`);
-console.log(`Per-file:  ${PER_FILE_MIN_LINES}% lines minimum (${Object.keys(EXCLUSIONS).length} exclusions)`);
+console.log(
+  `Per-file:  ${PER_FILE_MIN_LINES}% lines minimum (${Object.keys(EXCLUSIONS).length} exclusions${isDiffScoped ? `, diff-scoped to ${changedFiles.size} changed file(s)` : ""})`,
+);
 
 let failed = false;
 
@@ -428,6 +445,15 @@ if (globalFuncs < GLOBAL_THRESHOLDS.functions) {
 if (globalLines < GLOBAL_THRESHOLDS.lines) {
   console.error(`\nFAIL: Line coverage ${globalLines}% is below global threshold ${GLOBAL_THRESHOLDS.lines}%`);
   failed = true;
+}
+
+if (preExistingGaps.length > 0) {
+  console.warn(
+    `\nWARN: ${preExistingGaps.length} file(s) below ${PER_FILE_MIN_LINES}% on main (not in diff — skipped):`,
+  );
+  for (const { file, lines } of preExistingGaps.sort((a, b) => a.lines - b.lines)) {
+    console.warn(`  ${lines.toFixed(1)}%  ${file}`);
+  }
 }
 
 if (failures.length > 0) {
