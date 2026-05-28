@@ -38,6 +38,12 @@ describe("ContainmentGuard — in-worktree operations", () => {
     expect(r.action).toBe("allow");
   });
 
+  test("allows MultiEdit inside worktree", () => {
+    const g = guard();
+    const r = g.evaluate("MultiEdit", { file_path: `${WORKTREE}/src/main.ts`, edits: [] });
+    expect(r.action).toBe("allow");
+  });
+
   test("allows Read inside worktree", () => {
     const g = guard();
     const r = g.evaluate("Read", { file_path: `${WORKTREE}/README.md` });
@@ -124,6 +130,14 @@ describe("ContainmentGuard — file writes outside worktree", () => {
     const r = g.evaluate("Edit", { file_path: "/Users/test/repo/b.ts" });
     expect(r.action).toBe("deny");
     expect(r.strikes).toBe(2);
+  });
+
+  test("denies MultiEdit outside worktree with strike", () => {
+    const g = guard();
+    const r = g.evaluate("MultiEdit", { file_path: "/Users/test/repo/src/main.ts", edits: [] });
+    expect(r.action).toBe("deny");
+    expect(r.event).toBe("session:containment_denied");
+    expect(r.strikes).toBe(1);
   });
 
   test("escalates on 3rd strike", () => {

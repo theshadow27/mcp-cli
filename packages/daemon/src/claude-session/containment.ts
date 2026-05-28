@@ -242,12 +242,18 @@ function extractBashWriteTargets(command: string): string[] {
 
 // ── Containment-gated tool sets ──
 
-export const CONTAINMENT_WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "NotebookEdit"]);
+export const CONTAINMENT_WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 // ── File path extraction ──
 
 function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName === "Write" || toolName === "Edit" || toolName === "Read" || toolName === "NotebookEdit") {
+  if (
+    toolName === "Write" ||
+    toolName === "Edit" ||
+    toolName === "MultiEdit" ||
+    toolName === "Read" ||
+    toolName === "NotebookEdit"
+  ) {
     const fp = input.file_path;
     return typeof fp === "string" ? fp : null;
   }

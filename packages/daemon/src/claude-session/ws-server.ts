@@ -826,7 +826,10 @@ export class ClaudeWsServer {
     }
     let cliAllowedTools = session.config.allowedTools;
     if (session.config.worktree && cliAllowedTools?.length) {
-      cliAllowedTools = cliAllowedTools.filter((t) => !CONTAINMENT_WRITE_TOOLS.has(t));
+      cliAllowedTools = cliAllowedTools.filter((t) => {
+        const baseName = t.split("(")[0] ?? t;
+        return !CONTAINMENT_WRITE_TOOLS.has(baseName);
+      });
     }
     if (cliAllowedTools?.length) {
       cmd.push("--allowedTools", ...cliAllowedTools);
