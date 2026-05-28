@@ -109,12 +109,12 @@ describe("validateScopeKey (via resolveScope)", () => {
     const provider = createAsanaProvider({
       callTool: async (_server, tool, _args) => {
         if (tool === "getProject") {
-          return {
+          return wrapMcpResult({
             gid: "1234567890",
             name: "My Project",
             workspace: { gid: "ws-1", name: "My Workspace" },
             permalink_url: "https://app.asana.com/0/1234567890",
-          };
+          });
         }
         return null;
       },
@@ -130,12 +130,12 @@ describe("resolveScope", () => {
     const provider = createAsanaProvider({
       callTool: async (_server, tool, _args) => {
         if (tool === "getProject") {
-          return {
+          return wrapMcpResult({
             gid: "proj-1",
             name: "My Project",
             workspace: { gid: "ws-1", name: "My Workspace" },
             permalink_url: "https://app.asana.com/0/proj-1",
-          };
+          });
         }
         return null;
       },
@@ -151,11 +151,11 @@ describe("resolveScope", () => {
     const provider = createAsanaProvider({
       callTool: async (_server, tool, _args) => {
         if (tool === "getProject") {
-          return {
+          return wrapMcpResult({
             gid: "proj-1",
             name: "My Project",
             workspace: { gid: "ws-1", name: "My Workspace" },
-          };
+          });
         }
         return null;
       },
@@ -167,7 +167,7 @@ describe("resolveScope", () => {
 
   test("throws when project not found", async () => {
     const provider = createAsanaProvider({
-      callTool: async () => null,
+      callTool: async () => wrapMcpResult(null),
     });
     await expect(provider.resolveScope({ key: "nonexistent" })).rejects.toThrow("not found");
   });
@@ -184,7 +184,7 @@ describe("unwrapToolResult — isError handling", () => {
       },
     });
 
-    await expect(provider.resolveScope({ key: "proj-1" })).rejects.toThrow("MCP tool error: Rate limit exceeded");
+    await expect(provider.resolveScope({ key: "proj-1" })).rejects.toThrow("Rate limit exceeded");
   });
 
   test("throws on isError during list", async () => {
@@ -205,7 +205,7 @@ describe("unwrapToolResult — isError handling", () => {
       for await (const entry of provider.list(makeScope())) {
         entries.push(entry);
       }
-    }).toThrow("MCP tool error");
+    }).toThrow("403 Forbidden");
   });
 });
 
@@ -698,7 +698,7 @@ describe("create", () => {
 describe("delete", () => {
   test("calls deleteTask with correct task_gid", async () => {
     const scope = makeScope();
-    const { callTool, calls } = makeCallTool();
+    const { callTool, calls } = makeCallTool({ deleteTask: wrapMcpResult(null) });
     const provider = createAsanaProvider({ callTool });
 
     const deleteFn = provider.delete as NonNullable<typeof provider.delete>;

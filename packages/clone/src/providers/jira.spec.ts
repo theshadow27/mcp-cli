@@ -75,7 +75,7 @@ describe("validateScopeKey (via resolveScope)", () => {
     const provider = createJiraProvider({
       callTool: async (_server, tool) => {
         if (tool === "getAccessibleAtlassianResources") {
-          return [{ id: "cloud-1", url: "https://example.atlassian.net", name: "Example", scopes: [] }];
+          return wrapMcpResult([{ id: "cloud-1", url: "https://example.atlassian.net", name: "Example", scopes: [] }]);
         }
         return null;
       },
@@ -489,7 +489,7 @@ describe("resolveScope", () => {
     const provider = createJiraProvider({
       callTool: async (_server, tool) => {
         if (tool === "getAccessibleAtlassianResources") {
-          return [{ id: "cloud-1", url: "https://acme.atlassian.net", name: "Acme", scopes: [] }];
+          return wrapMcpResult([{ id: "cloud-1", url: "https://acme.atlassian.net", name: "Acme", scopes: [] }]);
         }
         return null;
       },
@@ -506,10 +506,10 @@ describe("resolveScope", () => {
       const provider = createJiraProvider({
         callTool: async (_server, tool) => {
           if (tool === "getAccessibleAtlassianResources") {
-            return [
+            return wrapMcpResult([
               { id: "cloud-1", url: "https://acme.atlassian.net", name: "Acme", scopes: [] },
               { id: "cloud-2", url: "https://corp.atlassian.net", name: "Corp", scopes: [] },
-            ];
+            ]);
           }
           return null;
         },
@@ -609,7 +609,7 @@ describe("unwrapToolResult — isError handling", () => {
       },
     });
 
-    await expect(provider.resolveScope({ key: "FOO" })).rejects.toThrow("MCP tool error: Rate limit exceeded");
+    await expect(provider.resolveScope({ key: "FOO" })).rejects.toThrow("Rate limit exceeded");
   });
 
   test("throws on isError during list", async () => {
@@ -628,6 +628,6 @@ describe("unwrapToolResult — isError handling", () => {
       for await (const entry of provider.list(scope)) {
         entries.push(entry);
       }
-    }).toThrow("MCP tool error: 403 Forbidden");
+    }).toThrow("403 Forbidden");
   });
 });
