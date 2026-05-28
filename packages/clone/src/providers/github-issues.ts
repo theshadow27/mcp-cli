@@ -5,6 +5,7 @@
  *   open/123-fix-auth-bug.md
  *   closed/100-initial-setup.md
  */
+import { unwrapToolResultJson } from "@mcp-cli/core";
 import type {
   ChangeEvent,
   FetchResult,
@@ -34,30 +35,6 @@ interface GitHubIssue {
 
 /** Shape of a GitHub issues list response (array of issues). */
 type GitHubIssuesResponse = GitHubIssue[];
-
-/** MCP tool call result shape. */
-interface McpToolResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}
-
-/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
-function unwrapToolResult(result: unknown): unknown {
-  const mcpResult = result as McpToolResult;
-  if (mcpResult?.isError) {
-    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
-    throw new Error(`MCP tool error: ${text}`);
-  }
-  if (mcpResult?.content?.[0]?.type === "text") {
-    const text = mcpResult.content[0].text;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-  return result;
-}
 
 /**
  * Validate a scope key for GitHub repos. Must be `owner/repo` format.
@@ -132,7 +109,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
 
   async function callGitHub(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await callTool(SERVER, tool, args, 30_000);
-    return unwrapToolResult(raw);
+    return unwrapToolResultJson<unknown>(raw);
   }
 
   const provider: RemoteProvider = {

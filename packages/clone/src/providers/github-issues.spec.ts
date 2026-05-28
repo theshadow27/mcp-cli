@@ -565,7 +565,7 @@ describe("unwrapToolResult — isError handling", () => {
     const provider = createGitHubIssuesProvider({
       callTool: async () => wrapMcpError("Not Found"),
     });
-    await expect(provider.fetch(scope, "1")).rejects.toThrow("MCP tool error: Not Found");
+    await expect(provider.fetch(scope, "1")).rejects.toThrow("Not Found");
   });
 
   test("throws on isError during list", async () => {
@@ -578,7 +578,7 @@ describe("unwrapToolResult — isError handling", () => {
       for await (const entry of provider.list(scope)) {
         entries.push(entry);
       }
-    }).toThrow("MCP tool error: Rate limit exceeded");
+    }).toThrow("Rate limit exceeded");
   });
 
   test("throws on isError during push conflict check", async () => {
@@ -590,7 +590,7 @@ describe("unwrapToolResult — isError handling", () => {
     const result = await pushFn(scope, "1", "Content", 1);
     // push catches errors and returns ok: false
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("MCP tool error: Server error");
+    expect(result.error).toContain("Server error");
   });
 });
 

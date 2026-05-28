@@ -1,6 +1,7 @@
 /**
  * Confluence provider — maps a Confluence space to a local directory of markdown files.
  */
+import { unwrapToolResultJson } from "@mcp-cli/core";
 import type {
   ChangeEvent,
   FetchResult,
@@ -85,30 +86,6 @@ interface ResourcesResponse {
 // McpToolCaller is now defined in provider.ts and re-exported here for backwards compatibility.
 export type { McpToolCaller } from "./provider";
 
-/** MCP tool call result shape. */
-interface McpToolResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}
-
-/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
-function unwrapToolResult(result: unknown): unknown {
-  const mcpResult = result as McpToolResult;
-  if (mcpResult?.isError) {
-    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
-    throw new Error(`MCP tool error: ${text}`);
-  }
-  if (mcpResult?.content?.[0]?.type === "text") {
-    const text = mcpResult.content[0].text;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-  return result;
-}
-
 /** Options for creating the Confluence provider. */
 export interface ConfluenceProviderOptions {
   /** Function to call an MCP tool: (server, tool, args, timeoutMs?) → result */
@@ -165,7 +142,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await resilientCallTool(SERVER, tool, args, 30_000);
-    return unwrapToolResult(raw);
+    return unwrapToolResultJson<unknown>(raw);
   }
 
   const provider: RemoteProvider = {
@@ -493,7 +470,7 @@ export async function bulkFetchPages(
     if (cursor) args.cursor = cursor;
 
     const raw = await callTool("atlassian", "getPagesInConfluenceSpace", args, 60_000);
-    const resp = unwrapToolResult(raw) as PagesResponse;
+    const resp = unwrapToolResultJson<PagesResponse>(raw);
 
     for (const page of resp.results) {
       total++;

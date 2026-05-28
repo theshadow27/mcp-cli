@@ -1,6 +1,7 @@
 /**
  * Jira provider — maps a Jira project's issues to a local directory of markdown files.
  */
+import { unwrapToolResultJson } from "@mcp-cli/core";
 import type {
   ChangeEvent,
   FetchResult,
@@ -43,30 +44,6 @@ interface ResourcesResponse {
   url: string;
   name: string;
   scopes: string[];
-}
-
-/** MCP tool call result shape. */
-interface McpToolResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}
-
-/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
-function unwrapToolResult(result: unknown): unknown {
-  const mcpResult = result as McpToolResult;
-  if (mcpResult?.isError) {
-    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
-    throw new Error(`MCP tool error: ${text}`);
-  }
-  if (mcpResult?.content?.[0]?.type === "text") {
-    const text = mcpResult.content[0].text;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-  return result;
 }
 
 /** Validate a scope key to prevent JQL injection. Only alphanumeric, hyphens, and underscores allowed. */
@@ -140,7 +117,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
 
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await resilientCallTool(SERVER, tool, args, 30_000);
-    return unwrapToolResult(raw);
+    return unwrapToolResultJson<unknown>(raw);
   }
 
   const provider: RemoteProvider = {
