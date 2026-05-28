@@ -375,7 +375,7 @@ export async function fetchTrackedPRs(
   if (warn && typeof remaining === "number" && remaining < RATE_LIMIT_WARN_THRESHOLD) {
     try {
       warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
-    } catch {}
+    } catch {} // dotw-todo prod-empty-catch: warn() should not throw, but if it does log to stderr — fix in #2496
   }
 
   const repoData = json.data?.repository;
