@@ -211,6 +211,11 @@ export async function handlePrompt(
     const allowedTools = (args.allowedTools as string[]) ?? undefined;
     const allowOnly = (args.allowOnly as boolean) ?? false;
 
+    // Claude-specific: resolveEffectiveTools() unions allowedTools with DEFAULT_SAFE_TOOLS
+    // (or returns DEFAULT_SAFE_TOOLS alone when no tools are supplied). This is intentional —
+    // Claude's permission-router enforces these baselines. Other session workers
+    // (codex, acp, opencode) pass allowedTools raw; DEFAULT_SAFE_TOOLS is a no-op for
+    // them because those providers have no equivalent permission-router machinery.
     const resolved = resolveEffectiveTools({
       allowedTools,
       allowOnly,

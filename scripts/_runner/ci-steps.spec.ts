@@ -1,7 +1,13 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 
 import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./ci-steps";
 import { createCaptureLogger } from "./logger";
+
+// Tests spawn real child processes (fake bun scripts) and some build the full
+// import graph from disk. Under parallel load the aggregate I/O stretches
+// execution beyond Bun's default 5s timeout — see #2464. 10s accommodates
+// the graph-building tests; tests with the noGraph stub run in <500ms.
+setDefaultTimeout(10_000);
 
 // The factories spawn `bun` and inspect exit codes + output. The structured
 // classification — "is this a real failure or a #1004/#1419 crash-after-pass?"
@@ -9,7 +15,7 @@ import { createCaptureLogger } from "./logger";
 // binary whose exit code, stdout/stderr, and junit XML we control, then assert
 // the returned StepResult matches the documented contract.
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -392,9 +398,31 @@ describe("changedTestsStep", () => {
   // Disable verdict cache for all legacy tests — they don't set up a repo root.
   const noCache = () => null;
 
+  // No-op graph stubs: tests that only exercise the classifier / cache logic
+  // don't need a real findAllSpecFiles + buildImportGraph scan of the repo.
+  // Scanning ~200 spec files + building the import graph adds ~2000ms per
+  // test; under parallel load this pushes the file past Bun's default
+  // timeout and triggers SIGTERM of the child process → exit -1 (#2464).
+  const noSpecFiles = () => [] as string[];
+  const noGraph = () =>
+    ({
+      forward: new Map(),
+      reverse: new Map(),
+      files: new Set(),
+      droppedEdges: 0,
+      closureOf: () => new Set(),
+      dependentsOf: () => new Set(),
+    }) as ReturnType<typeof import("../rules/_engine/import-graph").buildImportGraph>;
+
   it("exit 0 on both passes → success", async () => {
     const dir = makeFakeBun({ code: 0, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_x",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -405,7 +433,13 @@ describe("changedTestsStep", () => {
 
   it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
     const dir = makeFakeBun({ code: 1, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_x", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_x",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -415,10 +449,14 @@ describe("changedTestsStep", () => {
   });
 
   it("real failure in the safe subset short-circuits before the control pass", async () => {
-    // Pass 1 (main) fails; pass 2 (control) would succeed — if the short-circuit
-    // is removed, control runs and flips the verdict to success, catching the bug.
     const dir = makeTwoPassFakeBun({ code: 1, stdout: failingSummary }, { code: 0, stdout: passingSummary });
-    const step = changedTestsStep({ logName: "test_changed_sc", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_sc",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -428,10 +466,14 @@ describe("changedTestsStep", () => {
   });
 
   it("control pass failure is reported when the main pass succeeds", async () => {
-    // Pass 1 (main) succeeds; pass 2 (control) fails — exercises the second
-    // classifyChangedTest return and the control-fail code path.
     const dir = makeTwoPassFakeBun({ code: 0, stdout: passingSummary }, { code: 1, stdout: failingSummary });
-    const step = changedTestsStep({ logName: "test_changed_ctrl_fail", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_ctrl_fail",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -441,10 +483,15 @@ describe("changedTestsStep", () => {
   });
 
   it("passes the resolved base ref to bun via --changed", async () => {
-    // Fake bun echoes its own argv so we can prove --changed=<base> is forwarded.
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const step = changedTestsStep({ logName: "test_changed_argv", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_argv",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -455,12 +502,15 @@ describe("changedTestsStep", () => {
   });
 
   it("main pass carries --path-ignore-patterns for control; control pass does not carry control/**", async () => {
-    // Verifies the --path-ignore-patterns + --changed interaction: main pass
-    // must exclude packages/control via the flag; control pass targets it
-    // directly as a positional arg (no control/** ignore flag needed).
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
     writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const step = changedTestsStep({ logName: "test_changed_flags", resolveBase: stubBase, computeKey: noCache });
+    const step = changedTestsStep({
+      logName: "test_changed_flags",
+      resolveBase: stubBase,
+      computeKey: noCache,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
+    });
     await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -474,7 +524,6 @@ describe("changedTestsStep", () => {
   });
 
   it("skips tests on verdict cache hit (passing)", async () => {
-    // A fake bun that would fail — but the cache hit should prevent it from running.
     const dir = makeFakeBun({ code: 1, stdout: "SHOULD NOT RUN\n 1 fail\n" });
     const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-cache-"));
     const { storeVerdict } = await import("./verdict-cache");
@@ -485,6 +534,8 @@ describe("changedTestsStep", () => {
       resolveBase: stubBase,
       repoRoot: cacheRoot,
       computeKey: () => "cached-key",
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
     });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
@@ -503,6 +554,8 @@ describe("changedTestsStep", () => {
       resolveBase: stubBase,
       repoRoot: cacheRoot,
       computeKey: () => "new-key",
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
     });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
@@ -524,6 +577,8 @@ describe("changedTestsStep", () => {
       resolveBase: stubBase,
       repoRoot: cacheRoot,
       computeKey: () => null,
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
     });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
@@ -531,7 +586,6 @@ describe("changedTestsStep", () => {
       }),
     );
     expect(result).toEqual({ success: true });
-    // No verdict stored — cache file should not exist.
     expect(existsSync(join(cacheRoot, "build/.verdict-cache.json"))).toBe(false);
   });
 
@@ -546,13 +600,14 @@ describe("changedTestsStep", () => {
       resolveBase: stubBase,
       repoRoot: cacheRoot,
       computeKey: () => "fail-key",
+      findSpecFiles: noSpecFiles,
+      buildGraph: noGraph,
     });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
       }),
     );
-    // Tests ran (fake bun exits 0) and overwrite the cached failure.
     expect(result).toEqual({ success: true });
     expect(lookupVerdict(cacheRoot, "fail-key")).toBe(true);
   });
@@ -676,5 +731,76 @@ describe("changedTestsStep", () => {
     expect(updatedCache.entries[relA]).toBeDefined();
     expect(updatedCache.entries[relA]?.passed).toBe(true);
     expect(updatedCache.entries[relB]).toBeDefined();
+  });
+
+  it("closure cache: controlSkipPatterns only forwards packages/control/ entries to the control pass", async () => {
+    // Verifies that when closure-cached skipped files include both packages/control/
+    // paths and non-control paths, the control pass receives only the control-prefixed
+    // skip patterns — non-control skip patterns must not leak into the control invocation.
+    const cacheRoot = mkdtempSync(join(tmpdir(), "am-i-done-ctrl-skip-"));
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+
+    // One spec under packages/control/ (will appear in controlSkipPatterns).
+    // One spec at root level (must NOT appear in controlSkipPatterns).
+    const controlSpecDir = join(cacheRoot, "packages", "control");
+    mkdirSync(controlSpecDir, { recursive: true });
+    const specControl = join(controlSpecDir, "c.spec.ts");
+    const specOther = join(cacheRoot, "other.spec.ts");
+    writeFileSync(specControl, 'test("c", () => {});');
+    writeFileSync(specOther, 'test("other", () => {});');
+
+    const { buildImportGraph } = await import("../rules/_engine/import-graph");
+    const { readFileCache, storeFileVerdicts, computeClosureHash, writeFileCache } = await import("./file-cache");
+    const { relative } = await import("node:path");
+
+    const specFiles = [specControl, specOther];
+    const trivialBuild = (files: string[]) =>
+      buildImportGraph(files, {
+        readFile: (p) => readFileSync(p, "utf8"),
+        resolve: () => {
+          throw new Error("no deps");
+        },
+      });
+
+    const graph = trivialBuild(specFiles);
+    const hashControl = computeClosureHash(specControl, graph, (p) => readFileSync(p, "utf8"));
+    const hashOther = computeClosureHash(specOther, graph, (p) => readFileSync(p, "utf8"));
+
+    const cache = readFileCache(cacheRoot);
+    storeFileVerdicts(cache, [
+      { relPath: relative(cacheRoot, specControl), closureHash: hashControl, passed: true },
+      { relPath: relative(cacheRoot, specOther), closureHash: hashOther, passed: true },
+    ]);
+    writeFileCache(cacheRoot, cache);
+
+    const step = changedTestsStep({
+      logName: "test_ctrl_skip_patterns",
+      resolveBase: stubBase,
+      repoRoot: cacheRoot,
+      computeKey: noCache,
+      findSpecFiles: () => specFiles,
+      buildGraph: trivialBuild,
+    });
+
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+
+    const mainLog = readFileSync("/tmp/test_ctrl_skip_patterns.txt", "utf8");
+    const controlLog = readFileSync("/tmp/test_ctrl_skip_patterns_control.txt", "utf8");
+    const relControl = relative(cacheRoot, specControl); // "packages/control/c.spec.ts"
+    const relOther = relative(cacheRoot, specOther); // "other.spec.ts"
+
+    // Main pass gets skip patterns for both closure-cached files.
+    expect(mainLog).toContain(`--path-ignore-patterns=${relControl}`);
+    expect(mainLog).toContain(`--path-ignore-patterns=${relOther}`);
+
+    // Control pass gets only the packages/control/ skip pattern — not the root-level one.
+    expect(controlLog).toContain(`--path-ignore-patterns=${relControl}`);
+    expect(controlLog).not.toContain(`--path-ignore-patterns=${relOther}`);
   });
 });

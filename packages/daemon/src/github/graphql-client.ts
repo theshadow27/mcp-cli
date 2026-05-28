@@ -373,9 +373,7 @@ export async function fetchTrackedPRs(
 
   const remaining = json.data?.rateLimit?.remaining;
   if (warn && typeof remaining === "number" && remaining < RATE_LIMIT_WARN_THRESHOLD) {
-    try {
-      warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
-    } catch {}
+    warn(`[mcpd] GitHub GraphQL rate limit low: ${remaining} requests remaining`);
   }
 
   const repoData = json.data?.repository;

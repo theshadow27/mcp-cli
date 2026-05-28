@@ -182,11 +182,12 @@ export interface SprintStatsDeps {
 }
 
 function gitRoot(): string {
-  try {
-    const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
-    if (r.ok) return r.stdout.trim();
-  } catch {}
-  return process.cwd();
+  const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
+  if (!r.ok) {
+    console.error(`[sprint-stats] git rev-parse failed (exit ${r.exitCode}), falling back to cwd: ${r.stderr.trim()}`);
+    return process.cwd();
+  }
+  return r.stdout.trim();
 }
 
 const defaultDeps: SprintStatsDeps = {
@@ -213,30 +214,22 @@ const defaultDeps: SprintStatsDeps = {
     return null;
   },
   resolveGitTimestamp(ref) {
-    try {
-      const result = spawnCaptureSync("git", ["log", "-1", "--format=%cI", ref], { cwd: process.cwd() });
-      if (!result.ok) return null;
-      const iso = result.stdout.trim();
-      const d = new Date(iso);
-      return Number.isNaN(d.getTime()) ? null : d.getTime();
-    } catch {
-      return null;
-    }
+    const result = spawnCaptureSync("git", ["log", "-1", "--format=%cI", ref], { cwd: process.cwd() });
+    if (!result.ok) return null;
+    const iso = result.stdout.trim();
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null : d.getTime();
   },
   discoverWorktrees() {
-    try {
-      const result = spawnCaptureSync("git", ["worktree", "list", "--porcelain"]);
-      if (!result.ok) return [];
-      const paths: string[] = [];
-      for (const line of result.stdout.split("\n")) {
-        if (line.startsWith("worktree ")) {
-          paths.push(line.slice("worktree ".length));
-        }
+    const result = spawnCaptureSync("git", ["worktree", "list", "--porcelain"]);
+    if (!result.ok) return [];
+    const paths: string[] = [];
+    for (const line of result.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        paths.push(line.slice("worktree ".length));
       }
-      return paths;
-    } catch {
-      return [];
     }
+    return paths;
   },
 };
 

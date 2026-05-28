@@ -13,7 +13,15 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveModelName, resolveSourceClaudePath, spawnCaptureSync } from "@mcp-cli/core";
+import {
+  type LookupResult,
+  isLookupFailure,
+  lookupFailure,
+  resolveGitRootOrCwd,
+  resolveModelName,
+  resolveSourceClaudePath,
+  spawnCaptureSync,
+} from "@mcp-cli/core";
 import { printError } from "../output";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -34,8 +42,8 @@ export interface AuditResult {
 }
 
 export interface MemoryDeps {
-  /** Resolve the git repo root. Returns null if not in a git repo. */
-  getGitRoot: () => string | null;
+  /** Resolve the git repo root. Returns null if not in a git repo, LookupFailure on error. */
+  getGitRoot: () => LookupResult<string | null>;
   /** Current working directory. */
   cwd: () => string;
   /** Check whether a directory exists. */
@@ -99,8 +107,8 @@ The top_prune_candidates list should contain 3-5 files most worth pruning (stale
 /**
  * Find the .claude/memory directory relative to the git root (or cwd if not in a repo).
  */
-export function findMemoryDir(deps: Pick<MemoryDeps, "getGitRoot" | "cwd" | "dirExists">): string | null {
-  const root = deps.getGitRoot() ?? deps.cwd();
+export function findMemoryDir(deps: Pick<MemoryDeps, "getGitRoot" | "cwd" | "dirExists" | "logError">): string | null {
+  const root = resolveGitRootOrCwd(deps.getGitRoot, deps.logError, deps.cwd);
   const candidate = join(root, ".claude", "memory");
   return deps.dirExists(candidate) ? candidate : null;
 }
@@ -197,7 +205,7 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
   deps.logError("memory audit: reading memory files…");
 
   // Read MEMORY.md index
-  const gitRoot = deps.getGitRoot() ?? deps.cwd();
+  const gitRoot = resolveGitRootOrCwd(deps.getGitRoot, deps.logError, deps.cwd);
   const memoryIndexPath = join(gitRoot, ".claude", "memory", "MEMORY.md");
   const memoryIndex = deps.readFile(memoryIndexPath) ?? "(MEMORY.md not found)";
 
@@ -275,7 +283,7 @@ export function defaultDeps(): MemoryDeps {
   return {
     getGitRoot: () => {
       const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
-      if (!r.ok) return null;
+      if (!r.ok) return lookupFailure(`git rev-parse failed (exit ${r.exitCode}): ${r.stderr.trim()}`);
       return r.stdout.trim() || null;
     },
     cwd: () => process.cwd(),

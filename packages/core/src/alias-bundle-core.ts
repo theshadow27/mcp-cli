@@ -1,0 +1,64 @@
+// Re-exports all of @mcp-cli/core except alias-bundle itself.
+// Used as __mcp_core__ inside evalBundledJs so that phase scripts that write
+//   import { X } from "@mcp-cli/core"
+// can resolve X at eval time without creating the barrel-induced import cycle.
+export * from "./alias";
+export * from "./alias-bundle-types";
+export * from "./alias-dry-run";
+export * from "./alias-state";
+export * from "./allow-patterns";
+export * from "./cache";
+export * from "./ipc";
+export * from "./ipc-client";
+export * from "./config";
+export * from "./cli-config";
+export * from "./constants";
+export * from "./env";
+export * from "./fs";
+export * from "./schema-display";
+export * from "./model";
+export * from "./agent-provider";
+export * from "./agent-session";
+export * from "./session-names";
+export * from "./session-types";
+export * from "./trace";
+export * from "./git";
+export * from "./logger";
+export * from "./branch-guard";
+export * from "./manifest";
+export * from "./manifest-lock";
+export * from "./phase-transition";
+export type { WorktreeHooksConfig } from "./worktree-config";
+export {
+  WORKTREE_CONFIG_FILENAME,
+  readWorktreeConfig,
+  resolveWorktreeBase,
+  resolveWorktreePath,
+  buildHookEnv,
+  hasWorktreeHooks,
+} from "./worktree-config";
+export * from "./worktree-shim";
+export * from "./plan";
+export * from "./claude-plan-adapter";
+export * from "./python-repr";
+export * from "./agent-tools";
+export * from "./config-file";
+export * from "./flock";
+export * from "./scope";
+export * from "./sprint-state";
+export * from "./upgrade";
+export * from "./work-item";
+export * from "./pr-churn";
+export * from "./monitor-event";
+export * from "./event-filter";
+export * from "./gh-client";
+export * from "./errors";
+export * from "./telemetry";
+export * from "./phase-source";
+export * from "./mcp-proxy";
+export * from "./bun-version";
+export * from "./sprint-plan";
+export * from "./claude-patch";
+export * from "./automation";
+export * from "./subprocess";
+export * from "./mcp-result";

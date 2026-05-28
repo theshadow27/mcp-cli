@@ -10,6 +10,7 @@
  *         _index.md
  *         child-task.md
  */
+import { unwrapToolResultJson } from "@mcp-cli/core";
 import type {
   ChangeEvent,
   FetchResult,
@@ -20,30 +21,6 @@ import type {
   Scope,
 } from "./provider";
 import { type RetryOptions, createResilientCaller } from "./resilient-caller";
-
-/** MCP tool call result shape. */
-interface McpToolResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}
-
-/** Extract and parse JSON from an MCP tool call result. Throws on error responses. */
-function unwrapToolResult(result: unknown): unknown {
-  const mcpResult = result as McpToolResult;
-  if (mcpResult?.isError) {
-    const text = mcpResult.content?.[0]?.text ?? "Unknown MCP tool error";
-    throw new Error(`MCP tool error: ${text}`);
-  }
-  if (mcpResult?.content?.[0]?.type === "text") {
-    const text = mcpResult.content[0].text;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-  return result;
-}
 
 /** Shape of an Asana task from the API. */
 interface AsanaTask {
@@ -139,7 +116,7 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
 
   async function callAsana(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await resilientCallTool(SERVER, tool, args, 30_000);
-    return unwrapToolResult(raw);
+    return unwrapToolResultJson<unknown>(raw);
   }
 
   const provider: RemoteProvider = {

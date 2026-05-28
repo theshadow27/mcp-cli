@@ -1,4 +1,3 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 export * from "./alias";
 export * from "./alias-dry-run";
 export * from "./alias-state";
@@ -59,3 +58,5 @@ export * from "./claude-patch";
 export * from "./automation";
 export * from "./subprocess";
 export * from "./mcp-result";
+export * from "./lookup-result";
+export * from "./spawn-lookup";

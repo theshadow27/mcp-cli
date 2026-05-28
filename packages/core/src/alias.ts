@@ -1,9 +1,9 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * Alias definition types for structured defineAlias() aliases.
  */
 
 import type { z } from "zod/v4";
+export type { AliasType } from "./alias-bundle-types";
 import type { EventFilterSpec } from "./event-filter";
 import type { GhClient } from "./gh-client";
 import { ToolResultError } from "./mcp-result";
@@ -59,8 +59,6 @@ export interface MonitorAliasLogger {
 export interface MonitorAliasContext {
   /** Fired when the alias is disabled or the daemon is shutting down */
   signal: AbortSignal;
-  /** For fire-and-forget side events that shouldn't interrupt the generator */
-  bus: { publish(input: AliasMonitorEventInput): void };
   logger: MonitorAliasLogger;
 }
 
@@ -213,32 +211,6 @@ export interface AliasDefinition<I = unknown, O = unknown> {
   input?: z.ZodType<I>;
   output?: z.ZodType<O>;
   fn: (input: I, ctx: AliasContext) => O | Promise<O>;
-}
-
-/** Alias type discriminant for DB and IPC */
-export type AliasType = "freeform" | "defineAlias" | "defineMonitor";
-
-/** Context passed to a defineMonitor subscribe function */
-export interface MonitorContext {
-  signal: AbortSignal;
-  mcp: McpProxy;
-}
-
-/**
- * Structured monitor definition with an async generator that yields events.
- *
- * At the defineMonitor call site:
- *   defineMonitor({
- *     name: "my-monitor",
- *     subscribe: async function*(ctx) {
- *       yield { event: "tick", category: "heartbeat" };
- *     },
- *   })
- */
-export interface MonitorDefinition {
-  name: string;
-  description?: string;
-  subscribe: (ctx: MonitorContext) => AsyncGenerator<Record<string, unknown>>;
 }
 
 /**

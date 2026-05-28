@@ -165,7 +165,7 @@ describe("resolveEffectiveTools", () => {
       permissionMode: "rules",
     });
     expect(result.error).toBeDefined();
-    expect(result.tools).toEqual([]);
+    expect(result.tools).toBeUndefined();
   });
 
   test("allowOnly=true with empty allowedTools returns error", () => {
@@ -175,7 +175,7 @@ describe("resolveEffectiveTools", () => {
       permissionMode: "rules",
     });
     expect(result.error).toBeDefined();
-    expect(result.tools).toEqual([]);
+    expect(result.tools).toBeUndefined();
   });
 
   test("defaults permissionMode to rules", () => {
