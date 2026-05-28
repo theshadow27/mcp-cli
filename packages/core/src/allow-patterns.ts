@@ -96,7 +96,7 @@ export interface ResolveEffectiveToolsOpts {
  * Compute the final resolved tool set for a session.
  *
  * - permissionMode !== "rules" → undefined (no tool restrictions)
- * - allowOnly + no allowedTools → error (empty string[] returned, caller should reject)
+ * - allowOnly + no allowedTools → {tools: undefined, error: "..."} — caller must check error
  * - allowOnly + allowedTools → exactly those tools (no defaults)
  * - allowedTools without allowOnly → union with DEFAULT_SAFE_TOOLS
  * - no allowedTools → DEFAULT_SAFE_TOOLS
