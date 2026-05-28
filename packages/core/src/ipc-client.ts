@@ -1,4 +1,3 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * IPC client — connects to mcpd daemon via HTTP-over-Unix-socket.
  *

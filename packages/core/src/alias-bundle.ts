@@ -1,4 +1,3 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via dynamic import("./index") at L193 — fix in #2486
 /**
  * Alias bundling and execution via Bun.build + AsyncFunction eval.
  *
@@ -13,6 +12,8 @@
 
 import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
+import type { MonitorAliasMetadata } from "./alias-bundle-types";
+export type { MonitorAliasMetadata } from "./alias-bundle-types";
 import type { AutomationDefinition } from "./automation";
 import { defineAutomation } from "./automation";
 import { MONITOR_CATEGORIES } from "./monitor-event";
@@ -32,15 +33,6 @@ export const stubProxy: McpProxy = new Proxy({} as McpProxy, {
     );
   },
 });
-
-/**
- * Minimal metadata captured from a single defineMonitor() call in an alias file.
- * filePath and sourceHash are stored at the alias row level, not per-monitor.
- */
-export interface MonitorAliasMetadata {
-  name: string;
-  description?: string;
-}
 
 /** Metadata extracted from a defineAlias script at save-time. */
 export interface AliasMetadata {
@@ -187,11 +179,13 @@ async function evalBundledJs(
 ): Promise<EvalResult> {
   const stripped = stripModuleSyntax(bundledJs);
 
-  // Lazy-load the @mcp-cli/core barrel at eval time. alias-bundle.ts is part
-  // of core and re-exported from ./index, so static `import * as` would
-  // self-cycle; dynamic import defers resolution until all sibling modules
-  // are initialized.
-  const coreBarrel = await import("./index");
+  // Lazy-load the @mcp-cli/core exports at eval time so phase scripts that
+  // write `import { X } from "@mcp-cli/core"` can destructure X from the
+  // injected __mcp_core__ namespace.  We import from alias-bundle-core (not
+  // index) to avoid the barrel-induced cycle: index re-exports alias-bundle,
+  // so a static or dynamic import of index from inside alias-bundle would
+  // create alias-bundle → index → alias-bundle.
+  const coreBarrel = await import("./alias-bundle-core");
 
   let aliasDef: AliasDefinition | null = null;
   let automationDef: AutomationDefinition | null = null;

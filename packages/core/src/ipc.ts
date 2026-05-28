@@ -1,4 +1,3 @@
-// dotw-todo no-import-cycles: barrel-induced intra-package cycle via core/index.ts — fix in #2486
 /**
  * IPC protocol between mcx (command) and mcpd (daemon).
  *
@@ -8,8 +7,7 @@
 
 import { isAbsolute } from "node:path";
 import { z } from "zod/v4";
-import type { AliasType } from "./alias";
-import type { MonitorAliasMetadata } from "./alias-bundle";
+import type { AliasType, MonitorAliasMetadata } from "./alias-bundle-types";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
