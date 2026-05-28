@@ -164,7 +164,7 @@ interface MockSession {
   cwd: string;
   scriptPath: string;
   entries: ScriptEntry[];
-  state: "running" | "idle" | "ended";
+  state: "running" | "idle" | "ended" | "waiting_permission";
   interrupted: boolean;
   transcript: Array<{ role: string; text: string }>;
   createdAt: number;
@@ -226,9 +226,12 @@ function forwardSessionEvent(sessionId: string, event: AgentSessionEvent): void 
         session: { sessionId, state: "init", model: event.model, cwd: event.cwd },
       });
       break;
-    case "session:permission_request":
+    case "session:permission_request": {
+      const s = sessions.get(sessionId);
+      if (s) s.state = "waiting_permission";
       self.postMessage({ type: "db:state", sessionId, state: "waiting_permission" });
       break;
+    }
     case "session:result":
       self.postMessage({
         type: "db:cost",
@@ -321,12 +324,21 @@ async function runScript(session: MockSession): Promise<void> {
 
       if (verdict === "timeout") {
         session.transcript.push({ role: "system", text: `permission timeout (expected ${entry.wait_for})` });
+      } else if (verdict !== entry.wait_for) {
+        session.transcript.push({
+          role: "system",
+          text: `permission ${verdict} (expected ${entry.wait_for}) — script aborted`,
+        });
+        clearTimeout(lastPermission.timer);
+        session.pendingPermissions.delete(lastPermission.requestId);
+        break;
       } else {
         session.transcript.push({ role: "system", text: `permission ${verdict}` });
       }
 
       clearTimeout(lastPermission.timer);
       session.pendingPermissions.delete(lastPermission.requestId);
+      session.state = "running";
       self.postMessage({ type: "db:state", sessionId: session.sessionId, state: "active" });
       continue;
     }
@@ -582,8 +594,8 @@ function handleSessionList(): ToolResult {
     state: s.state,
     model: "mock",
     cwd: s.cwd,
-    cost: 0,
-    tokens: s.entries.length,
+    cost: s.totalCost,
+    tokens: s.totalTokens > 0 ? s.totalTokens : s.entries.length,
     createdAt: s.createdAt,
   }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
@@ -708,7 +720,11 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
             text: JSON.stringify({
               type: "session:result",
               sessionId,
-              result: { cost: 0, tokens: session.entries.length, numTurns: 1 },
+              result: {
+                cost: session.totalCost,
+                tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
+                numTurns: 1,
+              },
             }),
           },
         ],
@@ -724,7 +740,12 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
           text: JSON.stringify({
             type: currentState === "idle" ? "session:result" : "timeout",
             sessionId,
-            result: { result: "Mock script completed", cost: 0, tokens: session.entries.length, numTurns: 1 },
+            result: {
+              result: "Mock script completed",
+              cost: session.totalCost,
+              tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
+              numTurns: 1,
+            },
           }),
         },
       ],
@@ -758,7 +779,8 @@ function resolvePermission(args: Record<string, unknown>, verdict: "approve" | "
     };
   }
   waiter.resolve(verdict);
-  return { content: [{ type: "text", text: JSON.stringify({ [`${verdict}d`]: true, requestId }) }] };
+  const key = verdict === "approve" ? "approved" : "denied";
+  return { content: [{ type: "text", text: JSON.stringify({ [key]: true, requestId }) }] };
 }
 
 function handleApprove(args: Record<string, unknown>): ToolResult {

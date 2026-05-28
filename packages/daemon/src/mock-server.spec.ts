@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, t
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MOCK_SERVER_NAME, silentLogger } from "@mcp-cli/core";
+import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import { MockServer, buildMockToolCache, isWorkerEvent } from "./mock-server";
@@ -338,8 +339,6 @@ describe("MockServer", () => {
 
 // ── Extended mock-script DSL integration tests ──
 
-const POLL_INTERVAL_MS = 50;
-
 describe("Mock script DSL (extended entries)", () => {
   let server: MockServer | undefined;
   let db: StateDb | undefined;
@@ -466,12 +465,7 @@ describe("Mock script DSL (extended entries)", () => {
     const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
     const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
 
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const row = db?.getSession(sessionId);
-      if (row?.state === "disconnected") break;
-      await Bun.sleep(POLL_INTERVAL_MS);
-    }
+    await pollUntil(() => db?.getSession(sessionId)?.state === "disconnected", 5000);
     expect(db?.getSession(sessionId)?.state).toBe("disconnected");
   });
 
@@ -506,13 +500,7 @@ describe("Mock script DSL (extended entries)", () => {
     const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
     const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
 
-    // Poll until permission request shows up as waiting_permission in DB
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const row = db?.getSession(sessionId);
-      if (row?.state === "waiting_permission") break;
-      await Bun.sleep(POLL_INTERVAL_MS);
-    }
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
     expect(db?.getSession(sessionId)?.state).toBe("waiting_permission");
 
     // Approve the permission
@@ -541,12 +529,7 @@ describe("Mock script DSL (extended entries)", () => {
     const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
     const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
 
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const row = db?.getSession(sessionId);
-      if (row?.state === "waiting_permission") break;
-      await Bun.sleep(POLL_INTERVAL_MS);
-    }
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
 
     const denyResult = await client.callTool({
       name: "mock_deny",
@@ -571,12 +554,7 @@ describe("Mock script DSL (extended entries)", () => {
     const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
     const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
 
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const row = db?.getSession(sessionId);
-      if (row?.state === "waiting_permission") break;
-      await Bun.sleep(POLL_INTERVAL_MS);
-    }
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
 
     const approveResult = await client.callTool({
       name: "mock_approve",
@@ -599,12 +577,7 @@ describe("Mock script DSL (extended entries)", () => {
     const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
     const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
 
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      const row = db?.getSession(sessionId);
-      if (row?.state === "waiting_permission") break;
-      await Bun.sleep(POLL_INTERVAL_MS);
-    }
+    await pollUntil(() => db?.getSession(sessionId)?.state === "waiting_permission", 5000);
     expect(db?.getSession(sessionId)?.state).toBe("waiting_permission");
 
     const approveResult = await client.callTool({
