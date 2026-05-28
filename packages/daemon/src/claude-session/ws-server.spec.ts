@@ -626,6 +626,60 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("containment guard initializes from session:init cwd when config.cwd is absent (worktree mode)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    const worktreeCwd = "/Users/test/repo/.claude/worktrees/wt-init";
+    server.prepareSession("wt-no-cwd", {
+      prompt: "Hello",
+      worktree: "wt-init",
+    });
+    server.spawnClaude("wt-no-cwd");
+
+    const ws = await connectMockClaude(port, "wt-no-cwd");
+    try {
+      await waitForMessage(ws);
+      ws.send(
+        serialize({
+          type: "system",
+          subtype: "init",
+          cwd: worktreeCwd,
+          session_id: "wt-no-cwd",
+          tools: ["Read", "Write"],
+          mcp_servers: [],
+          model: "claude-sonnet-4-6",
+          permissionMode: "default",
+          apiKeySource: "test",
+          claude_code_version: "2.1.70",
+          uuid: "test-uuid",
+        }),
+      );
+
+      const responsePromise = waitForMessage(ws);
+      ws.send(
+        serialize({
+          type: "control_request",
+          request_id: "req-escape-init",
+          request: {
+            subtype: "can_use_tool",
+            tool_name: "Write",
+            input: { file_path: "/Users/test/repo/src/escaped.ts", content: "bad" },
+            tool_use_id: "tool-escape-init",
+          },
+        }),
+      );
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.response.behavior).toBe("deny");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("listSessions returns session info", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

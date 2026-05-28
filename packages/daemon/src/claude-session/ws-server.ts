@@ -1734,6 +1734,9 @@ export class ClaudeWsServer {
       case "session:init":
         // Capture Claude Code's own session ID for JSONL file lookup
         session.claudeSessionId = event.sessionId;
+        if (session.worktree && !session.containment && event.cwd) {
+          session.containment = new ContainmentGuard(event.cwd);
+        }
         this.recordSessionProgress(sessionId, session);
         break;
       case "session:response":
