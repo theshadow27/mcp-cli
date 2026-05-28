@@ -159,16 +159,25 @@ describe("killPid", () => {
   });
 });
 
+/** Poll until findProcessesByCwd sees the expected PID (or deadline). */
+async function awaitLsofVisibility(dir: string, targetPid: number, deadlineMs = 5_000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const pids = await findProcessesByCwd(dir, silentLogger);
+    if (pids.includes(targetPid)) return;
+    await Bun.sleep(POLL_MS);
+  }
+}
+
 describe("findProcessesByCwd", () => {
-  test("finds a process whose cwd is under the given directory", () => {
+  test("finds a process whose cwd is under the given directory", async () => {
     const tmpDir = `${import.meta.dir}/__test-cwd-${process.pid}`;
     const { mkdirSync, rmdirSync } = require("node:fs");
     mkdirSync(tmpDir, { recursive: true });
     const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
     try {
-      // lsof needs a moment to see the new process
-      Bun.sleepSync(200);
-      const pids = findProcessesByCwd(tmpDir, silentLogger);
+      await awaitLsofVisibility(tmpDir, proc.pid);
+      const pids = await findProcessesByCwd(tmpDir, silentLogger);
       expect(pids).toContain(proc.pid);
     } finally {
       forceKill(proc.pid);
@@ -181,13 +190,13 @@ describe("findProcessesByCwd", () => {
     }
   });
 
-  test("excludes current process from results", () => {
-    const pids = findProcessesByCwd(import.meta.dir, silentLogger);
+  test("excludes current process from results", async () => {
+    const pids = await findProcessesByCwd(import.meta.dir, silentLogger);
     expect(pids).not.toContain(process.pid);
   });
 
-  test("returns empty array for nonexistent directory", () => {
-    const pids = findProcessesByCwd("/tmp/__nonexistent-dir-test-2493", silentLogger);
+  test("returns empty array for nonexistent directory", async () => {
+    const pids = await findProcessesByCwd("/tmp/__nonexistent-dir-test-2493", silentLogger);
     expect(pids).toEqual([]);
   });
 });
@@ -200,9 +209,10 @@ describe("reapWorktreeProcesses", () => {
     const proc1 = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
     const proc2 = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
     try {
-      Bun.sleepSync(200);
+      await awaitLsofVisibility(tmpDir, proc1.pid);
+      await awaitLsofVisibility(tmpDir, proc2.pid);
       const logger = capturingLogger();
-      const killed = reapWorktreeProcesses(tmpDir, logger);
+      const killed = await reapWorktreeProcesses(tmpDir, logger);
       expect(killed).toBeGreaterThanOrEqual(2);
       await awaitDeath(proc1.pid);
       await awaitDeath(proc2.pid);
@@ -220,8 +230,8 @@ describe("reapWorktreeProcesses", () => {
     }
   });
 
-  test("returns 0 when no processes found", () => {
-    const killed = reapWorktreeProcesses("/tmp/__nonexistent-dir-test-2493", silentLogger);
+  test("returns 0 when no processes found", async () => {
+    const killed = await reapWorktreeProcesses("/tmp/__nonexistent-dir-test-2493", silentLogger);
     expect(killed).toBe(0);
   });
 });

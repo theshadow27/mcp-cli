@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
-import { spawnCaptureSync } from "@mcp-cli/core";
+import { spawnCapture } from "@mcp-cli/core";
 import { isOurProcess } from "./process-identity";
 
 /** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
@@ -105,16 +105,19 @@ export async function killPid(
 
 /**
  * Find PIDs of processes whose cwd is under `dirPath`.
- * Uses `lsof -a -d cwd +D <dir>` to match any process with a cwd
- * at or under the given directory. Returns only PIDs that differ from
- * the current process (we never self-kill).
+ * Uses `lsof -a -d cwd +d <dir>` (lowercase +d — single-level, no recursive
+ * filesystem walk) to match processes with a cwd at or directly under the
+ * directory. Returns only PIDs that differ from the current process.
  */
-export function findProcessesByCwd(dirPath: string, logger: Logger): number[] {
+export async function findProcessesByCwd(dirPath: string, logger: Logger): Promise<number[]> {
   const myPid = process.pid;
   try {
-    const result = spawnCaptureSync("lsof", ["-a", "-d", "cwd", "+D", dirPath, "-t"], {
+    const result = await spawnCapture("lsof", ["-a", "-d", "cwd", "+d", dirPath, "-t"], {
       timeoutMs: LSOF_TIMEOUT_MS,
     });
+    if (!result.ok && result.stderr.trim()) {
+      logger.debug(`[process] lsof exited ${result.exitCode} for ${dirPath}: ${result.stderr.trim()}`);
+    }
     const stdout = result.stdout.trim();
     if (!stdout) return [];
     const pids: number[] = [];
@@ -140,8 +143,8 @@ export function findProcessesByCwd(dirPath: string, logger: Logger): number[] {
  *
  * Returns the count of processes killed.
  */
-export function reapWorktreeProcesses(worktreePath: string, logger: Logger): number {
-  const pids = findProcessesByCwd(worktreePath, logger);
+export async function reapWorktreeProcesses(worktreePath: string, logger: Logger): Promise<number> {
+  const pids = await findProcessesByCwd(worktreePath, logger);
   if (pids.length === 0) return 0;
 
   logger.info(`[process] Reaping ${pids.length} orphaned process(es) under ${worktreePath}: ${pids.join(", ")}`);

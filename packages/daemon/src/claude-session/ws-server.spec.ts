@@ -2107,6 +2107,47 @@ describe("ClaudeWsServer", () => {
     expect(nonNullCount).toBe(1);
   });
 
+  test("terminateSession skips reap when another session shares the same worktree cwd (#2493)", async () => {
+    const infos: string[] = [];
+    const logger = { ...silentLogger, info: (...args: unknown[]) => infos.push(args.join(" ")) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    await server.start();
+
+    server.prepareSession("dying-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+    server.prepareSession("alive-session", {
+      prompt: "Hello",
+      worktree: "claude-shared",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+
+    await server.bye("dying-session");
+    expect(infos.some((m) => m.includes("skipping reap"))).toBe(true);
+  });
+
+  test("terminateSession skips reap for non-worktree sessions (#2493)", async () => {
+    const infos: string[] = [];
+    const logger = { ...silentLogger, info: (...args: unknown[]) => infos.push(args.join(" ")) };
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    await server.start();
+
+    server.prepareSession("plain-session", {
+      prompt: "Hello",
+      cwd: "/repo",
+    });
+
+    await server.bye("plain-session");
+    expect(infos.some((m) => m.includes("Reaping"))).toBe(false);
+    expect(infos.some((m) => m.includes("skipping reap"))).toBe(false);
+  });
+
   test("bye does NOT suppress cleanup when same worktree name is in different repos (#1837)", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
