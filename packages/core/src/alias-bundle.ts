@@ -531,7 +531,6 @@ declare module "mcp-cli" {
   }
   export interface MonitorAliasContext {
     signal: AbortSignal;
-    bus: { publish(input: AliasMonitorEventInput): void };
     logger: MonitorAliasLogger;
   }
   export interface MonitorAliasDefinition<E extends AliasMonitorEventInput = AliasMonitorEventInput> {

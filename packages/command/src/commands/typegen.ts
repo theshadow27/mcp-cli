@@ -125,7 +125,6 @@ export function generateDeclarations(tools: ToolInfo[]): string {
     "  }",
     "  interface MonitorAliasContext {",
     "    signal: AbortSignal;",
-    "    bus: { publish(input: AliasMonitorEventInput): void };",
     "    logger: MonitorAliasLogger;",
     "  }",
     "  interface MonitorAliasDefinition<E extends AliasMonitorEventInput = AliasMonitorEventInput> {",
