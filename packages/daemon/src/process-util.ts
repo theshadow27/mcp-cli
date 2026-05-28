@@ -6,6 +6,7 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
+import { spawnCapture } from "@mcp-cli/core";
 import { isOurProcess } from "./process-identity";
 
 /** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
@@ -16,6 +17,8 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 const POLL_INTERVAL_MS = 100;
 /** Cache age (ms) below which PID-recycling is near-impossible — skip jittery isOurProcess (#2437). */
 const FRESH_CACHE_MS = 30_000;
+/** Timeout (ms) for lsof scan when finding processes by cwd. */
+const LSOF_TIMEOUT_MS = 5_000;
 
 /**
  * Try to send a signal to a process. Returns true if the signal was sent
@@ -98,4 +101,70 @@ export async function killPid(
 
   // Wait briefly for SIGKILL to take effect
   await awaitExit(pid, Date.now() + KILL_SIGKILL_GRACE_MS);
+}
+
+/**
+ * Find PIDs of processes whose cwd is under `dirPath`.
+ * Uses `lsof -a -d cwd +d <dir>` (lowercase +d — single-level, no recursive
+ * filesystem walk) to match processes with a cwd at or directly under the
+ * directory. Returns only PIDs that differ from the current process.
+ */
+export async function findProcessesByCwd(
+  dirPath: string,
+  logger: Logger,
+  _spawnCaptureFn = spawnCapture,
+): Promise<number[]> {
+  const myPid = process.pid;
+  try {
+    const result = await _spawnCaptureFn("lsof", ["-a", "-d", "cwd", "+d", dirPath, "-t"], {
+      timeoutMs: LSOF_TIMEOUT_MS,
+    });
+    if (result.timedOut) {
+      logger.warn(`[process] lsof scan timed out for ${dirPath} — orphaned processes may persist`);
+      return [];
+    }
+    if (result.exitCode === null) {
+      logger.warn(`[process] lsof unavailable for ${dirPath} — orphaned processes may persist`);
+      return [];
+    }
+    if (!result.ok && result.stderr.trim()) {
+      logger.debug(`[process] lsof exited ${result.exitCode} for ${dirPath}: ${result.stderr.trim()}`);
+    }
+    const stdout = result.stdout.trim();
+    if (!stdout) return [];
+    const pids: number[] = [];
+    for (const line of stdout.split("\n")) {
+      const pid = Number.parseInt(line.trim(), 10);
+      if (Number.isFinite(pid) && pid > 0 && pid !== myPid) {
+        pids.push(pid);
+      }
+    }
+    return pids;
+  } catch (err) {
+    logger.warn(`[process] lsof scan for cwd under ${dirPath} failed: ${err}`);
+    return [];
+  }
+}
+
+/**
+ * Kill all processes whose cwd is under the given worktree directory.
+ * Intended for post-bye cleanup: detached grandchild processes (bun test
+ * workers, am-i-done runners) that reparent to PID 1 when the session
+ * process is killed. SIGKILL is used directly since these are already
+ * orphaned — no point in a graceful SIGTERM handshake.
+ *
+ * Returns the count of processes killed.
+ */
+export async function reapWorktreeProcesses(worktreePath: string, logger: Logger): Promise<number> {
+  const pids = await findProcessesByCwd(worktreePath, logger);
+  if (pids.length === 0) return 0;
+
+  logger.info(`[process] Reaping ${pids.length} orphaned process(es) under ${worktreePath}: ${pids.join(", ")}`);
+  let killed = 0;
+  for (const pid of pids) {
+    if (trySendSignal(pid, "SIGKILL", logger)) {
+      killed++;
+    }
+  }
+  return killed;
 }

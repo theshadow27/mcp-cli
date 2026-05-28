@@ -54,7 +54,7 @@ import {
   spawnManaged,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
-import { killPid } from "../process-util";
+import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
 import { CONTAINMENT_WRITE_TOOLS, ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
@@ -2598,6 +2598,21 @@ export class ClaudeWsServer {
       session.pid = null;
       session.pidCachedAt = null;
       await this.killRawPid(pid, session.pidStartTime, cachedAt);
+    }
+
+    // Reap detached grandchild processes (bun test workers, am-i-done runners)
+    // whose cwd is under this session's worktree. These reparent to PID 1 when
+    // the session process is killed and accumulate as zombies across sprints (#2493).
+    // Guards: only for worktree-backed sessions, and only when no other live
+    // session shares the same cwd (sprint phases reuse worktrees via --keep-worktree).
+    if (session.config.cwd && session.config.worktree) {
+      const cwd = session.config.cwd;
+      const shared = [...this.sessions.values()].some((s) => s.config.cwd === cwd);
+      if (shared) {
+        this.logger.info(`[_claude] skipping reap for ${cwd} — another session still uses it`);
+      } else {
+        await reapWorktreeProcesses(cwd, this.logger);
+      }
     }
   }
 }
