@@ -19,7 +19,7 @@
  */
 
 import { CodexSession, type CodexSessionConfig } from "@mcp-cli/codex";
-import { type AgentSessionEvent, CODEX_SERVER_NAME, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, type AgentSessionEvent, CODEX_SERVER_NAME, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { CODEX_TOOLS } from "./codex-session/tools";
@@ -32,6 +32,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
 }
 
 interface ToolsChangedMessage {
@@ -529,7 +530,7 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     try {
       await startServer();
-      self.postMessage({ type: "ready" });
+      self.postMessage({ type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       mcpServer = null;
       transport = null;

@@ -14,7 +14,7 @@
  */
 
 import { AcpSession, type AcpSessionConfig } from "@mcp-cli/acp";
-import { ACP_SERVER_NAME, type AgentSessionEvent, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+import { ACP_SERVER_NAME, AGENT_PROTOCOL_VERSION, type AgentSessionEvent, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ACP_TOOLS } from "./acp-session/tools";
@@ -27,6 +27,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
 }
 
 interface ToolsChangedMessage {
@@ -519,7 +520,7 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     try {
       await startServer();
-      self.postMessage({ type: "ready" });
+      self.postMessage({ type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       mcpServer = null;
       transport = null;

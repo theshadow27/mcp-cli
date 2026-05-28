@@ -13,7 +13,12 @@
  *   4. Worker sends MCP JSON-RPC responses + DB event messages back
  */
 
-import { type AgentSessionEvent, DEFAULT_TIMEOUT_MS, OPENCODE_SERVER_NAME } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  type AgentSessionEvent,
+  DEFAULT_TIMEOUT_MS,
+  OPENCODE_SERVER_NAME,
+} from "@mcp-cli/core";
 import { OpenCodeSession, type OpenCodeSessionConfig } from "@mcp-cli/opencode";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -27,6 +32,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
 }
 
 interface ToolsChangedMessage {
@@ -522,7 +528,7 @@ self.onmessage = async (event: MessageEvent) => {
   if (isControlMessage(data) && data.type === "init") {
     try {
       await startServer();
-      self.postMessage({ type: "ready" });
+      self.postMessage({ type: "ready", supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       mcpServer = null;
       transport = null;

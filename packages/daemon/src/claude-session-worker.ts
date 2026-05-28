@@ -15,6 +15,7 @@
  */
 
 import {
+  AGENT_PROTOCOL_VERSION,
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
   type LiveSpan,
@@ -48,6 +49,7 @@ import { WorkerServerTransport } from "./worker-transport";
 interface InitMessage {
   type: "init";
   daemonId?: string;
+  protocol_version?: number;
   wsPort?: number;
   /** Suppress worker-side console logging (used in tests). */
   quiet?: boolean;
@@ -803,7 +805,7 @@ self.onmessage = async (event: MessageEvent) => {
     });
     try {
       const port = await startServer(data.wsPort, data.quiet);
-      self.postMessage({ type: "ready", port });
+      self.postMessage({ type: "ready", port, supported_protocol_version: AGENT_PROTOCOL_VERSION });
     } catch (err) {
       // Clean up partially-initialized resources
       await wsServer
