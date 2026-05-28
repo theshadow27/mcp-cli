@@ -651,11 +651,8 @@ export function formatDriftWarning(entries: DriftEntry[]): string {
 }
 
 /**
- * Shared drift-abort used by `check` and `run`. Any non-ok status exits 1
- * with a message; callers resume normal flow only when drift status is ok.
- *
- * Wired into `run` so malicious phase-source mutations cannot execute: the
- * lockfile must match the on-disk manifest + sources before dispatch.
+ * Shared drift-abort used by `check` and `phase advance`. Any non-ok status
+ * exits 1 with a message; callers resume normal flow only when drift is ok.
  */
 function assertNoDrift(d: PhaseInstallDeps): void {
   const result = detectDrift(d);
@@ -672,6 +669,49 @@ function assertNoDrift(d: PhaseInstallDeps): void {
       break;
   }
   d.exit(1);
+}
+
+/**
+ * Used by `phase run`: when the lockfile is absent or stale, auto-reinstall
+ * instead of aborting. Prints a brief warning to stderr so the caller knows
+ * it happened, then returns. Exits 1 only if a manifest is missing (can't
+ * install without one) or if the install itself fails.
+ */
+async function autoInstallOnDrift(cwd: string, d: PhaseInstallDeps): Promise<void> {
+  const result = detectDrift(d);
+  if (result.status === "ok") return;
+
+  if (result.status === "no-manifest") {
+    d.logError("no .mcx.yaml or .mcx.json in this repo");
+    d.exit(1);
+  }
+
+  if (result.status === "no-lockfile") {
+    d.logError(`no ${LOCKFILE_NAME} — running \`mcx phase install\` automatically`);
+  } else {
+    const n = result.entries.length;
+    d.logError(`${LOCKFILE_NAME} is out of date (${n} change${n === 1 ? "" : "s"}) — re-installing automatically`);
+  }
+
+  let installResult: InstallResult;
+  try {
+    installResult = await installPhases(cwd, d);
+  } catch (err) {
+    if (err instanceof ManifestError) {
+      d.logError(err.message);
+    } else {
+      d.logError(err instanceof Error ? err.message : String(err));
+    }
+    d.exit(1);
+  }
+
+  const lockPath = resolvePath(cwd, LOCKFILE_NAME);
+  const tmpPath = `${lockPath}.tmp`;
+  d.writeFileSync(tmpPath, serializeLockfile(installResult.lockfile));
+  renameSync(tmpPath, lockPath);
+
+  const count = installResult.lockfile.phases.length;
+  d.logError(`auto-installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
 }
 
 function shortHash(s: string): string {
@@ -831,7 +871,7 @@ export async function cmdPhase(
 
     if (sub === "run") {
       const argv = args.slice(1);
-      assertNoDrift(d);
+      await autoInstallOnDrift(d.cwd(), d);
       if (argv.includes("--dry-run")) {
         await runPhase(argv, d);
       } else if (argv.includes("--no-execute")) {
@@ -1001,7 +1041,9 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     cache: async (_k, producer) => producer() as Promise<never>,
     state: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
-    workItem: null,
+    // Stub work item so phases that guard on `ctx.workItem !== null` can
+    // preview without throwing. All fields are clearly synthetic.
+    workItem: { id: "dry-run", issueNumber: null, prNumber: null, branch: null, phase: "(dry-run)" },
     repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
     gh: createGhClient({ repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT }),
     signal: controller.signal,

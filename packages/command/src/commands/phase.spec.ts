@@ -386,6 +386,43 @@ defineAlias(({ z }) => ({
     expect(errs.some((e) => e.includes('phase "implement" threw') && e.includes("boom from handler"))).toBe(true);
   }, 15_000);
 
+  test("run --dry-run provides stub ctx.workItem so workItem-checking phases don't throw (#2510)", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(
+      join(dir, "impl.ts"),
+      `
+import { defineAlias, z } from "mcp-cli";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "impl",
+  input: z.object({}).optional(),
+  fn: async (_input, ctx) => {
+    if (!ctx.workItem) throw new Error("no work item");
+    await ctx.state.set("phase", ctx.workItem.phase);
+  },
+}));
+`.trim(),
+    );
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    const logs: string[] = [];
+    const errs: string[] = [];
+    await cmdPhase(["run", "implement", "--dry-run"], {
+      cwd: () => dir,
+      log: (m) => logs.push(m),
+      logError: (m) => errs.push(m),
+      exit: ((code: number) => {
+        throw new Error(`exit(${code})`);
+      }) as (code: number) => never,
+    });
+
+    // state.set should be intercepted, not thrown
+    expect(logs).toEqual([`[dry-run] ctx.state.set("phase", "(dry-run)")`]);
+    expect(errs).toEqual([]);
+  }, 15_000);
+
   test("run --no-execute dispatches to transition enforcement only", async () => {
     // #1381 wired real handler execution on `run <target>` without --dry-run.
     // `--no-execute` is the escape hatch for orchestrators that want to log
@@ -818,30 +855,34 @@ describe("cmdPhase dispatch", () => {
     try {
       const { code, err } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => empty }));
       expect(code).toBe(1);
-      // drift-check fires first; no-lockfile precedes no-manifest when both are absent
-      expect(err).toContain("no .mcx.lock");
+      // auto-install attempt fails because there is no manifest
+      expect(err).toContain("no .mcx.yaml");
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
   });
 
-  test("run aborts with drift warning when phase source is tampered", async () => {
-    // Mutate a phase source after install — drift check must block dispatch
-    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
-    const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--from", "impl"], { cwd: () => dir }));
-    expect(code).toBe(1);
-    expect(err).toContain("out of date");
-    expect(err).toContain("qa.ts");
-    expect(err).toContain("mcx phase install");
-  });
+  test("run auto-installs when phase source is stale (#2510)", async () => {
+    // Mutate a phase source after install — run should auto-reinstall rather than abort
+    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// bumped\n`);
+    // Use --no-execute so we don't need a daemon for the actual phase execution.
+    // No dep override for logError so messages flow through console.error → catchExit err.
+    const { code, err } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--from", "impl", "--no-execute"], { cwd: () => dir }),
+    );
+    expect(code).toBeUndefined(); // success after auto-install + transition validation
+    expect(err).toContain("re-installing automatically");
+    expect(err).toContain("auto-installed");
+    expect(err).toContain("approved");
+  }, 15_000);
 
-  test("run --dry-run aborts on drift before dispatch", async () => {
-    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// tampered\n`);
+  test("run --dry-run auto-installs when lockfile is stale (#2510)", async () => {
+    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// bumped\n`);
     const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--dry-run"], { cwd: () => dir }));
-    expect(code).toBe(1);
-    expect(err).toContain("out of date");
-    expect(err).toContain("mcx phase install");
-  });
+    expect(code).toBeUndefined(); // succeeds: auto-install + dry-run
+    expect(err).toContain("re-installing automatically");
+    expect(err).toContain("auto-installed");
+  }, 15_000);
 
   test("unknown subcommand exits 1", async () => {
     const { code, err } = await catchExit(() => cmdPhase(["bogus"]));

@@ -22,15 +22,15 @@ import type { CheckRule } from "./_engine/rule";
 
 const PHASE_REL = "packages/command/src/commands/phase.ts";
 const RUN_BLOCK_START = /if\s*\(\s*sub\s*===\s*["']run["']\s*\)/;
-const DRIFT_CALL = /\b(assertNoDrift|detectDrift)\s*\(/;
+const DRIFT_CALL = /\b(assertNoDrift|detectDrift|autoInstallOnDrift)\s*\(/;
 
 const rule: CheckRule = {
   id: "phase-drift",
   kind: "check",
-  scold: 'phase.ts `sub === "run"` block must call assertNoDrift / detectDrift before dispatching',
+  scold: 'phase.ts `sub === "run"` block must call assertNoDrift / autoInstallOnDrift / detectDrift before dispatching',
   guidance: [
     "the run-block guards `mcx phase run` against stale .mcx.lock — silently skipping it ships drift",
-    "add `assertNoDrift(d)` (throws) or `const r = detectDrift(d); if (!r.ok) ...` (returns) inside the block",
+    "use `await autoInstallOnDrift(cwd, d)` (auto-reinstalls on drift) or `assertNoDrift(d)` (aborts) inside the block",
     "if the block was intentionally renamed, update this rule's RUN_BLOCK_START regex in the same PR",
   ],
   documentation: "phase.ts run-block drift guard",
