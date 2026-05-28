@@ -617,6 +617,46 @@ describe("ContainmentGuard — symlink path traversal", () => {
     }
   });
 
+  test("denies symlink escape when resolved and unresolved roots diverge (platform-independent)", () => {
+    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const realRoot = join(base, "real-root");
+    const aliasRoot = join(base, "alias-root");
+    const outside = join(base, "outside");
+    mkdirSync(realRoot, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    // alias-root → real-root: guarantees worktreeRoot (resolved) ≠ _unresolvedRoot
+    symlinkSync(realRoot, aliasRoot);
+
+    const worktree = join(aliasRoot, "worktree");
+    mkdirSync(worktree, { recursive: true });
+    const outsideDir = join(realRoot, "sibling");
+    mkdirSync(outsideDir, { recursive: true });
+    // worktree/escape → sibling dir (outside worktree but under same ancestor)
+    symlinkSync(outsideDir, join(worktree, "escape"));
+
+    try {
+      // Construct guard with the ALIASED path — unresolvedRoot = .../alias-root/worktree,
+      // worktreeRoot = .../real-root/worktree (resolved). Incoming file_path uses the
+      // alias form, so without the unresolvedRoot check the startsWith guard misses.
+      const g = new ContainmentGuard(join(aliasRoot, "worktree"));
+      const escapePath = join(aliasRoot, "worktree", "escape", "evil.ts");
+      const r = g.evaluate("Write", { file_path: escapePath });
+      expect(r.action).toBe("deny");
+      expect(r.strikes).toBe(1);
+
+      // Edit via same escape path
+      const r2 = g.evaluate("Edit", { file_path: escapePath });
+      expect(r2.action).toBe("deny");
+
+      // Bash write via same escape path
+      const g2 = new ContainmentGuard(join(aliasRoot, "worktree"));
+      const r3 = g2.evaluate("Bash", { command: `tee ${escapePath}` });
+      expect(r3.action).toBe("deny");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("denies Write to /tmp symlink pointing outside allowed prefixes", () => {
     // Nominal path starts with /tmp/ so old resolve()-based check would allow it,
     // but real target is outside any allowed prefix. We use homedir() instead of

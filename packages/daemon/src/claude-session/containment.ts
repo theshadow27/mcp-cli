@@ -273,13 +273,13 @@ function isPathOutside(filePath: string, worktreeRoot: string): boolean {
 
 const ALLOWED_EXTERNAL_PREFIXES = ["/tmp", "/var/tmp", "/private/tmp"];
 
-function isAllowedExternalPath(filePath: string, worktreeRoot: string, unresolvedRoot?: string): boolean {
+function isAllowedExternalPath(filePath: string, worktreeRoot: string, unresolvedRoot: string): boolean {
   const normalized = resolve(worktreeRoot, filePath);
   // Symlink escape guard (#1481): nominal path inside the worktree → /tmp
   // exemption must not apply. Check both resolved and unresolved root forms
   // to handle macOS /tmp → /private/tmp aliasing (#2549).
   if (normalized.startsWith(`${worktreeRoot}/`)) return false;
-  if (unresolvedRoot && normalized.startsWith(`${unresolvedRoot}/`)) return false;
+  if (normalized.startsWith(`${unresolvedRoot}/`)) return false;
   const real = resolveRealpath(normalized);
   if (real.startsWith(`${worktreeRoot}/`) || real === worktreeRoot) return false;
   return ALLOWED_EXTERNAL_PREFIXES.some((p) => real.startsWith(`${p}/`) || real === p);
