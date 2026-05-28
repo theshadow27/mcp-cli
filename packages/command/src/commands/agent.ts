@@ -542,16 +542,22 @@ running without MCX_RECORD_SESSION, this command will stop it first.`);
     return;
   }
 
-  const { flags, positionals, errors } = parseFlags(args, {
-    save: { type: "string", alias: "s" },
-  });
-
-  if (errors.length > 0) {
-    d.printError(errors[0]);
-    d.exit(1);
+  // Extract --save/-s and pass everything else through to spawn.
+  // Don't use parseFlags here — it rejects unknown flags, but record
+  // accepts all spawn flags (--task, --model, --cwd, --allow, etc.).
+  let savePath: string | undefined;
+  const spawnArgs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if ((tok === "--save" || tok === "-s") && i + 1 < args.length) {
+      // dotw-ignore no-manual-arg-parsing: pass-through command — parseFlags rejects the unknown spawn flags we must forward
+      savePath = args[++i]; // dotw-ignore args-bounds: guarded by i + 1 < args.length above
+    } else if (tok.startsWith("--save=")) {
+      savePath = tok.slice("--save=".length);
+    } else {
+      spawnArgs.push(tok);
+    }
   }
-
-  let savePath = flags.save as string | undefined;
   if (!savePath) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     savePath = join(options.RECORDINGS_DIR, `${ts}.ndjson`);
@@ -570,8 +576,7 @@ running without MCX_RECORD_SESSION, this command will stop it first.`);
     // No daemon running — proceed
   }
 
-  // Forward remaining args to spawn, inject --wait for full capture
-  const spawnArgs = [...positionals];
+  // Inject --wait for full capture
   if (!spawnArgs.includes("--wait")) {
     spawnArgs.push("--wait");
   }

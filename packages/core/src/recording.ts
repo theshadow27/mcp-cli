@@ -25,7 +25,7 @@ export interface RecordingEntry {
  * Classify a postMessage payload into its protocol kind.
  * Uses the same discrimination rules as the spec §1:
  *   - `jsonrpc` field present → mcp
- *   - `type` field starting with "db:" or "metrics:" or "monitor:" → db
+ *   - `type` field starting with "db:" or "metrics:" or exact "monitor:event" → db
  *   - `type` field present (all other) → control
  */
 export function classifyMessageKind(payload: unknown): RecordingKind {
@@ -46,6 +46,10 @@ export function classifyMessageKind(payload: unknown): RecordingKind {
  * Zero overhead when not instantiated. Writes are fire-and-forget
  * (buffered by the OS / Bun's writer). The caller is responsible for
  * calling close() when the session ends.
+ *
+ * record() and recordMessage() never throw — a serialization or I/O
+ * failure is silently swallowed so recording can never disrupt the
+ * protocol path.
  */
 export class NdjsonRecorder {
   private writer: ReturnType<ReturnType<typeof Bun.file>["writer"]> | null = null;
@@ -58,13 +62,17 @@ export class NdjsonRecorder {
 
   record(dir: RecordingDirection, kind: RecordingKind, payload: unknown): void {
     if (this.closed || !this.writer) return;
-    const entry: RecordingEntry = {
-      t: performance.timeOrigin + performance.now(),
-      dir,
-      kind,
-      payload,
-    };
-    this.writer.write(`${JSON.stringify(entry)}\n`);
+    try {
+      const entry: RecordingEntry = {
+        t: performance.timeOrigin + performance.now(),
+        dir,
+        kind,
+        payload,
+      };
+      this.writer.write(`${JSON.stringify(entry)}\n`);
+    } catch {
+      // Recording must never disrupt the protocol path.
+    }
   }
 
   recordMessage(dir: RecordingDirection, payload: unknown): void {
@@ -74,7 +82,11 @@ export class NdjsonRecorder {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.writer?.end();
+    try {
+      await this.writer?.end();
+    } catch {
+      // Best-effort flush.
+    }
     this.writer = null;
   }
 }

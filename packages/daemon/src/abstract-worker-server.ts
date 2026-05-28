@@ -1,16 +1,11 @@
 import { resolve } from "node:path";
-import type { Logger } from "@mcp-cli/core";
-import {
-  AGENT_PROTOCOL_VERSION,
-  NdjsonRecorder,
-  ProtocolVersionMismatchError,
-  consoleLogger,
-  resolveRealpath,
-} from "@mcp-cli/core";
+import type { Logger, NdjsonRecorder } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { type MetricsCollector, metrics as defaultMetrics } from "./metrics";
+import { setupRecording } from "./recording-hooks";
 import {
   DEFAULT_RESTART_POLICY,
   type RestartPolicy,
@@ -152,8 +147,7 @@ export abstract class AbstractWorkerServer {
   protected readonly restartPolicy: RestartPolicy = DEFAULT_RESTART_POLICY;
   protected readonly handshakeTimeoutMs: number;
   protected static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000;
-  protected recorder: NdjsonRecorder | null = null;
-  recordingPath: string | null = null;
+  recorder: NdjsonRecorder | null = null;
 
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
   onActivity?: () => void;
@@ -186,10 +180,6 @@ export abstract class AbstractWorkerServer {
     this.metrics.gauge(d.metrics.crashLoopStopped).set(0);
     const worker = this.workerFactory(workerPath(d.workerScript));
     this.worker = worker;
-
-    if (this.recordingPath) {
-      this.recorder = new NdjsonRecorder(this.recordingPath);
-    }
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -243,6 +233,14 @@ export abstract class AbstractWorkerServer {
       this.transport = new WorkerClientTransport(this.worker);
       this.client = this.clientFactory();
 
+      // Install recording hooks BEFORE connect so the MCP initialize
+      // handshake is captured in both directions.
+      let rawHandler: (() => ((this: Worker, event: MessageEvent) => void) | null) | undefined;
+      if (this.recorder) {
+        const hooks = setupRecording(worker, this.transport, this.recorder);
+        rawHandler = hooks.rawTransportHandler;
+      }
+
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       let connectResolved = false;
       await Promise.race([
@@ -260,7 +258,10 @@ export abstract class AbstractWorkerServer {
       ]);
       clearTimeout(handshakeTimer);
 
-      const transportHandler = worker.onmessage;
+      // Post-connect: replaces the setupRecording handshake wrapper.
+      // Record ALL inbound messages here (the handshake wrapper only
+      // lived during connect and is now gone — no double-record).
+      const transportFwd = rawHandler?.() ?? worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
         this.recorder?.recordMessage("worker->daemon", data);
@@ -272,17 +273,8 @@ export abstract class AbstractWorkerServer {
           this.handleProviderEvent(data);
           return;
         }
-        transportHandler?.call(worker, event);
+        (transportFwd as ((this: Worker, event: MessageEvent) => void) | null)?.call(worker, event);
       };
-
-      if (this.recorder) {
-        const origSend = this.transport.send.bind(this.transport);
-        const recorder = this.recorder;
-        this.transport.send = (msg, opts) => {
-          recorder.recordMessage("daemon->worker", msg);
-          return origSend(msg, opts);
-        };
-      }
 
       worker.onerror = null;
       this.attachCrashDetection(worker);
@@ -330,8 +322,6 @@ export abstract class AbstractWorkerServer {
   async stop(): Promise<void> {
     this.stopped = true;
     this.onRestarted = undefined;
-    await this.recorder?.close();
-    this.recorder = null;
     await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);

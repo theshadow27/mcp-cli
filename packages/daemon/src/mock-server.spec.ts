@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MOCK_SERVER_NAME, silentLogger } from "@mcp-cli/core";
+import { MOCK_SERVER_NAME, NdjsonRecorder, type RecordingEntry, silentLogger } from "@mcp-cli/core";
 import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
@@ -622,5 +623,113 @@ describe("Mock script DSL (extended entries)", () => {
     const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
     const texts = entries.filter((e: { role: string }) => e.role === "assistant").map((e: { text: string }) => e.text);
     expect(texts).toEqual(["first", "second"]);
+  });
+});
+
+// ── NDJSON recording integration ──
+
+describe("MockServer NDJSON recording", () => {
+  const recDir = join(tmpdir(), `rec-test-${process.pid}`);
+  let server: MockServer | undefined;
+  let db: StateDb | undefined;
+  let recorder: NdjsonRecorder | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    await recorder?.close();
+    db?.close();
+    server = undefined;
+    db = undefined;
+    recorder = undefined;
+    rmSync(recDir, { recursive: true, force: true });
+  });
+
+  test("records init → ready → MCP initialize → tool call sequence", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const recPath = join(recDir, "trace.ndjson");
+    recorder = new NdjsonRecorder(recPath);
+
+    server = new MockServer(db, "test-daemon", undefined, silentLogger);
+    server.recorder = recorder;
+
+    const { client } = await server.start();
+
+    // Exercise a tool call through the MCP client
+    await client.callTool({ name: "mock_session_list", arguments: {} });
+    await server.stop();
+    server = undefined;
+    await recorder.close();
+
+    const lines = readFileSync(recPath, "utf-8").trim().split("\n");
+    const entries = lines.map((l) => JSON.parse(l) as RecordingEntry);
+
+    // Verify we have a substantial recording
+    expect(entries.length).toBeGreaterThanOrEqual(5);
+
+    // 1. init message (daemon→worker, control)
+    const init = entries.find(
+      (e) => e.dir === "daemon->worker" && e.kind === "control" && (e.payload as { type?: string })?.type === "init",
+    );
+    expect(init).toBeDefined();
+
+    // 2. ready message (worker→daemon, control)
+    const ready = entries.find(
+      (e) => e.dir === "worker->daemon" && e.kind === "control" && (e.payload as { type?: string })?.type === "ready",
+    );
+    expect(ready).toBeDefined();
+
+    // 3. MCP initialize request (daemon→worker, mcp)
+    const initReq = entries.find(
+      (e) =>
+        e.dir === "daemon->worker" && e.kind === "mcp" && (e.payload as { method?: string })?.method === "initialize",
+    );
+    expect(initReq).toBeDefined();
+
+    // 4. MCP initialize response (worker→daemon, mcp) — this was the blocker
+    const initResp = entries.find(
+      (e) =>
+        e.dir === "worker->daemon" &&
+        e.kind === "mcp" &&
+        "result" in (e.payload as Record<string, unknown>) &&
+        (e.payload as { id?: unknown })?.id === (initReq?.payload as { id?: unknown })?.id,
+    );
+    expect(initResp).toBeDefined();
+
+    // 5. Tool call (daemon→worker, mcp)
+    const toolCall = entries.find(
+      (e) =>
+        e.dir === "daemon->worker" && e.kind === "mcp" && (e.payload as { method?: string })?.method === "tools/call",
+    );
+    expect(toolCall).toBeDefined();
+
+    // 6. Tool response (worker→daemon, mcp)
+    // The response comes through the post-connect worker.onmessage wrapper (which
+    // records DB events) and then falls through to the raw transport handler
+    // (which the setupRecording wrapper records). Look for any mcp response
+    // matching the tool call ID.
+    const toolCallId = (toolCall?.payload as { id?: unknown })?.id;
+    const toolResp = entries.find(
+      (e) =>
+        e.dir === "worker->daemon" &&
+        e.kind === "mcp" &&
+        (e.payload as { id?: unknown })?.id === toolCallId &&
+        !("method" in (e.payload as Record<string, unknown>)),
+    );
+    expect(toolResp).toBeDefined();
+
+    // Verify ordering: init before ready, ready before initialize, initialize before tool call
+    const initIdx = entries.indexOf(init as RecordingEntry);
+    const readyIdx = entries.indexOf(ready as RecordingEntry);
+    const initReqIdx = entries.indexOf(initReq as RecordingEntry);
+    const toolCallIdx = entries.indexOf(toolCall as RecordingEntry);
+    expect(initIdx).toBeLessThan(readyIdx);
+    expect(readyIdx).toBeLessThan(initReqIdx);
+    expect(initReqIdx).toBeLessThan(toolCallIdx);
+
+    // Timestamps are monotonically increasing
+    for (let i = 1; i < entries.length; i++) {
+      expect(entries[i].t).toBeGreaterThanOrEqual(entries[i - 1].t);
+    }
   });
 });

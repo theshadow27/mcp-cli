@@ -10,11 +10,10 @@
  * since this is a testing-only provider.
  */
 
-import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
+import type { JsonSchema, Logger, NdjsonRecorder, ToolInfo } from "@mcp-cli/core";
 import {
   AGENT_PROTOCOL_VERSION,
   MOCK_SERVER_NAME,
-  NdjsonRecorder,
   ProtocolVersionMismatchError,
   consoleLogger,
   formatToolSignature,
@@ -23,6 +22,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { MOCK_TOOLS } from "./mock-session/tools";
+import { setupRecording } from "./recording-hooks";
 import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
 import { WorkerClientTransport } from "./worker-transport";
@@ -103,12 +103,11 @@ export class MockServer {
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private readonly logger: Logger;
-  private recorder: NdjsonRecorder | null = null;
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000;
 
   /** Called on worker activity — lets the daemon reset its idle timer. */
   onActivity?: () => void;
-  recordingPath: string | null = null;
+  recorder: NdjsonRecorder | null = null;
 
   constructor(
     db: StateDb,
@@ -125,9 +124,6 @@ export class MockServer {
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     if (this.worker) throw new Error("start() called while worker is already running");
-    if (this.recordingPath) {
-      this.recorder = new NdjsonRecorder(this.recordingPath);
-    }
     const worker = new Worker(workerPath("mock-session-worker.ts"));
     this.worker = worker;
 
@@ -182,6 +178,14 @@ export class MockServer {
       this.transport = new WorkerClientTransport(this.worker);
       this.client = this.clientFactory();
 
+      // Install recording hooks BEFORE connect so the MCP initialize
+      // handshake is captured in both directions.
+      let rawHandler: (() => ((this: Worker, event: MessageEvent) => void) | null) | undefined;
+      if (this.recorder) {
+        const hooks = setupRecording(worker, this.transport, this.recorder);
+        rawHandler = hooks.rawTransportHandler;
+      }
+
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       let connectResolved = false;
       await Promise.race([
@@ -198,8 +202,10 @@ export class MockServer {
       ]);
       clearTimeout(handshakeTimer);
 
-      // Wrap worker.onmessage to intercept DB event messages
-      const transportHandler = worker.onmessage;
+      // Post-connect: replaces the setupRecording handshake wrapper.
+      // Record ALL inbound messages here (the handshake wrapper only
+      // lived during connect and is now gone — no double-record).
+      const transportFwd = rawHandler?.() ?? worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
         this.recorder?.recordMessage("worker->daemon", data);
@@ -207,17 +213,8 @@ export class MockServer {
           this.handleWorkerEvent(data);
           return;
         }
-        transportHandler?.call(worker, event);
+        (transportFwd as ((this: Worker, event: MessageEvent) => void) | null)?.call(worker, event);
       };
-
-      if (this.recorder) {
-        const origSend = this.transport.send.bind(this.transport);
-        const recorder = this.recorder;
-        this.transport.send = (msg, opts) => {
-          recorder.recordMessage("daemon->worker", msg);
-          return origSend(msg, opts);
-        };
-      }
 
       worker.onerror = null;
     } catch (err) {
@@ -242,8 +239,6 @@ export class MockServer {
 
   /** Stop the worker and clean up. */
   async stop(): Promise<void> {
-    await this.recorder?.close();
-    this.recorder = null;
     await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.worker.onmessage = null;
