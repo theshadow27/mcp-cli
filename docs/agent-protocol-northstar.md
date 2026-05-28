@@ -9,7 +9,12 @@ mcx talks to ≥6 agent providers today (claude, codex, opencode, acp, gemini, c
 ## Components
 
 ### 1. Formal protocol spec (`docs/agent-protocol.md`)
-Single document, single source of truth, names every message type that crosses the worker↔daemon boundary:
+
+**Scope and prior art.** This protocol sits at the **mcpd ↔ agent-worker** boundary — the same boundary as today's Bun `postMessage` channel, formalized and made transport-agnostic. It is **not** a re-implementation of ACP (which lives at a different layer: editor/IDE ↔ agent). It is **not** a new agent wire protocol (claude SDK NDJSON, codex App Server, and ACP each remain the per-vendor wire format, consumed by per-vendor adapters on the worker side). It is a **harness coordination protocol**: the minimum surface an orchestrator needs to drive a remote harness — spawn, prompt, interrupt, observe lifecycle events, route permission round-trips, collect cost/tokens. Today this protocol runs over `postMessage`; tomorrow the same messages must be tunnelable over stdio, WebSocket, or any other reliable duplex byte stream so the worker can run remote (claude-in-docker, claude.ai, Bedrock). Wire format and message schemas are normative; transport is not.
+
+**Future consideration (out of scope for these epics).** If the `mcx issue` epic (#2485) lands, mcx CLI ↔ mcpd messages become a second protocol surface alongside this one. The two are independent today but share the same remote-capability story (point CLI at a remote daemon = same transport problem). Worth keeping the message-encoding choice for *this* protocol compatible with a future shared transport so a single `mcx serve --remote` mode can carry both. Not a blocker; not in this epic's scope.
+
+**Document structure.** Single source of truth, names every message type that crosses the worker↔daemon boundary:
 
 - **Control messages** (parent → worker): `init`, `tools_changed`, `restore_sessions`
 - **Init handshake** (worker → parent): `ready`, including `protocol_version: N`
