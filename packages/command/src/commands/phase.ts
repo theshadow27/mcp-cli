@@ -711,7 +711,7 @@ async function autoInstallOnDrift(cwd: string, d: PhaseInstallDeps): Promise<voi
   renameSync(tmpPath, lockPath);
 
   const count = installResult.lockfile.phases.length;
-  d.logError(`auto-installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
+  d.log(`auto-installed ${count} phase${count === 1 ? "" : "s"} → ${LOCKFILE_NAME}`);
 }
 
 function shortHash(s: string): string {
@@ -870,8 +870,14 @@ export async function cmdPhase(
     }
 
     if (sub === "run") {
-      const argv = args.slice(1);
-      await autoInstallOnDrift(d.cwd(), d);
+      const rawArgv = args.slice(1);
+      const reinstall = rawArgv.includes("--reinstall");
+      const argv = rawArgv.filter((a) => a !== "--reinstall");
+      if (reinstall) {
+        await autoInstallOnDrift(d.cwd(), d);
+      } else {
+        assertNoDrift(d);
+      }
       if (argv.includes("--dry-run")) {
         await runPhase(argv, d);
       } else if (argv.includes("--no-execute")) {
@@ -1794,19 +1800,22 @@ Subcommands:
       Verify .mcx.lock matches the manifest and phase sources. Exits non-zero on drift.
 
   mcx phase run <target> [--from <current>] [--work-item <id>] [--force <message>]
-                          [--arg key=val ...] [--input <json>]
+                          [--arg key=val ...] [--input <json>] [--reinstall]
       Validate and record the transition, then execute the phase handler
       with a live ctx (daemon-backed state, real MCP proxy, work-item info).
       Structured return is printed to stdout as JSON so the orchestrator
       can pipe it: e.g. \`action: "spawn" | "wait" | "goto"\` for sprint
       phases. --force <message> bypasses disallowed-transition and
       regression checks; unknown-phase errors are never bypassable.
+      --reinstall: if .mcx.lock is stale, auto-reinstall before running
+      instead of aborting. Explicit opt-in required — the default is to
+      abort so unreviewed phase-source mutations cannot silently execute.
 
-  mcx phase run <target> --no-execute [--from ...] [--work-item ...] [--force ...]
+  mcx phase run <target> --no-execute [--from ...] [--work-item ...] [--force ...] [--reinstall]
       Validate + log the transition without executing the handler. Use
       when the orchestrator wants to record intent separately from dispatch.
 
-  mcx phase run <name> --dry-run [--arg key=val ...]
+  mcx phase run <name> --dry-run [--arg key=val ...] [--reinstall]
       Execute a phase handler with side effects logged but not dispatched.
       Use --arg to forward key=val pairs into ctx.args so dry-run exercises
       the same code paths as real execution.

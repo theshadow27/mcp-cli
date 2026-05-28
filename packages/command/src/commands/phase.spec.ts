@@ -850,38 +850,48 @@ describe("cmdPhase dispatch", () => {
     expect(err).toContain("unknown flag");
   });
 
-  test("run with no manifest exits 1", async () => {
+  test("run with no lockfile exits 1", async () => {
     const empty = mkdtempSync(join(tmpdir(), "mcx-phase-cmd-empty2-"));
     try {
       const { code, err } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => empty }));
       expect(code).toBe(1);
-      // auto-install attempt fails because there is no manifest
-      expect(err).toContain("no .mcx.yaml");
+      expect(err).toContain("no .mcx.lock");
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
   });
 
-  test("run auto-installs when phase source is stale (#2510)", async () => {
-    // Mutate a phase source after install — run should auto-reinstall rather than abort
+  test("run --reinstall auto-installs when phase source is stale (#2510)", async () => {
+    // Mutate a phase source after install — run --reinstall should auto-reinstall rather than abort
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// bumped\n`);
     // Use --no-execute so we don't need a daemon for the actual phase execution.
-    // No dep override for logError so messages flow through console.error → catchExit err.
-    const { code, err } = await catchExit(() =>
-      cmdPhase(["run", "qa", "--from", "impl", "--no-execute"], { cwd: () => dir }),
+    const { code, out, err } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--reinstall", "--from", "impl", "--no-execute"], { cwd: () => dir }),
     );
     expect(code).toBeUndefined(); // success after auto-install + transition validation
     expect(err).toContain("re-installing automatically");
-    expect(err).toContain("auto-installed");
+    expect(out).toContain("auto-installed");
     expect(err).toContain("approved");
   }, 15_000);
 
-  test("run --dry-run auto-installs when lockfile is stale (#2510)", async () => {
+  test("run --dry-run --reinstall auto-installs when lockfile is stale (#2510)", async () => {
     writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// bumped\n`);
-    const { code, err } = await catchExit(() => cmdPhase(["run", "qa", "--dry-run"], { cwd: () => dir }));
+    const { code, out, err } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--dry-run", "--reinstall"], { cwd: () => dir }),
+    );
     expect(code).toBeUndefined(); // succeeds: auto-install + dry-run
     expect(err).toContain("re-installing automatically");
-    expect(err).toContain("auto-installed");
+    expect(out).toContain("auto-installed");
+  }, 15_000);
+
+  test("run aborts on drift without --reinstall (security gate)", async () => {
+    writeFileSync(join(dir, "qa.ts"), `${readFileSync(join(dir, "qa.ts"), "utf-8")}\n// bumped\n`);
+    const { code, err } = await catchExit(() =>
+      cmdPhase(["run", "qa", "--from", "impl", "--no-execute"], { cwd: () => dir }),
+    );
+    expect(code).toBe(1);
+    expect(err).toContain("out of date");
+    expect(err).toContain("mcx phase install");
   }, 15_000);
 
   test("unknown subcommand exits 1", async () => {
