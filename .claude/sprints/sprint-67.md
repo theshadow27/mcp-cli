@@ -1,6 +1,6 @@
 # Sprint 67
 
-> Planned 2026-05-27. Target: ~16 PRs. Theme: **Rules + tech-debt mop-up** (introspection sprint, ends in 7).
+> Planned 2026-05-27. Started 2026-05-27. Target: ~16 PRs. Theme: **Rules + tech-debt mop-up** (introspection sprint, ends in 7).
 
 ## Goal
 
