@@ -170,17 +170,14 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<LookupRe
  * Returns null if not inside a git repo.
  */
 function getGitRoot(): LookupResult<string | null> {
-  try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
-    if (!result.ok) return null;
-    const commonDir = result.stdout.trim();
-    if (!commonDir) return null;
-    const resolved = resolve(commonDir);
-    const root = resolved.endsWith(".git") ? dirname(resolved) : resolved;
-    return resolveRealpath(root);
-  } catch (e) {
-    return lookupFailure(`git rev-parse failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
+  if (!result.ok)
+    return lookupFailure(`git rev-parse --git-common-dir failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  const commonDir = result.stdout.trim();
+  if (!commonDir) return null;
+  const resolved = resolve(commonDir);
+  const root = resolved.endsWith(".git") ? dirname(resolved) : resolved;
+  return resolveRealpath(root);
 }
 
 export const defaultDeps: ClaudeDeps = {

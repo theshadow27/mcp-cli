@@ -282,13 +282,9 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
 export function defaultDeps(): MemoryDeps {
   return {
     getGitRoot: () => {
-      try {
-        const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
-        if (!r.ok) return null;
-        return r.stdout.trim() || null;
-      } catch (e) {
-        return lookupFailure(`git rev-parse failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      const r = spawnCaptureSync("git", ["rev-parse", "--show-toplevel"]);
+      if (!r.ok) return lookupFailure(`git rev-parse failed (exit ${r.exitCode}): ${r.stderr.trim()}`);
+      return r.stdout.trim() || null;
     },
     cwd: () => process.cwd(),
     dirExists: (path) => existsSync(path),

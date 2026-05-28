@@ -111,16 +111,13 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
 }
 
 function getGitRoot(): LookupResult<string | null> {
-  try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
-    if (!result.ok) return null;
-    const commonDir = result.stdout.trim();
-    if (!commonDir) return null;
-    const resolved = resolve(commonDir);
-    return resolved.endsWith(".git") ? dirname(resolved) : resolved;
-  } catch (e) {
-    return lookupFailure(`git rev-parse failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
+  if (!result.ok)
+    return lookupFailure(`git rev-parse --git-common-dir failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  const commonDir = result.stdout.trim();
+  if (!commonDir) return null;
+  const resolved = resolve(commonDir);
+  return resolved.endsWith(".git") ? dirname(resolved) : resolved;
 }
 
 async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
