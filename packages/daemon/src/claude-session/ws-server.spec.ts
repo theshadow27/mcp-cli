@@ -321,6 +321,43 @@ describe("ClaudeWsServer", () => {
     expect(ms.lastCmd).toContain("my-tree");
   });
 
+  test("spawnClaude strips Write/Edit from --allowedTools for worktree sessions", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("wt-session", {
+      prompt: "Hello",
+      allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(git:*)"],
+      worktree: "my-tree",
+    });
+    server.spawnClaude("wt-session");
+
+    expect(ms.lastCmd).toContain("--allowedTools");
+    expect(ms.lastCmd).toContain("Read");
+    expect(ms.lastCmd).toContain("Glob");
+    expect(ms.lastCmd).toContain("Grep");
+    expect(ms.lastCmd).toContain("Bash(git:*)");
+    expect(ms.lastCmd).not.toContain("Write");
+    expect(ms.lastCmd).not.toContain("Edit");
+  });
+
+  test("spawnClaude keeps Write/Edit in --allowedTools for non-worktree sessions", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("no-wt-session", {
+      prompt: "Hello",
+      allowedTools: ["Read", "Write", "Edit", "Glob"],
+    });
+    server.spawnClaude("no-wt-session");
+
+    expect(ms.lastCmd).toContain("--allowedTools");
+    expect(ms.lastCmd).toContain("Write");
+    expect(ms.lastCmd).toContain("Edit");
+  });
+
   test("spawnClaude passes --model flag when model is set in config", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
@@ -485,6 +522,87 @@ describe("ClaudeWsServer", () => {
       const parsed = JSON.parse(response.trim());
       expect(parsed.type).toBe("control_response");
       expect(parsed.response.response.behavior).toBe("deny");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("containment guard denies Write outside worktree via can_use_tool", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    const worktreeCwd = "/Users/test/repo/.claude/worktrees/my-tree";
+    server.prepareSession("wt-session", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: worktreeCwd,
+    });
+    server.spawnClaude("wt-session");
+
+    const ws = await connectMockClaude(port, "wt-session");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("wt-session"));
+      const responsePromise = waitForMessage(ws);
+      ws.send(
+        serialize({
+          type: "control_request",
+          request_id: "req-escape",
+          request: {
+            subtype: "can_use_tool",
+            tool_name: "Write",
+            input: { file_path: "/Users/test/repo/.claire/worktrees/my-tree/src/bad.ts", content: "escape" },
+            tool_use_id: "tool-escape",
+          },
+        }),
+      );
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.response.behavior).toBe("deny");
+    } finally {
+      ws.close();
+    }
+  });
+
+  test("containment guard allows Write inside worktree via can_use_tool", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    const worktreeCwd = "/Users/test/repo/.claude/worktrees/my-tree";
+    server.prepareSession("wt-session-ok", {
+      prompt: "Hello",
+      worktree: "my-tree",
+      cwd: worktreeCwd,
+      permissionStrategy: "auto",
+    });
+    server.spawnClaude("wt-session-ok");
+
+    const ws = await connectMockClaude(port, "wt-session-ok");
+    try {
+      await waitForMessage(ws);
+      ws.send(systemInitMessage("wt-session-ok"));
+      const responsePromise = waitForMessage(ws);
+      ws.send(
+        serialize({
+          type: "control_request",
+          request_id: "req-ok",
+          request: {
+            subtype: "can_use_tool",
+            tool_name: "Write",
+            input: { file_path: `${worktreeCwd}/src/good.ts`, content: "safe" },
+            tool_use_id: "tool-ok",
+          },
+        }),
+      );
+
+      const response = await responsePromise;
+      const parsed = JSON.parse(response.trim());
+      expect(parsed.type).toBe("control_response");
+      expect(parsed.response.response.behavior).toBe("allow");
     } finally {
       ws.close();
     }

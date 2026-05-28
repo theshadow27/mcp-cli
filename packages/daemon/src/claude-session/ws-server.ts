@@ -824,8 +824,13 @@ export class ClaudeWsServer {
     if (session.config.model) {
       cmd.push("--model", session.config.model);
     }
-    if (session.config.allowedTools?.length) {
-      cmd.push("--allowedTools", ...session.config.allowedTools);
+    let cliAllowedTools = session.config.allowedTools;
+    if (session.config.worktree && cliAllowedTools?.length) {
+      const CONTAINMENT_GATED = new Set(["Write", "Edit"]);
+      cliAllowedTools = cliAllowedTools.filter((t) => !CONTAINMENT_GATED.has(t));
+    }
+    if (cliAllowedTools?.length) {
+      cmd.push("--allowedTools", ...cliAllowedTools);
     }
     if (session.config.worktree && !session.config.cwd) {
       // Only pass --worktree when cwd is not set. When both are present,
