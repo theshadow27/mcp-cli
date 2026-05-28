@@ -77,3 +77,15 @@ If sprint 68 finishes with capacity remaining and #2540 has landed, the orchestr
 - **#2393, #2485** (epics labeled meta) — left open as tracking; not Step-1a candidates
 - **#2506** (introspection cadence guard) — meta, deferred per user direction
 - **#2507** (diary→rules harvest), **#2182** (/docs-sweep skill) — meta improvements; not 30-min orchestrator edits, deferred to a dedicated effort
+
+## Results
+
+- **Released**: v1.13.0 (minor — agent-protocol foundation + stdio transport + recording are new backwards-compatible capability; `mcx agent record` is a new command surface)
+- **PRs merged**: 13 — #2546 (#2540 spec), #2547 (#2544 CI smoke), #2551 (#2234 stdio transport), #2568 (#2371 FP-guard), #2566 (#2541 version negotiation), #2567 (#2542 NDJSON recording), #2559 (#2543 mock-DSL), #2550 (#2533 stale-todo rule), #2552 (#2536 ci-steps stub), #2556 (#2510 phase-dx), #2554 (#2549 containment P1), #2572 (#2527 pre-commit junk-commit), #2573 (#2493 orphan reaper)
+- **Issues closed**: 13 merged + #2535 (closed no-op, pre-resolved by #2526) = 14
+- **Issues dropped/deferred**: #2331 (deferred — meta violation: touches `.claude/phases/**`; PR #2570 parked, relabeled `meta`, goes through next-plan); #2535 (no-op)
+- **Agent-protocol epic (#2537) COMPLETE**: spec + version negotiation + recording + mock-DSL + stdio transport all merged. Unblocks Epic 2 (#2538 manual agent grid) — its sub-stories can now be planned per the carries-to-next-sprint note (the #2540 prior-art subsection is on main).
+- **Mid-sprint P1 caught & fixed**: #2549 — ContainmentGuard fail-open on symlink escape (regression from PR #2518), macOS-local but real security bug; found by two workers independently (deduped #2548→#2549).
+- **Live #2493 incident**: 24+ zombie `am-i-done`/`bun test` trees from byed sessions starved CPU mid-sprint; manually reaped, then #2493 shipped the permanent fix (reap-on-bye with shared-worktree + worktree-only guards).
+- **New issues filed (followups)**: #2553, #2555, #2557, #2558, #2560, #2561, #2562, #2569, #2571, #2574, + reopened #207 (mcx claude log truncation regression).
+- **Convergence note**: #2543 took 3 repair rounds (review→QA-fail interrupt regression→Copilot batch of 9) but stayed mechanical (no design rethink needed); all others 0-1 rounds.
