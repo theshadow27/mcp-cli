@@ -213,7 +213,6 @@ export interface AliasDefinition<I = unknown, O = unknown> {
   fn: (input: I, ctx: AliasContext) => O | Promise<O>;
 }
 
-
 /**
  * Unwrap MCP tool call result content for ergonomic alias authoring.
  *
