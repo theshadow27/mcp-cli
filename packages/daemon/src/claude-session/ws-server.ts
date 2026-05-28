@@ -56,7 +56,7 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
-import { ContainmentGuard } from "./containment";
+import { CONTAINMENT_WRITE_TOOLS, ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -824,8 +824,15 @@ export class ClaudeWsServer {
     if (session.config.model) {
       cmd.push("--model", session.config.model);
     }
-    if (session.config.allowedTools?.length) {
-      cmd.push("--allowedTools", ...session.config.allowedTools);
+    let cliAllowedTools = session.config.allowedTools;
+    if (session.config.worktree && cliAllowedTools?.length) {
+      cliAllowedTools = cliAllowedTools.filter((t) => {
+        const baseName = t.split("(")[0] ?? t;
+        return !CONTAINMENT_WRITE_TOOLS.has(baseName);
+      });
+    }
+    if (cliAllowedTools?.length) {
+      cmd.push("--allowedTools", ...cliAllowedTools);
     }
     if (session.config.worktree && !session.config.cwd) {
       // Only pass --worktree when cwd is not set. When both are present,
@@ -1730,6 +1737,9 @@ export class ClaudeWsServer {
       case "session:init":
         // Capture Claude Code's own session ID for JSONL file lookup
         session.claudeSessionId = event.sessionId;
+        if (session.worktree && !session.containment && event.cwd) {
+          session.containment = new ContainmentGuard(event.cwd);
+        }
         this.recordSessionProgress(sessionId, session);
         break;
       case "session:response":
