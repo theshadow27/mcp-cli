@@ -1,6 +1,6 @@
 # Sprint 68
 
-> Planned 2026-05-28 14:30 local. Started 2026-05-28 14:58 local. Target: 14 PRs.
+> Planned 2026-05-28 14:30 local. Started 2026-05-28 14:58 local. Ended 2026-05-28 18:30 local. Target: 14 PRs. Result: 13 merged (12 of 14 planned + #2549 P1 bonus); #2535 closed no-op; #2331 deferred (meta).
 
 ## Goal
 
