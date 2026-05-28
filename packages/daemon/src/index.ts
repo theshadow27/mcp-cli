@@ -557,6 +557,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Mock server: always available (no external binary needed)
   const mockServer = new MockServer(db, daemonId, undefined, logger);
 
+  // NDJSON protocol recording — enabled by MCX_RECORD_SESSION env var
+  const recordingPath = process.env.MCX_RECORD_SESSION || null;
+  if (recordingPath) {
+    claudeServer.recordingPath = recordingPath;
+    if (codexServer) codexServer.recordingPath = recordingPath;
+    if (acpServer) acpServer.recordingPath = recordingPath;
+    if (opencodeServer) opencodeServer.recordingPath = recordingPath;
+    mockServer.recordingPath = recordingPath;
+    logger.info(`[daemon] NDJSON protocol recording enabled → ${recordingPath}`);
+  }
+
   // Site server: always started. The worker itself is lightweight — Playwright (and its ~200MB install)
   // is only loaded via dynamic import the first time a browser-dependent tool runs. Users with no
   // browser tool invocation pay the worker startup cost but nothing more.

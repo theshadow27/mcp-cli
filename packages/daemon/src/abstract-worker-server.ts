@@ -1,6 +1,12 @@
 import { resolve } from "node:path";
 import type { Logger } from "@mcp-cli/core";
-import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  NdjsonRecorder,
+  ProtocolVersionMismatchError,
+  consoleLogger,
+  resolveRealpath,
+} from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
@@ -146,6 +152,8 @@ export abstract class AbstractWorkerServer {
   protected readonly restartPolicy: RestartPolicy = DEFAULT_RESTART_POLICY;
   protected readonly handshakeTimeoutMs: number;
   protected static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000;
+  protected recorder: NdjsonRecorder | null = null;
+  recordingPath: string | null = null;
 
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
   onActivity?: () => void;
@@ -179,6 +187,10 @@ export abstract class AbstractWorkerServer {
     const worker = this.workerFactory(workerPath(d.workerScript));
     this.worker = worker;
 
+    if (this.recordingPath) {
+      this.recorder = new NdjsonRecorder(this.recordingPath);
+    }
+
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
@@ -207,9 +219,11 @@ export abstract class AbstractWorkerServer {
           }
           settled = true;
           clearTimeout(timeout);
+          this.recorder?.record("worker->daemon", "control", event.data);
           this.onWorkerReady(event.data);
           resolve();
         } else if (event.data?.type === "error") {
+          this.recorder?.record("worker->daemon", "control", event.data);
           clearTimeout(timeout);
           cleanup();
           reject(new Error(`${d.displayName} session worker init failed: ${event.data.message}`));
@@ -220,7 +234,9 @@ export abstract class AbstractWorkerServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`${d.displayName} session worker error: ${msg}`));
       };
-      worker.postMessage(this.buildInitMessage());
+      const initMsg = this.buildInitMessage();
+      this.recorder?.record("daemon->worker", "control", initMsg);
+      worker.postMessage(initMsg);
     });
 
     try {
@@ -247,6 +263,7 @@ export abstract class AbstractWorkerServer {
       const transportHandler = worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
+        this.recorder?.recordMessage("worker->daemon", data);
         if (isBaseWorkerEvent(data)) {
           this.handleWorkerEvent(data);
           return;
@@ -257,6 +274,15 @@ export abstract class AbstractWorkerServer {
         }
         transportHandler?.call(worker, event);
       };
+
+      if (this.recorder) {
+        const origSend = this.transport.send.bind(this.transport);
+        const recorder = this.recorder;
+        this.transport.send = (msg, opts) => {
+          recorder.recordMessage("daemon->worker", msg);
+          return origSend(msg, opts);
+        };
+      }
 
       worker.onerror = null;
       this.attachCrashDetection(worker);
@@ -304,6 +330,8 @@ export abstract class AbstractWorkerServer {
   async stop(): Promise<void> {
     this.stopped = true;
     this.onRestarted = undefined;
+    await this.recorder?.close();
+    this.recorder = null;
     await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.cleanupWorkerHandlers(this.worker);
@@ -349,6 +377,11 @@ export abstract class AbstractWorkerServer {
 
   protected buildInitMessage(): Record<string, unknown> {
     return { type: "init", daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION };
+  }
+
+  protected sendControlMessage(msg: Record<string, unknown>): void {
+    this.recorder?.record("daemon->worker", "control", msg);
+    this.worker?.postMessage(msg);
   }
 
   protected onWorkerReady(_data: unknown): void {}
@@ -480,7 +513,7 @@ export abstract class AbstractWorkerServer {
           }
           this.metrics.gauge(d.metrics.activeSessions).set(this.activeSessions.size);
 
-          (this.worker as Worker | null)?.postMessage({ type: "tools_changed" });
+          this.sendControlMessage({ type: "tools_changed" });
           this.onRestarted?.(client, transport);
           return;
         } catch (err) {

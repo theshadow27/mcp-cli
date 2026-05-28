@@ -143,7 +143,7 @@ export class ClaudeServer extends AbstractWorkerServer {
       if ("cascadeHead" in event) input.cascadeHead = event.cascadeHead;
       this.onMonitorEvent(input);
     }
-    this.worker?.postMessage({ type: "work_item_event", event });
+    this.sendControlMessage({ type: "work_item_event", event });
   }
 
   // ── PID-aware session pruning ──
@@ -360,7 +360,7 @@ export class ClaudeServer extends AbstractWorkerServer {
     }
     this.metrics.gauge("mcpd_active_sessions").set(this.activeSessions.size);
 
-    this.worker?.postMessage({
+    this.sendControlMessage({
       type: "restore_sessions",
       sessions: restorable.map((row) => ({
         sessionId: row.sessionId,

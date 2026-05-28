@@ -14,6 +14,7 @@ import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
 import {
   AGENT_PROTOCOL_VERSION,
   MOCK_SERVER_NAME,
+  NdjsonRecorder,
   ProtocolVersionMismatchError,
   consoleLogger,
   formatToolSignature,
@@ -102,10 +103,12 @@ export class MockServer {
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private readonly logger: Logger;
+  private recorder: NdjsonRecorder | null = null;
   private static readonly NO_PID_SESSION_TTL_MS = 10 * 60 * 1000;
 
   /** Called on worker activity — lets the daemon reset its idle timer. */
   onActivity?: () => void;
+  recordingPath: string | null = null;
 
   constructor(
     db: StateDb,
@@ -122,6 +125,9 @@ export class MockServer {
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     if (this.worker) throw new Error("start() called while worker is already running");
+    if (this.recordingPath) {
+      this.recorder = new NdjsonRecorder(this.recordingPath);
+    }
     const worker = new Worker(workerPath("mock-session-worker.ts"));
     this.worker = worker;
 
@@ -153,8 +159,10 @@ export class MockServer {
           }
           settled = true;
           clearTimeout(timeout);
+          this.recorder?.record("worker->daemon", "control", event.data);
           resolve();
         } else if (event.data?.type === "error") {
+          this.recorder?.record("worker->daemon", "control", event.data);
           clearTimeout(timeout);
           reject(new Error(`Mock session worker init failed: ${event.data.message}`));
         }
@@ -164,7 +172,9 @@ export class MockServer {
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         if (cleanup()) reject(new Error(`Mock session worker error: ${msg}`));
       };
-      worker.postMessage({ type: "init", daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION });
+      const initMsg = { type: "init" as const, daemonId: this.daemonId, protocol_version: AGENT_PROTOCOL_VERSION };
+      this.recorder?.record("daemon->worker", "control", initMsg);
+      worker.postMessage(initMsg);
     });
 
     // Set up MCP transport and connect
@@ -192,12 +202,22 @@ export class MockServer {
       const transportHandler = worker.onmessage;
       worker.onmessage = (event: MessageEvent) => {
         const data = event.data;
+        this.recorder?.recordMessage("worker->daemon", data);
         if (isWorkerEvent(data)) {
           this.handleWorkerEvent(data);
           return;
         }
         transportHandler?.call(worker, event);
       };
+
+      if (this.recorder) {
+        const origSend = this.transport.send.bind(this.transport);
+        const recorder = this.recorder;
+        this.transport.send = (msg, opts) => {
+          recorder.recordMessage("daemon->worker", msg);
+          return origSend(msg, opts);
+        };
+      }
 
       worker.onerror = null;
     } catch (err) {
@@ -222,6 +242,8 @@ export class MockServer {
 
   /** Stop the worker and clean up. */
   async stop(): Promise<void> {
+    await this.recorder?.close();
+    this.recorder = null;
     await closeClientWithTimeout(this.client);
     if (this.worker) {
       this.worker.onmessage = null;

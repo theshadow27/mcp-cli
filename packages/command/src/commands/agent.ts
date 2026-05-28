@@ -37,6 +37,7 @@ import {
   getProvider,
   hasWorktreeHooks,
   listMcxWorktrees,
+  options,
   pruneWorktrees,
   readWorktreeConfig,
   resolveWorktreePath,
@@ -297,9 +298,12 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
     case "status":
       await agentStatus(subArgs, provider, d);
       break;
+    case "record":
+      await agentRecord(subArgs, provider, agentOverride, d);
+      break;
     default:
       d.printError(
-        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", "worktrees", or "status".`,
+        `Unknown ${providerName} subcommand: ${sub}. Use "spawn", "ls", "send", "bye", "interrupt", "log", "wait", "resume", "approve", "deny", "worktrees", "record", or "status".`,
       );
       d.exit(1);
   }
@@ -507,6 +511,74 @@ async function agentSpawn(
     d.logError(`${label} session started: ${parsed_data.sessionId.slice(0, 8)}`);
   }
   d.log(text);
+}
+
+// ── Record ──
+
+const RECORD_PING_TIMEOUT_MS = 2_000;
+const RECORD_SHUTDOWN_TIMEOUT_MS = 5_000;
+const RECORD_SHUTDOWN_SETTLE_MS = 500;
+
+async function agentRecord(
+  args: string[],
+  provider: AgentProvider,
+  agentOverride: string | undefined,
+  d: AgentDeps,
+): Promise<void> {
+  if (hasHelpFlag(args)) {
+    d.log(`mcx agent ${provider.name} record — Spawn a session with NDJSON protocol recording
+
+Usage:
+  mcx agent ${provider.name} record --task "..." [--save <path>]
+
+Options:
+  --save <path>    Output file path (default: ~/.mcp-cli/recordings/<timestamp>.ndjson)
+  --task, -t       Prompt / task for the session (required)
+
+All other spawn flags (--model, --cwd, --allow, etc.) are accepted.
+
+The daemon must be (re)started with recording enabled. If an existing daemon is
+running without MCX_RECORD_SESSION, this command will stop it first.`);
+    return;
+  }
+
+  const { flags, positionals, errors } = parseFlags(args, {
+    save: { type: "string", alias: "s" },
+  });
+
+  if (errors.length > 0) {
+    d.printError(errors[0]);
+    d.exit(1);
+  }
+
+  let savePath = flags.save as string | undefined;
+  if (!savePath) {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    savePath = join(options.RECORDINGS_DIR, `${ts}.ndjson`);
+  }
+
+  // Ensure daemon is running with MCX_RECORD_SESSION set
+  process.env.MCX_RECORD_SESSION = savePath;
+
+  // Stop existing daemon if it's running (it won't have the env var)
+  try {
+    await ipcCall("ping", undefined, { timeoutMs: RECORD_PING_TIMEOUT_MS });
+    d.logError("Stopping existing daemon to enable recording...");
+    await ipcCall("shutdown", undefined, { timeoutMs: RECORD_SHUTDOWN_TIMEOUT_MS });
+    await Bun.sleep(RECORD_SHUTDOWN_SETTLE_MS);
+  } catch {
+    // No daemon running — proceed
+  }
+
+  // Forward remaining args to spawn, inject --wait for full capture
+  const spawnArgs = [...positionals];
+  if (!spawnArgs.includes("--wait")) {
+    spawnArgs.push("--wait");
+  }
+
+  d.logError(`Recording to: ${savePath}`);
+  await agentSpawn(spawnArgs, provider, agentOverride, d);
+  d.logError(`Recording saved: ${savePath}`);
 }
 
 /** Shell-quote a string (wrap in single quotes, escape internal single quotes). */
@@ -1797,6 +1869,7 @@ Usage:
   mcx agent ${name} deny <session> [req-id]     Deny pending permission request
   mcx agent ${name} worktrees [--prune]          List mcx-created worktrees
   mcx agent ${name} status <target> [--json]     One-shot session inspector
+  mcx agent ${name} record --task "..." [--save] Record NDJSON protocol trace
 
 Run "mcx agent ${name} spawn --help" for spawn options.`);
 }
