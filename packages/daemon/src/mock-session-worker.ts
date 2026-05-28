@@ -154,6 +154,7 @@ type ScriptEntry =
 
 interface PermissionWaiter {
   requestId: string;
+  promise: Promise<"approve" | "deny" | "timeout">;
   resolve: (verdict: "approve" | "deny") => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -297,7 +298,7 @@ async function runScript(session: MockSession): Promise<void> {
   }
 
   for (let i = 0; i < session.entries.length; i++) {
-    if (session.interrupted) break;
+    if (session.interrupted || emittedTerminal) break;
 
     const entry = session.entries[i];
 
@@ -313,13 +314,10 @@ async function runScript(session: MockSession): Promise<void> {
       if (!lastPermission) continue;
 
       const timeoutMs = entry.timeout_ms ?? 5000;
-      const verdict = await new Promise<"approve" | "deny" | "timeout">((res) => {
-        const timer = safeSetTimeout(() => res("timeout"), timeoutMs);
-        lastPermission.resolve = (v) => {
-          clearTimeout(timer);
-          res(v);
-        };
+      const timeoutPromise = new Promise<"timeout">((res) => {
+        lastPermission.timer = safeSetTimeout(() => res("timeout"), timeoutMs);
       });
+      const verdict = await Promise.race([lastPermission.promise, timeoutPromise]);
 
       if (verdict === "timeout") {
         session.transcript.push({ role: "system", text: `permission timeout (expected ${entry.wait_for})` });
@@ -327,6 +325,7 @@ async function runScript(session: MockSession): Promise<void> {
         session.transcript.push({ role: "system", text: `permission ${verdict}` });
       }
 
+      clearTimeout(lastPermission.timer);
       session.pendingPermissions.delete(lastPermission.requestId);
       self.postMessage({ type: "db:state", sessionId: session.sessionId, state: "active" });
       continue;
@@ -362,12 +361,16 @@ async function runScript(session: MockSession): Promise<void> {
           inputSummary: `${entry.tool}(${JSON.stringify(entry.args ?? {})})`,
         };
 
+        let waiterResolve: (verdict: "approve" | "deny") => void = () => {};
+        const promise = new Promise<"approve" | "deny" | "timeout">((res) => {
+          waiterResolve = (v) => res(v);
+        });
         const waiter: PermissionWaiter = {
           requestId,
-          resolve: () => {},
+          promise,
+          resolve: waiterResolve,
           timer: safeSetTimeout(() => {}, 0),
         };
-        clearTimeout(waiter.timer);
         session.pendingPermissions.set(requestId, waiter);
 
         forwardSessionEvent(session.sessionId, { type: "session:permission_request", request });
@@ -431,7 +434,7 @@ async function runScript(session: MockSession): Promise<void> {
       result: {
         result: session.lastResultText,
         cost: session.totalCost,
-        tokens: session.totalTokens || session.entries.length,
+        tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
         numTurns: 1,
       },
     });
@@ -562,7 +565,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
           result: {
             result: session.lastResultText ?? "Mock script completed",
             cost: session.totalCost,
-            tokens: session.totalTokens || session.entries.length,
+            tokens: session.totalTokens > 0 ? session.totalTokens : session.entries.length,
             numTurns: 1,
           },
         }),
@@ -752,9 +755,7 @@ function resolvePermission(args: Record<string, unknown>, verdict: "approve" | "
       isError: true,
     };
   }
-  clearTimeout(waiter.timer);
   waiter.resolve(verdict);
-  session.pendingPermissions.delete(requestId);
   return { content: [{ type: "text", text: JSON.stringify({ [`${verdict}d`]: true, requestId }) }] };
 }
 

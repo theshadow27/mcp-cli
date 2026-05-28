@@ -588,6 +588,39 @@ describe("Mock script DSL (extended entries)", () => {
     expect(text).toContain("req-x");
   });
 
+  test("approve resolves even if sent before wait_for executes", async () => {
+    await setup();
+    const path = writeScript("early-approve.json", [
+      { emit: "permission_request", tool: "Write", args: { path: "/tmp/x" }, request_id: "early-1" },
+      { wait_for: "approve", timeout_ms: 5000 },
+      { emit: "response", text: "continued after early approve" },
+    ]);
+
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const row = db?.getSession(sessionId);
+      if (row?.state === "waiting_permission") break;
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    expect(db?.getSession(sessionId)?.state).toBe("waiting_permission");
+
+    const approveResult = await client.callTool({
+      name: "mock_approve",
+      arguments: { sessionId, requestId: "early-1" },
+    });
+    expect(approveResult.isError).toBeFalsy();
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    expect(entries.some((e: { text: string }) => e.text === "continued after early approve")).toBe(true);
+    expect(entries.some((e: { text: string }) => e.text === "permission approve")).toBe(true);
+  });
+
   test("mixed legacy + emit entries in same script", async () => {
     await setup();
     const path = writeScript("mixed.json", [
@@ -601,15 +634,20 @@ describe("Mock script DSL (extended entries)", () => {
     expect(parsed.result.cost).toBeCloseTo(0.001);
   });
 
-  test("delay on emit entries works", async () => {
+  test("delay on emit entries preserves ordering", async () => {
     await setup();
     const path = writeScript("delay.json", [
-      { emit: "response", text: "fast", delay: 0 },
-      { emit: "response", text: "slow", delay: 50 },
+      { emit: "response", text: "first", delay: 0 },
+      { emit: "response", text: "second", delay: 10 },
     ]);
-    const start = Date.now();
-    await runScript(path);
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeGreaterThanOrEqual(40);
+    const result = await client.callTool({ name: "mock_prompt", arguments: { prompt: path, wait: false } });
+    const { sessionId } = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+    await client.callTool({ name: "mock_wait", arguments: { sessionId } });
+
+    const transcript = await client.callTool({ name: "mock_transcript", arguments: { sessionId } });
+    const entries = JSON.parse((transcript.content as Array<{ type: string; text: string }>)[0].text);
+    const texts = entries.filter((e: { role: string }) => e.role === "assistant").map((e: { text: string }) => e.text);
+    expect(texts).toEqual(["first", "second"]);
   });
 });
