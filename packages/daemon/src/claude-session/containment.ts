@@ -273,14 +273,15 @@ function isPathOutside(filePath: string, worktreeRoot: string): boolean {
 
 const ALLOWED_EXTERNAL_PREFIXES = ["/tmp", "/var/tmp", "/private/tmp"];
 
-function isAllowedExternalPath(filePath: string, worktreeRoot: string): boolean {
+function isAllowedExternalPath(filePath: string, worktreeRoot: string, unresolvedRoot?: string): boolean {
   const normalized = resolve(worktreeRoot, filePath);
-  // Symlink escape: nominal path is inside the worktree but real path is outside.
-  // The /tmp exemption must not apply — otherwise a session creates
-  // worktree/escape → /tmp/outside and writes freely (#1481).
+  // Symlink escape guard (#1481): nominal path inside the worktree → /tmp
+  // exemption must not apply. Check both resolved and unresolved root forms
+  // to handle macOS /tmp → /private/tmp aliasing (#2549).
   if (normalized.startsWith(`${worktreeRoot}/`)) return false;
-  // Resolve symlinks before prefix check so /tmp/link → /etc/passwd is not allowed.
+  if (unresolvedRoot && normalized.startsWith(`${unresolvedRoot}/`)) return false;
   const real = resolveRealpath(normalized);
+  if (real.startsWith(`${worktreeRoot}/`) || real === worktreeRoot) return false;
   return ALLOWED_EXTERNAL_PREFIXES.some((p) => real.startsWith(`${p}/`) || real === p);
 }
 
@@ -290,13 +291,16 @@ const MAX_STRIKES = 3;
 
 export class ContainmentGuard {
   readonly worktreeRoot: string;
+  private readonly _unresolvedRoot: string;
   private _strikes = 0;
   private _escalated = false;
 
   constructor(worktreeRoot: string) {
-    // Strip trailing slash then resolve symlinks (iterative walk so non-existent paths
+    const stripped = worktreeRoot.replace(/\/+$/, "");
+    this._unresolvedRoot = resolve(stripped);
+    // Resolve symlinks (iterative walk so non-existent paths
     // like /tmp/worktree still resolve /tmp → /private/tmp on macOS).
-    this.worktreeRoot = resolveRealpath(worktreeRoot.replace(/\/+$/, ""));
+    this.worktreeRoot = resolveRealpath(stripped);
   }
 
   get strikes(): number {
@@ -361,7 +365,7 @@ export class ContainmentGuard {
     // Check shell file writes (redirects, cp, mv, tee, ln, etc.)
     const writeTargets = extractBashWriteTargets(command);
     for (const target of writeTargets) {
-      if (isAllowedExternalPath(target, this.worktreeRoot)) continue;
+      if (isAllowedExternalPath(target, this.worktreeRoot, this._unresolvedRoot)) continue;
       if (isPathOutside(target, this.worktreeRoot)) {
         return this.evaluateFileAccess("Bash", target);
       }
@@ -385,7 +389,7 @@ export class ContainmentGuard {
 
     // Write/Edit: strike-counted gray zone
     // Allow /tmp writes without penalty (symlink escapes excluded via worktreeRoot guard)
-    if (isAllowedExternalPath(filePath, this.worktreeRoot)) {
+    if (isAllowedExternalPath(filePath, this.worktreeRoot, this._unresolvedRoot)) {
       return { action: "allow", reason: "", strikes: this._strikes };
     }
 
