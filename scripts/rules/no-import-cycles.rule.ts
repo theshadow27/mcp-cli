@@ -9,7 +9,7 @@ import type { CheckRule } from "./_engine/rule";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-interface CycleInfo {
+export interface CycleInfo {
   cyclePath: string[];
   isCrossPackage: boolean;
 }
@@ -118,8 +118,12 @@ export function traceCycle(
 
 // ── Graph + cycle detection (cached per run) ───────────────────────────
 
-let cachedFilesRef: Map<string, FileMeta> | null = null;
-let cachedCycleMap: Map<string, CycleInfo> | null = null;
+// Keyed by the files Map identity so the cache is scoped to the rule-engine
+// run. WeakMap means the entry is collected when the run's Map is GC'd.
+const cycleCache = new WeakMap<Map<string, FileMeta>, Map<string, CycleInfo>>();
+
+/** @internal — test-only visibility for cache isolation and reuse assertions */
+export const _cycleCache = cycleCache;
 
 function deriveRepoRoot(files: Map<string, FileMeta>): string {
   for (const meta of files.values()) {
@@ -131,7 +135,8 @@ function deriveRepoRoot(files: Map<string, FileMeta>): string {
 }
 
 function computeCycles(files: Map<string, FileMeta>): Map<string, CycleInfo> {
-  if (cachedFilesRef === files && cachedCycleMap) return cachedCycleMap;
+  const cached = cycleCache.get(files);
+  if (cached) return cached;
 
   const repoRoot = deriveRepoRoot(files);
   const contentMap = new Map<string, string>();
@@ -145,6 +150,12 @@ function computeCycles(files: Map<string, FileMeta>): Map<string, CycleInfo> {
   const graph = buildImportGraph(roots, {
     readFile: (p) => contentMap.get(p) ?? readFileSync(p, "utf8"),
   });
+
+  if (graph.droppedEdges > 0 && process.env.DEBUG) {
+    process.stderr.write(
+      `[no-import-cycles] ${graph.droppedEdges} unresolvable import specifier(s) dropped — graph may be incomplete\n`,
+    );
+  }
 
   const result = new Map<string, CycleInfo>();
 
@@ -167,8 +178,7 @@ function computeCycles(files: Map<string, FileMeta>): Map<string, CycleInfo> {
     });
   }
 
-  cachedFilesRef = files;
-  cachedCycleMap = result;
+  cycleCache.set(files, result);
   return result;
 }
 

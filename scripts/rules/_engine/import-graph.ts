@@ -16,6 +16,12 @@ export interface ImportGraph {
   reverse: ReadonlyMap<string, ReadonlySet<string>>;
   /** All files in the graph. */
   files: ReadonlySet<string>;
+  /**
+   * Number of import specifiers that could not be resolved during graph construction.
+   * A non-zero value means the graph is incomplete — cycles involving unresolvable
+   * specifiers are invisible. Check this when assessing rule completeness.
+   */
+  droppedEdges: number;
   /** Compute the transitive import closure of a file (all files it depends on, transitively). */
   closureOf(file: string): ReadonlySet<string>;
   /** Compute the reverse closure (all files that transitively depend on a given file). */
@@ -107,6 +113,8 @@ function scriptKindFor(path: string): ts.ScriptKind {
 export interface BuildGraphOptions {
   readFile?: (path: string) => string;
   resolve?: SpecifierResolver;
+  /** Called for each specifier that could not be resolved. Use to collect diagnostics. */
+  onUnresolvable?: (specifier: string, fromFile: string) => void;
 }
 
 /**
@@ -124,6 +132,7 @@ export function buildImportGraph(
 ): ImportGraph {
   const readFile = typeof opts === "function" ? opts : (opts?.readFile ?? ((p: string) => readFileSync(p, "utf8")));
   const resolve = (typeof opts === "object" && opts !== null ? opts?.resolve : undefined) ?? defaultResolve;
+  const onUnresolvable = typeof opts === "object" && opts !== null ? opts?.onUnresolvable : undefined;
   const edges: MutableEdges = {
     forward: new Map(),
     reverse: new Map(),
@@ -131,6 +140,7 @@ export function buildImportGraph(
   const allFiles = new Set<string>();
   const queue = [...rootFiles];
   const visited = new Set<string>();
+  let droppedEdges = 0;
 
   while (queue.length > 0) {
     const file = queue.pop();
@@ -145,7 +155,20 @@ export function buildImportGraph(
       continue;
     }
 
-    const fileEdges = extractEdges(content, file, resolve);
+    const raw = parseSpecifiers(content, file);
+    const fileEdges: ImportEdge[] = [];
+    const dir = dirname(file);
+    for (const { specifier, isBarrelReExport } of raw) {
+      try {
+        const resolved = resolve(specifier, dir);
+        if (!isTerminal(resolved)) {
+          fileEdges.push({ target: resolved, isBarrelReExport });
+        }
+      } catch {
+        droppedEdges++;
+        onUnresolvable?.(specifier, file);
+      }
+    }
     edges.forward.set(file, fileEdges);
 
     for (const edge of fileEdges) {
@@ -172,10 +195,10 @@ export function buildImportGraph(
   // The `isBarrelReExport` flag is preserved for rule consumers that
   // want to distinguish barrel re-exports from direct imports.
 
-  return createGraph(edges, allFiles);
+  return createGraph(edges, allFiles, droppedEdges);
 }
 
-function createGraph(edges: MutableEdges, allFiles: Set<string>): ImportGraph {
+function createGraph(edges: MutableEdges, allFiles: Set<string>, droppedEdges: number): ImportGraph {
   const closureCache = new Map<string, ReadonlySet<string>>();
   const reverseClosureCache = new Map<string, ReadonlySet<string>>();
 
@@ -231,6 +254,7 @@ function createGraph(edges: MutableEdges, allFiles: Set<string>): ImportGraph {
     forward: edges.forward,
     reverse: edges.reverse,
     files: allFiles,
+    droppedEdges,
     closureOf,
     dependentsOf,
   };
