@@ -5,7 +5,8 @@
  *
  * No explicit timeout (relies on the safe 1500ms harness default), an explicit
  * timeout comfortably below the watchdog, or a larger deadline that still sits
- * under a file-level setDefaultTimeout — no violation.
+ * under a file-level setDefaultTimeout — no violation. Also covers the case
+ * where "//" appears inside a string literal earlier on the same line (#2371).
  */
 
 import { setDefaultTimeout } from "bun:test";
@@ -45,3 +46,9 @@ await pollUntil(() => events.some((e) => e.type === "ready"), 10_000);
 // await pollUntil(condition);
 // await pollUntil(condition, 10_000); — old approach
 // pollUntil(fn) — waits for the condition
+
+// "//" inside a string literal earlier on the line must not be treated as a
+// line comment — the call is live and this explicit timeout is below the
+// watchdog, so it should not be flagged (#2371).
+const url = "http://localhost"; await pollUntil(condition, 4000);
+const endpoint = "https://api.example.com"; await pollUntil(() => true, 3_000);
