@@ -29,7 +29,6 @@ import {
   resolveModelName,
   resolveRealpath,
   resolveWorktreePath,
-  spawnCapture,
   spawnCaptureSync,
   updatePatchedClaude,
   validateAllowPatterns,
@@ -52,7 +51,7 @@ import { parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { LookupResult, MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
-import { isLookupFailure, lookupFailure, resolveGitRootOrCwd } from "@mcp-cli/core";
+import { isLookupFailure, lookupFailure, resolveGitRootOrCwd, runOrLookupFailure } from "@mcp-cli/core";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
 
 // ── Dependency injection ──
@@ -130,38 +129,39 @@ export function parseDiffShortstat(output: string): string | null {
   return `+${insertions}/-${deletions} (${files}f)`;
 }
 
-async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
-  try {
-    const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
-    return parseDiffShortstat(result.stdout);
-  } catch (e) {
-    return lookupFailure(`git diff failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
+export async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
+  const stdout = await runOrLookupFailure("git", ["diff", "--shortstat"], { cwd: worktreePath });
+  if (isLookupFailure(stdout)) return stdout;
+  return parseDiffShortstat(stdout);
 }
 
 export async function defaultGetPrStatus(worktreePath: string): Promise<LookupResult<PrStatus | null>> {
-  try {
-    const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
-    const branch = branchResult.stdout.trim();
-    if (!branch) return null;
+  const branchOut = await runOrLookupFailure("git", ["branch", "--show-current"], { cwd: worktreePath });
+  if (isLookupFailure(branchOut)) return branchOut;
+  const branch = branchOut.trim();
+  if (!branch) return null;
 
-    const prResult = await spawnCapture("gh", [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--json",
-      "number,state",
-      "--limit",
-      "1",
-    ]);
-    const prs = JSON.parse(prResult.stdout.trim()) as Array<{ number: number; state: string }>;
-    if (!Array.isArray(prs) || prs.length === 0) return null;
-    const pr = prs[0];
-    return { number: pr.number, state: pr.state.toLowerCase() };
-  } catch (e) {
-    return lookupFailure(`PR status lookup failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
+  const prOut = await runOrLookupFailure("gh", [
+    "pr",
+    "list",
+    "--head",
+    branch,
+    "--json",
+    "number,state",
+    "--limit",
+    "1",
+  ]);
+  if (isLookupFailure(prOut)) return prOut;
+
+  let prs: Array<{ number: number; state: string }>;
+  try {
+    prs = JSON.parse(prOut.trim()) as Array<{ number: number; state: string }>;
+  } catch {
+    return lookupFailure(`Failed to parse gh pr list output for ${worktreePath}: ${prOut.slice(0, 100)}`);
   }
+  if (!Array.isArray(prs) || prs.length === 0) return null;
+  const pr = prs[0];
+  return { number: pr.number, state: pr.state.toLowerCase() };
 }
 
 /**

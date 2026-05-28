@@ -40,7 +40,6 @@ import {
   pruneWorktrees,
   readWorktreeConfig,
   resolveWorktreePath,
-  spawnCapture,
   spawnCaptureSync,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
@@ -52,6 +51,8 @@ import {
   type SharedSessionDeps,
   buildResumePrompt,
   cleanupWorktree,
+  defaultGetDiffStats,
+  defaultGetPrStatus,
   extractIssueNumber,
   parseApproveArgs,
   parseByeResult,
@@ -118,50 +119,6 @@ function getGitRoot(): LookupResult<string | null> {
   if (!commonDir) return null;
   const resolved = resolve(commonDir);
   return resolved.endsWith(".git") ? dirname(resolved) : resolved;
-}
-
-async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
-  try {
-    const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath });
-    const trimmed = result.stdout.trim();
-    if (!trimmed) return null;
-    const filesMatch = trimmed.match(/(\d+)\s+file/);
-    const insertMatch = trimmed.match(/(\d+)\s+insertion/);
-    const deleteMatch = trimmed.match(/(\d+)\s+deletion/);
-    const files = filesMatch ? Number(filesMatch[1]) : 0;
-    const insertions = insertMatch ? Number(insertMatch[1]) : 0;
-    const deletions = deleteMatch ? Number(deleteMatch[1]) : 0;
-    if (files === 0 && insertions === 0 && deletions === 0) return null;
-    return `+${insertions}/-${deletions} (${files}f)`;
-  } catch (e) {
-    return lookupFailure(`git diff failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-async function defaultGetPrStatus(
-  worktreePath: string,
-): Promise<LookupResult<{ number: number; state: string } | null>> {
-  try {
-    const branchResult = await spawnCapture("git", ["branch", "--show-current"], { cwd: worktreePath });
-    const branch = branchResult.stdout.trim();
-    if (!branch) return null;
-    const prResult = await spawnCapture("gh", [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--json",
-      "number,state",
-      "--limit",
-      "1",
-    ]);
-    const prs = JSON.parse(prResult.stdout.trim()) as Array<{ number: number; state: string }>;
-    if (!Array.isArray(prs) || prs.length === 0) return null;
-    const pr = prs[0];
-    return { number: pr.number, state: pr.state.toLowerCase() };
-  } catch (e) {
-    return lookupFailure(`PR status lookup failed in ${worktreePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
 }
 
 export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
