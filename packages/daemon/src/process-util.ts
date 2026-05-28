@@ -109,12 +109,24 @@ export async function killPid(
  * filesystem walk) to match processes with a cwd at or directly under the
  * directory. Returns only PIDs that differ from the current process.
  */
-export async function findProcessesByCwd(dirPath: string, logger: Logger): Promise<number[]> {
+export async function findProcessesByCwd(
+  dirPath: string,
+  logger: Logger,
+  _spawnCaptureFn = spawnCapture,
+): Promise<number[]> {
   const myPid = process.pid;
   try {
-    const result = await spawnCapture("lsof", ["-a", "-d", "cwd", "+d", dirPath, "-t"], {
+    const result = await _spawnCaptureFn("lsof", ["-a", "-d", "cwd", "+d", dirPath, "-t"], {
       timeoutMs: LSOF_TIMEOUT_MS,
     });
+    if (result.timedOut) {
+      logger.warn(`[process] lsof scan timed out for ${dirPath} — orphaned processes may persist`);
+      return [];
+    }
+    if (result.exitCode === null) {
+      logger.warn(`[process] lsof unavailable for ${dirPath} — orphaned processes may persist`);
+      return [];
+    }
     if (!result.ok && result.stderr.trim()) {
       logger.debug(`[process] lsof exited ${result.exitCode} for ${dirPath}: ${result.stderr.trim()}`);
     }

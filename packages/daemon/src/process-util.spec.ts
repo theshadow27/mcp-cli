@@ -199,6 +199,38 @@ describe("findProcessesByCwd", () => {
     const pids = await findProcessesByCwd("/tmp/__nonexistent-dir-test-2493", silentLogger);
     expect(pids).toEqual([]);
   });
+
+  test("warns and returns empty when lsof times out", async () => {
+    const logger = capturingLogger();
+    const timedOutResult = async () => ({
+      ok: false as const,
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      truncated: false,
+    });
+    const pids = await findProcessesByCwd("/some/dir", logger, timedOutResult);
+    expect(pids).toEqual([]);
+    expect(logger.warns.some((w) => w.includes("timed out"))).toBe(true);
+  });
+
+  test("warns and returns empty when lsof is unavailable", async () => {
+    const logger = capturingLogger();
+    const missingBinaryResult = async () => ({
+      ok: false as const,
+      exitCode: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+    });
+    const pids = await findProcessesByCwd("/some/dir", logger, missingBinaryResult);
+    expect(pids).toEqual([]);
+    expect(logger.warns.some((w) => w.includes("unavailable"))).toBe(true);
+  });
 });
 
 describe("reapWorktreeProcesses", () => {
