@@ -1,6 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { extractTodoRefs } from "./check-stale-todos";
+import { type IssueFetcher, type TodoRef, checkRefs, extractTodoRefs, scanFiles } from "./check-stale-todos";
 
 // Build dotw-todo test strings programmatically so this spec file doesn't
 // contain literal `// dotw-todo <rule>: ... #NNN` patterns. If it did,
@@ -82,11 +85,131 @@ describe("extractTodoRefs", () => {
   });
 
   it("skips identifiers like dotw-todo-needs-issue that contain dotw-todo as a substring", () => {
-    // The pattern requires whitespace after dotw-todo, so dotw-todo-<more> doesn't match.
-    // Construct the content with a template to avoid the scanner seeing a literal pattern.
     const ident = ["dotw-todo", "needs-issue"].join("-");
     const content = `// ${ident} is the rule documented in #2352`;
     const refs = extractTodoRefs(content, "packages/foo/bar.ts");
     expect(refs).toHaveLength(0);
+  });
+});
+
+describe("scanFiles", () => {
+  let tmpRoot: string;
+
+  beforeEach(async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), "stale-todos-"));
+    await mkdir(join(tmpRoot, "packages", "foo"), { recursive: true });
+    await mkdir(join(tmpRoot, "scripts"), { recursive: true });
+    await mkdir(join(tmpRoot, "test"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("finds dotw-todo refs in packages/ files", async () => {
+    await writeFile(join(tmpRoot, "packages", "foo", "bar.ts"), `${makeTodo("some-rule", "fix in #42")}\n`);
+    const refs = await scanFiles(tmpRoot);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]?.issueNumbers).toEqual([42]);
+    expect(refs[0]?.file).toBe("packages/foo/bar.ts");
+  });
+
+  it("excludes .rule.ts and fixture files", async () => {
+    await mkdir(join(tmpRoot, "scripts", "rules", "fixtures"), { recursive: true });
+    await writeFile(join(tmpRoot, "scripts", "rules", "my.rule.ts"), `${makeTodo("r", "fix in #1")}\n`);
+    await writeFile(join(tmpRoot, "scripts", "rules", "fixtures", "x.ts"), `${makeTodo("r", "fix in #2")}\n`);
+    await writeFile(join(tmpRoot, "scripts", "ok.ts"), `${makeTodo("r", "fix in #3")}\n`);
+    const refs = await scanFiles(tmpRoot);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]?.issueNumbers).toEqual([3]);
+  });
+
+  it("returns empty when no dotw-todo refs exist", async () => {
+    await writeFile(join(tmpRoot, "packages", "foo", "clean.ts"), "export const x = 1;\n");
+    const refs = await scanFiles(tmpRoot);
+    expect(refs).toHaveLength(0);
+  });
+});
+
+describe("checkRefs", () => {
+  const stdoutWrite = process.stdout.write.bind(process.stdout);
+  const stderrWrite = process.stderr.write.bind(process.stderr);
+  let stdoutBuf: string;
+  let stderrBuf: string;
+
+  beforeEach(() => {
+    stdoutBuf = "";
+    stderrBuf = "";
+    process.stdout.write = ((chunk: string) => {
+      stdoutBuf += chunk;
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string) => {
+      stderrBuf += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
+  });
+
+  const ref = (issueNumbers: number[], file = "f.ts", line = 1): TodoRef => ({
+    file,
+    line,
+    issueNumbers,
+    snippet: `snippet for ${issueNumbers.join(",")}`,
+  });
+
+  it("returns 0 with no refs", async () => {
+    const code = await checkRefs([], async () => "OPEN");
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain("no dotw-todo issue references found");
+  });
+
+  it("returns 1 when all issues are unreachable (fail-closed)", async () => {
+    const code = await checkRefs([ref([100])], async () => null);
+    expect(code).toBe(1);
+    expect(stderrBuf).toContain("could not reach GitHub API");
+    expect(stderrBuf).toContain("1 issue unreachable");
+  });
+
+  it("returns 1 when a referenced issue is CLOSED", async () => {
+    const code = await checkRefs([ref([200], "pkg/foo.ts", 5)], async (n) => (n === 200 ? "CLOSED" : "OPEN"));
+    expect(code).toBe(1);
+    expect(stderrBuf).toContain("#200 (CLOSED)");
+    expect(stderrBuf).toContain("pkg/foo.ts:5");
+  });
+
+  it("returns 0 when all referenced issues are OPEN", async () => {
+    const code = await checkRefs([ref([300])], async () => "OPEN");
+    expect(code).toBe(0);
+    expect(stdoutBuf).toContain("all referenced issues open");
+  });
+
+  it("warns but continues when some (not all) issues are unreachable", async () => {
+    const code = await checkRefs([ref([400]), ref([401])], async (n) => (n === 400 ? null : "OPEN"));
+    expect(code).toBe(0);
+    expect(stderrBuf).toContain("#400");
+    expect(stderrBuf).toContain("skipped");
+  });
+
+  it("fetches each unique issue only once", async () => {
+    const calls: number[] = [];
+    const fetcher: IssueFetcher = async (n) => {
+      calls.push(n);
+      return "OPEN";
+    };
+    await checkRefs([ref([500]), ref([500, 501])], fetcher);
+    expect(calls.sort()).toEqual([500, 501]);
+  });
+
+  it("reports multiple stale refs in one run", async () => {
+    const code = await checkRefs([ref([600], "a.ts", 10), ref([601], "b.ts", 20)], async () => "CLOSED");
+    expect(code).toBe(1);
+    expect(stderrBuf).toContain("2 dotw-todo comments reference closed issues");
+    expect(stderrBuf).toContain("a.ts:10");
+    expect(stderrBuf).toContain("b.ts:20");
   });
 });

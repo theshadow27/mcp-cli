@@ -8,7 +8,7 @@
  * no .rule.ts, no .d.ts, no node_modules).
  *
  * Exit 0: all referenced issues are open (or none found).
- * Exit 1: at least one dotw-todo references a closed issue.
+ * Exit 1: at least one dotw-todo references a closed issue, or gh is unreachable.
  */
 
 import { readFile } from "node:fs/promises";
@@ -23,6 +23,8 @@ const TODO_FULL_RE = /\/\/\s*dotw-todo\s+([\w-]+)\s*:\s*(.+)$/;
 const ISSUE_NUM_RE = /#(\d+)/g;
 const STRING_LITERAL_QUOTES = new Set(['"', "'", "`"]);
 
+const GH_TIMEOUT_MS = 10_000;
+
 export interface TodoRef {
   file: string;
   line: number;
@@ -30,12 +32,8 @@ export interface TodoRef {
   snippet: string;
 }
 
-/**
- * Extract all dotw-todo issue references from a single file's content.
- * Applies the same string-literal guard as the dotw-todo-needs-issue rule:
- * a `//` immediately preceded by `"`, `'`, or `` ` `` is prose, not a
- * suppression comment, and is skipped.
- */
+export type IssueFetcher = (issueNumber: number) => Promise<string | null>;
+
 export function extractTodoRefs(content: string, relPath: string): TodoRef[] {
   const refs: TodoRef[] = [];
   const lines = content.split("\n");
@@ -59,7 +57,7 @@ export function extractTodoRefs(content: string, relPath: string): TodoRef[] {
   return refs;
 }
 
-async function scanFiles(repoRoot: string): Promise<TodoRef[]> {
+export async function scanFiles(repoRoot: string): Promise<TodoRef[]> {
   const roots = ["packages", "scripts", "test"];
   const all: TodoRef[] = [];
   for (const root of roots) {
@@ -78,17 +76,25 @@ async function scanFiles(repoRoot: string): Promise<TodoRef[]> {
   return all;
 }
 
-function fetchIssueState(issueNumber: number): string | null {
-  const result = Bun.spawnSync(["gh", "issue", "view", String(issueNumber), "--json", "state", "--jq", ".state"]);
-  if (result.exitCode !== 0) return null;
-  return result.stdout.toString().trim();
+export async function fetchIssueStateViaGh(issueNumber: number): Promise<string | null> {
+  const proc = Bun.spawn(["gh", "issue", "view", String(issueNumber), "--json", "state", "--jq", ".state"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const timer = setTimeout(() => proc.kill(), GH_TIMEOUT_MS);
+  try {
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) return null;
+    return (await new Response(proc.stdout).text()).trim();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-async function main(): Promise<void> {
-  const refs = await scanFiles(REPO_ROOT);
+export async function checkRefs(refs: TodoRef[], fetcher: IssueFetcher): Promise<number> {
   if (refs.length === 0) {
     process.stdout.write("✓ no dotw-todo issue references found\n");
-    return;
+    return 0;
   }
 
   const uniqueNumbers = new Set<number>();
@@ -96,12 +102,20 @@ async function main(): Promise<void> {
     for (const n of ref.issueNumbers) uniqueNumbers.add(n);
   }
 
+  const results = await Promise.all([...uniqueNumbers].map(async (n) => ({ issue: n, state: await fetcher(n) })));
+
   const closedIssues = new Set<number>();
   const unreachable = new Set<number>();
-  for (const n of uniqueNumbers) {
-    const state = fetchIssueState(n);
-    if (state === null) unreachable.add(n);
-    else if (state === "CLOSED") closedIssues.add(n);
+  for (const { issue, state } of results) {
+    if (state === null) unreachable.add(issue);
+    else if (state === "CLOSED") closedIssues.add(issue);
+  }
+
+  if (unreachable.size === uniqueNumbers.size) {
+    process.stderr.write(
+      `✗ could not reach GitHub API — cannot verify issue states (${uniqueNumbers.size} issue${uniqueNumbers.size === 1 ? "" : "s"} unreachable)\n`,
+    );
+    return 1;
   }
 
   if (unreachable.size > 0) {
@@ -115,7 +129,7 @@ async function main(): Promise<void> {
     process.stdout.write(
       `✓ ${refs.length} dotw-todo ref${refs.length === 1 ? "" : "s"} checked — all referenced issues open\n`,
     );
-    return;
+    return 0;
   }
 
   process.stderr.write(
@@ -129,9 +143,11 @@ async function main(): Promise<void> {
   process.stderr.write(
     "fix: remove the violation (and its dotw-todo), or reopen/file a successor issue and update the reference\n",
   );
-  process.exit(1);
+  return 1;
 }
 
 if (import.meta.main) {
-  await main();
+  const refs = await scanFiles(REPO_ROOT);
+  const code = await checkRefs(refs, fetchIssueStateViaGh);
+  process.exit(code);
 }
