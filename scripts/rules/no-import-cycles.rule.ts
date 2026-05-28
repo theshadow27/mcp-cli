@@ -9,7 +9,7 @@ import type { CheckRule } from "./_engine/rule";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-interface CycleInfo {
+export interface CycleInfo {
   cyclePath: string[];
   isCrossPackage: boolean;
 }
@@ -121,6 +121,9 @@ export function traceCycle(
 // Keyed by the files Map identity so the cache is scoped to the rule-engine
 // run. WeakMap means the entry is collected when the run's Map is GC'd.
 const cycleCache = new WeakMap<Map<string, FileMeta>, Map<string, CycleInfo>>();
+
+/** @internal — test-only visibility for cache isolation and reuse assertions */
+export const _cycleCache = cycleCache;
 
 function deriveRepoRoot(files: Map<string, FileMeta>): string {
   for (const meta of files.values()) {

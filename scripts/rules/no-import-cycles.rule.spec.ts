@@ -6,7 +6,8 @@ import { buildImportGraph } from "./_engine/import-graph";
 import type { SpecifierResolver } from "./_engine/import-graph";
 import { evaluateRule } from "./_engine/rule";
 import { checkSuppression } from "./_engine/suppression";
-import rule, { findSCCs, findSelfImports, traceCycle } from "./no-import-cycles.rule";
+import rule, { _cycleCache, findSCCs, findSelfImports, traceCycle } from "./no-import-cycles.rule";
+import type { CycleInfo } from "./no-import-cycles.rule";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -154,21 +155,33 @@ describe("rule integration", () => {
     const file2 = makeFile({ path: "/fake/packages/core/src/b.ts", relPath: "packages/core/src/b.ts" });
     const files2 = new Map([[file2.path, file2]]);
 
-    // Running against two distinct Map objects must not cross-contaminate.
-    const v1 = evaluateRule(rule, file1, files1);
+    // Populate the cache for files1.
+    evaluateRule(rule, file1, files1);
+
+    // Poison files1's cache entry so it reports a self-import for file2's path.
+    // If the cache is not isolated, evaluating file2 against the distinct files2
+    // Map would incorrectly return this poisoned result.
+    const cache1 = _cycleCache.get(files1);
+    expect(cache1).toBeDefined();
+    const poison: CycleInfo = { cyclePath: [file2.path], isCrossPackage: false };
+    cache1?.set(file2.path, poison);
+
+    // Evaluating file2 against files2 (a distinct Map) must NOT see the poisoned
+    // entry from files1 — it must compute a fresh, clean result.
     const v2 = evaluateRule(rule, file2, files2);
-    expect(v1).toHaveLength(0);
     expect(v2).toHaveLength(0);
   });
 
   test("same files Map reuses the cached result on second invocation", () => {
     const file = makeFile();
     const files = new Map([[file.path, file]]);
-    // Two evaluations with the same Map should both return the same result
-    // (the second call hits the WeakMap cache).
-    const v1 = evaluateRule(rule, file, files);
-    const v2 = evaluateRule(rule, file, files);
-    expect(v1).toEqual(v2);
+
+    evaluateRule(rule, file, files);
+    const firstCacheMap = _cycleCache.get(files);
+
+    // Second call must return the same Map object — not recompute and replace it.
+    evaluateRule(rule, file, files);
+    expect(_cycleCache.get(files)).toBe(firstCacheMap);
   });
 
   test("real codebase SCCs are intra-package (no cross-package cycles)", () => {
