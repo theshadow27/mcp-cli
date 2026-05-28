@@ -24,7 +24,7 @@ const rule: PatternRule = {
   guidance: [
     'bare `(*)` is not a permission wildcard — `"Bash(*)"`  matches nothing at runtime',
     'to allow all calls to a tool, use just the tool name: `"Bash"`',
-    'for prefix matching, use the `:*` suffix: `"Bash(:*)"` or `"mcp__echo(:*)""`',
+    'for prefix matching, use the `:*` suffix: `"Bash(:*)"` or `"mcp__echo(:*)"`',
   ],
   documentation: "#2491",
 };
