@@ -37,18 +37,26 @@ interface VerdictCacheFile {
  * these, invalidating the cache.
  */
 export function computeVerdictKey(resolveBase: () => string, cwd?: string): string | null {
+  // Strip GIT_* env vars so an explicit cwd is authoritative — without this,
+  // GIT_DIR set by an outer git hook invocation overrides cwd and causes git
+  // to operate on the hook's repo instead of the requested directory (#2527).
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) env[k] = v;
+  }
+
   const base = resolveBase();
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd });
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd, env });
   if (head.status !== 0) return null;
   const headSha = head.stdout.trim();
 
   // `git diff HEAD` captures both staged and unstaged changes in one shot.
-  const diff = spawnSync("git", ["diff", "HEAD"], { encoding: "utf8", cwd });
+  const diff = spawnSync("git", ["diff", "HEAD"], { encoding: "utf8", cwd, env });
   if (diff.status !== 0) return null;
 
   // Untracked files (new spec files, etc.) are invisible to `git diff HEAD`.
   // Include their names so adding/removing an untracked file flips the key.
-  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8", cwd });
+  const untracked = spawnSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8", cwd, env });
   const untrackedList = untracked.status === 0 ? untracked.stdout : "";
 
   const diffHash = Bun.hash(diff.stdout + untrackedList).toString(16);
