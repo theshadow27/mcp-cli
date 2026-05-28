@@ -122,8 +122,14 @@ async function runBun(
     logger.error(d.trimEnd());
   });
   const code = await new Promise<number>((resolve) => {
-    child.on("close", (c) => resolve(c ?? -1));
-    child.on("error", () => resolve(-1));
+    child.on("close", (c: number | null, signal: string | null) => {
+      if (signal) logger.warn(`child killed by ${signal} (code=${c})`);
+      resolve(c ?? -1);
+    });
+    child.on("error", (err: Error) => {
+      logger.error(`spawn error: ${err.message} (code=${(err as NodeJS.ErrnoException).code})`);
+      resolve(-1);
+    });
   });
   const junitFailures = junitPath ? parseJunitFailures(junitPath) : null;
   return { code, output: buf.join(""), junitFailures };
