@@ -19,6 +19,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { ImportGraph } from "../rules/_engine/import-graph";
+
 /**
  * Derive the junit/coverage failures count from the stdout content.
  * A stdout containing " 0 fail" is a clean-run signal → 0 failures.
@@ -404,15 +406,14 @@ describe("changedTestsStep", () => {
   // test; under parallel load this pushes the file past Bun's default
   // timeout and triggers SIGTERM of the child process → exit -1 (#2464).
   const noSpecFiles = () => [] as string[];
-  const noGraph = () =>
-    ({
-      forward: new Map(),
-      reverse: new Map(),
-      files: new Set(),
-      droppedEdges: 0,
-      closureOf: () => new Set(),
-      dependentsOf: () => new Set(),
-    }) as ReturnType<typeof import("../rules/_engine/import-graph").buildImportGraph>;
+  const noGraph = (): ImportGraph => ({
+    forward: new Map(),
+    reverse: new Map(),
+    files: new Set(),
+    droppedEdges: 0,
+    closureOf: () => new Set(),
+    dependentsOf: () => new Set(),
+  });
 
   it("exit 0 on both passes → success", async () => {
     const dir = makeFakeBun({ code: 0, stdout: passingSummary });
