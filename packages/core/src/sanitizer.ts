@@ -2,7 +2,7 @@ export interface SecretMatch {
   pattern: string;
   offset: number;
   length: number;
-  matched: string;
+  preview: string;
 }
 
 export interface ScanResult {
@@ -33,8 +33,9 @@ interface PatternDef {
 // AKIA = long-lived IAM keys, ASIA = STS temporary credentials.
 // Both are 20-char uppercase alphanumeric after the 4-char prefix.
 const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
-// 40-char base64-ish secret key (appears after access key ID in configs).
-const AWS_SECRET_KEY = /\b[A-Za-z0-9/+=]{40}(?=\s|"|'|$)/gm;
+// 40-char base64-ish secret key, only when preceded by an AWS-context keyword.
+const AWS_SECRET_KEY =
+  /(?<=(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey|secret_access_key|aws_secret)\s*[:=]\s*["']?)[A-Za-z0-9/+=]{40}(?=\s|"|'|$)/gm;
 
 // ── GitHub ─────────────────────────────────────────────────────────
 // Classic PATs (ghp_), OAuth (gho_), user-to-server (ghu_),
@@ -56,6 +57,23 @@ const SLACK_TOKEN = /\bxox[bpars]-[A-Za-z0-9\-]{10,}\b/g;
 const STRIPE_KEY = /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g;
 const PYPI_TOKEN = /\bpypi-[A-Za-z0-9_-]{16,}\b/g;
 const ANTHROPIC_API_KEY_LITERAL = /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g;
+
+// ── GitLab ──────────────────────────────────────────────────────────
+// Project/personal/group access tokens + pipeline triggers.
+const GITLAB_TOKEN = /\bglpat-[A-Za-z0-9_-]{20,}\b/g;
+const GITLAB_RUNNER_TOKEN = /\bGR1348941[A-Za-z0-9_-]{20,}\b/g;
+
+// ── Google Cloud ────────────────────────────────────────────────────
+// API keys (AIza prefix), OAuth client secrets, service account key IDs.
+const GOOGLE_API_KEY = /\bAIza[A-Za-z0-9_-]{35}\b/g;
+
+// ── HashiCorp Vault ─────────────────────────────────────────────────
+// Service (hvs.), batch (hvb.), recovery (hvp.) tokens.
+const VAULT_TOKEN = /\b(?:hvs|hvb|hvp)\.[A-Za-z0-9_-]{24,}\b/g;
+
+// ── Bitbucket ───────────────────────────────────────────────────────
+// App passwords / repository access tokens.
+const BITBUCKET_TOKEN = /\bATBB[A-Za-z0-9]{32,}\b/g;
 
 // ── Header-based secrets ───────────────────────────────────────────
 const AUTHORIZATION_HEADER =
@@ -159,6 +177,11 @@ function buildPatterns(): PatternDef[] {
     { name: "slack-token", re: SLACK_TOKEN },
     { name: "stripe-key", re: STRIPE_KEY },
     { name: "pypi-token", re: PYPI_TOKEN },
+    { name: "gitlab-token", re: GITLAB_TOKEN },
+    { name: "gitlab-runner-token", re: GITLAB_RUNNER_TOKEN },
+    { name: "google-api-key", re: GOOGLE_API_KEY },
+    { name: "vault-token", re: VAULT_TOKEN },
+    { name: "bitbucket-token", re: BITBUCKET_TOKEN },
     { name: "email", re: EMAIL },
     { name: "ipv4", re: IPV4 },
     { name: "ipv6", re: IPV6_FULL },
@@ -176,6 +199,11 @@ function getPatterns(): PatternDef[] {
   return _patterns;
 }
 
+function redactPreview(raw: string): string {
+  if (raw.length <= 8) return `${raw.slice(0, 2)}***`;
+  return `${raw.slice(0, 4)}***${raw.slice(-2)}`;
+}
+
 export function scanSecrets(text: string): ScanResult {
   const matches: SecretMatch[] = [];
 
@@ -187,7 +215,7 @@ export function scanSecrets(text: string): ScanResult {
         pattern: name,
         offset: m.index,
         length: m[0].length,
-        matched: m[0],
+        preview: redactPreview(m[0]),
       });
     }
   }
@@ -294,9 +322,6 @@ function isKnownFalsePositive(patternName: string, matched: string): boolean {
   }
 
   if (patternName === "aws-secret-key") {
-    if (/^[A-Za-z]+$/.test(matched)) return true;
-    if (/^[0-9]+$/.test(matched)) return true;
-    if (/^[0-9a-fA-F]+$/.test(matched)) return true;
     if (matched.length < 40) return true;
   }
 

@@ -21,13 +21,25 @@ describe("scanSecrets / AWS", () => {
     expect(r.matches.some((m) => m.pattern === "aws-access-key")).toBe(false);
   });
 
-  test("ignores git SHA-1 hashes (40 hex chars)", () => {
-    const r = scanSecrets("commit e2b5eb6721f62f7b6da14bbab9ab9380cadc080c");
+  test("detects AWS secret key with context keyword", () => {
+    const r = scanSecrets("aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "aws-secret-key")).toBe(true);
+  });
+
+  test("detects SecretAccessKey context", () => {
+    const r = scanSecrets('SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"');
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "aws-secret-key")).toBe(true);
+  });
+
+  test("ignores bare 40-char base64 strings without context", () => {
+    const r = scanSecrets("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
     expect(r.matches.some((m) => m.pattern === "aws-secret-key")).toBe(false);
   });
 
-  test("ignores SHA-1 of empty string (all hex)", () => {
-    const r = scanSecrets("da39a3ee5e6b4b0d3255bfef95601890afd80709");
+  test("ignores git SHA-1 hashes (40 hex chars)", () => {
+    const r = scanSecrets("commit e2b5eb6721f62f7b6da14bbab9ab9380cadc080c");
     expect(r.matches.some((m) => m.pattern === "aws-secret-key")).toBe(false);
   });
 });
@@ -199,6 +211,74 @@ describe("scanSecrets / platform tokens", () => {
     const r = scanSecrets("sk-ant-api03-abcdefghijklmnopqrstuv");
     expect(r.clean).toBe(false);
     expect(r.matches.some((m) => m.pattern === "anthropic-api-key")).toBe(true);
+  });
+});
+
+// ── GitLab / Google / Vault / Bitbucket ─────────────────────────────
+
+describe("scanSecrets / additional providers", () => {
+  test("detects glpat- GitLab token", () => {
+    const r = scanSecrets("token: glpat-ABCDEFghijklmnopqrstuv12");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "gitlab-token")).toBe(true);
+  });
+
+  test("detects GR1348941 GitLab runner token", () => {
+    const r = scanSecrets("GR1348941ABCDEFghijklmnopqrstuv12");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "gitlab-runner-token")).toBe(true);
+  });
+
+  test("detects AIza Google API key", () => {
+    const r = scanSecrets("key: AIzaSyA1234567890abcdefghijklmnopqrstuv");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "google-api-key")).toBe(true);
+  });
+
+  test("detects hvs. Vault service token", () => {
+    const r = scanSecrets("token: hvs.ABCDEFghijklmnopqrstuv1234");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "vault-token")).toBe(true);
+  });
+
+  test("detects hvb. Vault batch token", () => {
+    const r = scanSecrets("hvb.ABCDEFghijklmnopqrstuv1234");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "vault-token")).toBe(true);
+  });
+
+  test("detects ATBB Bitbucket token", () => {
+    const r = scanSecrets("ATBB1234567890abcdefghijklmnopqrstuvwxyz");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "bitbucket-token")).toBe(true);
+  });
+});
+
+// ── Preview field (blocker fix) ─────────────────────────────────────
+
+describe("scanSecrets / preview field safety", () => {
+  test("preview does not contain the full secret", () => {
+    const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
+    const r = scanSecrets(secret);
+    expect(r.matches.length).toBeGreaterThan(0);
+    const match = r.matches[0];
+    expect(match.preview).not.toBe(secret);
+    expect(match.preview.length).toBeLessThan(secret.length);
+    expect(match.preview).toContain("***");
+  });
+
+  test("preview shows first 4 + last 2 chars for long secrets", () => {
+    const r = scanSecrets("AKIAIOSFODNN7EXAMPLE");
+    const match = r.matches.find((m) => m.pattern === "aws-access-key");
+    expect(match).toBeDefined();
+    expect(match?.preview).toBe("AKIA***LE");
+  });
+
+  test("preview shows first 2 chars for short matches", () => {
+    const r = scanSecrets('"password": "hunter2x"');
+    const match = r.matches.find((m) => m.pattern === "generic-secret-assignment");
+    expect(match).toBeDefined();
+    expect(match?.preview).toBe("hu***");
   });
 });
 
@@ -526,6 +606,10 @@ describe("defence in depth: sanitize then re-scan", () => {
     "npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij12",
     "pypi-AgEIcHlwaS5vcmcABCDEFGH12345",
     "sk-ant-api03-abcdefghijklmnopqrstuv",
+    "glpat-ABCDEFghijklmnopqrstuv12",
+    "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+    "hvs.ABCDEFghijklmnopqrstuv1234",
+    "ATBB1234567890abcdefghijklmnopqrstuvwxyz",
   ];
 
   for (const input of DIRTY_INPUTS) {
@@ -572,6 +656,9 @@ describe("negative tests: non-secrets pass through unchanged", () => {
     "10.0.0.1",
     "e2b5eb6721f62f7b6da14bbab9ab9380cadc080c",
     "user@example.c|m is not a real email",
+    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "glpat- followed by nothing special",
+    "AIza short",
   ];
 
   for (const input of SAFE_INPUTS) {

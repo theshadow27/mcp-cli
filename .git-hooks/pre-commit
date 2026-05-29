@@ -56,8 +56,15 @@ if [ -n "$recording_files" ]; then
   # binaries. These can't be text-scanned so they must be blocked outright
   # (raw binaries should go through LFS; only LFS pointer files are text).
   # shellcheck disable=SC2086
-  binary_files=$(git diff --cached --numstat -- $recording_files \
-    | awk '$1 == "-" && $2 == "-" { print $3 }' || true)
+  binary_numstat=$(git diff --cached --numstat -- $recording_files) || {
+    echo "pre-commit: git diff --numstat failed (fail-closed)" >&2
+    exit 1
+  }
+  binary_files=$(printf '%s\n' "$binary_numstat" \
+    | awk '$1 == "-" && $2 == "-" { print $3 }') || {
+    echo "pre-commit: binary detection failed (fail-closed)" >&2
+    exit 1
+  }
   if [ -n "$binary_files" ]; then
     echo "pre-commit: staged binary files in recordings/ or binaries/ cannot be scanned for secrets" >&2
     printf '%s\n' "$binary_files" | head -10 >&2
@@ -68,8 +75,18 @@ if [ -n "$recording_files" ]; then
   # Extract added text lines from diff. Filter out only the "+++ b/..."
   # file-header lines (3 plusses), keeping real content that starts with "+".
   # shellcheck disable=SC2086
-  added_content=$(git diff --cached -U0 --no-color -- $recording_files \
-    | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//' || true)
+  diff_output=$(git diff --cached -U0 --no-color -- $recording_files) || {
+    echo "pre-commit: git diff failed (fail-closed)" >&2
+    exit 1
+  }
+  added_content=$(printf '%s\n' "$diff_output" \
+    | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//') || {
+    rc=$?
+    if [ "$rc" -gt 1 ]; then
+      echo "pre-commit: content extraction failed (fail-closed)" >&2
+      exit 1
+    fi
+  }
   if [ -n "$added_content" ]; then
     HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
     if ! printf '%s\n' "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts"; then
