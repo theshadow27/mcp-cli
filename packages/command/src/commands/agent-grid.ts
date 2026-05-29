@@ -17,35 +17,38 @@ import { c, printError } from "../output";
 
 // ── Types ──────────────────────────────────────────────────────────
 
-interface TestOutcome {
+export interface TestOutcome {
   test: string;
   result: GridResult;
 }
 
-interface ProviderReport {
+export interface ProviderReport {
   provider: string;
   version: string | null;
   outcomes: TestOutcome[];
   summary: { pass: number; fail: number; na: number };
 }
 
-interface GridRunReport {
+export interface GridRunReport {
   providers: ProviderReport[];
   elapsed_ms: number;
 }
 
+// ── Constants ──────────────────────────────────────────────────────
+
+const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
+
 // ── Test discovery ─────────────────────────────────────────────────
 
-function discoverTests(): GridTest[] {
-  // Test implementations are added by later issues in the epic.
-  // The skeleton returns an empty suite — the runner still exercises
-  // the full flag-parse → gate → report pipeline.
+export function discoverTests(): GridTest[] {
+  // Test implementations are added by later issues in the epic (#2538).
   return [];
 }
 
 // ── Runner ─────────────────────────────────────────────────────────
 
-async function runGridForProvider(
+export async function runGridForProvider(
   provider: AgentProvider,
   tests: GridTest[],
   opts: { version: string | null; record: string | null; offline: boolean },
@@ -61,7 +64,15 @@ async function runGridForProvider(
         continue;
       }
       try {
-        const result = await test.run({ provider, cwd });
+        const result = await Promise.race([
+          test.run({ provider, cwd }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`test timed out after ${DEFAULT_TEST_TIMEOUT_MS}ms`)),
+              DEFAULT_TEST_TIMEOUT_MS,
+            ),
+          ),
+        ]);
         outcomes.push({ test: test.name, result });
       } catch (err) {
         outcomes.push({
@@ -89,7 +100,7 @@ async function runGridForProvider(
 
 // ── Output formatting ──────────────────────────────────────────────
 
-function formatReportText(report: GridRunReport): string {
+export function formatReportText(report: GridRunReport): string {
   const lines: string[] = [];
 
   if (report.providers.length === 0) {
@@ -131,10 +142,10 @@ registerHelp("agent-grid", {
   summary: "Agent capability grid — run tests, inspect results",
   usage: ["mcx agent-grid run [--providers=X,Y] [--version=V] [--offline] [--record=path] [--commit-outcome]"],
   options: [
-    ["--providers <names>", "Comma-separated provider names (default: all enabled)"],
+    ["--providers, -p <names>", "Comma-separated provider names (default: all enabled)"],
     ["--version <ver>", "Test a specific version (default: latest)"],
     ["--offline", "Install from LFS archive only; fail if not cached"],
-    ["--record <path>", "Save recording to path (default: temp)"],
+    ["--record, -r <path>", "Save recording to path"],
     ["--commit-outcome", "Write results back to versions.yaml"],
     ["--json", "Output raw JSON instead of formatted text"],
   ],
@@ -145,9 +156,23 @@ registerHelp("agent-grid", {
   ],
 });
 
+registerHelp("agent-grid run", {
+  name: "agent-grid run",
+  summary: "Run capability tests against agent providers",
+  usage: ["mcx agent-grid run [flags]"],
+  options: [
+    ["--providers, -p <names>", "Comma-separated provider names (default: all enabled)"],
+    ["--version <ver>", "Test a specific version (default: latest)"],
+    ["--offline", "Install from LFS archive only; fail if not cached"],
+    ["--record, -r <path>", "Save recording to path"],
+    ["--commit-outcome", "Write results back to versions.yaml"],
+    ["--json", "Output raw JSON instead of formatted text"],
+  ],
+});
+
 // ── Flag parsing ───────────────────────────────────────────────────
 
-interface RunOptions {
+export interface RunOptions {
   providers: string[];
   version: string | null;
   offline: boolean;
@@ -156,7 +181,7 @@ interface RunOptions {
   json: boolean;
 }
 
-function parseRunArgs(args: string[]): RunOptions {
+export function parseRunArgs(args: string[]): RunOptions | null {
   const { flags, errors, help } = parseFlags(args, {
     providers: { type: "string", alias: "p" },
     version: { type: "string" },
@@ -167,21 +192,7 @@ function parseRunArgs(args: string[]): RunOptions {
   });
 
   if (help) {
-    const h = formatHelp({
-      name: "agent-grid run",
-      summary: "Run capability tests against agent providers",
-      usage: ["mcx agent-grid run [flags]"],
-      options: [
-        ["--providers, -p <names>", "Comma-separated provider names (default: all enabled)"],
-        ["--version <ver>", "Test a specific version"],
-        ["--offline", "Install from LFS archive only"],
-        ["--record, -r <path>", "Save recording to path"],
-        ["--commit-outcome", "Write results back to versions.yaml"],
-        ["--json", "Output JSON"],
-      ],
-    });
-    console.error(h);
-    process.exit(0);
+    return null;
   }
 
   if (errors.length > 0) {
@@ -209,9 +220,9 @@ function parseRunArgs(args: string[]): RunOptions {
 
 // ── Resolve providers ──────────────────────────────────────────────
 
-function resolveProviders(names: string[]): AgentProvider[] {
+export function resolveProviders(names: string[]): AgentProvider[] {
   if (names.length === 0) {
-    return getAllProviders();
+    return getAllProviders().filter((p) => !EXCLUDED_DEFAULT_PROVIDERS.has(p.name));
   }
   const resolved: AgentProvider[] = [];
   for (const name of names) {
@@ -227,12 +238,41 @@ function resolveProviders(names: string[]): AgentProvider[] {
   return resolved;
 }
 
+// ── Stub flag warnings ─────────────────────────────────────────────
+
+function warnStubFlags(opts: RunOptions): void {
+  if (opts.offline) {
+    console.error(`${c.yellow}--offline: not yet implemented; network access is not restricted${c.reset}`);
+  }
+  if (opts.record) {
+    console.error(`${c.yellow}--record: not yet implemented; recording will not be saved${c.reset}`);
+  }
+  if (opts.version) {
+    console.error(`${c.yellow}--version: not yet implemented; using current installed version${c.reset}`);
+  }
+  if (opts.commitOutcome) {
+    console.error(`${c.yellow}--commit-outcome: not yet implemented; versions.yaml will not be updated${c.reset}`);
+  }
+}
+
 // ── Subcommand dispatch ────────────────────────────────────────────
 
 async function agentGridRun(args: string[]): Promise<void> {
   const opts = parseRunArgs(args);
+  if (!opts) {
+    const h = getHelp("agent-grid run");
+    if (h) console.log(formatHelp(h));
+    return;
+  }
+
+  warnStubFlags(opts);
+
   const providers = resolveProviders(opts.providers);
   const tests = discoverTests();
+
+  if (tests.length === 0) {
+    console.error(`${c.yellow}warning: no tests registered; suite is empty${c.reset}`);
+  }
 
   const start = performance.now();
 
@@ -255,10 +295,6 @@ async function agentGridRun(args: string[]): Promise<void> {
     console.log(formatReportText(report));
   }
 
-  if (opts.commitOutcome) {
-    console.error(`${c.yellow}--commit-outcome: writing to versions.yaml is not yet implemented${c.reset}`);
-  }
-
   const anyFail = providerReports.some((r) => r.summary.fail > 0);
   if (anyFail) process.exit(1);
 }
@@ -266,20 +302,25 @@ async function agentGridRun(args: string[]): Promise<void> {
 // ── Main entry ─────────────────────────────────────────────────────
 
 export async function cmdAgentGrid(args: string[]): Promise<void> {
-  if (args.length === 0 || hasHelpFlag(args)) {
-    const help = getHelp("agent-grid");
-    if (help) console.error(formatHelp(help));
+  const sub = args[0];
+
+  if (sub === "run") {
+    await agentGridRun(args.slice(1));
     return;
   }
 
-  const sub = args[0];
-  switch (sub) {
-    case "run":
-      await agentGridRun(args.slice(1));
-      break;
-    default:
-      printError(`unknown subcommand: ${sub}`);
-      console.error('Run "mcx agent-grid --help" for usage.');
-      process.exit(1);
+  if (!sub || hasHelpFlag(args)) {
+    const help = formatHelp({
+      name: "agent-grid",
+      summary: "Agent capability grid — run tests, inspect results",
+      usage: ["mcx agent-grid <subcommand> [flags]"],
+      options: [["run", "Run capability tests against agent providers"]],
+    });
+    console.log(help);
+    return;
   }
+
+  printError(`unknown subcommand: ${sub}`);
+  console.error('Run "mcx agent-grid --help" for usage.');
+  process.exit(1);
 }
