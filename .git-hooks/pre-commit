@@ -52,11 +52,12 @@ fi
 # any scanner error is treated as a match (safe default).
 recording_files=$(echo "$staged_files" | grep -E '^(recordings/|agent-grid/binaries/)' || true)
 if [ -n "$recording_files" ]; then
+  # shellcheck disable=SC2086 — $recording_files is newline-delimited paths from git; quoting would pass as single arg
   added_content=$(git diff --cached -U0 --no-color -- $recording_files \
     | grep -E '^\+[^+]' | sed 's/^\+//' || true)
   if [ -n "$added_content" ]; then
     HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
-    if ! echo "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts" 2>/dev/null; then
+    if ! printf '%s\n' "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts"; then
       echo "pre-commit: refusing to stage files with unsanitized secrets in recordings/ or binaries/" >&2
       echo "Run the sanitizer on the files before committing, or bypass with:" >&2
       echo "  SKIP_PRIVACY_CHECK=1 git commit ..." >&2

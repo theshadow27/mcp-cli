@@ -20,6 +20,16 @@ describe("scanSecrets", () => {
       const result = scanSecrets("AKIA_SHORT");
       expect(result.matches.some((m) => m.pattern === "aws-access-key")).toBe(false);
     });
+
+    test("ignores git SHA-1 hashes (40 hex chars)", () => {
+      const result = scanSecrets("commit e2b5eb6721f62f7b6da14bbab9ab9380cadc080c");
+      expect(result.matches.some((m) => m.pattern === "aws-secret-key")).toBe(false);
+    });
+
+    test("ignores SHA-1 of empty string (all hex)", () => {
+      const result = scanSecrets("da39a3ee5e6b4b0d3255bfef95601890afd80709");
+      expect(result.matches.some((m) => m.pattern === "aws-secret-key")).toBe(false);
+    });
   });
 
   describe("JWTs", () => {
@@ -88,6 +98,26 @@ describe("scanSecrets", () => {
     test("detects ANTHROPIC_API_KEY", () => {
       const result = scanSecrets("ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx");
       expect(result.clean).toBe(false);
+    });
+
+    test("preserves key name when sanitizing env-key-value", () => {
+      const result = sanitizeText('"API_KEY": "super-secret-key-value-1234"');
+      expect(result.text).toContain("API_KEY");
+      expect(result.text).toContain("[REDACTED:");
+      expect(result.text).not.toContain("super-secret");
+    });
+
+    test("preserves key name when sanitizing well-known-env", () => {
+      const result = sanitizeText("GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1234");
+      expect(result.text).toContain("GITHUB_TOKEN=");
+      expect(result.text).toContain("[REDACTED:");
+      expect(result.text).not.toContain("ghp_");
+    });
+
+    test("preserves separator when sanitizing well-known-env with JSON", () => {
+      const result = sanitizeText('"ANTHROPIC_API_KEY": "sk-ant-xxxxxxxxxxxxxxxxxxxx"');
+      expect(result.text).toContain("ANTHROPIC_API_KEY");
+      expect(result.text).toContain("[REDACTED:");
     });
   });
 
@@ -467,6 +497,7 @@ describe("negative tests: non-secrets pass through unchanged", () => {
     "password: ********",
     "[REDACTED:aws-access-key] already sanitized",
     "10.0.0.1",
+    "e2b5eb6721f62f7b6da14bbab9ab9380cadc080c",
   ];
 
   for (const input of SAFE_INPUTS) {

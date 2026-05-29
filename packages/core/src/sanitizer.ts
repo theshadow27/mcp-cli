@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-
 export interface SecretMatch {
   pattern: string;
   offset: number;
@@ -105,11 +103,11 @@ function buildPatterns(): PatternDef[] {
     },
     {
       name: "well-known-env",
-      re: new RegExp(`(?<=${wellKnownPattern})["']?\\s*[:=]\\s*["']?([A-Za-z0-9_/+\\-.=]{8,})`, "gi"),
+      re: new RegExp(`(?<=(?:${wellKnownPattern})["']?\\s*[:=]\\s*["']?)[A-Za-z0-9_/+\\-.=]{8,}`, "gi"),
     },
     {
       name: "env-key-value",
-      re: new RegExp(`(?:[A-Z_]*(?:${suffixPattern}))["']?\\s*[:=]\\s*["']?([A-Za-z0-9_/+\\-.=]{8,})`, "gi"),
+      re: new RegExp(`(?<=[A-Z_]*(?:${suffixPattern})["']?\\s*[:=]\\s*["']?)[A-Za-z0-9_/+\\-.=]{8,}`, "gi"),
     },
     {
       name: "private-key-block",
@@ -293,6 +291,7 @@ function isKnownFalsePositive(patternName: string, matched: string): boolean {
   if (patternName === "aws-secret-key") {
     if (/^[A-Za-z]+$/.test(matched)) return true;
     if (/^[0-9]+$/.test(matched)) return true;
+    if (/^[0-9a-fA-F]+$/.test(matched)) return true;
     if (matched.length < 40) return true;
   }
 
@@ -306,8 +305,4 @@ function isKnownFalsePositive(patternName: string, matched: string): boolean {
 
 export function sanitizeForRecording(ndjsonLine: string): SanitizeResult {
   return sanitizeText(ndjsonLine);
-}
-
-export function buildHomePath(): string {
-  return homedir();
 }
