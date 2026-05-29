@@ -21,8 +21,8 @@ const LAST_SDK_URL_VERSION = "2.1.122";
  * Returns negative if a < b, 0 if equal, positive if a > b.
  */
 function compareSemver(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const pa = a.split(".").map((s) => Number.parseInt(s, 10));
+  const pb = b.split(".").map((s) => Number.parseInt(s, 10));
   for (let i = 0; i < 3; i++) {
     const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
     if (diff !== 0) return diff;
