@@ -140,7 +140,8 @@ const WELL_KNOWN_ENVS = [
 const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 const IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
 const IPV6_FULL = /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g;
-const IPV6_COMPRESSED = /\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/g;
+const IPV6_COMPRESSED =
+  /(?:\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){0,5})?::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){0,5}\b)?/g;
 const HOME_PATH = /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//g;
 const HOME_PATH_SLUG = /-(?:Users|home)-[A-Za-z0-9._-]+-/g;
 
@@ -270,7 +271,13 @@ export function sanitizeJsonPayload(obj: unknown): { sanitized: unknown; replace
       for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
         const keyResult = sanitizeText(k);
         total += keyResult.replacements;
-        out[keyResult.text] = walk(v);
+        let sanitizedKey = keyResult.text;
+        if (sanitizedKey in out) {
+          let n = 2;
+          while (`${sanitizedKey}_${n}` in out) n++;
+          sanitizedKey = `${sanitizedKey}_${n}`;
+        }
+        out[sanitizedKey] = walk(v);
       }
       return out;
     }
@@ -319,6 +326,10 @@ function isKnownFalsePositive(patternName: string, matched: string): boolean {
 
   if (patternName === "home-path") {
     if (matched === "/Users/Shared/" || matched === "/home/runner/") return true;
+  }
+
+  if (patternName === "ipv6-compressed") {
+    if (matched === "::" || matched === "::1") return true;
   }
 
   if (patternName === "aws-secret-key") {

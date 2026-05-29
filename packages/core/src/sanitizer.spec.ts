@@ -367,6 +367,27 @@ describe("scanSecrets / IPs", () => {
     expect(scanSecrets("bind: 10.0.0.1").matches.some((m) => m.pattern === "ipv4")).toBe(false);
   });
 
+  test("detects compressed IPv6 ::1 loopback (but false-positive filtered)", () => {
+    const r = scanSecrets("addr: ::1");
+    expect(r.matches.some((m) => m.pattern === "ipv6-compressed")).toBe(false);
+  });
+
+  test("detects compressed IPv6 fe80:: link-local", () => {
+    const r = scanSecrets("addr: fe80::");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "ipv6-compressed")).toBe(true);
+  });
+
+  test("detects compressed IPv6 2001:db8::1", () => {
+    const r = scanSecrets("addr: 2001:db8::1");
+    expect(r.clean).toBe(false);
+    expect(r.matches.some((m) => m.pattern === "ipv6-compressed")).toBe(true);
+  });
+
+  test("allows :: unspecified address (false-positive filtered)", () => {
+    expect(scanSecrets("bind: ::").matches.some((m) => m.pattern === "ipv6-compressed")).toBe(false);
+  });
+
   test("allows subnet masks", () => {
     expect(scanSecrets("mask: 255.255.255.0").matches.some((m) => m.pattern === "ipv4")).toBe(false);
   });
@@ -553,6 +574,16 @@ describe("sanitizeJsonPayload", () => {
     expect(sanitizeJsonPayload([]).sanitized).toEqual([]);
   });
 
+  test("deduplicates colliding sanitized keys instead of dropping values", () => {
+    const obj = { "alice@acmecorp.com": 1, "bob@acmecorp.com": 2 };
+    const { sanitized } = sanitizeJsonPayload(obj);
+    const keys = Object.keys(sanitized as Record<string, unknown>);
+    expect(keys.length).toBe(2);
+    const values = Object.values(sanitized as Record<string, unknown>);
+    expect(values).toContain(1);
+    expect(values).toContain(2);
+  });
+
   test("counts key replacements in the total", () => {
     const obj = { "alice@acmecorp.com": "safe-value" };
     const { replacements } = sanitizeJsonPayload(obj);
@@ -610,6 +641,8 @@ describe("defence in depth: sanitize then re-scan", () => {
     "AIzaSyA1234567890abcdefghijklmnopqrstuv",
     "hvs.ABCDEFghijklmnopqrstuv1234",
     "ATBB1234567890abcdefghijklmnopqrstuvwxyz",
+    "fe80::",
+    "2001:db8::1",
   ];
 
   for (const input of DIRTY_INPUTS) {
@@ -659,6 +692,8 @@ describe("negative tests: non-secrets pass through unchanged", () => {
     "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
     "glpat- followed by nothing special",
     "AIza short",
+    "::1",
+    "::",
   ];
 
   for (const input of SAFE_INPUTS) {
