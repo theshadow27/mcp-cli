@@ -51,6 +51,10 @@ Stand up the **manual agent grid (Epic 2, #2538)** — versioned `(provider, ver
 - #2578, #2579, #2581 all write under `agent-grid/` — different files; broadcast a rebase-and-check directive when the first lands.
 - #2585 → #2587 share the `agent-grid` dispatch entry in `packages/command/src/main.ts` (covered by the blockedBy edge above).
 
+## Pre-landed (exclude from run)
+
+- **#2579** (LFS archive claude 2.1.119) — landed ahead of the run via **PR #2591** (auto-merge armed, CI-gated). The artifact needs the user's local 2.1.119 binary, so it was done directly rather than spawned. The run phase should treat #2579 as done and not spawn against it. Follow-up #2592 (per-platform archives + CI git-lfs verification) tracked separately.
+
 ## Context
 
 Epic 2 builds directly on the Epic 1 foundation that landed across sprints 66–68: NDJSON recording (#2542/#2567), mock-script DSL parity (#2543), version negotiation (#2541/#2566), and the stdio MVP (#2545). The stdio transport dep #2234 is closed, so the `claude-latest` matrix leg is exercisable. Filler is deliberately on-theme (transport/protocol test coverage + the compareSemver pre-release bug that silently breaks the stdio version gate) so it reinforces the grid rather than scattering focus.
