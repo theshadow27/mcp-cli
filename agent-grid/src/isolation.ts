@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,29 +10,29 @@ const SEED_MESSAGE = "seed";
 const activeEnvs = new Set<string>();
 let handlersInstalled = false;
 
+function cleanupAllEnvs(): void {
+  for (const dir of activeEnvs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort on interrupt
+    }
+  }
+  activeEnvs.clear();
+}
+
 function installInterruptHandlers(): void {
   if (handlersInstalled) return;
   handlersInstalled = true;
 
-  const cleanup = () => {
-    for (const dir of activeEnvs) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort on interrupt
-      }
-    }
-    activeEnvs.clear();
+  const onSignal = (signal: NodeJS.Signals) => {
+    cleanupAllEnvs();
+    process.removeListener(signal, onSignal);
+    process.kill(process.pid, signal);
   };
 
-  process.on("SIGINT", () => {
-    cleanup();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
-    process.exit(143);
-  });
+  process.on("SIGINT", () => onSignal("SIGINT"));
+  process.on("SIGTERM", () => onSignal("SIGTERM"));
 }
 
 export function cleanGitEnv(): Record<string, string> {
@@ -44,6 +44,8 @@ export function cleanGitEnv(): Record<string, string> {
   env.GIT_AUTHOR_EMAIL = "agent-grid@test";
   env.GIT_COMMITTER_NAME = "agent-grid";
   env.GIT_COMMITTER_EMAIL = "agent-grid@test";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  env.GIT_CONFIG_SYSTEM = "/dev/null";
   return env;
 }
 
@@ -52,6 +54,7 @@ function git(cwd: string, args: string[]): void {
     cwd,
     stdio: ["ignore", "ignore", "pipe"],
     env: cleanGitEnv(),
+    timeout: 30_000,
   });
   if (result.status !== 0) {
     const stderr = result.stderr?.toString() ?? "";
@@ -85,7 +88,7 @@ export function createIsolatedEnv(): IsolatedEnv {
 
   try {
     git(dir, ["init", "-b", "main"]);
-    Bun.write(join(dir, SEED_FILE), SEED_CONTENT);
+    writeFileSync(join(dir, SEED_FILE), SEED_CONTENT);
     git(dir, ["add", SEED_FILE]);
     git(dir, ["commit", "-m", SEED_MESSAGE]);
   } catch (e) {
