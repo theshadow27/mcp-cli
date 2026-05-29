@@ -1,6 +1,6 @@
 # Sprint 69
 
-> Planned 2026-05-28. Target: 15 PRs.
+> Planned 2026-05-28. Started 2026-05-29. Target: 15 PRs.
 
 ## Goal
 
