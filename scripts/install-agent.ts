@@ -21,6 +21,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -372,6 +373,8 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
   }
 
   const destDir = join(deps.agentsDir, args.provider, args.version);
+  const stagingDir = join(deps.agentsDir, args.provider, `${args.version}.staging-${Date.now()}`);
+
   mkdirSync(destDir, { recursive: true });
 
   const lockPath = join(destDir, ".install.lock");
@@ -381,16 +384,20 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
     throw new Error(`Another install of ${args.provider}@${args.version} is already in progress`);
   }
 
+  mkdirSync(stagingDir, { recursive: true });
+
   try {
     // Registry-first (skip if --offline)
     if (!args.offline) {
       deps.error(`Trying registry for ${args.provider}@${args.version}...`);
-      const registryResult = await installFromRegistry(entry, args.provider, args.version, destDir, deps);
+      const registryResult = await installFromRegistry(entry, args.provider, args.version, stagingDir, deps);
       if (registryResult) {
+        const finalBinaryPath = join(destDir, registryResult.binaryPath.slice(stagingDir.length + 1));
+        swapStagingToFinal(stagingDir, destDir);
         return {
           provider: args.provider,
           version: args.version,
-          binaryPath: registryResult.binaryPath,
+          binaryPath: finalBinaryPath,
           source: "registry",
           sha256: registryResult.sha256,
         };
@@ -400,22 +407,29 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
 
     // Archive fallback
     deps.error(`Installing ${args.provider}@${args.version} from archive...`);
-    const archiveResult = await installFromArchive(entry, args.provider, destDir, deps);
+    const archiveResult = await installFromArchive(entry, args.provider, stagingDir, deps);
+    const finalBinaryPath = join(destDir, archiveResult.binaryPath.slice(stagingDir.length + 1));
+    swapStagingToFinal(stagingDir, destDir);
 
     return {
       provider: args.provider,
       version: args.version,
-      binaryPath: archiveResult.binaryPath,
+      binaryPath: finalBinaryPath,
       source: "archive",
       sha256: archiveResult.sha256,
     };
   } catch (err) {
-    rmSync(destDir, { recursive: true, force: true });
+    rmSync(stagingDir, { recursive: true, force: true });
     throw err;
   } finally {
     flockUnlock(lockFd);
     closeSync(lockFd);
   }
+}
+
+function swapStagingToFinal(stagingDir: string, destDir: string): void {
+  rmSync(destDir, { recursive: true, force: true });
+  renameSync(stagingDir, destDir);
 }
 
 async function main(): Promise<void> {

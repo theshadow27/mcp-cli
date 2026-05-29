@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -673,10 +682,9 @@ providers:
     expect(result.provider).toBe("claude");
   });
 
-  test("cleans up destDir on total failure", async () => {
+  test("cleans up staging dir on failure, keeps destDir shell", async () => {
     await setupGrid();
 
-    // Use a version that doesn't have an archive to force archive failure
     const yaml = `
 providers:
   - name: mock
@@ -694,6 +702,42 @@ providers:
       "Archive not found",
     );
 
-    expect(existsSync(destDir)).toBe(false);
+    // destDir still exists (created for the lock file) but staging was cleaned up
+    expect(existsSync(destDir)).toBe(true);
+    // No leftover staging dirs
+    const parent = join(agentsDir, "mock");
+    const siblings = readdirSync(parent);
+    for (const s of siblings) {
+      expect(s).not.toContain(".staging-");
+    }
+  });
+
+  test("preserves existing install when reinstall fails", async () => {
+    await setupGrid();
+
+    // First install succeeds
+    const result = await installAgent({ provider: "mock", version: "1.0.0", offline: true }, makeDeps());
+    expect(existsSync(result.binaryPath)).toBe(true);
+    const originalContent = readFileSync(result.binaryPath, "utf-8");
+
+    // Now break the archive so reinstall fails
+    const yaml = `
+providers:
+  - name: mock
+    track: patch
+    versions:
+      - version: "1.0.0"
+        outcome: pass
+        archive: binaries/nonexistent.tgz
+`;
+    writeFileSync(join(gridDir, "versions.yaml"), yaml);
+
+    await expect(installAgent({ provider: "mock", version: "1.0.0", offline: true }, makeDeps())).rejects.toThrow(
+      "Archive not found",
+    );
+
+    // Original install is untouched
+    expect(existsSync(result.binaryPath)).toBe(true);
+    expect(readFileSync(result.binaryPath, "utf-8")).toBe(originalContent);
   });
 });
