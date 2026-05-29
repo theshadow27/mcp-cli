@@ -370,4 +370,79 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");
   });
+
+  test("restoreSessions with explicit transport:'stdio' revives with stdio args", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = "restored-stdio-1";
+    server.restoreSessions([
+      {
+        sessionId,
+        pid: null,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-sess-abc",
+        transport: "stdio",
+      },
+    ]);
+
+    const sessions = server.listSessions();
+    const restored = sessions.find((s) => s.sessionId === sessionId);
+    expect(restored).toBeDefined();
+    expect(restored?.state).toBe("disconnected");
+
+    server.reviveSession(sessionId, "follow-up prompt");
+
+    expect(mock.lastCmd).not.toContain("--sdk-url");
+    expect(mock.lastCmd).toContain("--print");
+    expect(mock.lastCmd).toContain("--output-format");
+    expect(mock.lastCmd).toContain("stream-json");
+    expect(mock.lastOpts).toMatchObject({ stdin: "pipe", stdout: "pipe" });
+  });
+
+  // Production restore path: claude-server.ts does not persist or forward
+  // transport from the DB, so restored stdio sessions default to "ws" and
+  // spawn with --sdk-url instead of stdio args. Tracked in #2602.
+  test.skip("production restore path: stdio session without explicit transport revives correctly", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = "restored-stdio-no-transport";
+    server.restoreSessions([
+      {
+        sessionId,
+        pid: null,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-sess-def",
+        // No transport field — mirrors the production restore_sessions sender
+      },
+    ]);
+
+    server.reviveSession(sessionId, "follow-up prompt");
+
+    // This SHOULD use stdio args once #2602 lands a transport column in
+    // agent_sessions + forwards it in claude-server.ts restore_sessions.
+    // Currently fails: defaults to "ws" and spawns with --sdk-url.
+    expect(mock.lastCmd).not.toContain("--sdk-url");
+    expect(mock.lastCmd).toContain("--print");
+    expect(mock.lastCmd).toContain("stream-json");
+  });
 });
