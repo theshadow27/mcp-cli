@@ -6,7 +6,7 @@
   "version": "1.13.0",
   "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "agent-grid"],
   "bin": {
     "mcx": "bin/mcx.js",
     "mcpd": "bin/mcpd.js",
