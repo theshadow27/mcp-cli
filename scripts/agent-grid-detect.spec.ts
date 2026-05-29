@@ -3,6 +3,7 @@ import type { Provider } from "../agent-grid/versions-schema";
 import {
   type ProposedRow,
   REGISTRY,
+  compareSemVer,
   detectNewVersions,
   formatJson,
   formatYaml,
@@ -27,6 +28,42 @@ describe("parseSemVer", () => {
     expect(parseSemVer("latest")).toBeNull();
     expect(parseSemVer("")).toBeNull();
     expect(parseSemVer("abc")).toBeNull();
+  });
+
+  test("rejects garbage suffix without hyphen", () => {
+    expect(parseSemVer("1.2.3oops")).toBeNull();
+    expect(parseSemVer("1.2.3 extra")).toBeNull();
+  });
+});
+
+// ── compareSemVer ─────────────────────────────────────────────────
+
+describe("compareSemVer", () => {
+  test("returns positive when a > b", () => {
+    expect(
+      compareSemVer(
+        { major: 2, minor: 1, patch: 200, prerelease: "" },
+        { major: 2, minor: 1, patch: 119, prerelease: "" },
+      ),
+    ).toBeGreaterThan(0);
+  });
+
+  test("returns negative when a < b", () => {
+    expect(
+      compareSemVer(
+        { major: 2, minor: 1, patch: 50, prerelease: "" },
+        { major: 2, minor: 1, patch: 119, prerelease: "" },
+      ),
+    ).toBeLessThan(0);
+  });
+
+  test("returns zero when equal", () => {
+    expect(
+      compareSemVer(
+        { major: 2, minor: 1, patch: 119, prerelease: "" },
+        { major: 2, minor: 1, patch: 119, prerelease: "" },
+      ),
+    ).toBe(0);
   });
 });
 
@@ -176,6 +213,61 @@ describe("detectNewVersions", () => {
     expect(proposed).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.error).toContain("cannot parse");
+  });
+
+  test("proposes patch update in older minor line when higher minor exists", () => {
+    const providers: Provider[] = [
+      makeProvider({
+        name: "claude",
+        track: "patch",
+        versions: [
+          { version: "2.1.119", outcome: "pass" },
+          { version: "2.2.0", outcome: "pass" },
+        ],
+      }),
+    ];
+    const queryer = () => "2.1.200";
+    const { proposed } = detectNewVersions(providers, queryer);
+    expect(proposed).toHaveLength(1);
+    expect(proposed[0]?.entry.version).toBe("2.1.200");
+  });
+
+  test("rejects downgrade within same version line", () => {
+    const providers: Provider[] = [
+      makeProvider({
+        name: "claude",
+        track: "patch",
+        versions: [{ version: "2.1.119", outcome: "pass" }],
+      }),
+    ];
+    const queryer = () => "2.1.50";
+    const { proposed, skipped } = detectNewVersions(providers, queryer);
+    expect(proposed).toHaveLength(0);
+    expect(skipped.some((s) => s.reason.includes("not newer"))).toBe(true);
+  });
+
+  test("skips provider with only non-semver versions", () => {
+    const providers: Provider[] = [
+      makeProvider({
+        name: "codex",
+        versions: [{ version: "latest", outcome: "fail", failure_class: "spawn-failed" }],
+      }),
+    ];
+    const queryer = () => "0.135.0";
+    const { proposed, skipped } = detectNewVersions(providers, queryer);
+    expect(proposed).toHaveLength(0);
+    expect(skipped.some((s) => s.reason.includes("no parseable semver"))).toBe(true);
+  });
+
+  test("respects aggregate timeout", () => {
+    const providers: Provider[] = [
+      makeProvider({ name: "claude" }),
+      makeProvider({ name: "codex" }),
+      makeProvider({ name: "opencode" }),
+    ];
+    const queryer = () => "1.0.0";
+    const { errors } = detectNewVersions(providers, queryer, { aggregateTimeoutMs: -1 });
+    expect(errors.some((e) => e.error.includes("aggregate timeout"))).toBe(true);
   });
 });
 

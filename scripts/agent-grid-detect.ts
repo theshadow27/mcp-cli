@@ -43,7 +43,7 @@ export interface SemVer {
 }
 
 export function parseSemVer(v: string): SemVer | null {
-  const m = v.match(/^(\d+)\.(\d+)\.(\d+)(.*)$/);
+  const m = v.match(/^(\d+)\.(\d+)\.(\d+)(-[a-zA-Z0-9.+-]+)?$/);
   if (!m) return null;
   return {
     major: Number.parseInt(m[1] as string, 10),
@@ -51,6 +51,12 @@ export function parseSemVer(v: string): SemVer | null {
     patch: Number.parseInt(m[3] as string, 10),
     prerelease: m[4] ?? "",
   };
+}
+
+export function compareSemVer(a: SemVer, b: SemVer): number {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  return a.patch - b.patch;
 }
 
 export function matchesTrack(latest: SemVer, known: SemVer, track: "patch" | "minor" | "major"): boolean {
@@ -79,6 +85,7 @@ export interface QueryError {
 }
 
 const NPM_QUERY_TIMEOUT_MS = 15_000;
+const AGGREGATE_TIMEOUT_MS = 30_000;
 
 export function queryNpmVersion(pkg: string, spawner = spawnSync): string | null {
   const result = spawner("npm", ["view", pkg, "version"], {
@@ -102,6 +109,7 @@ export interface ProposedRow {
 export function detectNewVersions(
   providers: Provider[],
   queryer: (pkg: string) => string | null = queryNpmVersion,
+  opts: { aggregateTimeoutMs?: number } = {},
 ): {
   proposed: ProposedRow[];
   skipped: Array<{ provider: string; reason: string }>;
@@ -110,6 +118,8 @@ export function detectNewVersions(
   const proposed: ProposedRow[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
   const errors: Array<{ provider: string; error: string }> = [];
+  const aggregateTimeout = opts.aggregateTimeoutMs ?? AGGREGATE_TIMEOUT_MS;
+  const startTime = Date.now();
 
   for (const provider of providers) {
     if (provider.enabled === false) {
@@ -125,6 +135,11 @@ export function detectNewVersions(
     const reg = REGISTRY[provider.name];
     if (!reg) {
       skipped.push({ provider: provider.name, reason: "no registry configured" });
+      continue;
+    }
+
+    if (Date.now() - startTime > aggregateTimeout) {
+      errors.push({ provider: provider.name, error: "aggregate timeout exceeded" });
       continue;
     }
 
@@ -150,21 +165,32 @@ export function detectNewVersions(
       .map((v) => parseSemVer(v.version))
       .filter((v): v is SemVer => v !== null);
 
-    const highestKnown =
-      existingVersions.length > 0
-        ? existingVersions.reduce((a, b) => {
-            if (a.major !== b.major) return a.major > b.major ? a : b;
-            if (a.minor !== b.minor) return a.minor > b.minor ? a : b;
-            return a.patch > b.patch ? a : b;
-          })
-        : null;
-
-    if (highestKnown && !matchesTrack(latestSemver, highestKnown, provider.track)) {
+    if (provider.versions.length > 0 && existingVersions.length === 0) {
       skipped.push({
         provider: provider.name,
-        reason: `${latest} outside ${provider.track} track (highest known: ${highestKnown.major}.${highestKnown.minor}.${highestKnown.patch})`,
+        reason: "no parseable semver versions to compare against — cannot verify track",
       });
       continue;
+    }
+
+    if (existingVersions.length > 0) {
+      const inLine = existingVersions.filter((v) => matchesTrack(latestSemver, v, provider.track));
+      if (inLine.length === 0) {
+        skipped.push({
+          provider: provider.name,
+          reason: `${latest} outside ${provider.track} track (no existing version in same line)`,
+        });
+        continue;
+      }
+
+      const highestInLine = inLine.reduce((a, b) => (compareSemVer(a, b) >= 0 ? a : b));
+      if (compareSemVer(latestSemver, highestInLine) <= 0) {
+        skipped.push({
+          provider: provider.name,
+          reason: `${latest} is not newer than ${highestInLine.major}.${highestInLine.minor}.${highestInLine.patch}`,
+        });
+        continue;
+      }
     }
 
     const now = new Date();
