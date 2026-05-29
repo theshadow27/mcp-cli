@@ -1,6 +1,6 @@
 # Sprint 69
 
-> Planned 2026-05-28. Started 2026-05-29. Target: 15 PRs.
+> Planned 2026-05-28. Started 2026-05-29. Ended 2026-05-29. Target: 15 PRs. **Result: 12 merged** (incl pre-landed #2579); #2587/#2588/#2589 rolled to sprint 70 (CI-coverage-blocked by the #2597 bun wedge).
 
 ## Goal
 
