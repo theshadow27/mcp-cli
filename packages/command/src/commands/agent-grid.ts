@@ -406,7 +406,7 @@ export async function cmdAgentGrid(args: string[]): Promise<void> {
   if (!sub || hasHelpFlag(args)) {
     const help = formatHelp({
       name: "agent-grid",
-      summary: "Agent capability grid — run tests, inspect results",
+      summary: "Agent capability grid — run tests, inspect results, replay recordings",
       usage: ["mcx agent-grid <subcommand> [flags]"],
       options: [
         ["run", "Run capability tests against agent providers"],

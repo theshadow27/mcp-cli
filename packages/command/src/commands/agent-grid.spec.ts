@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GridTest } from "@mcp-cli/agent-grid";
 import { gateTest } from "@mcp-cli/agent-grid";
-import { type AgentProvider, type RecordingEntry, getProvider } from "@mcp-cli/core";
+import { type AgentProvider, getProvider } from "@mcp-cli/core";
 import {
   type GridRunReport,
   type ReplayOptions,
