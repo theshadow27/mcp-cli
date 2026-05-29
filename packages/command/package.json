@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@mcp-cli/acp": "workspace:*",
+    "@mcp-cli/agent-grid": "workspace:*",
     "@mcp-cli/clone": "workspace:*",
     "@mcp-cli/core": "workspace:*",
     "jq-web": "^0.6.2",
