@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { getProvider } from "@mcp-cli/core";
 import type { AgentProvider } from "@mcp-cli/core";
-import { gateTest, missingFeatures } from "./capability-gate.js";
-import type { GridResult, GridTest } from "./grid-test.js";
+import { gateTest, missingFeatures } from "./capability-gate";
+import type { GridResult, GridTest } from "./grid-test";
 
 function requireProvider(name: string): AgentProvider {
   const p = getProvider(name);

@@ -1,5 +1,5 @@
 import type { AgentFeatures, AgentProvider } from "@mcp-cli/core";
-import type { GridResult, GridTest } from "./grid-test.js";
+import type { GridResult, GridTest } from "./grid-test";
 
 /** Check which required features a provider lacks. */
 export function missingFeatures(provider: AgentProvider, requires: (keyof AgentFeatures)[]): (keyof AgentFeatures)[] {
