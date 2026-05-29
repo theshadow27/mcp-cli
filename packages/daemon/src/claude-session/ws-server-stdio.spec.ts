@@ -370,4 +370,42 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");
   });
+
+  test("restored stdio session spawns with stdio args, not --sdk-url", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = "restored-stdio-1";
+    server.restoreSessions([
+      {
+        sessionId,
+        pid: null,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-sess-abc",
+        transport: "stdio",
+      },
+    ]);
+
+    const sessions = server.listSessions();
+    const restored = sessions.find((s) => s.sessionId === sessionId);
+    expect(restored).toBeDefined();
+    expect(restored?.state).toBe("disconnected");
+
+    server.reviveSession(sessionId, "follow-up prompt");
+
+    expect(mock.lastCmd).not.toContain("--sdk-url");
+    expect(mock.lastCmd).toContain("--print");
+    expect(mock.lastCmd).toContain("--output-format");
+    expect(mock.lastCmd).toContain("stream-json");
+    expect(mock.lastOpts).toMatchObject({ stdin: "pipe", stdout: "pipe" });
+  });
 });

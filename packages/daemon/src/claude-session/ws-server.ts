@@ -656,6 +656,7 @@ export class ClaudeWsServer {
       totalTokens: number;
       spawnedAt?: string | null;
       claudeSessionId?: string | null;
+      transport?: "ws" | "stdio";
     }>,
   ): number {
     let restored = 0;
@@ -697,7 +698,7 @@ export class ClaudeWsServer {
         pendingInterruptReason: null,
         traceparent: null,
         stuckDetector: null,
-        transport: "ws",
+        transport: s.transport ?? "ws",
         stdioWriter: null,
       });
       restored++;
