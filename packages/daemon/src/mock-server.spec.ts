@@ -1,8 +1,16 @@
-import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MOCK_SERVER_NAME, NdjsonRecorder, type RecordingEntry, silentLogger } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  MOCK_SERVER_NAME,
+  NdjsonRecorder,
+  ProtocolVersionMismatchError,
+  type RecordingEntry,
+  silentLogger,
+} from "@mcp-cli/core";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
@@ -335,6 +343,92 @@ describe("MockServer", () => {
     expect(server.hasActiveSessions()).toBe(false);
     const row = db.getSession("stale-1");
     expect(row?.state).toBe("ended");
+  });
+});
+
+// ── Protocol version negotiation ──
+
+describe("MockServer protocol version negotiation", () => {
+  let server: MockServer | undefined;
+  let db: StateDb | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    db?.close();
+    server = undefined;
+    db = undefined;
+  });
+
+  function fakeWorkerFactory(readyPayload: Record<string, unknown>) {
+    return (_scriptPath: string): Worker => {
+      const w = {
+        postMessage: mock((_msg: unknown) => {
+          queueMicrotask(() => {
+            w.onmessage?.({ data: { type: "ready", ...readyPayload } } as MessageEvent);
+          });
+        }),
+        terminate: mock(() => {}),
+        addEventListener: mock(() => {}),
+        removeEventListener: mock(() => {}),
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null as ((event: ErrorEvent | Event) => void) | null,
+      };
+      return w as unknown as Worker;
+    };
+  }
+
+  const instantClient = () =>
+    ({
+      connect: async () => {},
+      close: async () => {},
+    }) as unknown as Client;
+
+  test("accepts ready with matching supported_protocol_version", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MockServer(
+      db,
+      undefined,
+      instantClient,
+      silentLogger,
+      2_000,
+      fakeWorkerFactory({ supported_protocol_version: AGENT_PROTOCOL_VERSION }),
+    );
+
+    await expect(server.start()).resolves.toBeDefined();
+  });
+
+  test("accepts ready without supported_protocol_version (backwards-compatible)", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MockServer(db, undefined, instantClient, silentLogger, 2_000, fakeWorkerFactory({}));
+
+    await expect(server.start()).resolves.toBeDefined();
+  });
+
+  test("rejects ready with mismatched supported_protocol_version", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const mismatchedVersion = AGENT_PROTOCOL_VERSION + 1;
+    server = new MockServer(
+      db,
+      undefined,
+      instantClient,
+      silentLogger,
+      2_000,
+      fakeWorkerFactory({ supported_protocol_version: mismatchedVersion }),
+    );
+
+    try {
+      await server.start();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolVersionMismatchError);
+      const pErr = err as ProtocolVersionMismatchError;
+      expect(pErr.requested).toBe(AGENT_PROTOCOL_VERSION);
+      expect(pErr.supported).toBe(mismatchedVersion);
+      expect(pErr.message).toContain("agent-protocol.md");
+    }
   });
 });
 

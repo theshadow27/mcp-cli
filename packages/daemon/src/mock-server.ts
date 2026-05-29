@@ -93,6 +93,7 @@ export function isWorkerEvent(data: unknown): data is WorkerEvent {
 // ── Server ──
 
 type ClientFactory = () => Client;
+type WorkerFactory = (scriptPath: string) => Worker;
 
 export class MockServer {
   private worker: Worker | null = null;
@@ -100,6 +101,7 @@ export class MockServer {
   private client: Client | null = null;
   private db: StateDb;
   private readonly clientFactory: ClientFactory;
+  private readonly workerFactory: WorkerFactory;
   private readonly activeSessions = new Set<string>();
   private readonly sessionAddedAt = new Map<string, number>();
   private readonly logger: Logger;
@@ -115,16 +117,18 @@ export class MockServer {
     clientFactory?: ClientFactory,
     logger?: Logger,
     private handshakeTimeoutMs = 10_000,
+    workerFactory?: WorkerFactory,
   ) {
     this.db = db;
     this.clientFactory = clientFactory ?? (() => new Client({ name: `mcp-cli/${MOCK_SERVER_NAME}`, version: "0.1.0" }));
+    this.workerFactory = workerFactory ?? ((scriptPath: string) => new Worker(scriptPath));
     this.logger = logger ?? consoleLogger;
   }
 
   /** Start the worker and connect the MCP client. */
   async start(): Promise<{ client: Client; transport: WorkerClientTransport }> {
     if (this.worker) throw new Error("start() called while worker is already running");
-    const worker = new Worker(workerPath("mock-session-worker.ts"));
+    const worker = this.workerFactory(workerPath("mock-session-worker.ts"));
     this.worker = worker;
 
     // Wait for the worker to report ready
