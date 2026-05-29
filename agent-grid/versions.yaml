@@ -1,0 +1,39 @@
+# Agent grid: versioned source of truth for (provider × version) test outcomes.
+# Schema: agent-grid/versions-schema.ts — validated by `bun run am-i-done`.
+# See docs/agent-protocol-northstar.md §4 for the full spec.
+
+providers:
+  - name: claude
+    track: patch
+    versions:
+      - version: "2.1.119"
+        first_seen: "2026-05-23T21:24:15Z"
+        last_tested: "2026-05-28T03:00:00Z"
+        outcome: pass
+        archive: binaries/claude-2.1.119.tgz
+
+      - version: latest
+        first_seen: "2026-05-29T00:00:00Z"
+        outcome: untested
+
+  - name: codex
+    track: patch
+    versions:
+      - version: latest
+        first_seen: "2026-05-29T00:00:00Z"
+        outcome: fail
+        failure_class: spawn-failed
+        reason: "Codex spawn fully broken (RPC -32600); tracked in #2482"
+        last_tested: "2026-05-20T03:00:00Z"
+
+  - name: grok
+    track: minor
+    enabled: false
+
+  - name: copilot
+    track: minor
+    enabled: false
+
+  - name: gemini
+    track: minor
+    enabled: false

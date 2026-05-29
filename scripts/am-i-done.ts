@@ -74,6 +74,13 @@ const LINT_CHECK: Step = {
   onFailure: ["run `bun run lint` locally to auto-fix"],
 };
 
+const AGENT_GRID: Step = {
+  name: "agent-grid",
+  description: "agent-grid/versions.yaml schema validation",
+  command: "bun scripts/validate-agent-grid.ts",
+  onFailure: ["fix the validation errors reported above", "schema: agent-grid/versions-schema.ts"],
+};
+
 const RULES: Step = {
   name: "doing-it-wrong",
   description: "architectural rule engine (scripts/rules/*.rule.ts)",
@@ -229,14 +236,15 @@ const STALE_TODOS_CI: Step = {
 // Default (no flag): the developer-friendly path — parallel tests for
 //   speed, `biome --write` for auto-fix, and the simpler coverage step.
 
-const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES];
-const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, TEST_CHANGED];
-const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
+const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID];
+const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED];
+const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, AGENT_GRID, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
 const CI: Step[] = [
   INSTALL,
   TYPECHECK,
   LINT_CHECK,
   RULES,
+  AGENT_GRID,
   STALE_TODOS_CI,
   TEST_NON_DAEMON_CI,
   TEST_DAEMON_CI,
