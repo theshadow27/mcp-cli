@@ -47,6 +47,24 @@ if [ -z "${SKIP_PRIVACY_CHECK:-}" ]; then
   fi
 fi
 
+# Secret/PII sanitizer gate: reject staged additions to recordings/ or
+# agent-grid/binaries/ that contain secret-shaped content. Fail-closed:
+# any scanner error is treated as a match (safe default).
+recording_files=$(echo "$staged_files" | grep -E '^(recordings/|agent-grid/binaries/)' || true)
+if [ -n "$recording_files" ]; then
+  added_content=$(git diff --cached -U0 --no-color -- $recording_files \
+    | grep -E '^\+[^+]' | sed 's/^\+//' || true)
+  if [ -n "$added_content" ]; then
+    HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
+    if ! echo "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts" 2>/dev/null; then
+      echo "pre-commit: refusing to stage files with unsanitized secrets in recordings/ or binaries/" >&2
+      echo "Run the sanitizer on the files before committing, or bypass with:" >&2
+      echo "  SKIP_PRIVACY_CHECK=1 git commit ..." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Classify staged files into tiers
 # shellcheck source=classify.sh
 source "$HOOK_DIR/classify.sh"
