@@ -32,9 +32,11 @@
       "@mcp-cli/control": ["./packages/control/src/main.tsx"],
       "@mcp-cli/control/*": ["./packages/control/src/*"],
       "@mcp-cli/clone": ["./packages/clone/src/index.ts"],
-      "@mcp-cli/clone/*": ["./packages/clone/src/*"]
+      "@mcp-cli/clone/*": ["./packages/clone/src/*"],
+      "@mcp-cli/agent-grid": ["./agent-grid/src/index.ts"],
+      "@mcp-cli/agent-grid/*": ["./agent-grid/src/*"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "test/**/*.ts"],
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "agent-grid/src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

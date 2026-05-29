@@ -47,6 +47,56 @@ if [ -z "${SKIP_PRIVACY_CHECK:-}" ]; then
   fi
 fi
 
+# Secret/PII sanitizer gate: reject staged additions to recordings/ or
+# agent-grid/binaries/ that contain secret-shaped content. Fail-closed:
+# any scanner error is treated as a match (safe default).
+recording_files=$(echo "$staged_files" | grep -E '^(recordings/|agent-grid/binaries/)' || true)
+if [ -n "$recording_files" ]; then
+  # Fail-closed on binary files: git diff --numstat shows "-\t-\t<path>" for
+  # binaries. These can't be text-scanned so they must be blocked outright
+  # (raw binaries should go through LFS; only LFS pointer files are text).
+  # shellcheck disable=SC2086
+  binary_numstat=$(git diff --cached --numstat -- $recording_files) || {
+    echo "pre-commit: git diff --numstat failed (fail-closed)" >&2
+    exit 1
+  }
+  binary_files=$(printf '%s\n' "$binary_numstat" \
+    | awk '$1 == "-" && $2 == "-" { print $3 }') || {
+    echo "pre-commit: binary detection failed (fail-closed)" >&2
+    exit 1
+  }
+  if [ -n "$binary_files" ]; then
+    echo "pre-commit: staged binary files in recordings/ or binaries/ cannot be scanned for secrets" >&2
+    printf '%s\n' "$binary_files" | head -10 >&2
+    echo "Use LFS for binary content, or run the sanitizer on text equivalents." >&2
+    exit 1
+  fi
+
+  # Extract added text lines from diff. Filter out only the "+++ b/..."
+  # file-header lines (3 plusses), keeping real content that starts with "+".
+  # shellcheck disable=SC2086
+  diff_output=$(git diff --cached -U0 --no-color -- $recording_files) || {
+    echo "pre-commit: git diff failed (fail-closed)" >&2
+    exit 1
+  }
+  added_content=$(printf '%s\n' "$diff_output" \
+    | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//') || {
+    rc=$?
+    if [ "$rc" -gt 1 ]; then
+      echo "pre-commit: content extraction failed (fail-closed)" >&2
+      exit 1
+    fi
+  }
+  if [ -n "$added_content" ]; then
+    HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
+    if ! printf '%s\n' "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts"; then
+      echo "pre-commit: refusing to stage files with unsanitized secrets in recordings/ or binaries/" >&2
+      echo "Run the sanitizer on the files before committing." >&2
+      exit 1
+    fi
+  fi
+fi
+
 # Classify staged files into tiers
 # shellcheck source=classify.sh
 source "$HOOK_DIR/classify.sh"

@@ -61,6 +61,7 @@ export const SUBCOMMANDS = [
   "export",
   "help",
   "agent",
+  "agent-grid",
   "claude",
   "pr",
   "track",

@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { sanitizeJsonPayload } from "./sanitizer";
 
 /**
  * Message direction on the daemon↔worker boundary.
@@ -69,7 +70,8 @@ export class NdjsonRecorder {
         kind,
         payload,
       };
-      this.writer.write(`${JSON.stringify(entry)}\n`);
+      const { sanitized } = sanitizeJsonPayload(entry);
+      this.writer.write(`${JSON.stringify(sanitized)}\n`);
     } catch {
       // Recording must never disrupt the protocol path.
     }

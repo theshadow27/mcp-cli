@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { SITE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, SITE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SiteServer, buildSiteToolCache, isWorkerEvent } from "./site-server";
 import { SITE_TOOLS } from "./site/tools";
@@ -128,6 +128,71 @@ describe("SiteServer", () => {
     const workerFactory = (_path: string): Worker => makeFakeWorker({ replyReady: false });
     server = new SiteServer(undefined, undefined, workerFactory, silentLogger, 250);
     await expect(server.start()).rejects.toThrow(/timeout/);
+  });
+});
+
+describe("SiteServer protocol version negotiation", () => {
+  let server: SiteServer | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+  });
+
+  function versionWorkerFactory(readyPayload: Record<string, unknown>) {
+    return (_scriptPath: string): Worker => {
+      const w = {
+        postMessage: mock((_msg: unknown) => {
+          queueMicrotask(() => {
+            w.onmessage?.({ data: { type: "ready", ...readyPayload } } as MessageEvent);
+          });
+        }),
+        terminate: mock(() => {}),
+        addEventListener: mock(() => {}),
+        removeEventListener: mock(() => {}),
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null as ((event: ErrorEvent | Event) => void) | null,
+      };
+      return w as unknown as Worker;
+    };
+  }
+
+  test("accepts ready with matching supported_protocol_version", async () => {
+    server = new SiteServer(
+      undefined,
+      instantClient,
+      versionWorkerFactory({ supported_protocol_version: AGENT_PROTOCOL_VERSION }),
+      silentLogger,
+      2_000,
+    );
+    await expect(server.start()).resolves.toBeDefined();
+  });
+
+  test("accepts ready without supported_protocol_version (backwards-compatible)", async () => {
+    server = new SiteServer(undefined, instantClient, versionWorkerFactory({}), silentLogger, 2_000);
+    await expect(server.start()).resolves.toBeDefined();
+  });
+
+  test("rejects ready with mismatched supported_protocol_version", async () => {
+    const mismatchedVersion = AGENT_PROTOCOL_VERSION + 1;
+    server = new SiteServer(
+      undefined,
+      instantClient,
+      versionWorkerFactory({ supported_protocol_version: mismatchedVersion }),
+      silentLogger,
+      2_000,
+    );
+
+    try {
+      await server.start();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolVersionMismatchError);
+      const pErr = err as ProtocolVersionMismatchError;
+      expect(pErr.requested).toBe(AGENT_PROTOCOL_VERSION);
+      expect(pErr.supported).toBe(mismatchedVersion);
+      expect(pErr.message).toContain("agent-protocol.md");
+    }
   });
 });
 

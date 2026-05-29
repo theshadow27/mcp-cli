@@ -23,6 +23,13 @@
         "playwright": "^1.58.0",
       },
     },
+    "agent-grid": {
+      "name": "@mcp-cli/agent-grid",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mcp-cli/core": "workspace:*",
+      },
+    },
     "packages/acp": {
       "name": "@mcp-cli/acp",
       "version": "0.1.0",
@@ -51,6 +58,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@mcp-cli/acp": "workspace:*",
+        "@mcp-cli/agent-grid": "workspace:*",
         "@mcp-cli/clone": "workspace:*",
         "@mcp-cli/core": "workspace:*",
         "jq-web": "^0.6.2",
@@ -127,6 +135,8 @@
     "@hono/node-server": ["@hono/node-server@1.19.11", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g=="],
 
     "@mcp-cli/acp": ["@mcp-cli/acp@workspace:packages/acp"],
+
+    "@mcp-cli/agent-grid": ["@mcp-cli/agent-grid@workspace:agent-grid"],
 
     "@mcp-cli/clone": ["@mcp-cli/clone@workspace:packages/clone"],
 

@@ -37,4 +37,11 @@ describe("resolveTransport", () => {
     expect(resolveTransport(undefined, "2.1.123")).toBe("stdio");
     expect(resolveTransport(undefined, null)).toBe("ws");
   });
+
+  test("pre-release suffixes are parsed correctly", () => {
+    expect(resolveTransport("auto", "2.1.123-beta.1")).toBe("stdio");
+    expect(resolveTransport("auto", "2.2.0-rc.2")).toBe("stdio");
+    expect(resolveTransport("auto", "2.1.122-alpha.0")).toBe("ws");
+    expect(resolveTransport("auto", "2.1.100-dev.5")).toBe("ws");
+  });
 });
