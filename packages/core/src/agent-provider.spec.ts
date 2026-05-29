@@ -372,6 +372,19 @@ describe("protocol feature declarations", () => {
 });
 
 describe("declaration honesty verification", () => {
+  /** Run the shape-assertion sweep: every feature declared true in PROVIDER_SHAPES must be true in the registry. Throws on mismatch. */
+  function verifyDeclarationsMatch(): void {
+    for (const [name, shape] of Object.entries(PROVIDER_SHAPES) as [BuiltInProviderName, ProviderShapeExpectation][]) {
+      const provider = getProvider(name);
+      if (!provider) continue;
+      for (const [feature, expected] of Object.entries(shape.native) as [keyof AgentFeatures, boolean][]) {
+        if (provider.native[feature] !== expected) {
+          throw new Error(`${name}.native.${feature}: registry has ${provider.native[feature]}, expected ${expected}`);
+        }
+      }
+    }
+  }
+
   test("tampered declaration (true→false) is caught by shape assertion", () => {
     const saved = getAllProviders();
     try {
@@ -382,9 +395,7 @@ describe("declaration honesty verification", () => {
       };
       _resetRegistries();
       registerProvider(tampered);
-      const retrieved = getProvider("claude") as AgentProvider;
-      expect(retrieved.native.multiTurn).toBe(false);
-      expect(retrieved.native.multiTurn).not.toBe(PROVIDER_SHAPES.claude.native.multiTurn);
+      expect(() => verifyDeclarationsMatch()).toThrow("claude.native.multiTurn: registry has false, expected true");
     } finally {
       _resetRegistries();
       for (const p of saved) registerProvider(p);
@@ -401,13 +412,17 @@ describe("declaration honesty verification", () => {
       };
       _resetRegistries();
       registerProvider(tampered);
-      const retrieved = getProvider("codex") as AgentProvider;
-      expect(retrieved.native.permissionRoundtrip).toBe(true);
-      expect(retrieved.native.permissionRoundtrip).not.toBe(PROVIDER_SHAPES.codex.native.permissionRoundtrip);
+      expect(() => verifyDeclarationsMatch()).toThrow(
+        "codex.native.permissionRoundtrip: registry has true, expected false",
+      );
     } finally {
       _resetRegistries();
       for (const p of saved) registerProvider(p);
     }
+  });
+
+  test("untampered providers pass the shape assertion sweep", () => {
+    expect(() => verifyDeclarationsMatch()).not.toThrow();
   });
 
   test("every provider with declared-true features has them in the registry", () => {
