@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type InstallDeps,
-  Sha256MismatchError,
   findVersionEntry,
   installAgent,
   installFromArchive,
@@ -231,11 +230,17 @@ describe("installFromArchive", () => {
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(
       ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "ignore" },
+      { stdout: "ignore", stderr: "pipe" },
     );
-    await proc.exited;
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    if (!existsSync(tgzPath)) {
+      throw new Error(`tar produced no output at ${tgzPath}`);
+    }
 
-    // Write sha256 sidecar
     const hash = await sha256File(tgzPath);
     writeFileSync(`${tgzPath}.sha256`, `${hash}  ${binaryName}.tgz\n`);
 
@@ -410,9 +415,16 @@ describe("installFromRegistry", () => {
     const tgzPath = join(tmpDir, "pkg-build", tgzName);
     const proc = Bun.spawn(["tar", "czf", tgzPath, "--no-same-owner", "-C", join(tmpDir, "pkg-build"), "package"], {
       stdout: "ignore",
-      stderr: "ignore",
+      stderr: "pipe",
     });
-    await proc.exited;
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    if (!existsSync(tgzPath)) {
+      throw new Error(`tar produced no output at ${tgzPath}`);
+    }
     rmSync(pkgDir, { recursive: true });
     return tgzName;
   }
@@ -548,9 +560,16 @@ describe("installAgent", () => {
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(
       ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "ignore" },
+      { stdout: "ignore", stderr: "pipe" },
     );
-    await proc.exited;
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    if (!existsSync(tgzPath)) {
+      throw new Error(`tar produced no output at ${tgzPath}`);
+    }
 
     const hash = await sha256File(tgzPath);
     writeFileSync(`${tgzPath}.sha256`, `${hash}  ${binaryName}.tgz\n`);
@@ -612,9 +631,16 @@ providers:
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(
       ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "ignore" },
+      { stdout: "ignore", stderr: "pipe" },
     );
-    await proc.exited;
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+    if (!existsSync(tgzPath)) {
+      throw new Error(`tar produced no output at ${tgzPath}`);
+    }
     const hash = await sha256File(tgzPath);
     writeFileSync(`${tgzPath}.sha256`, `${hash}  ${binaryName}.tgz\n`);
     rmSync(binaryPath);

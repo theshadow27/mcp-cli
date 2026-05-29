@@ -154,8 +154,10 @@ export function findVersionEntry(grid: VersionsGrid, provider: string, version: 
 export async function sha256File(path: string): Promise<string> {
   const file = Bun.file(path);
   const hasher = new Bun.CryptoHasher("sha256");
-  const bytes = await file.arrayBuffer();
-  hasher.update(new Uint8Array(bytes));
+  const stream = file.stream();
+  for await (const chunk of stream) {
+    hasher.update(chunk);
+  }
   return hasher.digest("hex");
 }
 
@@ -248,6 +250,9 @@ export async function installFromRegistry(
     }
 
     const binaryDest = join(destDir, binaryName);
+    if (existsSync(binaryDest) && lstatSync(binaryDest).isSymbolicLink()) {
+      throw new Error(`Refusing to overwrite symlink at ${binaryDest}`);
+    }
     const file = Bun.file(sourceBinary);
     await Bun.write(binaryDest, file);
 
@@ -330,6 +335,9 @@ export async function installFromArchive(
   const stat = lstatSync(binaryPath);
   if (stat.isSymbolicLink()) {
     throw new Error(`Extracted file is a symlink — refusing to install: ${binaryPath}`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`Extracted path is not a regular file — refusing to install: ${binaryPath}`);
   }
 
   chmodSync(binaryPath, 0o755);
