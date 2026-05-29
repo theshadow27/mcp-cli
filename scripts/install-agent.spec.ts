@@ -228,10 +228,7 @@ describe("installFromArchive", () => {
     writeFileSync(binaryPath, binaryContent, { mode: 0o755 });
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
-    const proc = Bun.spawn(
-      ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "pipe" },
-    );
+    const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
@@ -558,10 +555,7 @@ describe("installAgent", () => {
     writeFileSync(binaryPath, "#!/bin/sh\necho ok", { mode: 0o755 });
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
-    const proc = Bun.spawn(
-      ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "pipe" },
-    );
+    const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
@@ -629,10 +623,7 @@ providers:
     writeFileSync(binaryPath, "#!/bin/sh\necho ok", { mode: 0o755 });
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
-    const proc = Bun.spawn(
-      ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
-      { stdout: "ignore", stderr: "pipe" },
-    );
+    const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
