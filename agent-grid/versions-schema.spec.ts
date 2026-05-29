@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { ProviderSchema, VersionEntrySchema, VersionsGridSchema, validateVersionsGrid } from "./versions-schema";
 
 describe("VersionEntrySchema", () => {
@@ -103,6 +100,15 @@ describe("VersionEntrySchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  test("rejects untested outcome with failure_class", () => {
+    const result = VersionEntrySchema.safeParse({
+      version: "latest",
+      outcome: "untested",
+      failure_class: "spawn-failed",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("ProviderSchema", () => {
@@ -165,14 +171,7 @@ describe("VersionsGridSchema", () => {
 });
 
 describe("validateVersionsGrid", () => {
-  const makeTmpDir = () => {
-    const dir = join(tmpdir(), `versions-schema-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    return dir;
-  };
-
   test("validates a correct grid", () => {
-    const dir = makeTmpDir();
     const grid = {
       providers: [
         {
@@ -182,26 +181,24 @@ describe("validateVersionsGrid", () => {
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(true);
     expect(result.issues).toHaveLength(0);
   });
 
   test("detects duplicate provider names", () => {
-    const dir = makeTmpDir();
     const grid = {
       providers: [
         { name: "claude", track: "patch", versions: [{ version: "1.0.0", outcome: "pass" }] },
         { name: "claude", track: "minor", versions: [{ version: "2.0.0", outcome: "pass" }] },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(false);
     expect(result.issues.some((i) => i.message.includes("duplicate provider"))).toBe(true);
   });
 
   test("detects duplicate versions within a provider", () => {
-    const dir = makeTmpDir();
     const grid = {
       providers: [
         {
@@ -214,80 +211,56 @@ describe("validateVersionsGrid", () => {
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(false);
     expect(result.issues.some((i) => i.message.includes("duplicate version"))).toBe(true);
   });
 
-  test("detects dangling recording path", () => {
-    const dir = makeTmpDir();
+  test("rejects recording path with traversal", () => {
     const grid = {
       providers: [
         {
           name: "claude",
           track: "patch",
-          versions: [
-            {
-              version: "2.1.119",
-              outcome: "pass",
-              recording: "recordings/nonexistent.ndjson",
-            },
-          ],
+          versions: [{ version: "2.1.119", outcome: "pass", recording: "../etc/passwd" }],
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.message.includes("recording path does not exist"))).toBe(true);
+    expect(result.issues.some((i) => i.message.includes("relative within agent-grid"))).toBe(true);
   });
 
-  test("detects dangling archive path", () => {
-    const dir = makeTmpDir();
+  test("rejects absolute archive path", () => {
     const grid = {
       providers: [
         {
           name: "claude",
           track: "patch",
-          versions: [
-            {
-              version: "2.1.119",
-              outcome: "pass",
-              archive: "binaries/nonexistent.tgz",
-            },
-          ],
+          versions: [{ version: "2.1.119", outcome: "pass", archive: "/tmp/evil.tgz" }],
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.message.includes("archive path does not exist"))).toBe(true);
+    expect(result.issues.some((i) => i.message.includes("relative within agent-grid"))).toBe(true);
   });
 
-  test("accepts existing archive path", () => {
-    const dir = makeTmpDir();
-    mkdirSync(join(dir, "binaries"), { recursive: true });
-    writeFileSync(join(dir, "binaries", "test.tgz"), "fake");
+  test("accepts relative archive path", () => {
     const grid = {
       providers: [
         {
           name: "claude",
           track: "patch",
-          versions: [
-            {
-              version: "2.1.119",
-              outcome: "pass",
-              archive: "binaries/test.tgz",
-            },
-          ],
+          versions: [{ version: "2.1.119", outcome: "pass", archive: "binaries/test.tgz" }],
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
+    const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(true);
   });
 
-  test("flags disabled provider with versions", () => {
-    const dir = makeTmpDir();
+  test("warns on disabled provider with versions (non-blocking)", () => {
     const grid = {
       providers: [
         {
@@ -298,14 +271,13 @@ describe("validateVersionsGrid", () => {
         },
       ],
     };
-    const result = validateVersionsGrid(grid, dir);
-    expect(result.ok).toBe(false);
-    expect(result.issues.some((i) => i.message.includes("disabled provider"))).toBe(true);
+    const result = validateVersionsGrid(grid);
+    expect(result.ok).toBe(true);
+    expect(result.issues.some((i) => i.message.includes("disabled provider") && i.severity === "warn")).toBe(true);
   });
 
   test("returns structural errors for invalid input", () => {
-    const dir = makeTmpDir();
-    const result = validateVersionsGrid({ providers: "not-an-array" }, dir);
+    const result = validateVersionsGrid({ providers: "not-an-array" });
     expect(result.ok).toBe(false);
     expect(result.issues.length).toBeGreaterThan(0);
   });

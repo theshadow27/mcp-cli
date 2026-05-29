@@ -11,8 +11,7 @@ import { resolve } from "node:path";
 import { validateVersionsGrid } from "../agent-grid/versions-schema";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
-const GRID_DIR = resolve(REPO_ROOT, "agent-grid");
-const VERSIONS_PATH = resolve(GRID_DIR, "versions.yaml");
+const VERSIONS_PATH = resolve(REPO_ROOT, "agent-grid", "versions.yaml");
 
 function main(): void {
   let text: string;
@@ -31,20 +30,27 @@ function main(): void {
     process.exit(2);
   }
 
-  const result = validateVersionsGrid(raw, GRID_DIR);
+  const result = validateVersionsGrid(raw);
+
+  const warnings = result.issues.filter((i) => i.severity === "warn");
+  const errors = result.issues.filter((i) => i.severity === "error");
+
+  for (const w of warnings) {
+    process.stderr.write(`  warn: ${w.path}: ${w.message}\n`);
+  }
 
   if (result.ok) {
-    const grid = result.grid as NonNullable<typeof result.grid>;
+    const { grid } = result;
     const providerCount = grid.providers.length;
     const versionCount = grid.providers.reduce((n, p) => n + p.versions.length, 0);
-    process.stderr.write(
+    process.stdout.write(
       `agent-grid: ${providerCount} provider${providerCount === 1 ? "" : "s"}, ${versionCount} version entr${versionCount === 1 ? "y" : "ies"} — valid\n`,
     );
     process.exit(0);
   }
 
   process.stderr.write("agent-grid/versions.yaml validation failed:\n");
-  for (const issue of result.issues) {
+  for (const issue of errors) {
     process.stderr.write(`  ${issue.path}: ${issue.message}\n`);
   }
   process.exit(1);

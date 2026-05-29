@@ -6,8 +6,6 @@
  * and downstream grid tooling.
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { z } from "zod";
 
 const PROVIDER_NAMES = ["claude", "codex", "grok", "copilot", "gemini", "opencode", "acp", "mock"] as const;
@@ -54,6 +52,15 @@ export const VersionEntrySchema = z
       return true;
     },
     { message: "failure_class must not be set when outcome is pass" },
+  )
+  .refine(
+    (v) => {
+      if (v.outcome === "untested") {
+        return v.failure_class === undefined;
+      }
+      return true;
+    },
+    { message: "failure_class must not be set when outcome is untested" },
   );
 
 export type VersionEntry = z.infer<typeof VersionEntrySchema>;
@@ -76,22 +83,25 @@ export type VersionsGrid = z.infer<typeof VersionsGridSchema>;
 export interface ValidationIssue {
   path: string;
   message: string;
+  severity: "error" | "warn";
 }
 
-export interface ValidationResult {
-  ok: boolean;
-  grid?: VersionsGrid;
-  issues: ValidationIssue[];
+export type ValidationResult =
+  | { ok: true; grid: VersionsGrid; issues: ValidationIssue[] }
+  | { ok: false; grid?: undefined; issues: ValidationIssue[] };
+
+function isTraversalPath(p: string): boolean {
+  return p.startsWith("/") || p.includes("..") || p.startsWith("~");
 }
 
-export function validateVersionsGrid(raw: unknown, gridDir: string): ValidationResult {
+export function validateVersionsGrid(raw: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
 
   const result = VersionsGridSchema.safeParse(raw);
   if (!result.success) {
     for (const issue of result.error.issues) {
       const where = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-      issues.push({ path: where, message: issue.message });
+      issues.push({ path: where, message: issue.message, severity: "error" });
     }
     return { ok: false, issues };
   }
@@ -104,14 +114,15 @@ export function validateVersionsGrid(raw: unknown, gridDir: string): ValidationR
     const pPath = `providers[${pi}]`;
 
     if (seenProviders.has(provider.name)) {
-      issues.push({ path: `${pPath}.name`, message: `duplicate provider "${provider.name}"` });
+      issues.push({ path: `${pPath}.name`, message: `duplicate provider "${provider.name}"`, severity: "error" });
     }
     seenProviders.add(provider.name);
 
     if (!provider.enabled && provider.versions.length > 0) {
       issues.push({
         path: `${pPath}`,
-        message: `disabled provider "${provider.name}" should not have version entries`,
+        message: `disabled provider "${provider.name}" has version entries — remove them or re-enable`,
+        severity: "warn",
       });
     }
 
@@ -124,31 +135,29 @@ export function validateVersionsGrid(raw: unknown, gridDir: string): ValidationR
         issues.push({
           path: `${vPath}.version`,
           message: `duplicate version "${version.version}" in provider "${provider.name}"`,
+          severity: "error",
         });
       }
       seenVersions.add(version.version);
 
-      if (version.recording) {
-        const absPath = resolve(gridDir, version.recording);
-        if (!existsSync(absPath)) {
-          issues.push({
-            path: `${vPath}.recording`,
-            message: `recording path does not exist: ${version.recording}`,
-          });
-        }
+      if (version.recording && isTraversalPath(version.recording)) {
+        issues.push({
+          path: `${vPath}.recording`,
+          message: `recording path must be relative within agent-grid/: ${version.recording}`,
+          severity: "error",
+        });
       }
 
-      if (version.archive) {
-        const absPath = resolve(gridDir, version.archive);
-        if (!existsSync(absPath)) {
-          issues.push({
-            path: `${vPath}.archive`,
-            message: `archive path does not exist: ${version.archive}`,
-          });
-        }
+      if (version.archive && isTraversalPath(version.archive)) {
+        issues.push({
+          path: `${vPath}.archive`,
+          message: `archive path must be relative within agent-grid/: ${version.archive}`,
+          severity: "error",
+        });
       }
     }
   }
 
-  return { ok: issues.length === 0, grid, issues };
+  const hasErrors = issues.some((i) => i.severity === "error");
+  return hasErrors ? { ok: false, issues } : { ok: true, grid, issues };
 }

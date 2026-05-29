@@ -20,7 +20,7 @@ providers:
     track: patch
     versions:
       - version: latest
-        first_seen: "2026-05-29T00:00:00Z"
+        first_seen: "2026-05-20T00:00:00Z"
         outcome: fail
         failure_class: spawn-failed
         reason: "Codex spawn fully broken (RPC -32600); tracked in #2482"
