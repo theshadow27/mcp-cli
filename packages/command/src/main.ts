@@ -29,6 +29,7 @@ import {
 assertBunVersion();
 import { cmdAdd, cmdAddJson } from "./commands/add";
 import { cmdAgent } from "./commands/agent";
+import { cmdAgentGrid } from "./commands/agent-grid";
 import { cmdAlias } from "./commands/alias";
 import { cmdAuth } from "./commands/auth";
 import { cmdAutomation } from "./commands/automation";
@@ -397,6 +398,10 @@ async function main(): Promise<void> {
 
       case "agent":
         await cmdAgent(cleanArgs.slice(1));
+        break;
+
+      case "agent-grid":
+        await cmdAgentGrid(cleanArgs.slice(1));
         break;
 
       case "claude":
