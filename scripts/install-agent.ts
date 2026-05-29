@@ -3,16 +3,28 @@
  * Install an agent provider binary at a specific version.
  *
  * Resolution order: npm registry first, LFS archive fallback.
- * All installs are sha256-verified against the sidecar checksum.
+ * Registry installs are verified against `binary_sha256` from versions.yaml
+ * when present. Archive installs are verified against the `.sha256` sidecar
+ * (corruption guard — the real trust anchor is git LFS object integrity).
  *
  * Usage:
  *   bun scripts/install-agent.ts claude@2.1.119
  *   bun scripts/install-agent.ts --offline claude@2.1.119
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
-import { options } from "@mcp-cli/core";
+import { flockUnlock, options, tryFlockExclusive } from "@mcp-cli/core";
 import { type VersionEntry, type VersionsGrid, validateVersionsGrid } from "../agent-grid/versions-schema";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -84,6 +96,10 @@ export function parseInstallAgentArgs(argv: string[]): InstallArgs {
 
   if (positional.length === 0) {
     throw new Error("Usage: install-agent [--offline] <provider@version>");
+  }
+
+  if (positional.length > 1) {
+    throw new Error("Too many arguments — expected a single provider@version spec");
   }
 
   const spec = positional[0] as string;
@@ -350,6 +366,13 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
   const destDir = join(deps.agentsDir, args.provider, args.version);
   mkdirSync(destDir, { recursive: true });
 
+  const lockPath = join(destDir, ".install.lock");
+  const lockFd = openSync(lockPath, "w");
+  if (!tryFlockExclusive(lockFd)) {
+    closeSync(lockFd);
+    throw new Error(`Another install of ${args.provider}@${args.version} is already in progress`);
+  }
+
   try {
     // Registry-first (skip if --offline)
     if (!args.offline) {
@@ -381,6 +404,9 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
   } catch (err) {
     rmSync(destDir, { recursive: true, force: true });
     throw err;
+  } finally {
+    flockUnlock(lockFd);
+    closeSync(lockFd);
   }
 }
 

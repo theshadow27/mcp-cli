@@ -48,6 +48,10 @@ describe("parseInstallAgentArgs", () => {
   test("rejects unknown flags", () => {
     expect(() => parseInstallAgentArgs(["--foo", "claude@2.1.119"])).toThrow("Unknown flag");
   });
+
+  test("rejects multiple positional specs", () => {
+    expect(() => parseInstallAgentArgs(["claude@2.1.119", "codex@0.30.1"])).toThrow("Too many arguments");
+  });
 });
 
 // ── Grid loading ───────────────────────────────────────────────────
