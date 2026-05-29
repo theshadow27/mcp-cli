@@ -151,7 +151,7 @@ function buildPatterns(): PatternDef[] {
     },
     {
       name: "home-path-slug",
-      re: /-Users-[A-Za-z0-9._-]+-/g,
+      re: /-(?:Users|home)-[A-Za-z0-9._-]+-/g,
     },
     {
       name: "connection-string",
@@ -203,13 +203,11 @@ export function sanitizeText(text: string): SanitizeResult {
   for (const { name, re } of getPatterns()) {
     const pattern = new RegExp(re.source, re.flags);
     const placeholder = redactionPlaceholder(name);
-    let replaced = false;
     result = result.replace(pattern, (match) => {
       if (isKnownFalsePositive(name, match)) return match;
-      replaced = true;
+      replacements++;
       return placeholder;
     });
-    if (replaced) replacements++;
   }
 
   const residual = scanSecrets(result);
@@ -236,8 +234,9 @@ export function sanitizeJsonPayload(obj: unknown): { sanitized: unknown; replace
     if (val !== null && typeof val === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-        const sanitizedKey = sanitizeText(k).text;
-        out[sanitizedKey] = walk(v);
+        const keyResult = sanitizeText(k);
+        total += keyResult.replacements;
+        out[keyResult.text] = walk(v);
       }
       return out;
     }

@@ -262,8 +262,14 @@ describe("scanSecrets", () => {
       expect(result.clean).toBe(false);
     });
 
-    test("detects Claude-style slug paths", () => {
+    test("detects Claude-style slug paths (macOS)", () => {
       const result = scanSecrets("dir: -Users-johndoe-projects");
+      expect(result.clean).toBe(false);
+      expect(result.matches.some((m) => m.pattern === "home-path-slug")).toBe(true);
+    });
+
+    test("detects Linux home slug paths (-home-alice-)", () => {
+      const result = scanSecrets("dir: -home-alice-project-foo");
       expect(result.clean).toBe(false);
       expect(result.matches.some((m) => m.pattern === "home-path-slug")).toBe(true);
     });
@@ -360,6 +366,12 @@ describe("sanitizeText", () => {
     expect(result.clean).toBe(true);
   });
 
+  test("counts individual occurrences, not pattern classes", () => {
+    const input = "alice@acmecorp.com and bob@acmecorp.com";
+    const result = sanitizeText(input);
+    expect(result.replacements).toBe(2);
+  });
+
   test("passes through already-redacted text", () => {
     const input = "key = [REDACTED:aws-access-key]";
     const result = sanitizeText(input);
@@ -416,6 +428,12 @@ describe("sanitizeJsonPayload", () => {
     expect(sanitizeJsonPayload({}).sanitized).toEqual({});
     expect(sanitizeJsonPayload([]).sanitized).toEqual([]);
   });
+
+  test("counts key replacements in the total", () => {
+    const obj = { "alice@acmecorp.com": "safe-value" };
+    const { replacements } = sanitizeJsonPayload(obj);
+    expect(replacements).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("assertClean", () => {
@@ -451,6 +469,7 @@ describe("defence in depth: sanitize then re-scan", () => {
     "alice@acmecorp.com",
     "172.16.254.1",
     "/Users/johndoe/secret/file",
+    "-home-alice-project-foo",
     "mongodb://admin:pass123@mongo.internal:27017/prod",
     '"password": "hunter2-extended-edition"',
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",

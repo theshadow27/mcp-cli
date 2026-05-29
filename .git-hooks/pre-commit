@@ -59,8 +59,7 @@ if [ -n "$recording_files" ]; then
     HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
     if ! printf '%s\n' "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts"; then
       echo "pre-commit: refusing to stage files with unsanitized secrets in recordings/ or binaries/" >&2
-      echo "Run the sanitizer on the files before committing, or bypass with:" >&2
-      echo "  SKIP_PRIVACY_CHECK=1 git commit ..." >&2
+      echo "Run the sanitizer on the files before committing." >&2
       exit 1
     fi
   fi
