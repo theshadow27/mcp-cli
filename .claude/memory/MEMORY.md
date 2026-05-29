@@ -35,6 +35,10 @@
 - [Guidance names the cause](feedback_guidance_names_cause.md) — rule/fix guidance explains the failure mechanism + non-exhaustive examples, never just "do X"
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
 - [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
+- [Quota = autonomous policy, never ask](feedback_quota_autonomous_policy.md) — at ≥95% don't AskUserQuestion (it suspended sprint 69 overnight); ScheduleWakeup to `resetsAt` + auto-resume
+
+## Infra / Known Issues
+- [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — parallel sprints peg the box (load 117); bun bmalloc madvise spin (#2597), elapsed-time reaper band-aid, real fix = concurrency cap + SIGKILL pgroup (sprint 70 P1)
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.

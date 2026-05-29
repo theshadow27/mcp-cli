@@ -574,10 +574,29 @@ or the first reviewer flags it on the first PR.
 |-------------|--------|
 | **< 80%** | Normal — spawn impl, review, QA freely |
 | **≥ 80%** | **Impl freeze** — finish in-flight review/QA; don't spawn new impl |
-| **≥ 95%** | **Full pause** — wait for reset |
+| **≥ 95%** | **Autonomous pause-and-resume** (see below) — never a human gate |
 
 If `available` is `false` or the call fails, proceed normally. Don't
 block the sprint on a monitoring failure.
+
+**≥95% is a self-executing policy — NEVER raise an `AskUserQuestion` about
+quota.** Sprints run unattended; a question blocks the whole context until a
+human returns (sprint 69 sat idle overnight after a quota AskUserQuestion).
+Quota exhaustion is predictable — `resetsAt` is in the `quota_status` payload
+— so mechanize it:
+
+1. Finish every **no-LLM** action first so the pause loses nothing: flaky-CI
+   reruns, `qa:fail→qa:pass` label flips, merges of already-green PRs, and
+   `bye` of stuck/rate-limited sessions (they burn extra-usage credits
+   retrying against the cap and flood the monitor with duplicate results).
+2. `ScheduleWakeup` for the `resetsAt` timestamp, then re-enter the pipeline
+   when quota refills at the window boundary.
+3. On resume, re-establish state (merged/open PRs, preserved worktrees),
+   re-arm the monitor + reaper, and continue.
+
+Only escalate to the user for a genuinely irreducible choice (e.g. "abandon
+the sprint entirely?"), and even then prefer a safe default + notification
+over a blocking question. See memory `feedback_quota_autonomous_policy`.
 
 ## Handling stuck workers
 
