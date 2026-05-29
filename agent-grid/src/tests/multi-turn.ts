@@ -20,9 +20,7 @@ export function makeMultiTurnTest(deps: { callTool: CallToolFn }): GridTest {
       });
 
       const { sessionId } = turn1;
-      if (!sessionId) {
-        return { status: "fail", error: "no sessionId returned from turn 1" };
-      }
+      ctx.onCleanup?.(() => byeSession(ctx.provider, sessionId, callTool));
 
       try {
         const turn2 = await promptFollowUp(ctx.provider, {

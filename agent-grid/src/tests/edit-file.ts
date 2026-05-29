@@ -21,6 +21,8 @@ export function makeEditFileTest(deps: { callTool: CallToolFn }): GridTest {
         callTool: deps.callTool,
       });
 
+      ctx.onCleanup?.(() => byeSession(ctx.provider, result.sessionId, deps.callTool));
+
       try {
         const content = readFileSync(filePath, "utf-8");
         if (!content.includes(MODIFIED)) {
@@ -34,9 +36,7 @@ export function makeEditFileTest(deps: { callTool: CallToolFn }): GridTest {
         }
         return { status: "pass" };
       } finally {
-        if (result.sessionId) {
-          await byeSession(ctx.provider, result.sessionId, deps.callTool).catch(() => {});
-        }
+        await byeSession(ctx.provider, result.sessionId, deps.callTool).catch(() => {});
       }
     },
   };

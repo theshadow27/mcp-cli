@@ -53,9 +53,16 @@ const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
 
 // ── Test discovery ─────────────────────────────────────────────────
 
-function ipcCallTool(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+let _coreModule: typeof import("@mcp-cli/core") | undefined;
+async function getCoreModule() {
+  _coreModule ??= await import("@mcp-cli/core");
+  return _coreModule;
+}
+
+async function ipcCallTool(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
   const timeoutMs = tool.endsWith("_prompt") || tool.endsWith("_wait") ? 120_000 : undefined;
-  return import("@mcp-cli/core").then((m) => m.ipcCall("callTool", { server, tool, arguments: args }, { timeoutMs }));
+  const m = await getCoreModule();
+  return m.ipcCall("callTool", { server, tool, arguments: args }, { timeoutMs });
 }
 
 export function discoverTests(): GridTest[] {
@@ -74,7 +81,7 @@ export function discoverTests(): GridTest[] {
 export async function runGridForProvider(
   provider: AgentProvider,
   tests: GridTest[],
-  opts: { version: string | null; record: string | null; offline: boolean },
+  opts: { version: string | null; record: string | null; offline: boolean; timeoutMs?: number },
 ): Promise<ProviderReport> {
   const outcomes: TestOutcome[] = [];
   const cwd = mkdtempSync(resolve(tmpdir(), `agent-grid-${provider.name}-`));
@@ -86,18 +93,28 @@ export async function runGridForProvider(
         outcomes.push({ test: test.name, result: gateResult });
         continue;
       }
+
+      let cleanupFn: (() => Promise<void>) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
       try {
         const result = await Promise.race([
-          test.run({ provider, cwd }),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`test timed out after ${DEFAULT_TEST_TIMEOUT_MS}ms`)),
-              DEFAULT_TEST_TIMEOUT_MS,
-            ),
-          ),
+          test.run({
+            provider,
+            cwd,
+            onCleanup: (fn) => {
+              cleanupFn = fn;
+            },
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`test timed out after ${timeoutMs}ms`)), timeoutMs);
+          }),
         ]);
+        clearTimeout(timer);
         outcomes.push({ test: test.name, result });
       } catch (err) {
+        clearTimeout(timer);
+        if (cleanupFn) await cleanupFn().catch(() => {});
         outcomes.push({
           test: test.name,
           result: { status: "fail", error: err instanceof Error ? err.message : String(err) },

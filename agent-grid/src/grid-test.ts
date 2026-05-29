@@ -7,6 +7,7 @@ export type GridResult = { status: "pass" } | { status: "fail"; error: string } 
 export interface GridTestContext {
   provider: AgentProvider;
   cwd: string;
+  onCleanup?: (fn: () => Promise<void>) => void;
 }
 
 /** A single capability test in the agent grid. */

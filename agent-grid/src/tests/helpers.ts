@@ -54,6 +54,7 @@ export async function promptAndWait(
   }
 
   const sessionId = extractSessionId(text);
+  if (!sessionId) throw new Error("no sessionId in prompt response");
   return { sessionId, text, raw };
 }
 

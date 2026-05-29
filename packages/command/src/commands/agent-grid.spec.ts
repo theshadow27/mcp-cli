@@ -241,6 +241,43 @@ describe("runGridForProvider", () => {
     await runGridForProvider(claude, [gridTest], defaultOpts);
     expect(receivedCwd).toContain("agent-grid-claude-");
   });
+
+  test("calls onCleanup on timeout", async () => {
+    let cleanupCalled = false;
+    const claude = mustGetProvider("claude");
+    const LONGER_THAN_TIMEOUT = 60_000;
+    const gridTest: GridTest = {
+      name: "slow-test",
+      requires: [],
+      run: async (ctx) => {
+        ctx.onCleanup?.(async () => {
+          cleanupCalled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, LONGER_THAN_TIMEOUT));
+        return { status: "pass" };
+      },
+    };
+    const report = await runGridForProvider(claude, [gridTest], { ...defaultOpts, timeoutMs: 100 });
+    expect(report.outcomes).toHaveLength(1);
+    expect(report.outcomes[0].result.status).toBe("fail");
+    expect((report.outcomes[0].result as { error: string }).error).toContain("timed out");
+    expect(cleanupCalled).toBe(true);
+  });
+
+  test("provides onCleanup in test context", async () => {
+    let hasOnCleanup = false;
+    const claude = mustGetProvider("claude");
+    const gridTest: GridTest = {
+      name: "cleanup-check",
+      requires: [],
+      run: async (ctx) => {
+        hasOnCleanup = typeof ctx.onCleanup === "function";
+        return { status: "pass" };
+      },
+    };
+    await runGridForProvider(claude, [gridTest], defaultOpts);
+    expect(hasOnCleanup).toBe(true);
+  });
 });
 
 // ── formatReportText ───────────────────────────────────────────────

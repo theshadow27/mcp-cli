@@ -19,6 +19,8 @@ export function makeReadFileTest(deps: { callTool: CallToolFn }): GridTest {
         callTool: deps.callTool,
       });
 
+      ctx.onCleanup?.(() => byeSession(ctx.provider, result.sessionId, deps.callTool));
+
       try {
         if (!result.text.includes(MARKER)) {
           return {
@@ -28,9 +30,7 @@ export function makeReadFileTest(deps: { callTool: CallToolFn }): GridTest {
         }
         return { status: "pass" };
       } finally {
-        if (result.sessionId) {
-          await byeSession(ctx.provider, result.sessionId, deps.callTool).catch(() => {});
-        }
+        await byeSession(ctx.provider, result.sessionId, deps.callTool).catch(() => {});
       }
     },
   };

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -20,9 +20,20 @@ function requireProvider(name: string): AgentProvider {
   return p;
 }
 
+const tmpDirs: string[] = [];
 function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "grid-test-spec-"));
+  const dir = mkdtempSync(join(tmpdir(), "grid-test-spec-"));
+  tmpDirs.push(dir);
+  return dir;
 }
+
+afterAll(() => {
+  for (const dir of tmpDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+});
 
 function mcpTextResult(text: string, isError = false): unknown {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
@@ -32,7 +43,7 @@ function mcpPromptResult(sessionId: string, resultText: string): unknown {
   return mcpTextResult(JSON.stringify({ sessionId, success: true, text: resultText }));
 }
 
-const stubCallTool: CallToolFn = async () => mcpTextResult("stub");
+const stubCallTool: CallToolFn = async () => mcpPromptResult("stub-session", "stub");
 
 // ── extractText ───────────────────────────────────────────────────
 
@@ -85,10 +96,9 @@ describe("promptAndWait", () => {
     expect(result.sessionId).toBe("fallback-id");
   });
 
-  test("returns empty sessionId when not found", async () => {
+  test("throws when no sessionId found", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("no session info here");
-    const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
-    expect(result.sessionId).toBe("");
+    expect(promptAndWait(claude, { task: "test", cwd: "/tmp", callTool })).rejects.toThrow("no sessionId");
   });
 
   test("calls correct tool with correct args", async () => {
@@ -236,11 +246,25 @@ describe("spawn-in-dir", () => {
     expect(gateTest(test_, requireProvider("codex"))).toBeNull();
   });
 
-  test("passes when response includes cwd", async () => {
+  test("passes when response includes resolved cwd", async () => {
     const cwd = makeTmpDir();
     const expected = Bun.spawnSync(["realpath", cwd]).stdout.toString().trim();
 
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", expected);
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", expected);
+    };
+    const t = makeSpawnInDirTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("passes when response includes unresolved cwd", async () => {
+    const cwd = makeTmpDir();
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", cwd);
+    };
     const t = makeSpawnInDirTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("pass");
@@ -248,10 +272,31 @@ describe("spawn-in-dir", () => {
 
   test("fails when response does not include cwd", async () => {
     const cwd = makeTmpDir();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", "/some/other/path");
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", "/some/other/path");
+    };
     const t = makeSpawnInDirTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
+  });
+
+  test("registers onCleanup", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", cwd);
+    };
+    const t = makeSpawnInDirTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
   });
 });
 
@@ -265,7 +310,10 @@ describe("read-file", () => {
 
   test("passes when response includes marker", async () => {
     const cwd = makeTmpDir();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", "GRID_READ_MARKER_7f3a");
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", "GRID_READ_MARKER_7f3a");
+    };
     const t = makeReadFileTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("pass");
@@ -274,7 +322,10 @@ describe("read-file", () => {
 
   test("fails when response lacks marker", async () => {
     const cwd = makeTmpDir();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", "some other text");
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", "some other text");
+    };
     const t = makeReadFileTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
@@ -309,7 +360,10 @@ describe("edit-file", () => {
 
   test("fails when file not modified", async () => {
     const cwd = makeTmpDir();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", "done");
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", "done");
+    };
     const t = makeEditFileTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
@@ -324,21 +378,66 @@ describe("run-bash", () => {
     expect(test_.requires).toEqual([]);
   });
 
-  test("passes when response includes cwd", async () => {
+  test("passes when bash creates proof file with marker", async () => {
     const cwd = makeTmpDir();
-    const expected = Bun.spawnSync(["realpath", cwd]).stdout.toString().trim();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", expected);
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_prompt")) {
+        writeFileSync(join(cwd, "grid-bash-proof.txt"), "GRID_BASH_PROOF_9c4f\n");
+        return mcpPromptResult("sess-1", "done");
+      }
+      return mcpTextResult("ok");
+    };
     const t = makeRunBashTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("pass");
   });
 
-  test("fails when response does not include cwd", async () => {
+  test("fails when proof file not created", async () => {
     const cwd = makeTmpDir();
-    const callTool: CallToolFn = async () => mcpPromptResult("sess-1", "/wrong/path");
+    const callTool: CallToolFn = async (_s, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-1", "done");
+    };
     const t = makeRunBashTest({ callTool });
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("was not created");
+  });
+
+  test("fails when proof file has wrong content", async () => {
+    const cwd = makeTmpDir();
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_prompt")) {
+        writeFileSync(join(cwd, "grid-bash-proof.txt"), "wrong content");
+        return mcpPromptResult("sess-1", "done");
+      }
+      return mcpTextResult("ok");
+    };
+    const t = makeRunBashTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("missing marker");
+  });
+
+  test("registers onCleanup", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_prompt")) {
+        writeFileSync(join(cwd, "grid-bash-proof.txt"), "GRID_BASH_PROOF_9c4f\n");
+        return mcpPromptResult("sess-1", "done");
+      }
+      return mcpTextResult("ok");
+    };
+    const t = makeRunBashTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
   });
 });
 
@@ -386,16 +485,14 @@ describe("multi-turn", () => {
     expect(result.status).toBe("pass");
   });
 
-  test("fails when no sessionId from turn 1", async () => {
+  test("throws when no sessionId from turn 1", async () => {
     const cwd = makeTmpDir();
     const callTool: CallToolFn = async (_server, tool) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
       return mcpTextResult("plain text no session id");
     };
     const t = makeMultiTurnTest({ callTool });
-    const result = await t.run({ provider: requireProvider("claude"), cwd });
-    expect(result.status).toBe("fail");
-    expect((result as { error: string }).error).toContain("no sessionId");
+    expect(t.run({ provider: requireProvider("claude"), cwd })).rejects.toThrow("no sessionId");
   });
 
   test("fails when proof file not created", async () => {
@@ -452,5 +549,33 @@ describe("multi-turn", () => {
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
     expect((result as { error: string }).error).toContain("context not retained");
+  });
+
+  test("registers onCleanup after turn 1", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      callCount++;
+      if (callCount === 1) return mcpPromptResult("sess-mt", "OK");
+      if (callCount === 2) return mcpPromptResult("sess-mt", "GRID_MULTI_8b2c");
+      if (callCount === 3) {
+        writeFileSync(join(cwd, "multi-turn-proof.txt"), "GRID_MULTI_8b2c");
+        return mcpPromptResult("sess-mt", "done");
+      }
+      return mcpPromptResult("sess-mt", "unexpected");
+    };
+
+    const t = makeMultiTurnTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
   });
 });
