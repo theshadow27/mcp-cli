@@ -26,6 +26,14 @@ export interface AgentFeatures {
   headed: boolean;
   /** Agent sub-selection (ACP only) */
   agentSelect: boolean;
+  /** Permission round-trip: sensitive ops trigger a permission request */
+  permissionRoundtrip: boolean;
+  /** Multi-turn conversation with context retention */
+  multiTurn: boolean;
+  /** Clean acknowledgement of interrupt signals */
+  interruptAck: boolean;
+  /** Reports tool calls in structured protocol events */
+  toolCallReporting: boolean;
 }
 
 export interface CommonSpawnOpts {
@@ -141,6 +149,10 @@ registerProvider({
     afterSeq: true,
     headed: true,
     agentSelect: false,
+    permissionRoundtrip: true,
+    multiTurn: true,
+    interruptAck: true,
+    toolCallReporting: true,
   },
 });
 
@@ -158,6 +170,10 @@ registerProvider({
     afterSeq: false,
     headed: true,
     agentSelect: false,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: true,
   },
 });
 
@@ -175,6 +191,10 @@ registerProvider({
     afterSeq: false,
     headed: false,
     agentSelect: false,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
   },
 });
 
@@ -192,6 +212,10 @@ registerProvider({
     afterSeq: false,
     headed: false,
     agentSelect: true,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
   },
 });
 
@@ -212,6 +236,10 @@ registerProvider({
     afterSeq: false,
     headed: false,
     agentSelect: true,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
   },
 });
 
@@ -232,6 +260,10 @@ registerProvider({
     afterSeq: false,
     headed: false,
     agentSelect: true,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
   },
 });
 
@@ -252,6 +284,10 @@ registerProvider({
     afterSeq: false,
     headed: false,
     agentSelect: true,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
   },
 });
 
@@ -263,5 +299,9 @@ registerProvider({
   buildSpawnArgs: passthrough,
   native: {
     resume: false,
+    permissionRoundtrip: true,
+    multiTurn: true,
+    interruptAck: true,
+    toolCallReporting: true,
   },
 });

@@ -50,6 +50,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: true,
       headed: true,
       agentSelect: false,
+      permissionRoundtrip: true,
+      multiTurn: true,
+      interruptAck: true,
+      toolCallReporting: true,
     },
   },
   codex: {
@@ -64,6 +68,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: true,
       agentSelect: false,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: true,
     },
   },
   opencode: {
@@ -78,6 +86,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: false,
       agentSelect: false,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: false,
     },
   },
   acp: {
@@ -92,6 +104,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: false,
       agentSelect: true,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: false,
     },
   },
   copilot: {
@@ -107,6 +123,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: false,
       agentSelect: true,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: false,
     },
   },
   gemini: {
@@ -122,6 +142,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: false,
       agentSelect: true,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: false,
     },
   },
   grok: {
@@ -137,6 +161,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
       afterSeq: false,
       headed: false,
       agentSelect: true,
+      permissionRoundtrip: false,
+      multiTurn: true,
+      interruptAck: false,
+      toolCallReporting: false,
     },
   },
   mock: {
@@ -144,6 +172,10 @@ const PROVIDER_SHAPES: Record<BuiltInProviderName, ProviderShapeExpectation> = {
     toolPrefix: "mock",
     native: {
       resume: false,
+      permissionRoundtrip: true,
+      multiTurn: true,
+      interruptAck: true,
+      toolCallReporting: true,
     },
   },
 };
@@ -295,6 +327,114 @@ describe("shim registry", () => {
     };
     registerShim(shim);
     expect(getAllShims()).toEqual([shim]);
+  });
+});
+
+// ── Declaration verification ──────────────────────────────────────────────
+//
+// Verifies that every declared-true capability is actually present in the
+// provider's native map, and that the new protocol-side features
+// (permissionRoundtrip, multiTurn, interruptAck, toolCallReporting) are
+// declared by the providers that support them.
+
+const PROTOCOL_FEATURES = ["permissionRoundtrip", "multiTurn", "interruptAck", "toolCallReporting"] as const;
+
+describe("protocol feature declarations", () => {
+  for (const [name, shape] of Object.entries(PROVIDER_SHAPES) as [BuiltInProviderName, ProviderShapeExpectation][]) {
+    for (const feature of PROTOCOL_FEATURES) {
+      if (shape.native[feature] === true) {
+        test(`${name} declares ${feature}=true and registration matches`, () => {
+          const p = requireProvider(name);
+          expect(p.native[feature]).toBe(true);
+        });
+      } else if (shape.native[feature] === false) {
+        test(`${name} declares ${feature}=false and registration matches`, () => {
+          const p = requireProvider(name);
+          expect(p.native[feature]).toBe(false);
+        });
+      }
+    }
+  }
+
+  test("mock declares all protocol features true", () => {
+    const mock = requireProvider("mock");
+    for (const feature of PROTOCOL_FEATURES) {
+      expect(mock.native[feature]).toBe(true);
+    }
+  });
+
+  test("claude declares all protocol features true", () => {
+    const claude = requireProvider("claude");
+    for (const feature of PROTOCOL_FEATURES) {
+      expect(claude.native[feature]).toBe(true);
+    }
+  });
+});
+
+describe("declaration honesty verification", () => {
+  /** Run the shape-assertion sweep: every feature declared true in PROVIDER_SHAPES must be true in the registry. Throws on mismatch. */
+  function verifyDeclarationsMatch(): void {
+    for (const [name, shape] of Object.entries(PROVIDER_SHAPES) as [BuiltInProviderName, ProviderShapeExpectation][]) {
+      const provider = getProvider(name);
+      if (!provider) continue;
+      for (const [feature, expected] of Object.entries(shape.native) as [keyof AgentFeatures, boolean][]) {
+        if (provider.native[feature] !== expected) {
+          throw new Error(`${name}.native.${feature}: registry has ${provider.native[feature]}, expected ${expected}`);
+        }
+      }
+    }
+  }
+
+  test("tampered declaration (true→false) is caught by shape assertion", () => {
+    const saved = getAllProviders();
+    try {
+      const claude = requireProvider("claude");
+      const tampered: AgentProvider = {
+        ...claude,
+        native: { ...claude.native, multiTurn: false },
+      };
+      _resetRegistries();
+      registerProvider(tampered);
+      expect(() => verifyDeclarationsMatch()).toThrow("claude.native.multiTurn: registry has false, expected true");
+    } finally {
+      _resetRegistries();
+      for (const p of saved) registerProvider(p);
+    }
+  });
+
+  test("tampered declaration (false→true) is caught by shape assertion", () => {
+    const saved = getAllProviders();
+    try {
+      const codex = requireProvider("codex");
+      const tampered: AgentProvider = {
+        ...codex,
+        native: { ...codex.native, permissionRoundtrip: true },
+      };
+      _resetRegistries();
+      registerProvider(tampered);
+      expect(() => verifyDeclarationsMatch()).toThrow(
+        "codex.native.permissionRoundtrip: registry has true, expected false",
+      );
+    } finally {
+      _resetRegistries();
+      for (const p of saved) registerProvider(p);
+    }
+  });
+
+  test("untampered providers pass the shape assertion sweep", () => {
+    expect(() => verifyDeclarationsMatch()).not.toThrow();
+  });
+
+  test("every provider with declared-true features has them in the registry", () => {
+    for (const [name, shape] of Object.entries(PROVIDER_SHAPES) as [BuiltInProviderName, ProviderShapeExpectation][]) {
+      const provider = getProvider(name);
+      if (!provider) continue;
+      for (const [feature, expected] of Object.entries(shape.native) as [keyof AgentFeatures, boolean][]) {
+        if (expected) {
+          expect(provider.native[feature]).toBe(true);
+        }
+      }
+    }
   });
 });
 
