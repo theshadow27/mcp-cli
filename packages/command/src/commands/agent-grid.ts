@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { type GridResult, type GridTest, gateTest } from "@mcp-cli/agent-grid";
+import { type GridResult, type GridTest, gateTest, parseRecording, validateRecording } from "@mcp-cli/agent-grid";
 import { type AgentProvider, getAllProviders, getProvider } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { formatHelp, getHelp, hasHelpFlag, registerHelp } from "../help";
@@ -139,8 +139,11 @@ export function formatReportText(report: GridRunReport): string {
 
 registerHelp("agent-grid", {
   name: "agent-grid",
-  summary: "Agent capability grid — run tests, inspect results",
-  usage: ["mcx agent-grid run [--providers=X,Y] [--version=V] [--offline] [--record=path] [--commit-outcome]"],
+  summary: "Agent capability grid — run tests, inspect results, replay recordings",
+  usage: [
+    "mcx agent-grid run [--providers=X,Y] [--version=V] [--offline] [--record=path] [--commit-outcome]",
+    "mcx agent-grid replay <recording> [--json]",
+  ],
   options: [
     ["--providers, -p <names>", "Comma-separated provider names (default: all enabled)"],
     ["--version <ver>", "Test a specific version (default: latest)"],
@@ -153,6 +156,7 @@ registerHelp("agent-grid", {
     "mcx agent-grid run --providers=codex",
     "mcx agent-grid run --providers=claude --version=2.1.119 --record=./out.ndjson",
     "mcx agent-grid run --json",
+    "mcx agent-grid replay ./session.ndjson",
   ],
 });
 
@@ -299,6 +303,91 @@ async function agentGridRun(args: string[]): Promise<void> {
   if (anyFail) process.exit(1);
 }
 
+// ── Replay ────────────────────────────────────────────────────────
+
+registerHelp("agent-grid replay", {
+  name: "agent-grid replay",
+  summary: "Replay a recorded NDJSON exchange and validate protocol conformance",
+  usage: ["mcx agent-grid replay <recording> [flags]"],
+  options: [["--json", "Output raw JSON instead of formatted text"]],
+  examples: ["mcx agent-grid replay ./session.ndjson", "mcx agent-grid replay ./session.ndjson --json"],
+});
+
+export interface ReplayOptions {
+  file: string;
+  json: boolean;
+}
+
+export function parseReplayArgs(args: string[]): ReplayOptions | null {
+  const { flags, positionals, errors, help } = parseFlags(args, {
+    json: { type: "boolean" },
+  });
+
+  if (help) return null;
+
+  if (errors.length > 0) {
+    for (const e of errors) printError(e);
+    process.exit(1);
+  }
+
+  if (positionals.length === 0) {
+    printError("missing required argument: <recording>");
+    console.error('Run "mcx agent-grid replay --help" for usage.');
+    process.exit(1);
+  }
+
+  return {
+    file: positionals[0],
+    json: flags.json === true,
+  };
+}
+
+export function formatReplayText(report: ReturnType<typeof validateRecording>): string {
+  const lines: string[] = [];
+
+  lines.push(`${c.bold}replay${c.reset}: ${report.file}`);
+  lines.push(`${c.dim}entries: ${report.entries}${c.reset}`);
+  lines.push("");
+
+  if (report.pass) {
+    lines.push(`${c.green}pass${c.reset} — recording conforms to the agent protocol spec`);
+  } else {
+    lines.push(`${c.red}fail${c.reset} — ${report.violations.length} violation(s):\n`);
+    for (const v of report.violations) {
+      lines.push(`  ${c.red}line ${v.line}${c.reset}  [${v.rule}]  ${v.message}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function agentGridReplay(args: string[]): Promise<void> {
+  const opts = parseReplayArgs(args);
+  if (!opts) {
+    const h = getHelp("agent-grid replay");
+    if (h) console.log(formatHelp(h));
+    return;
+  }
+
+  let entries: ReturnType<typeof parseRecording>;
+  try {
+    entries = parseRecording(opts.file);
+  } catch (err) {
+    printError(`failed to parse recording: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  const report = validateRecording(entries, opts.file);
+
+  if (opts.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatReplayText(report));
+  }
+
+  if (!report.pass) process.exit(1);
+}
+
 // ── Main entry ─────────────────────────────────────────────────────
 
 export async function cmdAgentGrid(args: string[]): Promise<void> {
@@ -309,12 +398,20 @@ export async function cmdAgentGrid(args: string[]): Promise<void> {
     return;
   }
 
+  if (sub === "replay") {
+    await agentGridReplay(args.slice(1));
+    return;
+  }
+
   if (!sub || hasHelpFlag(args)) {
     const help = formatHelp({
       name: "agent-grid",
       summary: "Agent capability grid — run tests, inspect results",
       usage: ["mcx agent-grid <subcommand> [flags]"],
-      options: [["run", "Run capability tests against agent providers"]],
+      options: [
+        ["run", "Run capability tests against agent providers"],
+        ["replay", "Replay a recorded NDJSON exchange and validate protocol conformance"],
+      ],
     });
     console.log(help);
     return;

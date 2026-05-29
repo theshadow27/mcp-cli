@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GridTest } from "@mcp-cli/agent-grid";
 import { gateTest } from "@mcp-cli/agent-grid";
-import { type AgentProvider, getProvider } from "@mcp-cli/core";
+import { type AgentProvider, type RecordingEntry, getProvider } from "@mcp-cli/core";
 import {
   type GridRunReport,
+  type ReplayOptions,
   type RunOptions,
   cmdAgentGrid,
   discoverTests,
+  formatReplayText,
   formatReportText,
+  parseReplayArgs,
   parseRunArgs,
   resolveProviders,
   runGridForProvider,
@@ -367,6 +373,125 @@ describe("cmdAgentGrid", () => {
     expect(stderrLines().some((s: string) => s.includes("--commit-outcome") && s.includes("not yet implemented"))).toBe(
       true,
     );
+  });
+});
+
+// ── parseReplayArgs ───────────────────────────────────────────────
+
+describe("parseReplayArgs", () => {
+  test("returns null on --help", () => {
+    expect(parseReplayArgs(["--help"])).toBeNull();
+  });
+
+  test("parses positional file argument", () => {
+    const opts = parseReplayArgs(["./session.ndjson"]);
+    expect(opts).not.toBeNull();
+    expect(opts?.file).toBe("./session.ndjson");
+    expect(opts?.json).toBe(false);
+  });
+
+  test("parses --json flag", () => {
+    const opts = parseReplayArgs(["./session.ndjson", "--json"]);
+    expect(opts).not.toBeNull();
+    expect(opts?.json).toBe(true);
+  });
+});
+
+// ── formatReplayText ──────────────────────────────────────────────
+
+describe("formatReplayText", () => {
+  test("formats passing report", () => {
+    const text = formatReplayText({
+      file: "test.ndjson",
+      entries: 5,
+      violations: [],
+      pass: true,
+    });
+    expect(text).toContain("test.ndjson");
+    expect(text).toContain("entries: 5");
+    expect(text).toContain("pass");
+    expect(text).toContain("conforms");
+  });
+
+  test("formats failing report with violations", () => {
+    const text = formatReplayText({
+      file: "bad.ndjson",
+      entries: 3,
+      violations: [
+        { line: 1, rule: "handshake", message: "first message must be init" },
+        { line: 2, rule: "direction", message: "wrong direction" },
+      ],
+      pass: false,
+    });
+    expect(text).toContain("bad.ndjson");
+    expect(text).toContain("fail");
+    expect(text).toContain("2 violation(s)");
+    expect(text).toContain("line 1");
+    expect(text).toContain("[handshake]");
+    expect(text).toContain("line 2");
+    expect(text).toContain("[direction]");
+  });
+});
+
+// ── cmdAgentGrid replay (integration) ─────────────────────────────
+
+describe("cmdAgentGrid replay", () => {
+  let logSpy: ReturnType<typeof spyOn>;
+  let errorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, "log").mockImplementation(() => {});
+    errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  test("replay --help prints help", async () => {
+    await cmdAgentGrid(["replay", "--help"]);
+    expect(logSpy).toHaveBeenCalled();
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain("agent-grid replay");
+  });
+
+  test("replay with valid recording outputs pass", async () => {
+    const path = join(tmpdir(), `grid-replay-test-${process.pid}-${Date.now()}.ndjson`);
+    const lines = [
+      JSON.stringify({ t: 1000, dir: "daemon->worker", kind: "control", payload: { type: "init" } }),
+      JSON.stringify({ t: 1001, dir: "worker->daemon", kind: "control", payload: { type: "ready" } }),
+    ];
+    writeFileSync(path, `${lines.join("\n")}\n`);
+
+    await cmdAgentGrid(["replay", path]);
+    expect(logSpy).toHaveBeenCalled();
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain("pass");
+  });
+
+  test("replay --json outputs valid JSON", async () => {
+    const path = join(tmpdir(), `grid-replay-json-${process.pid}-${Date.now()}.ndjson`);
+    const lines = [
+      JSON.stringify({ t: 1000, dir: "daemon->worker", kind: "control", payload: { type: "init" } }),
+      JSON.stringify({ t: 1001, dir: "worker->daemon", kind: "control", payload: { type: "ready" } }),
+    ];
+    writeFileSync(path, `${lines.join("\n")}\n`);
+
+    await cmdAgentGrid(["replay", path, "--json"]);
+    expect(logSpy).toHaveBeenCalled();
+    const output = logSpy.mock.calls[0][0] as string;
+    const parsed = JSON.parse(output);
+    expect(parsed.pass).toBe(true);
+    expect(parsed.entries).toBe(2);
+    expect(parsed.violations).toEqual([]);
+  });
+
+  test("help includes replay subcommand", async () => {
+    await cmdAgentGrid(["--help"]);
+    expect(logSpy).toHaveBeenCalled();
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain("replay");
   });
 });
 
