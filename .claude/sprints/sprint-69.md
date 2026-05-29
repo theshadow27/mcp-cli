@@ -83,3 +83,13 @@ The `check`, `coverage`, and `check-no-claude` jobs in `.github/workflows/ci.yml
 
 ### Reaper collateral
 The elapsed-time (>90s) wedged-worker reaper occasionally SIGKILLs *legit* slow `am-i-done` test-workers under load (#2588 saw this and worked around it). Reinforces that #2597's concurrency cap — not the reaper band-aid — is the real fix; a productized reaper should gate on load or only fire when a worker is provably wedged.
+
+## Results
+
+- **Released**: v1.14.0 (minor — new `mcx agent-grid` command surface + agent-grid package)
+- **PRs merged**: 12 — #2579 (pre-landed), #2563, #2569, #2565, #2581, #2578, #2582, #2584, #2585, #2586, #2580, #2583
+- **Issues closed**: 12 of 15 planned
+- **Rolled to sprint 70**: 3 — #2587 (replay), #2588 (cap tests b1), #2589 (cap tests b2). #2587/#2588 are QA-clean + reviewer-approved with open PRs (#2614/#2617); both blocked only by the #2597 coverage wedge. #2589 blocked on #2588.
+- **New issues filed (from review/QA/investigations)**: #2597 (bun-wedge root cause — sprint 70 P1 #1), #2601, #2602 (stdio-restore prod bug / #2234), #2603, #2605, #2606, #2612, #2613, #2615, #2616 (mock-replay enhancement).
+- **Notable**: #2580 (security sanitizer) required a full simplify/redesign after a 3-wave convergence; the bun-wedge (#2597) escalated from local CPU saturation (load 117) to blocking required `coverage` CI for test-heavy PRs.
+- **Process/infra learnings for sprint 70** (see Run notes above + memories): quota must be an autonomous policy not an AskUserQuestion; CI test jobs need `timeout-minutes`; productize the wedge reaper.
