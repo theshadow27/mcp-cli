@@ -9,7 +9,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { type GridResult, type GridTest, gateTest, parseRecording, validateRecording } from "@mcp-cli/agent-grid";
+import {
+  type CallToolFn,
+  type GridResult,
+  type GridTest,
+  gateTest,
+  makeEditFileTest,
+  makeMultiTurnTest,
+  makeReadFileTest,
+  makeRunBashTest,
+  makeSpawnInDirTest,
+  parseRecording,
+  validateRecording,
+} from "@mcp-cli/agent-grid";
 import { type AgentProvider, getAllProviders, getProvider } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { formatHelp, getHelp, hasHelpFlag, registerHelp } from "../help";
@@ -41,9 +53,20 @@ const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
 
 // ── Test discovery ─────────────────────────────────────────────────
 
+function ipcCallTool(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+  const timeoutMs = tool.endsWith("_prompt") || tool.endsWith("_wait") ? 120_000 : undefined;
+  return import("@mcp-cli/core").then((m) => m.ipcCall("callTool", { server, tool, arguments: args }, { timeoutMs }));
+}
+
 export function discoverTests(): GridTest[] {
-  // Test implementations are added by later issues in the epic (#2538).
-  return [];
+  const deps = { callTool: ipcCallTool satisfies CallToolFn };
+  return [
+    makeSpawnInDirTest(deps),
+    makeReadFileTest(deps),
+    makeEditFileTest(deps),
+    makeRunBashTest(deps),
+    makeMultiTurnTest(deps),
+  ];
 }
 
 // ── Runner ─────────────────────────────────────────────────────────
@@ -244,7 +267,7 @@ export function resolveProviders(names: string[]): AgentProvider[] {
 
 // ── Stub flag warnings ─────────────────────────────────────────────
 
-function warnStubFlags(opts: RunOptions): void {
+export function warnStubFlags(opts: RunOptions): void {
   if (opts.offline) {
     console.error(`${c.yellow}--offline: not yet implemented; network access is not restricted${c.reset}`);
   }
