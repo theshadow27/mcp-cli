@@ -10,7 +10,7 @@
  *   bun scripts/install-agent.ts --offline claude@2.1.119
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { options } from "@mcp-cli/core";
 import { type VersionEntry, type VersionsGrid, validateVersionsGrid } from "../agent-grid/versions-schema";
@@ -26,6 +26,13 @@ const NPM_PACKAGES: Record<string, string> = {
 };
 
 // ── Types ──────────────────────────────────────────────────────────
+
+export class Sha256MismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Sha256MismatchError";
+  }
+}
 
 export interface InstallResult {
   provider: string;
@@ -156,6 +163,7 @@ export function readSidecarChecksum(tgzPath: string): string {
 // ── Registry install (npm pack) ────────────────────────────────────
 
 export async function installFromRegistry(
+  entry: VersionEntry,
   provider: string,
   version: string,
   destDir: string,
@@ -195,7 +203,7 @@ export async function installFromRegistry(
     }
 
     deps.error("registry: extracting package...");
-    const extract = deps.spawn(["tar", "xzf", tgzPath, "-C", tmpDir], {
+    const extract = deps.spawn(["tar", "xzf", tgzPath, "--no-same-owner", "-C", tmpDir], {
       stdout: "ignore",
       stderr: "pipe",
     });
@@ -230,10 +238,18 @@ export async function installFromRegistry(
     chmodSync(binaryDest, 0o755);
 
     const hash = await sha256File(binaryDest);
+
+    if (entry.binary_sha256 && hash !== entry.binary_sha256) {
+      throw new Sha256MismatchError(
+        `SHA256 mismatch for registry-installed binary\n  expected: ${entry.binary_sha256}\n  actual:   ${hash}\nRegistry may have served a tampered package.`,
+      );
+    }
+
     deps.error(`registry: installed ${binaryDest} (sha256: ${hash})`);
 
     return { binaryPath: binaryDest, sha256: hash };
   } catch (err) {
+    if (err instanceof Sha256MismatchError) throw err;
     deps.error(`registry: failed: ${(err as Error).message}`);
     return null;
   } finally {
@@ -258,11 +274,14 @@ export async function installFromArchive(
     throw new Error(`Archive not found: ${archivePath} — run 'git lfs pull' if this is a fresh clone`);
   }
 
+  // Sidecar guards against accidental corruption (truncated LFS pull, bad disk).
+  // Not a supply-chain boundary — the sidecar lives next to the archive in the
+  // same LFS-tracked tree. The real trust anchor is git LFS object integrity.
   const expectedHash = readSidecarChecksum(archivePath);
   const actualHash = await sha256File(archivePath);
 
   if (actualHash !== expectedHash) {
-    throw new Error(
+    throw new Sha256MismatchError(
       `SHA256 mismatch for ${archivePath}\n  expected: ${expectedHash}\n  actual:   ${actualHash}\nArchive may be corrupted or tampered with.`,
     );
   }
@@ -270,7 +289,7 @@ export async function installFromArchive(
   deps.error(`archive: checksum verified (${expectedHash})`);
 
   mkdirSync(destDir, { recursive: true });
-  const extract = deps.spawn(["tar", "xzf", archivePath, "-C", destDir], {
+  const extract = deps.spawn(["tar", "xzf", archivePath, "--no-same-owner", "-C", destDir], {
     stdout: "ignore",
     stderr: "pipe",
   });
@@ -280,21 +299,33 @@ export async function installFromArchive(
     throw new Error(`Archive extraction failed (exit ${extractExit}): ${stderr.trim()}`);
   }
 
+  const expectedBinaryName = `${provider}-${entry.version}`;
   const files = readdirSync(destDir);
-  const binaryName =
-    files.find((f) => f === `${provider}-${entry.version}`) ??
-    files.find((f) => f === provider) ??
-    files.find((f) => f.startsWith(provider) && !f.endsWith(".sha256"));
+  const binaryName = files.find((f) => f === expectedBinaryName) ?? files.find((f) => f === provider);
 
   if (!binaryName) {
-    throw new Error(`No binary found after extracting archive (files: ${files.join(", ")})`);
+    throw new Error(
+      `No binary found after extracting archive (expected "${expectedBinaryName}" or "${provider}", got: ${files.join(", ")})`,
+    );
   }
 
   const binaryPath = join(destDir, binaryName);
 
+  const stat = lstatSync(binaryPath);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Extracted file is a symlink — refusing to install: ${binaryPath}`);
+  }
+
   chmodSync(binaryPath, 0o755);
 
   const binaryHash = await sha256File(binaryPath);
+
+  if (entry.binary_sha256 && binaryHash !== entry.binary_sha256) {
+    throw new Sha256MismatchError(
+      `SHA256 mismatch for extracted binary\n  expected: ${entry.binary_sha256}\n  actual:   ${binaryHash}\nArchive may contain a tampered binary.`,
+    );
+  }
+
   deps.error(`archive: installed ${binaryPath} (binary sha256: ${binaryHash})`);
 
   return { binaryPath, sha256: binaryHash };
@@ -319,33 +350,38 @@ export async function installAgent(args: InstallArgs, deps: InstallDeps = defaul
   const destDir = join(deps.agentsDir, args.provider, args.version);
   mkdirSync(destDir, { recursive: true });
 
-  // Registry-first (skip if --offline)
-  if (!args.offline) {
-    deps.error(`Trying registry for ${args.provider}@${args.version}...`);
-    const registryResult = await installFromRegistry(args.provider, args.version, destDir, deps);
-    if (registryResult) {
-      return {
-        provider: args.provider,
-        version: args.version,
-        binaryPath: registryResult.binaryPath,
-        source: "registry",
-        sha256: registryResult.sha256,
-      };
+  try {
+    // Registry-first (skip if --offline)
+    if (!args.offline) {
+      deps.error(`Trying registry for ${args.provider}@${args.version}...`);
+      const registryResult = await installFromRegistry(entry, args.provider, args.version, destDir, deps);
+      if (registryResult) {
+        return {
+          provider: args.provider,
+          version: args.version,
+          binaryPath: registryResult.binaryPath,
+          source: "registry",
+          sha256: registryResult.sha256,
+        };
+      }
+      deps.error("Registry install failed — falling back to archive...");
     }
-    deps.error("Registry install failed — falling back to archive...");
+
+    // Archive fallback
+    deps.error(`Installing ${args.provider}@${args.version} from archive...`);
+    const archiveResult = await installFromArchive(entry, args.provider, destDir, deps);
+
+    return {
+      provider: args.provider,
+      version: args.version,
+      binaryPath: archiveResult.binaryPath,
+      source: "archive",
+      sha256: archiveResult.sha256,
+    };
+  } catch (err) {
+    rmSync(destDir, { recursive: true, force: true });
+    throw err;
   }
-
-  // Archive fallback
-  deps.error(`Installing ${args.provider}@${args.version} from archive...`);
-  const archiveResult = await installFromArchive(entry, args.provider, destDir, deps);
-
-  return {
-    provider: args.provider,
-    version: args.version,
-    binaryPath: archiveResult.binaryPath,
-    source: "archive",
-    sha256: archiveResult.sha256,
-  };
 }
 
 async function main(): Promise<void> {

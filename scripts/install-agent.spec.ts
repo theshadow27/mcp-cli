@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type InstallDeps,
+  Sha256MismatchError,
   findVersionEntry,
   installAgent,
   installFromArchive,
+  installFromRegistry,
   loadGrid,
   parseInstallAgentArgs,
   readSidecarChecksum,
@@ -286,6 +288,222 @@ describe("installFromArchive", () => {
 
     await expect(installFromArchive(entry, "testprov", destDir, makeDeps())).rejects.toThrow("No archive path");
   });
+
+  test("rejects symlinks in extracted archive", async () => {
+    await createTestArchive("testprov", "1.0.0");
+
+    const entry = {
+      version: "1.0.0",
+      outcome: "pass" as const,
+      archive: "binaries/testprov-1.0.0.tgz",
+    };
+
+    // Pre-place a symlink at the expected binary path before extraction
+    // to simulate a malicious archive that extracts symlinks
+    const symlinkPath = join(destDir, "testprov-1.0.0");
+    writeFileSync(join(destDir, "legit-target"), "real file");
+    rmSync(symlinkPath, { force: true });
+
+    // Extract the real archive, then replace the binary with a symlink
+    const result = await installFromArchive(entry, "testprov", destDir, makeDeps());
+    expect(result.binaryPath).toContain("testprov-1.0.0");
+
+    // Verify that the function would reject if the file were a symlink
+    // by calling with a rigged destDir containing a symlink
+    const symlinkDestDir = join(tmpDir, "symlink-dest");
+    mkdirSync(symlinkDestDir, { recursive: true });
+
+    // Create a new archive that we'll extract, then swap the binary for a symlink
+    await createTestArchive("linkprov", "1.0.0");
+    const linkEntry = {
+      version: "1.0.0",
+      outcome: "pass" as const,
+      archive: "binaries/linkprov-1.0.0.tgz",
+    };
+
+    // Create a mock deps.spawn that extracts normally but then we swap the result
+    const realDeps = makeDeps({ agentsDir: symlinkDestDir });
+    const origSpawn = realDeps.spawn;
+    let tarCalled = false;
+    realDeps.spawn = ((cmd: string[], opts: Record<string, unknown>) => {
+      const proc = origSpawn(cmd, opts);
+      if (cmd[0] === "tar" && !tarCalled) {
+        tarCalled = true;
+        // After tar finishes, replace the binary with a symlink
+        return {
+          ...proc,
+          exited: (proc as { exited: Promise<number> }).exited.then((code: number) => {
+            if (code === 0) {
+              const extracted = join(symlinkDestDir, "linkprov-1.0.0");
+              rmSync(extracted, { force: true });
+              symlinkSync("/tmp/evil-target", extracted);
+            }
+            return code;
+          }),
+          stderr: (proc as { stderr: ReadableStream }).stderr,
+        };
+      }
+      return proc;
+    }) as typeof Bun.spawn;
+
+    await expect(installFromArchive(linkEntry, "linkprov", symlinkDestDir, realDeps)).rejects.toThrow("symlink");
+  });
+
+  test("fails on binary_sha256 mismatch", async () => {
+    await createTestArchive("testprov", "1.0.0");
+
+    const entry = {
+      version: "1.0.0",
+      outcome: "pass" as const,
+      archive: "binaries/testprov-1.0.0.tgz",
+      binary_sha256: "0".repeat(64),
+    };
+
+    await expect(installFromArchive(entry, "testprov", destDir, makeDeps())).rejects.toThrow(
+      "SHA256 mismatch for extracted binary",
+    );
+  });
+});
+
+// ── Registry install (with mocked npm spawn) ───────────────────────
+
+describe("installFromRegistry", () => {
+  let tmpDir: string;
+  let gridDir: string;
+  let destDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    gridDir = join(tmpDir, "agent-grid");
+    destDir = join(tmpDir, "dest");
+    mkdirSync(join(gridDir, "binaries"), { recursive: true });
+    mkdirSync(destDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeDeps(overrides?: Partial<InstallDeps>): InstallDeps {
+    return {
+      agentsDir: destDir,
+      gridDir,
+      versionsPath: join(gridDir, "versions.yaml"),
+      spawn: Bun.spawn,
+      log: () => {},
+      error: () => {},
+      ...overrides,
+    };
+  }
+
+  async function createNpmPackageTgz(binaryContent: string): Promise<string> {
+    const pkgDir = join(tmpDir, "pkg-build", "package");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, "cli.mjs"), binaryContent, { mode: 0o755 });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }));
+
+    const tgzName = "test-pkg-1.0.0.tgz";
+    const tgzPath = join(tmpDir, "pkg-build", tgzName);
+    const proc = Bun.spawn(["tar", "czf", tgzPath, "--no-same-owner", "-C", join(tmpDir, "pkg-build"), "package"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await proc.exited;
+    rmSync(pkgDir, { recursive: true });
+    return tgzName;
+  }
+
+  function mockNpmSpawn(tgzDir: string, tgzName: string): typeof Bun.spawn {
+    return ((cmd: string[], opts: Record<string, unknown>) => {
+      if (cmd[0] === "npm") {
+        const packDest = cmd[cmd.indexOf("--pack-destination") + 1] as string;
+        copyFileSync(join(tgzDir, tgzName), join(packDest, tgzName));
+
+        const stdout = new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode(`${tgzName}\n`));
+            c.close();
+          },
+        });
+        const stderr = new ReadableStream({
+          start(c) {
+            c.close();
+          },
+        });
+        return { exited: Promise.resolve(0), stdout, stderr };
+      }
+      return Bun.spawn(cmd, opts);
+    }) as typeof Bun.spawn;
+  }
+
+  function mockFailedNpmSpawn(): typeof Bun.spawn {
+    return ((cmd: string[], opts: Record<string, unknown>) => {
+      if (cmd[0] === "npm") {
+        const stdout = new ReadableStream({
+          start(c) {
+            c.close();
+          },
+        });
+        const stderr = new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode("npm ERR! 404 Not Found\n"));
+            c.close();
+          },
+        });
+        return { exited: Promise.resolve(1), stdout, stderr };
+      }
+      return Bun.spawn(cmd, opts);
+    }) as typeof Bun.spawn;
+  }
+
+  test("returns null for provider without npm mapping", async () => {
+    const entry = { version: "1.0.0", outcome: "pass" as const };
+    const result = await installFromRegistry(entry, "mock", "1.0.0", destDir, makeDeps());
+    expect(result).toBeNull();
+  });
+
+  test("installs binary from npm pack output", async () => {
+    const binaryContent = '#!/usr/bin/env node\nconsole.log("claude");';
+    const tgzName = await createNpmPackageTgz(binaryContent);
+    const tgzDir = join(tmpDir, "pkg-build");
+
+    const entry = { version: "2.1.119", outcome: "pass" as const };
+    const deps = makeDeps({ spawn: mockNpmSpawn(tgzDir, tgzName) });
+
+    const result = await installFromRegistry(entry, "claude", "2.1.119", destDir, deps);
+
+    expect(result).not.toBeNull();
+    expect(result?.binaryPath).toContain("claude");
+    expect(result?.sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const content = readFileSync(result?.binaryPath ?? "", "utf-8");
+    expect(content).toContain("claude");
+  });
+
+  test("returns null on npm pack failure", async () => {
+    const entry = { version: "2.1.119", outcome: "pass" as const };
+    const deps = makeDeps({ spawn: mockFailedNpmSpawn() });
+
+    const result = await installFromRegistry(entry, "claude", "2.1.119", destDir, deps);
+    expect(result).toBeNull();
+  });
+
+  test("throws on binary_sha256 mismatch", async () => {
+    const binaryContent = '#!/usr/bin/env node\nconsole.log("claude");';
+    const tgzName = await createNpmPackageTgz(binaryContent);
+    const tgzDir = join(tmpDir, "pkg-build");
+
+    const entry = {
+      version: "2.1.119",
+      outcome: "pass" as const,
+      binary_sha256: "0".repeat(64),
+    };
+    const deps = makeDeps({ spawn: mockNpmSpawn(tgzDir, tgzName) });
+
+    await expect(installFromRegistry(entry, "claude", "2.1.119", destDir, deps)).rejects.toThrow(
+      "SHA256 mismatch for registry-installed binary",
+    );
+  });
 });
 
 // ── Full installAgent flow ─────────────────────────────────────────
@@ -379,5 +597,82 @@ providers:
     const result = await installAgent({ provider: "mock", version: "1.0.0", offline: false }, makeDeps());
 
     expect(result.source).toBe("archive");
+  });
+
+  test("falls back to archive when npm pack fails", async () => {
+    // Set up a grid with a claude provider (which has an npm mapping)
+    const binaryName = "claude-3.0.0";
+    const binaryPath = join(tmpDir, binaryName);
+    writeFileSync(binaryPath, "#!/bin/sh\necho ok", { mode: 0o755 });
+
+    const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
+    const proc = Bun.spawn(
+      ["tar", "czf", tgzPath, "--uid", "0", "--gid", "0", "--numeric-owner", "-C", tmpDir, binaryName],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    await proc.exited;
+    const hash = await sha256File(tgzPath);
+    writeFileSync(`${tgzPath}.sha256`, `${hash}  ${binaryName}.tgz\n`);
+    rmSync(binaryPath);
+
+    const yaml = `
+providers:
+  - name: claude
+    track: patch
+    versions:
+      - version: "3.0.0"
+        outcome: pass
+        archive: binaries/claude-3.0.0.tgz
+`;
+    writeFileSync(join(gridDir, "versions.yaml"), yaml);
+
+    // Mock npm to fail, so it falls back to archive
+    const failSpawn = ((cmd: string[], opts: Record<string, unknown>) => {
+      if (cmd[0] === "npm") {
+        const stdout = new ReadableStream({
+          start(c) {
+            c.close();
+          },
+        });
+        const stderr = new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode("npm ERR!\n"));
+            c.close();
+          },
+        });
+        return { exited: Promise.resolve(1), stdout, stderr };
+      }
+      return Bun.spawn(cmd, opts);
+    }) as typeof Bun.spawn;
+
+    const deps = { ...makeDeps(), spawn: failSpawn };
+    const result = await installAgent({ provider: "claude", version: "3.0.0", offline: false }, deps);
+
+    expect(result.source).toBe("archive");
+    expect(result.provider).toBe("claude");
+  });
+
+  test("cleans up destDir on total failure", async () => {
+    await setupGrid();
+
+    // Use a version that doesn't have an archive to force archive failure
+    const yaml = `
+providers:
+  - name: mock
+    track: patch
+    versions:
+      - version: "2.0.0"
+        outcome: pass
+        archive: binaries/nonexistent.tgz
+`;
+    writeFileSync(join(gridDir, "versions.yaml"), yaml);
+
+    const destDir = join(agentsDir, "mock", "2.0.0");
+
+    await expect(installAgent({ provider: "mock", version: "2.0.0", offline: true }, makeDeps())).rejects.toThrow(
+      "Archive not found",
+    );
+
+    expect(existsSync(destDir)).toBe(false);
   });
 });
