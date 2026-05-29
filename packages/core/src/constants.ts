@@ -132,6 +132,8 @@ const _originalOptions = {
   SITES_DIR: join(MCP_CLI_DIR, "sites"),
   /** Directory for NDJSON protocol recordings (`MCX_RECORD_SESSION`) */
   RECORDINGS_DIR: join(MCP_CLI_DIR, "recordings"),
+  /** Directory for agent provider binaries installed by `scripts/install-agent.ts` */
+  AGENTS_DIR: join(MCP_CLI_DIR, "agents"),
   /** Directory for patched copies of the user's claude binary (see issue #1808) */
   CLAUDE_PATCHED_DIR: join(MCP_CLI_DIR, "claude-patched"),
   /** Directory for self-signed TLS material used by the local WSS listener (see issue #1808) */

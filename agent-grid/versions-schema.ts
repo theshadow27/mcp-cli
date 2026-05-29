@@ -31,6 +31,10 @@ export const VersionEntrySchema = z
     outcome: z.enum(OUTCOME_VALUES),
     recording: z.string().optional(),
     archive: z.string().optional(),
+    binary_sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, "must be a 64-char hex sha256 hash")
+      .optional(),
     failure_class: z.enum(FAILURE_CLASSES).optional(),
     reason: z.string().optional(),
     issue: z.number().int().positive().optional(),
