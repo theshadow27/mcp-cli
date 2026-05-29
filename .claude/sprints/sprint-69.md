@@ -78,5 +78,8 @@ At 100% 5h-quota the orchestrator raised an **AskUserQuestion** ("wind down vs p
 ### CI bug: non-required flaky check cancels a required check
 The bun-wedge flake (#2597/#2612/#2615) hangs/fails `check-no-claude` (non-required), and the CI workflow's **fail-fast cancels the dependent `coverage` job (which IS required)** → blocks merge on an otherwise-green PR. So a non-required flaky check effectively gates merges. Fix options: make check-no-claude not trigger sibling-cancel, set `fail-fast: false`, or de-couple coverage from check-no-claude. Worked around this sprint by cancel+rerun, and (for non-coverage cases) merging since check-no-claude isn't required.
 
+### CI bug: no `timeout-minutes` on test jobs → wedged job squats 6h
+The `check`, `coverage`, and `check-no-claude` jobs in `.github/workflows/ci.yml` run `bun test` with **no `timeout-minutes`** (only an unrelated job at line ~279 sets one). When `bun test` hangs on the #2597 wedge, the job falls back to GitHub's **default 360-min (6h) cap** — observed a coverage+check-no-claude run squatting 47+ min before manual cancel. Cheap fix (sprint 70, meta/CI): add `timeout-minutes: ~20` to the test jobs so a wedged run fails fast instead of burning a runner for 6h. Pairs with the #2597 SIGKILL-pgroup watchdog (which would make `bun test` abort the wedged worker itself rather than relying on the job timeout).
+
 ### Reaper collateral
 The elapsed-time (>90s) wedged-worker reaper occasionally SIGKILLs *legit* slow `am-i-done` test-workers under load (#2588 saw this and worked around it). Reinforces that #2597's concurrency cap — not the reaper band-aid — is the real fix; a productized reaper should gate on load or only fire when a worker is provably wedged.
