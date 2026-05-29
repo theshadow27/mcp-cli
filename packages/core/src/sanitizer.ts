@@ -22,7 +22,49 @@ interface PatternDef {
   re: RegExp;
 }
 
-const ENV_KEY_NAMES = [
+// ── Pattern taxonomy ───────────────────────────────────────────────
+//
+// Organized by provider/family so coverage is by-construction:
+// every known prefix/format for a provider is grouped together.
+// When a new provider is added, add a block — don't sprinkle into
+// an unstructured list.
+
+// ── AWS ────────────────────────────────────────────────────────────
+// AKIA = long-lived IAM keys, ASIA = STS temporary credentials.
+// Both are 20-char uppercase alphanumeric after the 4-char prefix.
+const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
+// 40-char base64-ish secret key (appears after access key ID in configs).
+const AWS_SECRET_KEY = /\b[A-Za-z0-9/+=]{40}(?=\s|"|'|$)/gm;
+
+// ── GitHub ─────────────────────────────────────────────────────────
+// Classic PATs (ghp_), OAuth (gho_), user-to-server (ghu_),
+// server-to-server (ghs_), refresh (ghr_) — 36+ alphanumeric.
+const GITHUB_CLASSIC_TOKEN = /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/g;
+// Fine-grained PATs: github_pat_ prefix + base62 segments separated by underscore.
+const GITHUB_FINE_GRAINED_TOKEN = /\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{50,}\b/g;
+
+// ── JWTs ───────────────────────────────────────────────────────────
+const JWT = /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
+
+// ── Private key blocks (PEM) ───────────────────────────────────────
+const PRIVATE_KEY_BLOCK =
+  /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/g;
+
+// ── Platform tokens ────────────────────────────────────────────────
+const NPM_TOKEN = /\bnpm_[A-Za-z0-9]{36,}\b/g;
+const SLACK_TOKEN = /\bxox[bpars]-[A-Za-z0-9\-]{10,}\b/g;
+const STRIPE_KEY = /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g;
+const PYPI_TOKEN = /\bpypi-[A-Za-z0-9_-]{16,}\b/g;
+const ANTHROPIC_API_KEY_LITERAL = /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g;
+
+// ── Header-based secrets ───────────────────────────────────────────
+const AUTHORIZATION_HEADER =
+  /(?<=["']?(?:Authorization|authorization|Proxy-Authorization|proxy-authorization)["']?\s*[:=]\s*["']?)(?:Bearer |Basic |Token |token )?[A-Za-z0-9_/+\-.=]{20,}/g;
+const GENERIC_API_KEY_HEADER =
+  /(?<=["']?(?:X-API-Key|x-api-key|X-Api-Key|api[_-]?key)["']?\s*[:=]\s*["']?)[A-Za-z0-9_/+\-.=]{16,}/g;
+
+// ── Environment variable secrets ───────────────────────────────────
+const ENV_KEY_SUFFIXES = [
   "API_KEY",
   "API_SECRET",
   "SECRET_KEY",
@@ -76,31 +118,31 @@ const WELL_KNOWN_ENVS = [
   "SSH_PRIVATE_KEY",
 ];
 
+// ── PII patterns ───────────────────────────────────────────────────
+const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+const IPV4 = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
+const IPV6_FULL = /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g;
+const IPV6_COMPRESSED = /\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/g;
+const HOME_PATH = /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//g;
+const HOME_PATH_SLUG = /-(?:Users|home)-[A-Za-z0-9._-]+-/g;
+
+// ── Connection strings ─────────────────────────────────────────────
+const CONNECTION_STRING = /\b(?:mongodb|postgres|postgresql|mysql|redis|amqp|amqps):\/\/[^\s"'`,;)}\]]+/gi;
+
+// ── Generic secret assignment ──────────────────────────────────────
+const GENERIC_SECRET_ASSIGNMENT =
+  /(?<=["']?(?:password|passwd|secret|credential|token)["']?\s*[:=]\s*["']?)[A-Za-z0-9_/+\-.=!@#$%^&*]{8,}/gi;
+
 function buildPatterns(): PatternDef[] {
-  const suffixPattern = ENV_KEY_NAMES.map((k) => k.replace(/_/g, "[_-]")).join("|");
+  const suffixPattern = ENV_KEY_SUFFIXES.map((k) => k.replace(/_/g, "[_-]")).join("|");
   const wellKnownPattern = WELL_KNOWN_ENVS.map((k) => k.replace(/_/g, "[_-]")).join("|");
 
   return [
-    {
-      name: "aws-access-key",
-      re: /\bAKIA[0-9A-Z]{16}\b/g,
-    },
-    {
-      name: "aws-secret-key",
-      re: /\b[A-Za-z0-9/+=]{40}(?=\s|"|'|$)/gm,
-    },
-    {
-      name: "jwt",
-      re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
-    },
-    {
-      name: "authorization-header",
-      re: /(?<=["']?(?:Authorization|authorization|Proxy-Authorization|proxy-authorization)["']?\s*[:=]\s*["']?)(?:Bearer |Basic |Token |token )?[A-Za-z0-9_/+\-.=]{20,}/g,
-    },
-    {
-      name: "generic-api-key-header",
-      re: /(?<=["']?(?:X-API-Key|x-api-key|X-Api-Key|api[_-]?key)["']?\s*[:=]\s*["']?)[A-Za-z0-9_/+\-.=]{16,}/g,
-    },
+    { name: "aws-access-key", re: AWS_ACCESS_KEY },
+    { name: "aws-secret-key", re: AWS_SECRET_KEY },
+    { name: "jwt", re: JWT },
+    { name: "authorization-header", re: AUTHORIZATION_HEADER },
+    { name: "generic-api-key-header", re: GENERIC_API_KEY_HEADER },
     {
       name: "well-known-env",
       re: new RegExp(`(?<=(?:${wellKnownPattern})["']?\\s*[:=]\\s*["']?)[A-Za-z0-9_/+\\-.=]{8,}`, "gi"),
@@ -109,58 +151,22 @@ function buildPatterns(): PatternDef[] {
       name: "env-key-value",
       re: new RegExp(`(?<=[A-Z_]*(?:${suffixPattern})["']?\\s*[:=]\\s*["']?)[A-Za-z0-9_/+\\-.=]{8,}`, "gi"),
     },
-    {
-      name: "private-key-block",
-      re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/g,
-    },
-    {
-      name: "github-token",
-      re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/g,
-    },
-    {
-      name: "npm-token",
-      re: /\bnpm_[A-Za-z0-9]{36,}\b/g,
-    },
-    {
-      name: "slack-token",
-      re: /\bxox[bpars]-[A-Za-z0-9\-]{10,}\b/g,
-    },
-    {
-      name: "stripe-key",
-      re: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g,
-    },
-    {
-      name: "email",
-      re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
-    },
-    {
-      name: "ipv4",
-      re: /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g,
-    },
-    {
-      name: "ipv6",
-      re: /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g,
-    },
-    {
-      name: "ipv6-compressed",
-      re: /\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/g,
-    },
-    {
-      name: "home-path",
-      re: /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//g,
-    },
-    {
-      name: "home-path-slug",
-      re: /-(?:Users|home)-[A-Za-z0-9._-]+-/g,
-    },
-    {
-      name: "connection-string",
-      re: /\b(?:mongodb|postgres|postgresql|mysql|redis|amqp|amqps):\/\/[^\s"'`,;)}\]]+/gi,
-    },
-    {
-      name: "generic-secret-assignment",
-      re: /(?<=["']?(?:password|passwd|secret|credential|token)["']?\s*[:=]\s*["']?)[A-Za-z0-9_/+\-.=!@#$%^&*]{8,}/gi,
-    },
+    { name: "private-key-block", re: PRIVATE_KEY_BLOCK },
+    { name: "github-token", re: GITHUB_CLASSIC_TOKEN },
+    { name: "github-fine-grained-token", re: GITHUB_FINE_GRAINED_TOKEN },
+    { name: "anthropic-api-key", re: ANTHROPIC_API_KEY_LITERAL },
+    { name: "npm-token", re: NPM_TOKEN },
+    { name: "slack-token", re: SLACK_TOKEN },
+    { name: "stripe-key", re: STRIPE_KEY },
+    { name: "pypi-token", re: PYPI_TOKEN },
+    { name: "email", re: EMAIL },
+    { name: "ipv4", re: IPV4 },
+    { name: "ipv6", re: IPV6_FULL },
+    { name: "ipv6-compressed", re: IPV6_COMPRESSED },
+    { name: "home-path", re: HOME_PATH },
+    { name: "home-path-slug", re: HOME_PATH_SLUG },
+    { name: "connection-string", re: CONNECTION_STRING },
+    { name: "generic-secret-assignment", re: GENERIC_SECRET_ASSIGNMENT },
   ];
 }
 

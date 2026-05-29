@@ -52,9 +52,24 @@ fi
 # any scanner error is treated as a match (safe default).
 recording_files=$(echo "$staged_files" | grep -E '^(recordings/|agent-grid/binaries/)' || true)
 if [ -n "$recording_files" ]; then
-  # shellcheck disable=SC2086 — $recording_files is newline-delimited paths from git; quoting would pass as single arg
+  # Fail-closed on binary files: git diff --numstat shows "-\t-\t<path>" for
+  # binaries. These can't be text-scanned so they must be blocked outright
+  # (raw binaries should go through LFS; only LFS pointer files are text).
+  # shellcheck disable=SC2086
+  binary_files=$(git diff --cached --numstat -- $recording_files \
+    | awk '$1 == "-" && $2 == "-" { print $3 }' || true)
+  if [ -n "$binary_files" ]; then
+    echo "pre-commit: staged binary files in recordings/ or binaries/ cannot be scanned for secrets" >&2
+    printf '%s\n' "$binary_files" | head -10 >&2
+    echo "Use LFS for binary content, or run the sanitizer on text equivalents." >&2
+    exit 1
+  fi
+
+  # Extract added text lines from diff. Filter out only the "+++ b/..."
+  # file-header lines (3 plusses), keeping real content that starts with "+".
+  # shellcheck disable=SC2086
   added_content=$(git diff --cached -U0 --no-color -- $recording_files \
-    | grep -E '^\+[^+]' | sed 's/^\+//' || true)
+    | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//' || true)
   if [ -n "$added_content" ]; then
     HOOK_DIR_ABS="$(cd "$HOOK_DIR/.." && pwd)"
     if ! printf '%s\n' "$added_content" | bun run "$HOOK_DIR_ABS/scripts/scan-secrets.ts"; then
