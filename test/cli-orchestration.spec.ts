@@ -551,7 +551,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         });
         const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
         return status.state === "running";
-      });
+      }, 5000);
 
       const intRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
@@ -570,7 +570,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         });
         const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
         return status.state === "idle";
-      });
+      }, 5000);
 
       // Transcript should NOT have all entries
       const transcriptRes = await rpc(daemon.socketPath, "callTool", {
