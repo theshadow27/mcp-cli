@@ -124,7 +124,7 @@ const COVERAGE: Step = {
 // Test paths mirror .github/workflows/ci.yml; adding a new package directory
 // means updating both lists (and matching the workflow's artifact upload glob).
 
-const NON_DAEMON_TEST_PATHS = [
+export const NON_DAEMON_TEST_PATHS = [
   "packages/acp",
   "packages/clone",
   "packages/codex",
@@ -133,18 +133,11 @@ const NON_DAEMON_TEST_PATHS = [
   "packages/core",
   "packages/opencode",
   "packages/permissions",
-  "scripts/rules",
-  "scripts/_runner",
-  "test/integration.spec.ts",
+  "scripts/",
+  "agent-grid/",
 ];
 
-const DAEMON_TEST_PATHS = [
-  "packages/daemon",
-  "test/cli-orchestration.spec.ts",
-  "test/daemon-integration.spec.ts",
-  "test/stress.spec.ts",
-  "test/transport-errors.spec.ts",
-];
+export const DAEMON_TEST_PATHS = ["packages/daemon", "test/"];
 
 const TEST_NON_DAEMON_CI: Step = {
   name: "test-non-daemon",
