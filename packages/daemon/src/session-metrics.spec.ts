@@ -517,15 +517,18 @@ describe("SessionMetricsAggregator", () => {
       const localAgg = new SessionMetricsAggregator({ bus: localBus, db: localDb, coalesceWindowMs: 500 });
       const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
-      localBus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
-      localDb.exec("DROP TABLE session_metrics");
-      localBus.publish(sessionEnd("s1"));
+      try {
+        localBus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
+        localDb.exec("DROP TABLE session_metrics");
+        localBus.publish(sessionEnd("s1"));
 
-      expect(localAgg.sessionCount).toBe(1);
-      expect(localAgg.getState("s1")?.hasToolCalls).toBe(true);
-
-      errorSpy.mockRestore();
-      localDb.close();
+        expect(localAgg.sessionCount).toBe(1);
+        expect(localAgg.getState("s1")?.hasToolCalls).toBe(true);
+      } finally {
+        localAgg.dispose();
+        errorSpy.mockRestore();
+        localDb.close();
+      }
     });
   });
 
