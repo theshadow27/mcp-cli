@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import {
   METRIC_SESSION_COMMAND_HIST,
@@ -512,14 +512,23 @@ describe("SessionMetricsAggregator", () => {
 
   describe("persist failure retention", () => {
     test("retains in-memory state when DB write fails", () => {
-      bus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
+      const localDb = freshDb();
+      const localBus = new EventBus();
+      const localAgg = new SessionMetricsAggregator({ bus: localBus, db: localDb, coalesceWindowMs: 500 });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
-      db.exec("DROP TABLE session_metrics");
+      try {
+        localBus.publish(toolUse("s1", "Read", { filePath: "/f", dirPath: "/", linesHint: 1 }));
+        localDb.exec("DROP TABLE session_metrics");
+        localBus.publish(sessionEnd("s1"));
 
-      bus.publish(sessionEnd("s1"));
-
-      expect(agg.sessionCount).toBe(1);
-      expect(agg.getState("s1")?.hasToolCalls).toBe(true);
+        expect(localAgg.sessionCount).toBe(1);
+        expect(localAgg.getState("s1")?.hasToolCalls).toBe(true);
+      } finally {
+        localAgg.dispose();
+        errorSpy.mockRestore();
+        localDb.close();
+      }
     });
   });
 
