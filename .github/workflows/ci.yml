@@ -78,7 +78,7 @@ jobs:
             if [ ! -f "$f" ]; then
               echo "FAIL: LFS-tracked file missing: $f"
               fail=1
-            elif head -c 20 "$f" | grep -q '^version https://git-lfs'; then
+            elif head -c 100 "$f" | grep -q '^version https://git-lfs'; then
               size=$(wc -c < "$f")
               echo "FAIL: $f is an unresolved LFS pointer (${size} bytes)"
               fail=1

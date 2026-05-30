@@ -162,12 +162,17 @@ export function findVersionEntry(
   const candidates = prov.versions.filter((v) => v.version === version);
   if (candidates.length === 0) return null;
 
+  // null = unsupported/unknown host platform; only agnostic entries are safe
+  if (platform === null) {
+    return candidates.find((v) => !v.platform) ?? null;
+  }
+
   if (platform) {
     const exact = candidates.find((v) => v.platform === platform);
     if (exact) return exact;
   }
 
-  // Fall back to platform-agnostic entry (no platform field)
+  // platform is undefined — caller doesn't care about platform; prefer agnostic, then first candidate
   return candidates.find((v) => !v.platform) ?? candidates[0] ?? null;
 }
 

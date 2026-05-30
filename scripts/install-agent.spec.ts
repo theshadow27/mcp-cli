@@ -175,6 +175,31 @@ describe("findVersionEntry", () => {
     expect(entry).not.toBeNull();
   });
 
+  test("returns null when platform is null and only platform-specific entries exist", () => {
+    // null means unsupported/unknown host — must not return a platform-specific binary
+    const entry = findVersionEntry(grid, "claude", "2.1.119", null);
+    expect(entry).toBeNull();
+  });
+
+  test("returns agnostic entry when platform is null and agnostic entry exists", () => {
+    const agnosticGrid = {
+      providers: [
+        {
+          name: "claude" as const,
+          track: "patch" as const,
+          enabled: true,
+          versions: [
+            { version: "3.0.0", outcome: "pass" as const, platform: "darwin-arm64" as const },
+            { version: "3.0.0", outcome: "pass" as const },
+          ],
+        },
+      ],
+    };
+    const entry = findVersionEntry(agnosticGrid, "claude", "3.0.0", null);
+    expect(entry).not.toBeNull();
+    expect(entry?.platform).toBeUndefined();
+  });
+
   test("returns null for unknown provider", () => {
     expect(findVersionEntry(grid, "unknown", "1.0.0")).toBeNull();
   });
