@@ -1,4 +1,5 @@
 import type { AgentProvider } from "@mcp-cli/core";
+import { parsePythonRepr } from "@mcp-cli/core";
 
 export type CallToolFn = (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown>;
 
@@ -23,13 +24,12 @@ export function extractText(raw: unknown): string {
 }
 
 export function extractSessionId(text: string): string {
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    if (typeof parsed.sessionId === "string") return parsed.sessionId;
-  } catch {
-    // not JSON — try regex fallback
+  const normalized = parsePythonRepr(text);
+  if (typeof normalized === "object" && normalized !== null) {
+    const obj = normalized as Record<string, unknown>;
+    if (typeof obj.sessionId === "string") return obj.sessionId;
   }
-  const match = text.match(/"sessionId"\s*:\s*"([^"]+)"/);
+  const match = text.match(/['"]sessionId['"]\s*:\s*['"]([^'"]+)['"]/);
   return match?.[1] ?? "";
 }
 

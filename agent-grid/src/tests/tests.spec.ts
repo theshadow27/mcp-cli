@@ -8,7 +8,7 @@ import type { AgentProvider } from "@mcp-cli/core";
 import { gateTest } from "../capability-gate";
 import { makeEditFileTest } from "./edit-file";
 import type { CallToolFn } from "./helpers";
-import { byeSession, extractText, promptAndWait, promptFollowUp, promptNoWait } from "./helpers";
+import { byeSession, extractSessionId, extractText, promptAndWait, promptFollowUp, promptNoWait } from "./helpers";
 import { makeMultiTurnTest } from "./multi-turn";
 import { makeReadFileTest } from "./read-file";
 import { makeRunBashTest } from "./run-bash";
@@ -73,6 +73,30 @@ describe("extractText", () => {
   });
 });
 
+// ── extractSessionId ─────────────────────────────────────────────
+
+describe("extractSessionId", () => {
+  test("extracts from JSON", () => {
+    expect(extractSessionId('{"sessionId": "abc-123", "ok": true}')).toBe("abc-123");
+  });
+
+  test("extracts from Python repr (single-quoted)", () => {
+    expect(extractSessionId("{'sessionId': 'py-456', 'ok': True}")).toBe("py-456");
+  });
+
+  test("extracts via regex fallback for embedded JSON", () => {
+    expect(extractSessionId('some preamble "sessionId": "fallback-id" and more')).toBe("fallback-id");
+  });
+
+  test("extracts via regex fallback for embedded Python repr", () => {
+    expect(extractSessionId("some preamble 'sessionId': 'py-fallback' and more")).toBe("py-fallback");
+  });
+
+  test("returns empty string when no sessionId", () => {
+    expect(extractSessionId("no session info here")).toBe("");
+  });
+});
+
 // ── promptAndWait ─────────────────────────────────────────────────
 
 describe("promptAndWait", () => {
@@ -94,6 +118,12 @@ describe("promptAndWait", () => {
     const callTool: CallToolFn = async () => mcpTextResult('some preamble "sessionId": "fallback-id" and more');
     const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
     expect(result.sessionId).toBe("fallback-id");
+  });
+
+  test("extracts sessionId from Python repr response", async () => {
+    const callTool: CallToolFn = async () => mcpTextResult("{'sessionId': 'py-sess-1', 'success': True}");
+    const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
+    expect(result.sessionId).toBe("py-sess-1");
   });
 
   test("throws when no sessionId found", async () => {

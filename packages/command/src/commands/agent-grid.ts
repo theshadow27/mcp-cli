@@ -48,7 +48,7 @@ export interface GridRunReport {
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TEST_TIMEOUT_MS = 130_000;
 const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
 
 // ── Test discovery ─────────────────────────────────────────────────
@@ -94,7 +94,7 @@ export async function runGridForProvider(
         continue;
       }
 
-      let cleanupFn: (() => Promise<void>) | undefined;
+      const cleanupFns: (() => Promise<void>)[] = [];
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
       try {
@@ -103,7 +103,7 @@ export async function runGridForProvider(
             provider,
             cwd,
             onCleanup: (fn) => {
-              cleanupFn = fn;
+              cleanupFns.push(fn);
             },
           }),
           new Promise<never>((_, reject) => {
@@ -114,7 +114,9 @@ export async function runGridForProvider(
         outcomes.push({ test: test.name, result });
       } catch (err) {
         clearTimeout(timer);
-        if (cleanupFn) await cleanupFn().catch(() => {});
+        for (let i = cleanupFns.length - 1; i >= 0; i--) {
+          await cleanupFns[i]().catch(() => {});
+        }
         outcomes.push({
           test: test.name,
           result: { status: "fail", error: err instanceof Error ? err.message : String(err) },

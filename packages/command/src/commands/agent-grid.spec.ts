@@ -264,6 +264,31 @@ describe("runGridForProvider", () => {
     expect(cleanupCalled).toBe(true);
   });
 
+  test("accumulates multiple onCleanup fns and runs LIFO on timeout", async () => {
+    const order: number[] = [];
+    const claude = mustGetProvider("claude");
+    const LONGER_THAN_TIMEOUT = 60_000;
+    const gridTest: GridTest = {
+      name: "multi-cleanup",
+      requires: [],
+      run: async (ctx) => {
+        ctx.onCleanup?.(async () => {
+          order.push(1);
+        });
+        ctx.onCleanup?.(async () => {
+          order.push(2);
+        });
+        ctx.onCleanup?.(async () => {
+          order.push(3);
+        });
+        await new Promise((resolve) => setTimeout(resolve, LONGER_THAN_TIMEOUT));
+        return { status: "pass" };
+      },
+    };
+    await runGridForProvider(claude, [gridTest], { ...defaultOpts, timeoutMs: 100 });
+    expect(order).toEqual([3, 2, 1]);
+  });
+
   test("provides onCleanup in test context", async () => {
     let hasOnCleanup = false;
     const claude = mustGetProvider("claude");
