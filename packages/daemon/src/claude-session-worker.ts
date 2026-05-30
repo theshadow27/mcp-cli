@@ -73,6 +73,7 @@ interface RestoreSessionsMessage {
     worktree: string | null;
     totalCost: number;
     totalTokens: number;
+    claudeSessionId?: string | null;
     transport?: "ws" | "stdio";
   }>;
 }
@@ -236,8 +237,9 @@ export async function handlePrompt(
       : undefined;
 
     let sessionName: string;
+    let sessionTransport: "ws" | "stdio";
     try {
-      sessionName = server.prepareSession(sessionId, {
+      const prepared = server.prepareSession(sessionId, {
         prompt,
         name: args.name as string | undefined,
         cwd: args.cwd as string | undefined,
@@ -249,6 +251,8 @@ export async function handlePrompt(
         resumeSessionId: args.resumeSessionId as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
       });
+      sessionName = prepared.name;
+      sessionTransport = prepared.transport;
     } catch (err) {
       return {
         content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
@@ -266,6 +270,7 @@ export async function handlePrompt(
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
+        transport: sessionTransport,
       },
     });
 
