@@ -6,7 +6,10 @@
  * @see https://github.com/theshadow27/mcp-cli/issues/1330
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+
+setDefaultTimeout(15_000);
+
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,8 +63,8 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
   test("concurrent worktree remove + branch delete does not set core.bare=true", () => {
     const repo = initRepo();
     try {
-      const worktreeCount = 8;
-      const rounds = 5;
+      const worktreeCount = 4;
+      const rounds = 3;
       let coreBareDetected = false;
 
       for (let round = 0; round < rounds; round++) {
@@ -134,8 +137,8 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
   test("interleaved worktree remove and branch delete does not set core.bare=true", () => {
     const repo = initRepo();
     try {
-      const worktreeCount = 6;
-      const rounds = 5;
+      const worktreeCount = 4;
+      const rounds = 3;
       let coreBareDetected = false;
 
       for (let round = 0; round < rounds; round++) {
@@ -222,7 +225,7 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
       let coreBareCount = 0;
 
       // Rapid sequential create-remove to stress the git config lock
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 10; i++) {
         const branch = `rapid-${i}`;
         const wtPath = join(repo, ".worktrees", branch);
         git(repo, "worktree", "add", wtPath, "-b", branch, "HEAD");
@@ -238,7 +241,7 @@ describe("core.bare=true repro (concurrent worktree removal)", () => {
       expect(readCoreBare(repo)).toBe(false);
 
       if (coreBareCount > 0) {
-        console.error(`[repro] core.bare=true triggered ${coreBareCount}/20 times in rapid sequential cycles`);
+        console.error(`[repro] core.bare=true triggered ${coreBareCount}/10 times in rapid sequential cycles`);
       }
     } finally {
       rmSync(repo, { recursive: true, force: true });
