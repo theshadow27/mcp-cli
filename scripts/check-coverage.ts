@@ -59,6 +59,7 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
   "packages/daemon/src/index.spec.ts": "13 in-process daemon instances for startup/shutdown/idle/reload",
   "packages/daemon/src/config/watcher.spec.ts": "FS polling integration tests with 8s timeouts",
   "packages/core/src/alias-bundle-tsc.spec.ts": "bunx tsc subprocess spawning per test (~3-4s each)",
+  "packages/core/src/git-core-bare-repro.spec.ts": "Subprocess-heavy git race reproduction tests (~7s)",
   "test/cli-orchestration.spec.ts": "CLI→daemon orchestration smoke tests with real daemon + mock sessions",
 };
 

@@ -9,6 +9,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 
 setDefaultTimeout(15_000);
+
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
