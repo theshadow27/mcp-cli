@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { ProviderSchema, VersionEntrySchema, VersionsGridSchema, validateVersionsGrid } from "./versions-schema";
+import {
+  ProviderSchema,
+  VersionEntrySchema,
+  VersionsGridSchema,
+  hostPlatform,
+  validateVersionsGrid,
+} from "./versions-schema";
 
 describe("VersionEntrySchema", () => {
   test("accepts a minimal passing entry", () => {
@@ -101,6 +107,50 @@ describe("VersionEntrySchema", () => {
     expect(result.success).toBe(true);
   });
 
+  test("accepts entry with platform field", () => {
+    const result = VersionEntrySchema.safeParse({
+      version: "2.1.119",
+      outcome: "pass",
+      platform: "darwin-arm64",
+      archive: "binaries/claude-2.1.119.tgz",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.platform).toBe("darwin-arm64");
+    }
+  });
+
+  test("accepts all valid platform values", () => {
+    for (const p of ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]) {
+      const result = VersionEntrySchema.safeParse({
+        version: "1.0.0",
+        outcome: "pass",
+        platform: p,
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  test("rejects invalid platform value", () => {
+    const result = VersionEntrySchema.safeParse({
+      version: "1.0.0",
+      outcome: "pass",
+      platform: "windows-x64",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test("accepts entry without platform (platform-agnostic)", () => {
+    const result = VersionEntrySchema.safeParse({
+      version: "1.0.0",
+      outcome: "pass",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.platform).toBeUndefined();
+    }
+  });
+
   test("rejects untested outcome with failure_class", () => {
     const result = VersionEntrySchema.safeParse({
       version: "latest",
@@ -198,7 +248,7 @@ describe("validateVersionsGrid", () => {
     expect(result.issues.some((i) => i.message.includes("duplicate provider"))).toBe(true);
   });
 
-  test("detects duplicate versions within a provider", () => {
+  test("detects duplicate versions within a provider (no platform)", () => {
     const grid = {
       providers: [
         {
@@ -214,6 +264,49 @@ describe("validateVersionsGrid", () => {
     const result = validateVersionsGrid(grid);
     expect(result.ok).toBe(false);
     expect(result.issues.some((i) => i.message.includes("duplicate version"))).toBe(true);
+  });
+
+  test("allows same version with different platforms", () => {
+    const grid = {
+      providers: [
+        {
+          name: "claude",
+          track: "patch",
+          versions: [
+            { version: "2.1.119", outcome: "pass", platform: "darwin-arm64", archive: "binaries/claude-2.1.119.tgz" },
+            {
+              version: "2.1.119",
+              outcome: "untested",
+              platform: "linux-x64",
+              archive: "binaries/claude-2.1.119-linux-x64.tgz",
+            },
+          ],
+        },
+      ],
+    };
+    const result = validateVersionsGrid(grid);
+    expect(result.ok).toBe(true);
+    expect(result.issues.filter((i) => i.severity === "error")).toHaveLength(0);
+  });
+
+  test("detects duplicate version+platform pair", () => {
+    const grid = {
+      providers: [
+        {
+          name: "claude",
+          track: "patch",
+          versions: [
+            { version: "2.1.119", outcome: "pass", platform: "darwin-arm64" },
+            { version: "2.1.119", outcome: "fail", failure_class: "runtime-broken", platform: "darwin-arm64" },
+          ],
+        },
+      ],
+    };
+    const result = validateVersionsGrid(grid);
+    expect(result.ok).toBe(false);
+    expect(
+      result.issues.some((i) => i.message.includes("duplicate version") && i.message.includes("darwin-arm64")),
+    ).toBe(true);
   });
 
   test("rejects recording path with traversal", () => {
@@ -280,5 +373,14 @@ describe("validateVersionsGrid", () => {
     const result = validateVersionsGrid({ providers: "not-an-array" });
     expect(result.ok).toBe(false);
     expect(result.issues.length).toBeGreaterThan(0);
+  });
+});
+
+describe("hostPlatform", () => {
+  test("returns a valid platform string on supported hosts", () => {
+    const platform = hostPlatform();
+    // This test runs on darwin-arm64 or linux-x64 in CI
+    expect(platform).not.toBeNull();
+    expect(["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]).toContain(platform);
   });
 });

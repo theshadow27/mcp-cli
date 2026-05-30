@@ -26,7 +26,13 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { flockUnlock, options, tryFlockExclusive } from "@mcp-cli/core";
-import { type VersionEntry, type VersionsGrid, validateVersionsGrid } from "../agent-grid/versions-schema";
+import {
+  type Platform,
+  type VersionEntry,
+  type VersionsGrid,
+  hostPlatform,
+  validateVersionsGrid,
+} from "../agent-grid/versions-schema";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const GRID_DIR = resolve(REPO_ROOT, "agent-grid");
@@ -144,10 +150,25 @@ export function loadGrid(versionsPath: string): VersionsGrid {
   return result.grid;
 }
 
-export function findVersionEntry(grid: VersionsGrid, provider: string, version: string): VersionEntry | null {
+export function findVersionEntry(
+  grid: VersionsGrid,
+  provider: string,
+  version: string,
+  platform?: Platform | null,
+): VersionEntry | null {
   const prov = grid.providers.find((p) => p.name === provider);
   if (!prov) return null;
-  return prov.versions.find((v) => v.version === version) ?? null;
+
+  const candidates = prov.versions.filter((v) => v.version === version);
+  if (candidates.length === 0) return null;
+
+  if (platform) {
+    const exact = candidates.find((v) => v.platform === platform);
+    if (exact) return exact;
+  }
+
+  // Fall back to platform-agnostic entry (no platform field)
+  return candidates.find((v) => !v.platform) ?? candidates[0] ?? null;
 }
 
 // ── SHA256 helpers ─────────────────────────────────────────────────
@@ -360,7 +381,8 @@ export async function installFromArchive(
 
 export async function installAgent(args: InstallArgs, deps: InstallDeps = defaultDeps): Promise<InstallResult> {
   const grid = loadGrid(deps.versionsPath);
-  const entry = findVersionEntry(grid, args.provider, args.version);
+  const platform = hostPlatform();
+  const entry = findVersionEntry(grid, args.provider, args.version, platform);
 
   if (!entry) {
     const prov = grid.providers.find((p) => p.name === args.provider);

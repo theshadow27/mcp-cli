@@ -117,17 +117,62 @@ describe("findVersionEntry", () => {
         track: "patch" as const,
         enabled: true,
         versions: [
-          { version: "2.1.119", outcome: "pass" as const, archive: "binaries/claude-2.1.119.tgz" },
+          {
+            version: "2.1.119",
+            outcome: "pass" as const,
+            platform: "darwin-arm64" as const,
+            archive: "binaries/claude-2.1.119.tgz",
+          },
+          {
+            version: "2.1.119",
+            outcome: "untested" as const,
+            platform: "linux-x64" as const,
+            archive: "binaries/claude-2.1.119-linux-x64.tgz",
+          },
           { version: "latest", outcome: "untested" as const },
         ],
       },
     ],
   };
 
-  test("finds existing version", () => {
+  test("finds existing version without platform filter", () => {
     const entry = findVersionEntry(grid, "claude", "2.1.119");
     expect(entry).not.toBeNull();
+  });
+
+  test("finds platform-specific entry when platform matches", () => {
+    const entry = findVersionEntry(grid, "claude", "2.1.119", "darwin-arm64");
+    expect(entry).not.toBeNull();
     expect(entry?.archive).toBe("binaries/claude-2.1.119.tgz");
+    expect(entry?.platform).toBe("darwin-arm64");
+  });
+
+  test("finds different platform entry", () => {
+    const entry = findVersionEntry(grid, "claude", "2.1.119", "linux-x64");
+    expect(entry).not.toBeNull();
+    expect(entry?.archive).toBe("binaries/claude-2.1.119-linux-x64.tgz");
+    expect(entry?.platform).toBe("linux-x64");
+  });
+
+  test("falls back to platform-agnostic entry when platform has no match", () => {
+    const agnosticGrid = {
+      providers: [
+        {
+          name: "claude" as const,
+          track: "patch" as const,
+          enabled: true,
+          versions: [{ version: "3.0.0", outcome: "pass" as const }],
+        },
+      ],
+    };
+    const entry = findVersionEntry(agnosticGrid, "claude", "3.0.0", "linux-arm64");
+    expect(entry).not.toBeNull();
+    expect(entry?.platform).toBeUndefined();
+  });
+
+  test("falls back to first candidate when no platform-agnostic and no platform match", () => {
+    const entry = findVersionEntry(grid, "claude", "2.1.119", "linux-arm64");
+    expect(entry).not.toBeNull();
   });
 
   test("returns null for unknown provider", () => {

@@ -10,6 +10,7 @@ providers:
         first_seen: "2026-05-23T21:24:15Z"
         last_tested: "2026-05-28T03:00:00Z"
         outcome: pass
+        platform: darwin-arm64
         archive: binaries/claude-2.1.119.tgz
 
       - version: latest
