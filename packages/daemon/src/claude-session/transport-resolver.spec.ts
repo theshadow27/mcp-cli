@@ -44,4 +44,14 @@ describe("resolveTransport", () => {
     expect(resolveTransport("auto", "2.1.122-alpha.0")).toBe("ws");
     expect(resolveTransport("auto", "2.1.100-dev.5")).toBe("ws");
   });
+
+  test("fully non-numeric segments are treated as 0, not NaN", () => {
+    // "beta" → parseInt → NaN; || 0 must coerce to 0 (NaN ?? 0 = NaN, NaN || 0 = 0)
+    // [NaN,0,0] without guard would make diff=NaN → compareSemver returns 0 (wrong)
+    // [0,0,0] with guard is correct: 0.0.0 < 2.1.122 → ws
+    expect(resolveTransport("auto", "beta.0.0")).toBe("ws");
+    // Empty segment from corrupt split: "2..123" → [2, NaN, 123] → [2, 0, 123]
+    // 2.0.123 < 2.1.122 → ws
+    expect(resolveTransport("auto", "2..123")).toBe("ws");
+  });
 });
