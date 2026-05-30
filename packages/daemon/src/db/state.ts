@@ -44,6 +44,7 @@ export interface AgentSessionRow {
   spawnedAt: string;
   endedAt: string | null;
   claudeSessionId: string | null;
+  transport: string | null;
 }
 
 /** @deprecated Use AgentSessionRow instead. */
@@ -291,6 +292,27 @@ export class StateDb {
       })();
       version = 6;
     }
+
+    if (version < 7) {
+      this.db.transaction(() => {
+        const hasAgentSessions =
+          (this.db
+            .query<{ n: number }, []>(
+              "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='agent_sessions'",
+            )
+            .get()?.n ?? 0) > 0;
+        if (hasAgentSessions) {
+          const hasCol = (this.db.prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).some(
+            (r) => r.name === "transport",
+          );
+          if (!hasCol) {
+            this.db.exec("ALTER TABLE agent_sessions ADD COLUMN transport TEXT");
+          }
+        }
+        this.setSchemaVersion(CONSUMER, 7);
+      })();
+      version = 7;
+    }
   }
 
   private applyV1Schema(): void {
@@ -437,7 +459,8 @@ export class StateDb {
         total_cost   REAL NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
         spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
-        ended_at     TEXT
+        ended_at     TEXT,
+        transport    TEXT
       );
 
       CREATE TABLE IF NOT EXISTS spans (
@@ -1224,10 +1247,11 @@ export class StateDb {
     worktree?: string;
     repoRoot?: string;
     claudeSessionId?: string;
+    transport?: string;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
@@ -1238,7 +1262,8 @@ export class StateDb {
          cwd = COALESCE(excluded.cwd, agent_sessions.cwd),
          worktree = COALESCE(excluded.worktree, agent_sessions.worktree),
          repo_root = COALESCE(excluded.repo_root, agent_sessions.repo_root),
-         claude_session_id = COALESCE(excluded.claude_session_id, agent_sessions.claude_session_id)`,
+         claude_session_id = COALESCE(excluded.claude_session_id, agent_sessions.claude_session_id),
+         transport = COALESCE(excluded.transport, agent_sessions.transport)`,
       [
         session.sessionId,
         session.name ?? null,
@@ -1251,6 +1276,7 @@ export class StateDb {
         session.worktree ?? null,
         session.repoRoot ?? null,
         session.claudeSessionId ?? null,
+        session.transport ?? null,
       ],
     );
   }
@@ -1276,7 +1302,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1286,7 +1312,7 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -1878,6 +1904,7 @@ interface RawSessionRow {
   spawned_at: string;
   ended_at: string | null;
   claude_session_id: string | null;
+  transport: string | null;
 }
 
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
@@ -1897,6 +1924,7 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
     spawnedAt: row.spawned_at,
     endedAt: row.ended_at,
     claudeSessionId: row.claude_session_id,
+    transport: row.transport,
   };
 }
 

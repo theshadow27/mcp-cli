@@ -1851,13 +1851,13 @@ describe("StateDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 6", () => {
+    test("fresh DB sets schema version to 7", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
       db.close();
     });
 
@@ -1872,7 +1872,7 @@ describe("StateDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
       db2.close();
     });
 
@@ -1892,7 +1892,7 @@ describe("StateDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
       db.close();
     });
 
@@ -2170,6 +2170,35 @@ describe("StateDb", () => {
       db.close();
     });
 
+    test("v7 migration adds transport to pre-existing agent_sessions table", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      const { Database } = require("bun:sqlite");
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      raw.exec(`
+        CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+        CREATE TABLE agent_sessions (
+          session_id TEXT PRIMARY KEY,
+          state TEXT NOT NULL DEFAULT 'connecting',
+          claude_session_id TEXT,
+          spawned_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO schema_versions (name, version) VALUES ('state', 6);
+        INSERT INTO agent_sessions (session_id, state) VALUES ('sess-old', 'ended');
+      `);
+      raw.close();
+
+      const db = new StateDb(p);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test
+      const cols = (db["db"].prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).map(
+        (r) => r.name,
+      );
+      expect(cols).toContain("transport");
+      db.close();
+    });
+
     test("upsertSession with claudeSessionId persists and round-trips", () => {
       const db = createDb();
       db.upsertSession({ sessionId: "sess-csid", claudeSessionId: "claude-abc123" });
@@ -2185,6 +2214,32 @@ describe("StateDb", () => {
       const row = db.getSession("sess-csid2");
       expect(row?.claudeSessionId).toBe("claude-xyz");
       expect(row?.state).toBe("idle");
+      db.close();
+    });
+
+    test("upsertSession with transport persists and round-trips (fixes #2602)", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-transport", transport: "stdio" });
+      const row = db.getSession("sess-transport");
+      expect(row?.transport).toBe("stdio");
+      db.close();
+    });
+
+    test("upsertSession transport is preserved on partial update", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-tp2", transport: "stdio" });
+      db.upsertSession({ sessionId: "sess-tp2", state: "idle" });
+      const row = db.getSession("sess-tp2");
+      expect(row?.transport).toBe("stdio");
+      expect(row?.state).toBe("idle");
+      db.close();
+    });
+
+    test("upsertSession transport defaults to null when not provided", () => {
+      const db = createDb();
+      db.upsertSession({ sessionId: "sess-tp-null" });
+      const row = db.getSession("sess-tp-null");
+      expect(row?.transport).toBeNull();
       db.close();
     });
 

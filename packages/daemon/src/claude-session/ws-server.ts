@@ -751,8 +751,8 @@ export class ClaudeWsServer {
    * Prepare a session for an incoming Claude CLI connection.
    * Call this before spawning the Claude process.
    */
-  /** Prepare a session and return the assigned name. */
-  prepareSession(sessionId: string, config: SessionConfig): string {
+  /** Prepare a session and return the assigned name and resolved transport. */
+  prepareSession(sessionId: string, config: SessionConfig): { name: string; transport: "ws" | "stdio" } {
     const state = new SessionState(sessionId);
     // Pre-populate state.cwd from config so session info shows the correct
     // cwd even if the Claude process never connects (#1836).
@@ -799,7 +799,8 @@ export class ClaudeWsServer {
       transport: config.transport ?? "ws",
       stdioWriter: null,
     });
-    return name;
+    const resolvedTransport = config.transport ?? "ws";
+    return { name, transport: resolvedTransport };
   }
 
   /**

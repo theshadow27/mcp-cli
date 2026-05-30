@@ -409,10 +409,7 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastOpts).toMatchObject({ stdin: "pipe", stdout: "pipe" });
   });
 
-  // Production restore path: claude-server.ts does not persist or forward
-  // transport from the DB, so restored stdio sessions default to "ws" and
-  // spawn with --sdk-url instead of stdio args. Tracked in #2602.
-  test.skip("production restore path: stdio session without explicit transport revives correctly", async () => {
+  test("production restore path: stdio transport persisted in DB survives restore (fixes #2602)", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
       spawn: mock.spawn,
@@ -420,7 +417,7 @@ describe("ClaudeWsServer — stdio transport", () => {
     });
     await server.start(0);
 
-    const sessionId = "restored-stdio-no-transport";
+    const sessionId = "restored-stdio-from-db";
     server.restoreSessions([
       {
         sessionId,
@@ -432,15 +429,12 @@ describe("ClaudeWsServer — stdio transport", () => {
         totalCost: 0,
         totalTokens: 0,
         claudeSessionId: "claude-sess-def",
-        // No transport field — mirrors the production restore_sessions sender
+        transport: "stdio",
       },
     ]);
 
     server.reviveSession(sessionId, "follow-up prompt");
 
-    // This SHOULD use stdio args once #2602 lands a transport column in
-    // agent_sessions + forwards it in claude-server.ts restore_sessions.
-    // Currently fails: defaults to "ws" and spawns with --sdk-url.
     expect(mock.lastCmd).not.toContain("--sdk-url");
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");

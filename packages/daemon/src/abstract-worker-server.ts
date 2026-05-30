@@ -30,6 +30,7 @@ export interface DbUpsertSession {
   worktree?: string;
   repoRoot?: string;
   claudeSessionId?: string;
+  transport?: string;
 }
 
 interface DbUpsert {
