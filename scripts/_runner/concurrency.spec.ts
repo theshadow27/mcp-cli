@@ -36,7 +36,7 @@ describe("acquireConcurrencyGuard", () => {
     const cpuCount = availableParallelism();
     const guard = acquireConcurrencyGuard();
     expect(guard.siblingCount).toBe(0);
-    expect(guard.maxConcurrency).toBe(cpuCount);
+    expect(guard.maxConcurrency).toBe(Math.max(2, cpuCount));
     guard.cleanup();
   });
 

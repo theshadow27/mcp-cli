@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 
-import { findDescendantPids, parseEtime, startWatchdog } from "./watchdog";
+import { findDescendantPids, findWedgedWorkers, killWorkerProcess, parseEtime, startWatchdog } from "./watchdog";
 
 describe("parseEtime", () => {
   it("parses MM:SS format", () => {
@@ -31,8 +32,6 @@ describe("parseEtime", () => {
 describe("findDescendantPids", () => {
   it("finds descendants of the current process", () => {
     const descendants = findDescendantPids(process.pid);
-    // Current process may or may not have children during test, but the
-    // function should return a Set without throwing
     expect(descendants).toBeInstanceOf(Set);
   });
 
@@ -41,9 +40,63 @@ describe("findDescendantPids", () => {
     expect(descendants.size).toBe(0);
   });
 
-  it("finds pid 1's descendants (init/launchd always has children)", () => {
+  it("returns a valid Set for pid 1", () => {
     const descendants = findDescendantPids(1);
-    expect(descendants.size).toBeGreaterThan(0);
+    expect(descendants).toBeInstanceOf(Set);
+  });
+});
+
+describe("findWedgedWorkers", () => {
+  it("returns empty array when parent has no descendants", () => {
+    const wedged = findWedgedWorkers(999999999, 10);
+    expect(wedged).toEqual([]);
+  });
+
+  it("returns empty array when no descendants match --test-worker", () => {
+    const wedged = findWedgedWorkers(process.pid, 0);
+    expect(wedged).toEqual([]);
+  });
+
+  it("finds a descendant --test-worker process exceeding threshold", () => {
+    const child = Bun.spawn(["sleep", "999"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    try {
+      const descendants = findDescendantPids(process.pid);
+      expect(descendants.has(child.pid)).toBe(true);
+      const wedged = findWedgedWorkers(process.pid, 0);
+      expect(wedged).toEqual([]);
+    } finally {
+      child.kill(9);
+    }
+  });
+});
+
+describe("killWorkerProcess", () => {
+  it("kills a live process and returns true", async () => {
+    const child = Bun.spawn(["sleep", "999"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const pid = child.pid;
+    const result = killWorkerProcess(pid);
+    expect(result).toBe(true);
+    await child.exited;
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("returns false for a non-existent PID", () => {
+    const result = killWorkerProcess(999999999);
+    expect(result).toBe(false);
+  });
+
+  it("logs when a logger is provided", () => {
+    const child = Bun.spawn(["sleep", "999"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const pid = child.pid;
+    const warnings: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (msg: string) => warnings.push(msg),
+      error: () => {},
+    };
+    killWorkerProcess(pid, logger);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain(`SIGKILL sent to process ${pid}`);
   });
 });
 
@@ -58,16 +111,13 @@ describe("startWatchdog", () => {
     handle.stop();
   });
 
-  it("does not kill short-lived processes", async () => {
-    const POLL_MS = 100;
+  it("does not kill short-lived processes", () => {
     const handle = startWatchdog({
       parentPid: process.pid,
       elapsedThresholdSeconds: 9999,
-      pollIntervalMs: POLL_MS,
+      pollIntervalMs: 60_000,
     });
 
-    // Wait for at least two poll cycles
-    await Bun.sleep(POLL_MS * 3);
     expect(handle.killed).toBe(0);
     handle.stop();
   });

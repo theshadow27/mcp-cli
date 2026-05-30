@@ -327,8 +327,8 @@ async function main(): Promise<void> {
 
   process.stdout.write(`🤔 am-i-done? — ${label} mode (${steps.length} step${steps.length === 1 ? "" : "s"})\n\n`);
 
-  // Watchdog: SIGKILL wedged test-worker process groups that ignore --timeout (#2597).
-  // Starts before test steps, polls every 5s, kills workers exceeding 120s elapsed.
+  // Watchdog: SIGKILL wedged test-worker processes that ignore --timeout (#2597).
+  // Starts before test steps, polls every 5s, kills workers exceeding 180s elapsed.
   const WATCHDOG_THRESHOLD_S = 180;
   const WATCHDOG_POLL_MS = 5_000;
   const watchdog = hasTests

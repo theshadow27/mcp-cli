@@ -4,8 +4,8 @@
  * Bun's `--timeout` flag is a soft signal: it aborts the test harness, but a
  * worker stuck in a tight loop (e.g. the bmalloc madvise EAGAIN busy-spin,
  * bun#17723) never processes it. Only SIGKILL works. This watchdog polls for
- * descendant test-worker processes and kills their process group when elapsed
- * wall-clock time exceeds the threshold.
+ * descendant test-worker processes and SIGKILLs the individual worker PID
+ * when elapsed wall-clock time exceeds the threshold.
  *
  * Wall-clock elapsed time is the correct signal, not CPU time — under
  * contention, starved spinners accrue CPU time too slowly to trip a CPU-time
@@ -121,25 +121,19 @@ function findWedgedWorkers(parentPid: number, thresholdSeconds: number): WorkerI
   return wedged;
 }
 
-function killProcessGroup(pid: number, logger?: Logger): boolean {
+function killWorkerProcess(pid: number, logger?: Logger): boolean {
   try {
-    process.kill(-pid, 9);
-    logger?.warn(`[watchdog] SIGKILL sent to process group ${pid}`);
+    process.kill(pid, 9);
+    logger?.warn(`[watchdog] SIGKILL sent to process ${pid}`);
     return true;
   } catch {
-    try {
-      process.kill(pid, 9);
-      logger?.warn(`[watchdog] SIGKILL sent to process ${pid} (pgroup kill failed)`);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
 /**
  * Start a watchdog that periodically scans for wedged test-worker processes
- * descended from `parentPid` and SIGKILLs their process group.
+ * descended from `parentPid` and SIGKILLs the individual worker PID.
  *
  * Returns a handle to stop the watchdog and query kill count.
  */
@@ -154,9 +148,9 @@ export function startWatchdog(opts: WatchdogOptions): WatchdogHandle {
       const wedged = findWedgedWorkers(opts.parentPid, threshold);
       for (const w of wedged) {
         logger?.warn(
-          `[watchdog] test-worker pid ${w.pid} wedged (${w.elapsedSeconds}s elapsed, threshold ${threshold}s) — killing process group`,
+          `[watchdog] test-worker pid ${w.pid} wedged (${w.elapsedSeconds}s elapsed, threshold ${threshold}s) — sending SIGKILL`,
         );
-        if (killProcessGroup(w.pid, logger)) {
+        if (killWorkerProcess(w.pid, logger)) {
           handle.killed++;
         }
       }
@@ -174,4 +168,4 @@ export function startWatchdog(opts: WatchdogOptions): WatchdogHandle {
   return handle;
 }
 
-export { parseEtime, findWedgedWorkers, findDescendantPids };
+export { parseEtime, findWedgedWorkers, findDescendantPids, killWorkerProcess };

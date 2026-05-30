@@ -83,7 +83,7 @@ export function acquireConcurrencyGuard(): ConcurrencyGuard {
   const cpuCount = availableParallelism();
   const maxConcurrency = Math.max(2, Math.floor(cpuCount / totalRuns));
 
-  const cleanup = () => {
+  const cleanupFile = () => {
     try {
       unlinkSync(myPath);
     } catch {
@@ -91,15 +91,25 @@ export function acquireConcurrencyGuard(): ConcurrencyGuard {
     }
   };
 
-  process.on("exit", cleanup);
-  process.on("SIGINT", () => {
-    cleanup();
+  const onSigint = () => {
+    cleanupFile();
     process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    cleanup();
+  };
+  const onSigterm = () => {
+    cleanupFile();
     process.exit(143);
-  });
+  };
+
+  process.once("exit", cleanupFile);
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+
+  const cleanup = () => {
+    cleanupFile();
+    process.removeListener("exit", cleanupFile);
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
+  };
 
   return { maxConcurrency, siblingCount: siblings, cleanup };
 }
