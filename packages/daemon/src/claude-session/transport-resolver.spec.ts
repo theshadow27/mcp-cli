@@ -47,7 +47,8 @@ describe("resolveTransport", () => {
 
   test("fully non-numeric segments are treated as 0, not NaN", () => {
     // "beta" → parseInt → NaN; || 0 must coerce to 0 (NaN ?? 0 = NaN, NaN || 0 = 0)
-    // [NaN,0,0] without guard would make diff=NaN → compareSemver returns 0 (wrong)
+    // [NaN,0,0] without guard: diff=NaN, diff!==0 is true, compareSemver returns NaN;
+    // caller's NaN>0 is false → always "ws" regardless of actual version (wrong)
     // [0,0,0] with guard is correct: 0.0.0 < 2.1.122 → ws
     expect(resolveTransport("auto", "beta.0.0")).toBe("ws");
     // Empty segment from corrupt split: "2..123" → [2, NaN, 123] → [2, 0, 123]
