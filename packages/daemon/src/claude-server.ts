@@ -374,7 +374,7 @@ export class ClaudeServer extends AbstractWorkerServer {
         totalCost: row.totalCost,
         totalTokens: row.totalTokens,
         claudeSessionId: row.claudeSessionId,
-        transport: (row.transport as "ws" | "stdio") ?? undefined,
+        transport: row.transport === "ws" || row.transport === "stdio" ? row.transport : undefined,
       })),
     });
 

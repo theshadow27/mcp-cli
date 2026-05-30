@@ -770,6 +770,7 @@ export class ClaudeWsServer {
       }
     }
     const name = config.name ?? this.generateName();
+    const resolvedTransport = config.transport ?? "ws";
 
     this.sessions.set(sessionId, {
       state,
@@ -796,10 +797,9 @@ export class ClaudeWsServer {
       pendingInterruptReason: null,
       traceparent: null,
       stuckDetector: null,
-      transport: config.transport ?? "ws",
+      transport: resolvedTransport,
       stdioWriter: null,
     });
-    const resolvedTransport = config.transport ?? "ws";
     return { name, transport: resolvedTransport };
   }
 

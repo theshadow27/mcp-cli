@@ -1247,7 +1247,7 @@ export class StateDb {
     worktree?: string;
     repoRoot?: string;
     claudeSessionId?: string;
-    transport?: string;
+    transport?: "ws" | "stdio";
   }): void {
     this.db.run(
       `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport)

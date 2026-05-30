@@ -439,4 +439,33 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");
   });
+
+  test("restored session without transport defaults to ws (fallback path)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    const port = await server.start(0);
+
+    const sessionId = "restored-no-transport";
+    server.restoreSessions([
+      {
+        sessionId,
+        pid: null,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-sess-fallback",
+      },
+    ]);
+
+    server.reviveSession(sessionId, "follow-up prompt");
+
+    expect(mock.lastCmd).toContain("--sdk-url");
+    expect(mock.lastCmd.some((a: string) => a.startsWith(`ws://localhost:${port}/`))).toBe(true);
+  });
 });

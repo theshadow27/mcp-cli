@@ -73,6 +73,7 @@ interface RestoreSessionsMessage {
     worktree: string | null;
     totalCost: number;
     totalTokens: number;
+    claudeSessionId?: string | null;
     transport?: "ws" | "stdio";
   }>;
 }
