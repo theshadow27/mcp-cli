@@ -32,10 +32,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./_runner/ci-steps";
+import { acquireConcurrencyGuard } from "./_runner/concurrency";
 import { detectContext, isCi, isPreCommit, isPrePush } from "./_runner/context";
 import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
 import { StepRunner } from "./_runner/runner";
 import type { Step } from "./_runner/types";
+import { startWatchdog } from "./_runner/watchdog";
 import { doingItWrongStep } from "./doing-it-wrong";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
@@ -94,17 +96,23 @@ const RULES: Step = {
   ],
 };
 
-const TEST_PARALLEL: Step = {
-  name: "test-parallel",
-  description: "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362)",
-  command: "bun test --parallel --no-orphans --path-ignore-patterns=packages/control/**",
-};
+function testParallelStep(maxConcurrency?: number): Step {
+  const mcFlag = maxConcurrency ? ` --max-concurrency=${maxConcurrency}` : "";
+  return {
+    name: "test-parallel",
+    description: `bun test --parallel${mcFlag ? ` (max-concurrency=${maxConcurrency})` : ""} (excluding packages/control — yoga-layout TDZ, #2362)`,
+    command: `bun test --parallel --no-orphans --path-ignore-patterns=packages/control/**${mcFlag}`,
+  };
+}
 
-const TEST_CONTROL: Step = {
-  name: "test-control",
-  description: "bun test packages/control (sequential — yoga-layout TDZ workaround #2362)",
-  command: "bun test --no-orphans packages/control",
-};
+function testControlStep(maxConcurrency?: number): Step {
+  const mcFlag = maxConcurrency ? ` --max-concurrency=${maxConcurrency}` : "";
+  return {
+    name: "test-control",
+    description: `bun test packages/control (sequential — yoga-layout TDZ workaround #2362)${mcFlag ? ` (max-concurrency=${maxConcurrency})` : ""}`,
+    command: `bun test --no-orphans packages/control${mcFlag}`,
+  };
+}
 
 const COVERAGE: Step = {
   name: "coverage",
@@ -146,37 +154,43 @@ const DAEMON_TEST_PATHS = [
   "test/transport-errors.spec.ts",
 ];
 
-const TEST_NON_DAEMON_CI: Step = {
-  name: "test-non-daemon",
-  description: "non-daemon tests (sequential; #1004 crash-after-pass tolerance)",
-  command: bunTestWithCrashTolerance({
-    paths: NON_DAEMON_TEST_PATHS,
-    logName: "test_non_daemon",
-    retryOn132: false,
-  }),
-  source: "scripts/_runner/ci-steps.ts",
-  onFailure: [
-    "real failure: see the captured output above",
-    "post-test Bun crash (#1004): summary should show `0 fail` — would have been treated as pass",
-    "log artefact: /tmp/test_non_daemon.txt",
-  ],
-};
+function testNonDaemonCiStep(maxConcurrency?: number): Step {
+  return {
+    name: "test-non-daemon",
+    description: "non-daemon tests (sequential; #1004 crash-after-pass tolerance)",
+    command: bunTestWithCrashTolerance({
+      paths: NON_DAEMON_TEST_PATHS,
+      logName: "test_non_daemon",
+      retryOn132: false,
+      maxConcurrency,
+    }),
+    source: "scripts/_runner/ci-steps.ts",
+    onFailure: [
+      "real failure: see the captured output above",
+      "post-test Bun crash (#1004): summary should show `0 fail` — would have been treated as pass",
+      "log artefact: /tmp/test_non_daemon.txt",
+    ],
+  };
+}
 
-const TEST_DAEMON_CI: Step = {
-  name: "test-daemon",
-  description: "daemon tests (sequential; #1004 segfault retry + crash-after-pass tolerance)",
-  command: bunTestWithCrashTolerance({
-    paths: DAEMON_TEST_PATHS,
-    logName: "test_daemon",
-    retryOn132: true,
-  }),
-  source: "scripts/_runner/ci-steps.ts",
-  onFailure: [
-    "real failure: see the captured output above",
-    "post-test Bun crash (#1004): summary should show `0 fail` — would have been treated as pass",
-    "log artefact: /tmp/test_daemon.txt (retry: test_daemon_retry.txt)",
-  ],
-};
+function testDaemonCiStep(maxConcurrency?: number): Step {
+  return {
+    name: "test-daemon",
+    description: "daemon tests (sequential; #1004 segfault retry + crash-after-pass tolerance)",
+    command: bunTestWithCrashTolerance({
+      paths: DAEMON_TEST_PATHS,
+      logName: "test_daemon",
+      retryOn132: true,
+      maxConcurrency,
+    }),
+    source: "scripts/_runner/ci-steps.ts",
+    onFailure: [
+      "real failure: see the captured output above",
+      "post-test Bun crash (#1004): summary should show `0 fail` — would have been treated as pass",
+      "log artefact: /tmp/test_daemon.txt (retry: test_daemon_retry.txt)",
+    ],
+  };
+}
 
 const COVERAGE_CI: Step = {
   name: "coverage",
@@ -236,26 +250,45 @@ const STALE_TODOS_CI: Step = {
 // Default (no flag): the developer-friendly path — parallel tests for
 //   speed, `biome --write` for auto-fix, and the simpler coverage step.
 
-const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID];
-const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED];
-const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, AGENT_GRID, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
-const CI: Step[] = [
-  INSTALL,
-  TYPECHECK,
-  LINT_CHECK,
-  RULES,
-  AGENT_GRID,
-  STALE_TODOS_CI,
-  TEST_NON_DAEMON_CI,
-  TEST_DAEMON_CI,
-  COVERAGE_CI,
-];
-
-function selectSteps(): { steps: Step[]; label: string } {
-  if (isPreCommit) return { steps: PRE_COMMIT, label: "pre-commit" };
-  if (isCi) return { steps: CI, label: "ci" };
-  if (isPrePush) return { steps: PRE_PUSH, label: "pre-push" };
-  return { steps: COMPREHENSIVE, label: "default" };
+function selectSteps(maxConcurrency?: number): { steps: Step[]; label: string; hasTests: boolean } {
+  if (isPreCommit)
+    return { steps: [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID], label: "pre-commit", hasTests: false };
+  if (isCi)
+    return {
+      steps: [
+        INSTALL,
+        TYPECHECK,
+        LINT_CHECK,
+        RULES,
+        AGENT_GRID,
+        STALE_TODOS_CI,
+        testNonDaemonCiStep(maxConcurrency),
+        testDaemonCiStep(maxConcurrency),
+        COVERAGE_CI,
+      ],
+      label: "ci",
+      hasTests: true,
+    };
+  if (isPrePush)
+    return {
+      steps: [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED],
+      label: "pre-push",
+      hasTests: true,
+    };
+  return {
+    steps: [
+      INSTALL,
+      TYPECHECK,
+      LINT,
+      RULES,
+      AGENT_GRID,
+      testParallelStep(maxConcurrency),
+      testControlStep(maxConcurrency),
+      COVERAGE,
+    ],
+    label: "default",
+    hasTests: true,
+  };
 }
 
 function parseFlag(argv: string[], flag: string): string | undefined {
@@ -278,12 +311,34 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { steps, label } = selectSteps();
+  // Concurrency guard: detect sibling am-i-done runs and cap --max-concurrency
+  // so parallel sprints can't oversubscribe cores (#2597).
+  const guard = acquireConcurrencyGuard();
+  if (guard.siblingCount > 0) {
+    process.stderr.write(
+      `⚡ ${guard.siblingCount} sibling am-i-done run(s) detected — capping --max-concurrency=${guard.maxConcurrency} (#2597)\n`,
+    );
+  }
+
+  const { steps, label, hasTests } = selectSteps(guard.maxConcurrency);
   const xc = detectContext();
   const aiLogger = xc === "ai" && !argv.includes("--verbose") ? createAiFileLogger(REPO_ROOT) : null;
   const logger = aiLogger ?? createConsoleLogger();
 
   process.stdout.write(`🤔 am-i-done? — ${label} mode (${steps.length} step${steps.length === 1 ? "" : "s"})\n\n`);
+
+  // Watchdog: SIGKILL wedged test-worker process groups that ignore --timeout (#2597).
+  // Starts before test steps, polls every 5s, kills workers exceeding 120s elapsed.
+  const WATCHDOG_THRESHOLD_S = 180;
+  const WATCHDOG_POLL_MS = 5_000;
+  const watchdog = hasTests
+    ? startWatchdog({
+        parentPid: process.pid,
+        elapsedThresholdSeconds: WATCHDOG_THRESHOLD_S,
+        pollIntervalMs: WATCHDOG_POLL_MS,
+        logger,
+      })
+    : null;
 
   const runner = new StepRunner({
     logger,
@@ -294,6 +349,12 @@ async function main(): Promise<void> {
   });
   runner.add(...steps);
   const report = await runner.run();
+
+  watchdog?.stop();
+  if (watchdog && watchdog.killed > 0) {
+    logger.warn(`[watchdog] killed ${watchdog.killed} wedged test-worker process(es) during this run (#2597)`);
+  }
+  guard.cleanup();
 
   if (aiLogger) {
     await aiLogger.finalize(report.success);

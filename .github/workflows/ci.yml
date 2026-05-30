@@ -61,6 +61,7 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -108,6 +109,7 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -149,6 +151,7 @@ jobs:
 
   check-no-claude:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -210,6 +213,7 @@ jobs:
 
   pty-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [check, detect]
     steps:
       - name: Skip (docs-only PR)
@@ -257,6 +261,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [check, detect]
     steps:
       - name: Skip (docs-only PR)
