@@ -31,19 +31,27 @@ one PR at a time — there is no automatic promotion.**
   - inner binary: `31db3444309d5d0f8b85e8782e2dcd86f31f7e48c1a1e83d69b09268c7b4f9a2`
     (verify after extraction)
 
-## Platform note (read before consuming)
+## Platform-specific archives
 
-This archive is **darwin-arm64 only**. `install-agent --offline claude@2.1.119`
-will produce a binary that runs only on Apple-silicon macOS. The grid currently
-runs on that platform, so this is sufficient today. When the matrix grows to
-other platforms, `versions.yaml` (#2578) needs a `platform` field and this dir
-needs per-platform archives (`claude-2.1.119-darwin-arm64.tgz`, …). Filed as a
-follow-up — do not assume cross-platform.
+Archives are platform-specific. Each `versions.yaml` entry with an `archive`
+field should also have a `platform` field (`darwin-arm64`, `darwin-x64`,
+`linux-x64`, or `linux-arm64`). `install-agent.ts` auto-detects the host
+platform and selects the matching entry. Entries without a `platform` field are
+treated as platform-agnostic (e.g. Node.js scripts that run anywhere).
+
+When adding a binary for an additional platform, use the naming convention
+`<provider>-<version>-<platform>.tgz` (e.g. `claude-2.1.119-linux-x64.tgz`).
 
 ## Adding a new archive
 
 1. `tar -C <dir-containing-binary> -czf agent-grid/binaries/<name>.tgz <binary>`
-   (deterministic flags: `--uid 0 --gid 0 --numeric-owner`, `gzip -9 -n`).
+   (deterministic flags: `--uid 0 --gid 0 --numeric-owner`, `gzip -9 -n`
+   so checksums are reproducible across machines).
 2. `shasum -a 256 agent-grid/binaries/<name>.tgz > agent-grid/binaries/<name>.tgz.sha256`
-3. Add the row to `versions.yaml` (#2578) with `archivePath` + checksum.
+3. Add the row to `versions.yaml` with `archive`, `platform`, and optionally
+   `binary_sha256`.
 4. Commit — `.gitattributes` routes the `.tgz` to LFS automatically.
+
+**LFS push note:** This repo uses `core.hooksPath=.git-hooks`, which means
+git-lfs's own `pre-push` hook is inactive. After committing LFS-tracked files,
+push objects explicitly with `git lfs push origin <branch>` before `git push`.

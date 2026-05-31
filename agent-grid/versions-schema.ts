@@ -19,6 +19,9 @@ export type Outcome = (typeof OUTCOME_VALUES)[number];
 const FAILURE_CLASSES = ["spawn-failed", "protocol-broken", "runtime-broken", "flake", "quota", "wontfix"] as const;
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
+const PLATFORM_VALUES = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const;
+export type Platform = (typeof PLATFORM_VALUES)[number];
+
 const iso8601 = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "must be ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)");
@@ -30,6 +33,7 @@ export const VersionEntrySchema = z
     last_tested: iso8601.optional(),
     outcome: z.enum(OUTCOME_VALUES),
     recording: z.string().optional(),
+    platform: z.enum(PLATFORM_VALUES).optional(),
     archive: z.string().optional(),
     binary_sha256: z
       .string()
@@ -94,6 +98,11 @@ export type ValidationResult =
   | { ok: true; grid: VersionsGrid; issues: ValidationIssue[] }
   | { ok: false; grid?: undefined; issues: ValidationIssue[] };
 
+export function hostPlatform(): Platform | null {
+  const key = `${process.platform}-${process.arch}`;
+  return PLATFORM_VALUES.includes(key as Platform) ? (key as Platform) : null;
+}
+
 function isTraversalPath(p: string): boolean {
   return p.startsWith("/") || p.includes("..") || p.startsWith("~");
 }
@@ -130,19 +139,23 @@ export function validateVersionsGrid(raw: unknown): ValidationResult {
       });
     }
 
-    const seenVersions = new Set<string>();
+    const seenVersionKeys = new Set<string>();
     for (let vi = 0; vi < provider.versions.length; vi++) {
       const version = provider.versions[vi] as VersionEntry;
       const vPath = `${pPath}.versions[${vi}]`;
 
-      if (seenVersions.has(version.version)) {
+      const versionKey = version.platform ? `${version.version}:${version.platform}` : version.version;
+      if (seenVersionKeys.has(versionKey)) {
+        const label = version.platform
+          ? `duplicate version "${version.version}" (platform: ${version.platform})`
+          : `duplicate version "${version.version}"`;
         issues.push({
           path: `${vPath}.version`,
-          message: `duplicate version "${version.version}" in provider "${provider.name}"`,
+          message: `${label} in provider "${provider.name}"`,
           severity: "error",
         });
       }
-      seenVersions.add(version.version);
+      seenVersionKeys.add(versionKey);
 
       if (version.recording && isTraversalPath(version.recording)) {
         issues.push({
