@@ -235,12 +235,7 @@ const junit1Path = junitOutfile ? `/tmp/coverage-junit-run1-${Date.now()}.xml` :
 // 35 files falsely flagged below the 80% per-file floor. The dev `bun test`
 // command uses --parallel for speed (no --coverage there), and this script
 // stays sequential for accurate coverage aggregation.
-const maxConcurrency = process.env.BUN_MAX_CONCURRENCY
-  ? Number.parseInt(process.env.BUN_MAX_CONCURRENCY, 10)
-  : undefined;
-const mcFlag = maxConcurrency && Number.isFinite(maxConcurrency) ? [`--max-concurrency=${maxConcurrency}`] : [];
-
-const run1Args = ["bun", "test", "--no-orphans", "--coverage", ...mcFlag, ...nonDaemonPaths];
+const run1Args = ["bun", "test", "--no-orphans", "--coverage", ...nonDaemonPaths];
 if (junit1Path) run1Args.push("--reporter", "junit", `--reporter-outfile=${junit1Path}`);
 const proc1 = Bun.spawn(run1Args, {
   stdout: "pipe",
@@ -281,7 +276,6 @@ if (skipRun2) {
     "--parallel",
     "--timeout",
     "60000",
-    ...mcFlag,
     "packages/daemon/src",
     ...daemonTestFiles,
   ];
