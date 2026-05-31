@@ -46,6 +46,7 @@
 - Never use `git worktree remove --force` — let the safety check catch uncommitted work.
 - `mcx claude ls` and `wait` filter by current repo; use `--all` for cross-repo view.
 - `core.bare` arc closed in sprint 52 / #1860 / PR #1998 — `ensureCoreBareUnset()` removes the key entirely; daemon sweep deletes both true/false. Pre-flight invariant: `git config --local core.bare` should exit non-zero (key absent). The `git config core.bare false` hot-patch is no longer needed.
+- [Sprint operator north-star](project_sprint_operator.md) — orchestrator as k8s-style reconciler; backlog as declarative CRD (`mcx flow apply`); crash-resume = stateless reconcile; moat is the control plane not the LLM. Epic #2577. Near-term: Stage 0 review-labels + Stage 1 reconciler (#1942).
 
 ## Skills
 - `/sprint` — lifecycle: plan, run, review, retro. Detailed rules in `.claude/skills/sprint/references/*.md`.
