@@ -25,14 +25,20 @@ function installInterruptHandlers(): void {
   if (handlersInstalled) return;
   handlersInstalled = true;
 
-  const onSignal = (signal: NodeJS.Signals) => {
-    cleanupAllEnvs();
-    process.removeListener(signal, onSignal);
-    process.kill(process.pid, signal);
-  };
-
-  process.on("SIGINT", () => onSignal("SIGINT"));
-  process.on("SIGTERM", () => onSignal("SIGTERM"));
+  // Use `once`: Node removes the listener *before* invoking it, so the
+  // subsequent re-raise hits the default disposition and the process actually
+  // terminates. The previous `on(...)` + `removeListener(signal, onSignal)`
+  // form passed the wrong reference (the registered listener was the arrow
+  // wrapper, not `onSignal`), so removal was a no-op and `process.kill(self,
+  // signal)` re-entered the still-installed handler forever — the process
+  // became immortal under SIGINT/SIGTERM (#2586 regression; only SIGKILL
+  // stopped it, which is what made test workers look "wedged").
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      cleanupAllEnvs();
+      process.kill(process.pid, signal);
+    });
+  }
 }
 
 export function cleanGitEnv(): Record<string, string> {

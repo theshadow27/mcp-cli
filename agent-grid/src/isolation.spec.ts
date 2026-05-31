@@ -167,4 +167,37 @@ describe("createIsolatedEnv", () => {
 
     expect(activeEnvCount()).toBe(before);
   });
+
+  // Regression for the #2586 SIGTERM-immortality bug: a process that imported
+  // createIsolatedEnv() (which installs the interrupt handlers) MUST still die
+  // on SIGTERM. The original handler re-raised the signal into a listener it
+  // failed to remove, looping forever — only SIGKILL stopped it, which is what
+  // made bun test-workers look "wedged" and hung check-no-claude for 96 min.
+  test("a process importing createIsolatedEnv still dies on SIGTERM (not immortal)", async () => {
+    const isoPath = join(import.meta.dir, "isolation.ts");
+    const proc = Bun.spawn({
+      cmd: [
+        "bun",
+        "-e",
+        `const { createIsolatedEnv } = await import(${JSON.stringify(isoPath)});createIsolatedEnv().cleanup();console.log("READY");await new Promise(() => {});`,
+      ],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+
+    // Wait for the child to confirm handlers are installed, then SIGTERM it.
+    const reader = proc.stdout.getReader();
+    await reader.read();
+    proc.kill("SIGTERM");
+
+    // A correct handler exits promptly. An immortal process never resolves
+    // `exited`; race a deadline and treat the timeout as the failure signal.
+    const DEADLINE_MS = 3_000;
+    const verdict = await Promise.race([
+      proc.exited.then(() => "exited" as const),
+      Bun.sleep(DEADLINE_MS).then(() => "immortal" as const),
+    ]);
+    if (verdict === "immortal") proc.kill("SIGKILL");
+    expect(verdict).toBe("exited");
+  });
 });
