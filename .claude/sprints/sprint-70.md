@@ -1,6 +1,14 @@
 # Sprint 70
 
-> Planned 2026-05-30 08:18 EDT. Started 2026-05-30 08:22 EDT. Target: 13 PRs.
+> Planned 2026-05-30 08:18 EDT. Started 2026-05-30 08:22 EDT. Ended 2026-05-31 00:50 EDT. Target: 13 PRs.
+>
+> **Outcome: mixed → recovered.** 7 PRs merged (#2601/#2607/#2602/#2605/#2606/#2592 + revert #2637),
+> #2529 resolved. The sprint's own P1 "fix" (#2597) and its follow-ups (#2632/#2634) were a
+> machine-wide-process-killer + throttle cascade that twice melted the box and forced a reboot;
+> all reverted in #2637 after the user forced root-cause. `main` is clean (coverage ~45s, no killers).
+> Three qa:pass PRs (#2614/#2617/#2625) deferred (need rebase onto cleaned main). #2589/#2616 not started.
+> **Full story: `.claude/diary/20260530.70.md`.** This sprint is the cautionary tale of fix-forward
+> without questioning the premise; read the retro before touching test-runner concurrency again.
 
 ## Goal
 
