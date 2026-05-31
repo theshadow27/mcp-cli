@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { activeEnvCount, cleanGitEnv, createIsolatedEnv } from "./isolation";
+import { activeEnvCount, cleanGitEnv, createIsolatedEnv, onInterrupt } from "./isolation";
 
 function gitLog(cwd: string): string {
   const r = spawnSync("git", ["log", "--oneline"], { cwd, stdio: ["ignore", "pipe", "ignore"], env: cleanGitEnv() });
@@ -166,5 +166,58 @@ describe("createIsolatedEnv", () => {
     }
 
     expect(activeEnvCount()).toBe(before);
+  });
+
+  // Regression for the #2586 SIGTERM-immortality bug: a process that imported
+  // createIsolatedEnv() (which installs the interrupt handlers) MUST still die
+  // on SIGTERM. The original handler re-raised the signal into a listener it
+  // failed to remove, looping forever — only SIGKILL stopped it, which is what
+  // made bun test-workers look "wedged" and hung check-no-claude for 96 min.
+  test("a process importing createIsolatedEnv still dies on SIGTERM (not immortal)", async () => {
+    const isoPath = join(import.meta.dir, "isolation.ts");
+    const proc = Bun.spawn({
+      cmd: [
+        "bun",
+        "-e",
+        `const { createIsolatedEnv } = await import(${JSON.stringify(isoPath)});createIsolatedEnv().cleanup();console.log("READY");await new Promise(() => {});`,
+      ],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+
+    // Wait for the child to confirm handlers are installed, then SIGTERM it.
+    const reader = proc.stdout.getReader();
+    await reader.read();
+    proc.kill("SIGTERM");
+
+    // A correct handler exits promptly. An immortal process never resolves
+    // `exited`; race a deadline and treat the timeout as the failure signal.
+    const DEADLINE_MS = 3_000;
+    const verdict = await Promise.race([
+      proc.exited.then(() => "exited" as const),
+      Bun.sleep(DEADLINE_MS).then(() => "immortal" as const),
+    ]);
+    if (verdict === "immortal") proc.kill("SIGKILL");
+    expect(verdict).toBe("exited");
+  });
+
+  // In-process coverage for the handler body that the subprocess test above
+  // exercises but cannot credit (coverage instruments only the parent). The
+  // injected `terminate` stands in for `process.kill(self, signal)` so the
+  // cleanup + re-raise path runs without killing the test runner — this is
+  // the exact code that was SIGTERM-immortal in #2586.
+  test("onInterrupt cleans up active envs then re-raises the signal", () => {
+    const env = createIsolatedEnv();
+    dirs.push(env.dir);
+    expect(existsSync(env.dir)).toBe(true);
+
+    let raised: NodeJS.Signals | undefined;
+    onInterrupt("SIGTERM", (s) => {
+      raised = s;
+    });
+
+    expect(activeEnvCount()).toBe(0); // cleanupAllEnvs swept the active set
+    expect(existsSync(env.dir)).toBe(false); // and removed the directory
+    expect(raised).toBe("SIGTERM"); // then re-raised with the original signal
   });
 });

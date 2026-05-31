@@ -38,7 +38,7 @@
 - [Quota = autonomous policy, never ask](feedback_quota_autonomous_policy.md) — at ≥95% don't AskUserQuestion (it suspended sprint 69 overnight); ScheduleWakeup to `resetsAt` + auto-resume
 
 ## Infra / Known Issues
-- [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — parallel sprints peg the box (load 117); bun bmalloc madvise spin (#2597), elapsed-time reaper band-aid, real fix = concurrency cap + SIGKILL pgroup (sprint 70 P1)
+- [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.

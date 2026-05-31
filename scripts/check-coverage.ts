@@ -116,6 +116,8 @@ const EXCLUSIONS: Record<string, string> = {
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
+  "scripts/_runner/no-claude-test.ts":
+    "CI-only entry shim (spawns bun test, then process.exit); logic is bunTestWithCrashTolerance, covered by ci-steps.spec.ts (#2641)",
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
@@ -213,6 +215,12 @@ const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
 
 const nonDaemonPaths = [
   ...packageDirs,
+  // agent-grid is a workspace sibling of packages/ (see root package.json
+  // "workspaces"), so the packages/* enumeration above misses it entirely.
+  // Without this line its specs never run in the coverage gate and its files
+  // are never ratcheted — which is how isolation.ts shipped unmeasured.
+  // Daemon-free and fast (~0.5s); safe in run-1. (#2586 follow-up)
+  "agent-grid/src",
   "scripts/rules",
   "scripts/_runner",
   ...topLevelTestFiles,

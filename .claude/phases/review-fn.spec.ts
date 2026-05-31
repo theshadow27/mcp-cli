@@ -150,6 +150,24 @@ describe("scanReviewComments", () => {
   });
 });
 
+describe("runReview — spawn prompt", () => {
+  test("includes resolve step with correct pr number", async () => {
+    const state = makeState();
+    const result = await runReview({ provider: "claude" }, makeWork({ prNumber: 55 }), state, makeDeps(), "/repo");
+    if (result.action === "spawn") {
+      expect(result.prompt).toContain("mcx pr comments 55 resolve --all-addressed");
+    }
+  });
+
+  test("resolve step names the pr number from the work item", async () => {
+    const state = makeState();
+    const result = await runReview({ provider: "claude" }, makeWork({ prNumber: 99 }), state, makeDeps(), "/repo");
+    if (result.action === "spawn") {
+      expect(result.prompt).toContain("mcx pr comments 99 resolve --all-addressed");
+    }
+  });
+});
+
 describe("runReview — no session yet", () => {
   test("returns spawn action", async () => {
     const state = makeState();
