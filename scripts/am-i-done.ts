@@ -314,6 +314,7 @@ async function main(): Promise<void> {
   // Concurrency guard: detect sibling am-i-done runs and cap --max-concurrency
   // so parallel sprints can't oversubscribe cores (#2597).
   const guard = acquireConcurrencyGuard();
+  process.env.BUN_MAX_CONCURRENCY = String(guard.maxConcurrency);
   if (guard.siblingCount > 0) {
     process.stderr.write(
       `⚡ ${guard.siblingCount} sibling am-i-done run(s) detected — capping --max-concurrency=${guard.maxConcurrency} (#2597)\n`,
