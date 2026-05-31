@@ -21,18 +21,38 @@ function cleanupAllEnvs(): void {
   activeEnvs.clear();
 }
 
+/**
+ * Interrupt handler body: clean up active environments, then re-raise the
+ * signal so the process terminates with its default disposition. `terminate`
+ * is injectable so tests can exercise the cleanup + re-raise path without the
+ * real `process.kill(self, signal)` tearing down the test runner.
+ *
+ * Exported for testing.
+ */
+export function onInterrupt(
+  signal: NodeJS.Signals,
+  terminate: (s: NodeJS.Signals) => void = (s) => process.kill(process.pid, s),
+): void {
+  cleanupAllEnvs();
+  terminate(signal);
+}
+
 function installInterruptHandlers(): void {
   if (handlersInstalled) return;
   handlersInstalled = true;
 
-  const onSignal = (signal: NodeJS.Signals) => {
-    cleanupAllEnvs();
-    process.removeListener(signal, onSignal);
-    process.kill(process.pid, signal);
-  };
-
-  process.on("SIGINT", () => onSignal("SIGINT"));
-  process.on("SIGTERM", () => onSignal("SIGTERM"));
+  // Use `once`: Node removes the listener *before* invoking it, so the
+  // subsequent re-raise (in onInterrupt) hits the default disposition and the
+  // process actually terminates. The previous `on(...)` +
+  // `removeListener(signal, onSignal)` form passed the wrong reference (the
+  // registered listener was the arrow wrapper, not `onSignal`), so removal was
+  // a no-op and `process.kill(self, signal)` re-entered the still-installed
+  // handler forever — the process became immortal under SIGINT/SIGTERM (#2586
+  // regression; only SIGKILL stopped it, which is what made test workers look
+  // "wedged").
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => onInterrupt(signal));
+  }
 }
 
 export function cleanGitEnv(): Record<string, string> {

@@ -213,6 +213,12 @@ const topLevelTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
 
 const nonDaemonPaths = [
   ...packageDirs,
+  // agent-grid is a workspace sibling of packages/ (see root package.json
+  // "workspaces"), so the packages/* enumeration above misses it entirely.
+  // Without this line its specs never run in the coverage gate and its files
+  // are never ratcheted — which is how isolation.ts shipped unmeasured.
+  // Daemon-free and fast (~0.5s); safe in run-1. (#2586 follow-up)
+  "agent-grid/src",
   "scripts/rules",
   "scripts/_runner",
   ...topLevelTestFiles,

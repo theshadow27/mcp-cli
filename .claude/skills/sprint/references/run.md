@@ -443,14 +443,24 @@ worktree, PR context, and diagnosis loaded.
 
 ```text
 You flagged N issues on PR #<pr>. If they're contained fixes with your
-existing diagnosis, fix them yourself, push to <branch>, and update the
-sticky review with a delta table. If any need a redesign or multi-file
-judgment, reply 'needs opus repair'.
+existing diagnosis, fix them yourself and push to <branch>, then update the
+sticky review with a delta table describing what you changed. Do NOT mark
+the review approved — a fresh session verifies your repair. If any finding
+needs a redesign or multi-file judgment, reply 'needs opus repair'.
 ```
 
 When it replies `needs opus repair`, spawn a fresh opus repair per the
-normal flow. When it pushes a fix and updates the sticky to ✅,
-transition to QA.
+normal flow.
+
+**Self-repair is allowed; self-approval never is — for any change.** The
+session that wrote a commit does not get to be the gate that passes it. A
+reviewer's ✅ on its own repair is not a valid approval, however small the
+edit looked. Route every repair commit to a session that didn't write it:
+QA (already a fresh session) owns pass/fail for normal-scrutiny items; a
+fresh `phase=review` pass precedes QA for high-scrutiny ones. PR #2609's
+SIGTERM-immortality (#2586) was written into a self-approved repair commit
+by the session that flagged the original issue, 60s apart — writing eyes
+and approving eyes were one context, and the introduced defect shipped.
 
 **Precondition — the reviewer must be ON the PR branch, or self-repair
 silently breaks.** It can only push if it was spawned `--cwd` the worktree
@@ -526,28 +536,60 @@ gh pr view $PR --json labels -q '[.labels[].name]'
 If both `qa:pass` and `qa:fail` appear, hold the merge and resolve
 manually — the QA history needs review, not a silent label cleanup.
 
-### Merging on flaky-CI rerun: flip the label first
+### Flakes are banned — a "flake" must be proven, not asserted
 
-When round-N QA returns `qa:fail` with verdict text saying the impl is
-clean and the only blocker is flaky CI (unrelated test failures, often
-followed by "Re-trigger CI to confirm"), the orchestrator can fairly
-skip a fresh QA round after `gh run rerun --failed` clears green —
-re-spawning sonnet QA on a known-clean impl just to flip a label is
-wasteful. But the **PR label must be flipped from `qa:fail` to
-`qa:pass` (with a comment) before arming auto-merge.** A `qa:fail`-
-labelled PR landing on main makes the audit trail misleading: branch
-protection, retro tooling, and any future workflow that keys on the
-literal label sees a failure that wasn't one.
+"Flake" is the most dangerous word in the sprint. Once it enters the
+context it self-conditions every later judgment: the model treats its own
+earlier "this is a flake" as a premise and fits new failures to it instead
+of re-judging them (`✅✅✅❌` reads as a flake; `❌❌❌` then gets explained
+away rather than reopened — autoregressive lock-in, not reasoning you can
+prompt around). The only counter is to keep the verdict out of the context
+until it is **externally proven.**
 
-```bash
-gh pr edit $PR --remove-label qa:fail --add-label qa:pass
-gh pr comment $PR --body "Relabeling to qa:pass: prior QA verified impl clean; flaky-CI blocker cleared after \`gh run rerun --failed\` (run $RUN). Flaky test tracked in #NNNN."
-mcx pr merge $PR --squash --auto
-```
+So no one — orchestrator, reviewer, implementer, or QA — labels a failure
+"flake" by reasoning. A failure is real until a dedicated **flake-patrol**
+pass proves otherwise:
 
-Then verify the merge actually fired — see [Verify auto-merge actually
-fired] earlier in this file. Sprint 58 PR #2171 merged on stale
-`qa:fail`; #2177 documents the gap.
+- A flake-patrol session is a fresh, skeptical context spawned with the
+  symptom **only** and no "probably flaky" framing (it's a specialized
+  unframed investigation — see [`investigations.md`](investigations.md)).
+  It is never the reviewer, implementer, or QA that touched the work.
+- To earn the label it must produce **both**:
+  1. **A documented external cause** — a provider statuspage entry, a known
+     infra/runner incident, an upstream issue that actually exists and whose
+     signature matches. Citing a bug number is not proof; inconsistent issue
+     numbers across artifacts are a confabulation tell, not a citation.
+  2. **Three clean re-runs with zero code changes.** **Any** failure in that
+     window disqualifies it — it's real. (Three passes alone do not earn the
+     label: a bug that fails half the time passes three reruns 12.5% of the
+     time. The external cause is the proof; the reruns only clear the merge.)
+- A check red on **every** run since it first appeared — never green on this
+  branch or main — is definitionally not a flake (flakiness is
+  intermittency). It's a first-bad-commit to find: `gh run list
+  --workflow=<job> --branch=<branch> --json conclusion,headSha` already
+  records where it flipped.
+
+Only after flake-patrol proves it may the label be corrected (with a comment
+citing the external cause + the three clean runs) before merge — a
+`qa:fail`-labelled PR must never land silently (sprint 58 #2171/#2177).
+
+### CI failure → escalate; never absorb
+
+Any CI failure that flake-patrol has **not** proven a flake makes the work
+item **high scrutiny**, automatically:
+
+- No shared sessions — fresh context per round.
+- Full adversarial review between every repair round, not just QA.
+- Zero wiggle room: the check must go genuinely green — not rerun-until-
+  lucky, timeout-bumped, threshold-lowered, test-skipped, or override-merged.
+
+The orchestrator gets **exactly one** repair attempt on an escalated item.
+If that repair's CI also fails — two CI failures on the branch — **halt the
+item**: stop dispatching repairs, route to `needs-attention`, and hand the
+timeline to the human. Two failures means the design is wrong, not the
+patch; a third micro-repair is the treadmill (see "Convergence-failure →
+simplify"). A failure that trips a [Red Flag](#red-flags--stop-signals-not-speed-bumps)
+escalates harder — to a full sprint halt — per that section.
 
 ## Sweeping main commits during a sprint
 
@@ -666,3 +708,49 @@ miss):
 
 Report a single combined summary: merged PRs, version cut, diary path,
 unresolved follow-ups.
+
+## Red Flags — stop signals, not speed bumps
+
+These are not bugs to patch around. Each one means the work or the diagnosis
+is fighting the system. Sprint 70 is the proof of the cost of absorbing them
+instead of stopping: a 3-line signal-handler bug (#2586) became a multi-day,
+multi-meltdown descent because every danger signal below was met with a
+mitigation — a watchdog, a concurrency cap, a timeout bump — instead of a
+halt. If any of these appears, do **not** patch around it.
+
+- **Development or testing degrades the system** — load spike, CPU peg,
+  memory blowup, the box going slow or needing a reboot. The change is the
+  suspect, not the machine.
+- **A process won't die on SIGTERM / only SIGKILL stops it.** That is a
+  handler or teardown bug at the source. Fix the handler — never reach for a
+  killer to paper over it.
+- **`kill` anywhere as a mitigation** — `kill -9`, `killall`, SIGKILL
+  watchdogs, or any `ps -A`/`ps -e`-and-kill. Host-wide process scans are
+  unsafe by construction (collateral kills across worktrees, other repos, a
+  human's parallel runs). The fix for "something leaks" is teardown
+  (`await using`, afterEach/afterAll), full stop. *(No doing-it-wrong rule
+  mechanizes this yet — it should; until then it's policy here.)*
+- **Reapers, orphan-sweeps, extra-process cleanups, global side-effect
+  preloads** — anything reaching outside its own process tree, or a test
+  preload that kills or mutates state it didn't create. If you're writing
+  one, the leak it's masking is the actual work.
+- **A fix that makes a fast thing slower** — a >2–3× regression (a
+  sub-minute step taking many minutes) is a circuit-breaker. Revert; never
+  accommodate it with a timeout bump, a concurrency cap, or a bigger budget.
+- **Accommodating a failure to make it pass** — bumping a timeout or
+  threshold, lowering a coverage floor, adding a gate exclusion,
+  `.skip`/`xfail`-ing a test, cancelling a hanging CI run, or override-merging
+  a red required check. Each one makes the audit trail lie.
+- **A "confirmed upstream cause" you can't link** — an external bug blamed
+  for a failure without a verified issue whose signature matches. Inconsistent
+  issue numbers across artifacts are a confabulation tell.
+- **CI hitting a timeout** instead of reaching a pass/fail verdict.
+- **One explanation reused to dismiss escalating failures** — "it's a flake"
+  surviving a second and third failure. See [Flakes are banned].
+
+On any Red Flag the orchestrator gets **exactly one** repair attempt —
+adversarially reviewed, fresh session. If that attempt does not cleanly
+clear the flag, **stop the sprint**: finish in-flight safe / no-LLM actions,
+write the timeline, and hand it to the human to decide. Do not dispatch a
+second repair, and never let a Red Flag quietly re-route to a softer
+explanation. Over-halting is cheap; the cascade this prevents is not.
