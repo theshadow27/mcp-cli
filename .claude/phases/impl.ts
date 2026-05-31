@@ -23,6 +23,7 @@
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
+import { buildImplPrompt } from "./impl-fn";
 
 type Provider = "claude" | "copilot" | "gemini" | "grok" | `acp:${string}`;
 
@@ -109,7 +110,7 @@ defineAlias({
     const provider = input.provider;
     const supportsWorktree = provider === "claude";
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
-    const prompt = `/implement ${work.issueNumber}`;
+    const prompt = buildImplPrompt(work.issueNumber, work.prNumber ?? null);
     const command = [
       ...commandForProvider(provider),
       ...(supportsWorktree ? ["--worktree"] : []),

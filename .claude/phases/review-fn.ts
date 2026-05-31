@@ -105,7 +105,8 @@ export async function runReview(
     }
 
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
-    const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})`;
+    const resolveStep = `After replying to each addressed thread, resolve it: mcx pr comments ${work.prNumber} resolve --all-addressed`;
+    const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})\n${resolveStep}`;
     const cmdBase = input.provider.startsWith("acp:")
       ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
       : ["mcx", input.provider, "spawn"];
