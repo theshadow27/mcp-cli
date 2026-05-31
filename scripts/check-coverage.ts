@@ -116,6 +116,8 @@ const EXCLUSIONS: Record<string, string> = {
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
+  "scripts/_runner/no-claude-test.ts":
+    "CI-only entry shim (spawns bun test, then process.exit); logic is bunTestWithCrashTolerance, covered by ci-steps.spec.ts (#2641)",
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };

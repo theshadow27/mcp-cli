@@ -213,17 +213,13 @@ jobs:
           fi
           echo "claude not on PATH — OK"
 
-          set +e
-          bun test 2>&1 | tee /tmp/test_no_claude.txt
-          code=${PIPESTATUS[0]}
-          if [ $code -eq 0 ]; then
-            exit 0
-          elif grep -q "^ 0 fail$" /tmp/test_no_claude.txt; then
-            echo "::warning::Bun crash (exit $code) after all tests passed — treating as pass (see #1004)"
-            exit 0
-          else
-            exit $code
-          fi
+          # Run the full suite through the same junit-based crash-tolerant
+          # classifier the required `check` job uses (bunTestWithCrashTolerance).
+          # The previous raw `bun test` + `grep "^ 0 fail$"` leaked Bun's
+          # post-teardown SIGTERM (exit 143) as a red build — the grep needs the
+          # summary line, which a teardown crash can pre-empt (#2641). The entry
+          # writes /tmp/test_no_claude.txt for the artefact upload below.
+          bun scripts/_runner/no-claude-test.ts
       - name: Upload no-claude test logs
         if: always() && needs.detect.outputs.docs_only != 'true'
         uses: actions/upload-artifact@v7
