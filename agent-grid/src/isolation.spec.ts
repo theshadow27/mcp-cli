@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { activeEnvCount, cleanGitEnv, createIsolatedEnv } from "./isolation";
+import { activeEnvCount, cleanGitEnv, createIsolatedEnv, onInterrupt } from "./isolation";
 
 function gitLog(cwd: string): string {
   const r = spawnSync("git", ["log", "--oneline"], { cwd, stdio: ["ignore", "pipe", "ignore"], env: cleanGitEnv() });
@@ -199,5 +199,25 @@ describe("createIsolatedEnv", () => {
     ]);
     if (verdict === "immortal") proc.kill("SIGKILL");
     expect(verdict).toBe("exited");
+  });
+
+  // In-process coverage for the handler body that the subprocess test above
+  // exercises but cannot credit (coverage instruments only the parent). The
+  // injected `terminate` stands in for `process.kill(self, signal)` so the
+  // cleanup + re-raise path runs without killing the test runner — this is
+  // the exact code that was SIGTERM-immortal in #2586.
+  test("onInterrupt cleans up active envs then re-raises the signal", () => {
+    const env = createIsolatedEnv();
+    dirs.push(env.dir);
+    expect(existsSync(env.dir)).toBe(true);
+
+    let raised: NodeJS.Signals | undefined;
+    onInterrupt("SIGTERM", (s) => {
+      raised = s;
+    });
+
+    expect(activeEnvCount()).toBe(0); // cleanupAllEnvs swept the active set
+    expect(existsSync(env.dir)).toBe(false); // and removed the directory
+    expect(raised).toBe("SIGTERM"); // then re-raised with the original signal
   });
 });
