@@ -61,7 +61,6 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30 # capped coverage (#2632) runs ~18-20min; 30 gives headroom (#2631)
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -130,7 +129,6 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 30 # capped coverage (#2632) runs ~18-20min; 30 gives headroom (#2631)
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -174,7 +172,6 @@ jobs:
 
   check-no-claude:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     needs: [detect]
     steps:
       - name: Skip (docs-only PR)
@@ -238,7 +235,6 @@ jobs:
 
   pty-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     needs: [check, detect]
     steps:
       - name: Skip (docs-only PR)
@@ -287,7 +283,6 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     needs: [check, detect]
     steps:
       - name: Skip (docs-only PR)

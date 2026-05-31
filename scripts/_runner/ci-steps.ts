@@ -158,14 +158,11 @@ interface TestOpts {
   logName: string;
   /** Whether to retry once on exit 132 (SIGILL). Daemon tests historically need this. */
   retryOn132?: boolean;
-  /** Cap concurrent test workers to prevent oversubscription (#2597). */
-  maxConcurrency?: number;
 }
 
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
   return async ({ logger, env }) => {
-    const mcFlag = opts.maxConcurrency ? [`--max-concurrency=${opts.maxConcurrency}`] : [];
-    const args = ["test", "--no-orphans", ...mcFlag, ...opts.paths];
+    const args = ["test", "--no-orphans", ...opts.paths];
 
     const first = await runBun(args, logger, env, junitTmpPath(opts.logName));
     persistLog(opts.logName, first.output);
