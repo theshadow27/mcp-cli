@@ -138,7 +138,11 @@ const NON_DAEMON_TEST_PATHS = [
   "test/integration.spec.ts",
 ];
 
-const DAEMON_TEST_PATHS = [
+// Exported so the check-no-claude entry (scripts/_runner/no-claude-test.ts) can
+// split the same daemon batch out of its full-suite run — the daemon tests spawn
+// real daemons and destabilise Bun's end-of-process teardown, so they must not
+// share an invocation with the rest of the suite (#2641).
+export const DAEMON_TEST_PATHS = [
   "packages/daemon",
   "test/cli-orchestration.spec.ts",
   "test/daemon-integration.spec.ts",
