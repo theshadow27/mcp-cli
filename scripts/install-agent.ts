@@ -227,14 +227,19 @@ export async function installFromRegistry(
       stdout: "pipe",
       stderr: "pipe",
     });
+    // Drain both piped streams unconditionally so their file descriptors are
+    // released on every path — not just the error branch.
+    const [packStdout, packStderr] = await Promise.all([
+      new Response(pack.stdout).text(),
+      new Response(pack.stderr).text(),
+    ]);
     const packExit = await pack.exited;
     if (packExit !== 0) {
-      const stderr = await new Response(pack.stderr).text();
-      deps.error(`registry: npm pack failed (exit ${packExit}): ${stderr.trim()}`);
+      deps.error(`registry: npm pack failed (exit ${packExit}): ${packStderr.trim()}`);
       return null;
     }
 
-    const packOut = (await new Response(pack.stdout).text()).trim();
+    const packOut = packStdout.trim();
     const tgzName = packOut.split("\n").pop()?.trim();
     if (!tgzName) {
       deps.error("registry: npm pack produced no output");
@@ -252,10 +257,11 @@ export async function installFromRegistry(
       stdout: "ignore",
       stderr: "pipe",
     });
+    // Drain stderr unconditionally so its fd is released on success too.
+    const extractStderr = await new Response(extract.stderr).text();
     const extractExit = await extract.exited;
     if (extractExit !== 0) {
-      const stderr = await new Response(extract.stderr).text();
-      deps.error(`registry: extraction failed: ${stderr.trim()}`);
+      deps.error(`registry: extraction failed: ${extractStderr.trim()}`);
       return null;
     }
 
@@ -341,10 +347,11 @@ export async function installFromArchive(
     stdout: "ignore",
     stderr: "pipe",
   });
+  // Drain stderr unconditionally so its fd is released on success too.
+  const extractStderr = await new Response(extract.stderr).text();
   const extractExit = await extract.exited;
   if (extractExit !== 0) {
-    const stderr = await new Response(extract.stderr).text();
-    throw new Error(`Archive extraction failed (exit ${extractExit}): ${stderr.trim()}`);
+    throw new Error(`Archive extraction failed (exit ${extractExit}): ${extractStderr.trim()}`);
   }
 
   const expectedBinaryName = `${provider}-${entry.version}`;

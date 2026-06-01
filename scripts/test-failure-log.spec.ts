@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   type TestFailureEntry,
   appendFailures,
-  closeDb,
+  closeAllDbs,
   getDbPath,
   getGitContext,
   logTestRun,
@@ -37,13 +37,11 @@ function makeEntry(overrides: Partial<TestFailureEntry> = {}): TestFailureEntry 
 
 describe("test-failure-log", () => {
   const tmpDirs: string[] = [];
-  const dbPaths: string[] = [];
 
   afterEach(() => {
-    for (const p of dbPaths) {
-      closeDb(p);
-    }
-    dbPaths.length = 0;
+    // Close ALL cached handles — including any opened by a test that threw
+    // before registering its path. Releases WAL/SHM sidecar file descriptors.
+    closeAllDbs();
     for (const dir of tmpDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -53,9 +51,7 @@ describe("test-failure-log", () => {
   function makeDbPath(): string {
     const dir = makeTmpDir();
     tmpDirs.push(dir);
-    const dbPath = join(dir, "test-failures.db");
-    dbPaths.push(dbPath);
-    return dbPath;
+    return join(dir, "test-failures.db");
   }
 
   describe("appendFailures + readFailures", () => {
@@ -78,7 +74,6 @@ describe("test-failure-log", () => {
       const dir = makeTmpDir();
       tmpDirs.push(dir);
       const dbPath = join(dir, "nested", "deep", "test-failures.db");
-      dbPaths.push(dbPath);
 
       appendFailures([makeEntry()], dbPath);
       const entries = readFailures(dbPath);

@@ -53,10 +53,39 @@ export interface LoadOptions {
   roots?: string[];
   /** Substring filter on relative path. Empty = no filter. */
   filter?: string;
+  /**
+   * Bypass the in-process memo and re-read from disk. Source files don't
+   * change within a single run, so callers (the rule sweep, the spec) hit
+   * the cache; set this only when you genuinely need a fresh read.
+   */
+  noCache?: boolean;
 }
 
-export async function loadFiles({ repoRoot, roots, filter }: LoadOptions): Promise<Map<string, FileMeta>> {
+/**
+ * Memoizes scans within a process. `doing-it-wrong.spec.ts` invokes the
+ * sweep many times over the same tree; without this each call re-reads the
+ * whole source tree, a large peak-memory contributor under shared `bun test`.
+ * Keyed on the resolved (repoRoot, roots, filter) so different queries can't
+ * collide. Reset via `resetFileCache()` if a test mutates the tree between calls.
+ */
+const cache = new Map<string, Map<string, FileMeta>>();
+
+function cacheKey(repoRoot: string, scanRoots: string[], filter: string | undefined): string {
+  return JSON.stringify({ repoRoot, roots: scanRoots, filter: filter ?? "" });
+}
+
+/** Clear the memoized scan results. For tests that change files on disk mid-run. */
+export function resetFileCache(): void {
+  cache.clear();
+}
+
+export async function loadFiles({ repoRoot, roots, filter, noCache }: LoadOptions): Promise<Map<string, FileMeta>> {
   const scanRoots = roots ?? ["packages", "scripts", "test"];
+  const key = cacheKey(repoRoot, scanRoots, filter);
+  if (!noCache) {
+    const hit = cache.get(key);
+    if (hit) return hit;
+  }
   const out = new Map<string, FileMeta>();
   for (const root of scanRoots) {
     const cwd = join(repoRoot, root);
@@ -85,5 +114,6 @@ export async function loadFiles({ repoRoot, roots, filter }: LoadOptions): Promi
       });
     }
   }
+  if (!noCache) cache.set(key, out);
   return out;
 }

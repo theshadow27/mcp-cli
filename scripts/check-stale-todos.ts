@@ -91,9 +91,24 @@ export async function fetchIssueStateViaGh(issueNumber: number): Promise<string 
   }
 }
 
-export async function checkRefs(refs: TodoRef[], fetcher: IssueFetcher): Promise<number> {
+/** Output sink — defaults write to the process streams; tests inject a capturing buffer. */
+export type Sink = (s: string) => void;
+
+const defaultOut: Sink = (s) => {
+  process.stdout.write(s);
+};
+const defaultErr: Sink = (s) => {
+  process.stderr.write(s);
+};
+
+export async function checkRefs(
+  refs: TodoRef[],
+  fetcher: IssueFetcher,
+  out: Sink = defaultOut,
+  err: Sink = defaultErr,
+): Promise<number> {
   if (refs.length === 0) {
-    process.stdout.write("✓ no dotw-todo issue references found\n");
+    out("✓ no dotw-todo issue references found\n");
     return 0;
   }
 
@@ -112,37 +127,31 @@ export async function checkRefs(refs: TodoRef[], fetcher: IssueFetcher): Promise
   }
 
   if (unreachable.size === uniqueNumbers.size) {
-    process.stderr.write(
+    err(
       `✗ could not reach GitHub API — cannot verify issue states (${uniqueNumbers.size} issue${uniqueNumbers.size === 1 ? "" : "s"} unreachable)\n`,
     );
     return 1;
   }
 
   if (unreachable.size > 0) {
-    process.stderr.write(
-      `⚠ could not fetch state for issue(s): ${[...unreachable].map((n) => `#${n}`).join(", ")} — skipped\n`,
-    );
+    err(`⚠ could not fetch state for issue(s): ${[...unreachable].map((n) => `#${n}`).join(", ")} — skipped\n`);
   }
 
   const stale = refs.filter((r) => r.issueNumbers.some((n) => closedIssues.has(n)));
   if (stale.length === 0) {
-    process.stdout.write(
-      `✓ ${refs.length} dotw-todo ref${refs.length === 1 ? "" : "s"} checked — all referenced issues open\n`,
-    );
+    out(`✓ ${refs.length} dotw-todo ref${refs.length === 1 ? "" : "s"} checked — all referenced issues open\n`);
     return 0;
   }
 
-  process.stderr.write(
+  err(
     `\n✗ ${stale.length} dotw-todo comment${stale.length === 1 ? "" : "s"} reference closed issue${stale.length === 1 ? "" : "s"}:\n\n`,
   );
   for (const ref of stale) {
     const closed = ref.issueNumbers.filter((n) => closedIssues.has(n));
-    process.stderr.write(`  ${ref.file}:${ref.line}  ${closed.map((n) => `#${n} (CLOSED)`).join(", ")}\n`);
-    process.stderr.write(`    ${ref.snippet}\n\n`);
+    err(`  ${ref.file}:${ref.line}  ${closed.map((n) => `#${n} (CLOSED)`).join(", ")}\n`);
+    err(`    ${ref.snippet}\n\n`);
   }
-  process.stderr.write(
-    "fix: remove the violation (and its dotw-todo), or reopen/file a successor issue and update the reference\n",
-  );
+  err("fix: remove the violation (and its dotw-todo), or reopen/file a successor issue and update the reference\n");
   return 1;
 }
 
