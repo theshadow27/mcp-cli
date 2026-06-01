@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,27 +132,21 @@ describe("scanFiles", () => {
 });
 
 describe("checkRefs", () => {
-  const stdoutWrite = process.stdout.write.bind(process.stdout);
-  const stderrWrite = process.stderr.write.bind(process.stderr);
   let stdoutBuf: string;
   let stderrBuf: string;
+  // Injected sinks — capture into local buffers instead of monkeypatching the
+  // process-global streams (which would swallow other modules' output in the
+  // shared `bun test` process and break the stream write-callback contract).
+  const out = (s: string) => {
+    stdoutBuf += s;
+  };
+  const err = (s: string) => {
+    stderrBuf += s;
+  };
 
   beforeEach(() => {
     stdoutBuf = "";
     stderrBuf = "";
-    process.stdout.write = ((chunk: string) => {
-      stdoutBuf += chunk;
-      return true;
-    }) as typeof process.stdout.write;
-    process.stderr.write = ((chunk: string) => {
-      stderrBuf += chunk;
-      return true;
-    }) as typeof process.stderr.write;
-  });
-
-  afterEach(() => {
-    process.stdout.write = stdoutWrite;
-    process.stderr.write = stderrWrite;
   });
 
   const ref = (issueNumbers: number[], file = "f.ts", line = 1): TodoRef => ({
@@ -163,33 +157,33 @@ describe("checkRefs", () => {
   });
 
   it("returns 0 with no refs", async () => {
-    const code = await checkRefs([], async () => "OPEN");
+    const code = await checkRefs([], async () => "OPEN", out, err);
     expect(code).toBe(0);
     expect(stdoutBuf).toContain("no dotw-todo issue references found");
   });
 
   it("returns 1 when all issues are unreachable (fail-closed)", async () => {
-    const code = await checkRefs([ref([100])], async () => null);
+    const code = await checkRefs([ref([100])], async () => null, out, err);
     expect(code).toBe(1);
     expect(stderrBuf).toContain("could not reach GitHub API");
     expect(stderrBuf).toContain("1 issue unreachable");
   });
 
   it("returns 1 when a referenced issue is CLOSED", async () => {
-    const code = await checkRefs([ref([200], "pkg/foo.ts", 5)], async (n) => (n === 200 ? "CLOSED" : "OPEN"));
+    const code = await checkRefs([ref([200], "pkg/foo.ts", 5)], async (n) => (n === 200 ? "CLOSED" : "OPEN"), out, err);
     expect(code).toBe(1);
     expect(stderrBuf).toContain("#200 (CLOSED)");
     expect(stderrBuf).toContain("pkg/foo.ts:5");
   });
 
   it("returns 0 when all referenced issues are OPEN", async () => {
-    const code = await checkRefs([ref([300])], async () => "OPEN");
+    const code = await checkRefs([ref([300])], async () => "OPEN", out, err);
     expect(code).toBe(0);
     expect(stdoutBuf).toContain("all referenced issues open");
   });
 
   it("warns but continues when some (not all) issues are unreachable", async () => {
-    const code = await checkRefs([ref([400]), ref([401])], async (n) => (n === 400 ? null : "OPEN"));
+    const code = await checkRefs([ref([400]), ref([401])], async (n) => (n === 400 ? null : "OPEN"), out, err);
     expect(code).toBe(0);
     expect(stderrBuf).toContain("#400");
     expect(stderrBuf).toContain("skipped");
@@ -201,12 +195,12 @@ describe("checkRefs", () => {
       calls.push(n);
       return "OPEN";
     };
-    await checkRefs([ref([500]), ref([500, 501])], fetcher);
+    await checkRefs([ref([500]), ref([500, 501])], fetcher, out, err);
     expect(calls.sort()).toEqual([500, 501]);
   });
 
   it("reports multiple stale refs in one run", async () => {
-    const code = await checkRefs([ref([600], "a.ts", 10), ref([601], "b.ts", 20)], async () => "CLOSED");
+    const code = await checkRefs([ref([600], "a.ts", 10), ref([601], "b.ts", 20)], async () => "CLOSED", out, err);
     expect(code).toBe(1);
     expect(stderrBuf).toContain("2 dotw-todo comments reference closed issues");
     expect(stderrBuf).toContain("a.ts:10");

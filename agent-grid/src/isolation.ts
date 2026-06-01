@@ -8,52 +8,6 @@ const SEED_CONTENT = "# agent-grid test seed\n";
 const SEED_MESSAGE = "seed";
 
 const activeEnvs = new Set<string>();
-let handlersInstalled = false;
-
-function cleanupAllEnvs(): void {
-  for (const dir of activeEnvs) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best-effort on interrupt
-    }
-  }
-  activeEnvs.clear();
-}
-
-/**
- * Interrupt handler body: clean up active environments, then re-raise the
- * signal so the process terminates with its default disposition. `terminate`
- * is injectable so tests can exercise the cleanup + re-raise path without the
- * real `process.kill(self, signal)` tearing down the test runner.
- *
- * Exported for testing.
- */
-export function onInterrupt(
-  signal: NodeJS.Signals,
-  terminate: (s: NodeJS.Signals) => void = (s) => process.kill(process.pid, s),
-): void {
-  cleanupAllEnvs();
-  terminate(signal);
-}
-
-function installInterruptHandlers(): void {
-  if (handlersInstalled) return;
-  handlersInstalled = true;
-
-  // Use `once`: Node removes the listener *before* invoking it, so the
-  // subsequent re-raise (in onInterrupt) hits the default disposition and the
-  // process actually terminates. The previous `on(...)` +
-  // `removeListener(signal, onSignal)` form passed the wrong reference (the
-  // registered listener was the arrow wrapper, not `onSignal`), so removal was
-  // a no-op and `process.kill(self, signal)` re-entered the still-installed
-  // handler forever — the process became immortal under SIGINT/SIGTERM (#2586
-  // regression; only SIGKILL stopped it, which is what made test workers look
-  // "wedged").
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => onInterrupt(signal));
-  }
-}
 
 export function cleanGitEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -86,7 +40,7 @@ function git(cwd: string, args: string[]): void {
 export interface IsolatedEnv {
   /** Absolute path to the isolated directory (git work tree root). */
   dir: string;
-  /** Remove the directory and deregister from interrupt cleanup. */
+  /** Remove the directory and deregister it from the active-env set. */
   cleanup(): void;
   [Symbol.dispose](): void;
 }
@@ -96,12 +50,13 @@ export interface IsolatedEnv {
  * a single seed commit. The returned object supports both explicit
  * `cleanup()` and `using` via `Symbol.dispose`.
  *
- * Interrupt handlers (SIGINT/SIGTERM) are installed once per process to
- * clean up any active environments on unexpected exit.
+ * No process-wide signal handler is installed: tmpdir cleanup is handled by
+ * explicit `cleanup()` / `Symbol.dispose` / test `afterEach`, and the OS
+ * reclaims `/tmp` on process exit. A library used under `bun test` must never
+ * install global SIGINT/SIGTERM handlers on the shared runner (that caused the
+ * #2586 SIGTERM-immortality bug).
  */
 export function createIsolatedEnv(): IsolatedEnv {
-  installInterruptHandlers();
-
   const dir = mkdtempSync(join(tmpdir(), "agent-grid-"));
 
   activeEnvs.add(dir);
