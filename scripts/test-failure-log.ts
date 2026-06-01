@@ -84,6 +84,19 @@ export function closeDb(dbPath: string): void {
   }
 }
 
+/**
+ * Close and remove ALL cached database handles (for testing cleanup).
+ * Releases the WAL/SHM sidecar file descriptors held by every open handle.
+ * Tests should call this in `afterEach` so a handle opened by a test that
+ * throws before registering its path is still released.
+ */
+export function closeAllDbs(): void {
+  for (const db of dbCache.values()) {
+    db.close();
+  }
+  dbCache.clear();
+}
+
 /** Resolve the database path from env or default */
 export function getDbPath(): string {
   const dir = process.env.MCP_CLI_DIR;

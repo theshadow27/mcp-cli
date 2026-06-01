@@ -308,10 +308,11 @@ describe("installFromArchive", () => {
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
+    // Drain stderr unconditionally so its fd is released on success too.
+    const tarStderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`tar failed (exit ${exitCode}): ${tarStderr.trim()}`);
     }
     if (!existsSync(tgzPath)) {
       throw new Error(`tar produced no output at ${tgzPath}`);
@@ -493,10 +494,11 @@ describe("installFromRegistry", () => {
       stdout: "ignore",
       stderr: "pipe",
     });
+    // Drain stderr unconditionally so its fd is released on success too.
+    const tarStderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`tar failed (exit ${exitCode}): ${tarStderr.trim()}`);
     }
     if (!existsSync(tgzPath)) {
       throw new Error(`tar produced no output at ${tgzPath}`);
@@ -635,10 +637,11 @@ describe("installAgent", () => {
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
+    // Drain stderr unconditionally so its fd is released on success too.
+    const tarStderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`tar failed (exit ${exitCode}): ${tarStderr.trim()}`);
     }
     if (!existsSync(tgzPath)) {
       throw new Error(`tar produced no output at ${tgzPath}`);
@@ -703,10 +706,11 @@ providers:
 
     const tgzPath = join(gridDir, "binaries", `${binaryName}.tgz`);
     const proc = Bun.spawn(["tar", "czf", tgzPath, "-C", tmpDir, binaryName], { stdout: "ignore", stderr: "pipe" });
+    // Drain stderr unconditionally so its fd is released on success too.
+    const tarStderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`tar failed (exit ${exitCode}): ${stderr.trim()}`);
+      throw new Error(`tar failed (exit ${exitCode}): ${tarStderr.trim()}`);
     }
     if (!existsSync(tgzPath)) {
       throw new Error(`tar produced no output at ${tgzPath}`);

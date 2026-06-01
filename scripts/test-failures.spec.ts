@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type TestFailureEntry, appendFailures, closeDb, readFailures } from "./test-failure-log";
+import { type TestFailureEntry, appendFailures, closeAllDbs, readFailures } from "./test-failure-log";
 import { formatOutput, parseArgs } from "./test-failures";
 
 function makeTmpDir(): string {
@@ -29,13 +29,11 @@ function makeEntry(overrides: Partial<TestFailureEntry> = {}): TestFailureEntry 
 
 describe("test-failures CLI", () => {
   const tmpDirs: string[] = [];
-  const dbPaths: string[] = [];
 
   afterEach(() => {
-    for (const p of dbPaths) {
-      closeDb(p);
-    }
-    dbPaths.length = 0;
+    // Close ALL cached handles — including any opened by a test that threw
+    // before registering its path. Releases WAL/SHM sidecar file descriptors.
+    closeAllDbs();
     for (const dir of tmpDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -45,9 +43,7 @@ describe("test-failures CLI", () => {
   function makeDbPath(): string {
     const dir = makeTmpDir();
     tmpDirs.push(dir);
-    const dbPath = join(dir, "test-failures.db");
-    dbPaths.push(dbPath);
-    return dbPath;
+    return join(dir, "test-failures.db");
   }
 
   describe("parseArgs", () => {
