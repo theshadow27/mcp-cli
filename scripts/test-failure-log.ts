@@ -75,15 +75,6 @@ function openDb(dbPath: string): Database {
   return db;
 }
 
-/** Close and remove a cached database handle (for testing cleanup). */
-export function closeDb(dbPath: string): void {
-  const cached = dbCache.get(dbPath);
-  if (cached) {
-    cached.close();
-    dbCache.delete(dbPath);
-  }
-}
-
 /**
  * Close and remove ALL cached database handles (for testing cleanup).
  * Releases the WAL/SHM sidecar file descriptors held by every open handle.
