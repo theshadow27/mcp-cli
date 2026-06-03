@@ -2,11 +2,14 @@
  * Phase: review — adversarial review for high-scrutiny PRs.
  *
  * On first entry: emits the spawn plan for the reviewer.
- * On re-entry (review_session_id already set): scans the PR for the sticky
- *   `## Adversarial Review` comment and decides the transition.
- *     - no comment yet         → { action: "wait" }
- *     - 🔴 or 🟡 present       → { action: "goto", target: "repair" } (with round cap)
- *     - all ✅ / no blockers    → { action: "goto", target: "qa" }
+ * On re-entry (review_session_id already set): reads the typed verdict LABEL
+ *   the reviewer set (`review:pass` / `review:changes`) and decides the
+ *   transition. The sticky comment body is NEVER scraped for the verdict —
+ *   prose is attacker-influenced free text, so trusting it is a merge-gate
+ *   prompt-injection vector (#2575). The label is the only control signal.
+ *     - no verdict label yet   → { action: "wait" }
+ *     - review:changes         → { action: "goto", target: "repair" } (with round cap)
+ *     - review:pass            → { action: "goto", target: "qa" }
  *
  * Round cap: review_round >= 2 and issues remain → prefer qa (matches
  * run.md's "two reviews max" rule).
@@ -20,7 +23,7 @@
  * Orchestrator responsibility: replace review_session_id "pending:*" with real
  * session ID after spawn; delete review_session_id before re-entering review
  * for a new round (so the handler spawns a fresh reviewer rather than reading
- * the previous reviewer's comment).
+ * the previous reviewer's verdict label).
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
@@ -35,7 +38,7 @@ const ProviderSchema = z
 
 defineAlias({
   name: "phase-review",
-  description: "Sprint phase: spawn adversarial reviewer or act on its sticky comment.",
+  description: "Sprint phase: spawn adversarial reviewer or act on its review:pass/review:changes verdict label.",
   input: z.object({
     provider: ProviderSchema.default("claude"),
     model: z.enum(["opus", "sonnet"]).optional(),
@@ -71,15 +74,21 @@ defineAlias({
       {
         async gh(op) {
           try {
-            if (op.op === "pr:comments") {
-              const comments = await ctx.gh.pr(op.prNumber).bodyComments();
-              const stdout = comments.map((c) => c.body).join("\n");
-              return { stdout, stderr: "", exitCode: 0 };
+            if (op.op === "pr:labels") {
+              const pr = await ctx.gh.pr(op.prNumber).body();
+              return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
             }
             return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
           } catch (err) {
             return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
           }
+        },
+        async prEdit(prNumber, flags) {
+          const removeLabels: string[] = [];
+          for (let i = 0; i < flags.length; i += 2) {
+            if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
+          }
+          await ctx.gh.pr(prNumber).edit({ removeLabels });
         },
         findModelInSprintPlan,
       },
