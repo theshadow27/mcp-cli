@@ -315,4 +315,87 @@ describe("runReview — goto repair (review:changes)", () => {
     expect(writes.review_round).toBe(2);
     expect(writes.previous_phase).toBe("review");
   });
+
+  test("review:changes is cleared on the goto repair (verdict consumed)", async () => {
+    const removed: string[] = [];
+    const result = await runReview(
+      { provider: "claude" },
+      makeWork(),
+      makeState({ review_session_id: "sess_123", review_round: 1 }),
+      makeDeps({
+        gh: labelsGh(["review:changes"]),
+        prEdit: async (_pr, flags) => {
+          for (let i = 0; i < flags.length; i += 2) {
+            if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
+          }
+        },
+      }),
+      "__none__",
+    );
+    expect(result).toMatchObject({ action: "goto", target: "repair" });
+    expect(removed).toContain("review:changes");
+  });
+
+  test("review:changes is cleared even when the round cap routes to qa", async () => {
+    const removed: string[] = [];
+    const result = await runReview(
+      { provider: "claude" },
+      makeWork(),
+      makeState({ review_session_id: "sess_123", review_round: REVIEW_ROUND_CAP }),
+      makeDeps({
+        gh: labelsGh(["review:changes"]),
+        prEdit: async (_pr, flags) => {
+          for (let i = 0; i < flags.length; i += 2) {
+            if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
+          }
+        },
+      }),
+      "__none__",
+    );
+    expect(result).toMatchObject({ action: "goto", target: "qa" });
+    expect(removed).toContain("review:changes");
+  });
+});
+
+// ── Multi-tick lifecycle: stale verdict must not survive the repair round (#2649) ──
+//
+// Regression for the mirror-replay drift caught in adversarial review: the read side
+// (`readReviewLabels`) mirrored qa, but the *clear* did not. The qa loop is safe only
+// because `repair-fn` clears `qa:fail` on every repair spawn; review left
+// `review:changes` on the PR, so on re-entry — with `review_round` already at the cap —
+// the gate replayed the stale label and misrouted the round-2 reviewer to qa.
+// This drives the real lifecycle over a SHARED, MUTABLE label set + state map, the only
+// shape that exercises the cross-tick invariant (every other test pre-seeds its label).
+describe("runReview — lifecycle (#2649)", () => {
+  test("stale review:changes does not survive into the round-2 re-entry", async () => {
+    // Shared label set: prEdit --remove-label mutates it; pr:labels reads it back.
+    const labels = new Set<string>(["review:changes"]);
+    const deps = makeDeps({
+      gh: async (op: GhOp) =>
+        op.op === "pr:labels"
+          ? { stdout: [...labels].join("\n"), stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 },
+      prEdit: async (_pr, flags) => {
+        for (let i = 0; i < flags.length; i += 2) {
+          if (flags[i] === "--remove-label") labels.delete(flags[i + 1]);
+        }
+      },
+    });
+    const state = makeState({ review_session_id: "sess_r1", review_round: 1 });
+
+    // Round 1: review:changes → repair, and the verdict label is consumed.
+    const r1 = await runReview({ provider: "claude" }, makeWork(), state, deps, "__none__");
+    expect(r1).toMatchObject({ action: "goto", target: "repair" });
+    expect(labels.has("review:changes")).toBe(false);
+    expect(await state.get<number>("review_round")).toBe(REVIEW_ROUND_CAP); // 1 → 2
+
+    // Repair clears the session sentinel and spawns a fresh round-2 reviewer.
+    await state.set("review_session_id", "sess_r2");
+
+    // Round-2 re-entry BEFORE the new reviewer renders a verdict: with the stale label
+    // gone the gate WAITS, rather than reading round >= cap + a phantom review:changes
+    // and misrouting to qa (the orphaned-reviewer bug).
+    const r2 = await runReview({ provider: "claude" }, makeWork(), state, deps, "__none__");
+    expect(r2.action).toBe("wait");
+  });
 });

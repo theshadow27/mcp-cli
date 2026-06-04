@@ -215,4 +215,67 @@ describe("runReview — session exists", () => {
     await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
     expect(await state.get<string>("previous_phase")).toBe("review");
   });
+
+  test("clears review:changes on the goto repair (verdict consumed)", async () => {
+    const removed: string[] = [];
+    const state = makeState({ review_session_id: "abc", review_round: 1 });
+    const deps = makeDeps({
+      gh: labelsGh(["review:changes"]),
+      async prEdit(_prNumber, flags) {
+        for (let i = 0; i < flags.length; i += 2) {
+          if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
+        }
+      },
+    });
+    await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(removed).toContain("review:changes");
+  });
+
+  test("clears review:changes even when the round cap routes to qa", async () => {
+    const removed: string[] = [];
+    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP });
+    const deps = makeDeps({
+      gh: labelsGh(["review:changes"]),
+      async prEdit(_prNumber, flags) {
+        for (let i = 0; i < flags.length; i += 2) {
+          if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
+        }
+      },
+    });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("qa");
+    expect(removed).toContain("review:changes");
+  });
+});
+
+// Regression for #2649 mirror-replay drift: review must clear the verdict label it
+// consumes, so a re-entry after the repair round waits for a fresh verdict instead of
+// replaying the stale one. Drives the real lifecycle over a shared mutable label set.
+describe("runReview — lifecycle (#2649)", () => {
+  test("stale review:changes does not survive into the round-2 re-entry", async () => {
+    const labels = new Set<string>(["review:changes"]);
+    const deps = makeDeps({
+      gh: async (op) =>
+        op.op === "pr:labels"
+          ? { stdout: [...labels].join("\n"), stderr: "", exitCode: 0 }
+          : { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 },
+      async prEdit(_prNumber, flags) {
+        for (let i = 0; i < flags.length; i += 2) {
+          if (flags[i] === "--remove-label") labels.delete(flags[i + 1]);
+        }
+      },
+    });
+    const state = makeState({ review_session_id: "sess_r1", review_round: 1 });
+
+    const r1 = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(r1).toMatchObject({ action: "goto", target: "repair" });
+    expect(labels.has("review:changes")).toBe(false);
+
+    // Repair clears the session sentinel; review spawns a fresh round-2 reviewer.
+    await state.set("review_session_id", "sess_r2");
+
+    const r2 = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(r2.action).toBe("wait");
+  });
 });

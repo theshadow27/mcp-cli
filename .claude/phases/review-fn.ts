@@ -120,7 +120,16 @@ export async function runReview(
     return { action: "goto", target: "qa", reason: "review:pass → qa", round, ...withModel };
   }
 
-  // review:changes — blockers remain.
+  // review:changes — blockers remain. Consume (clear) the verdict label co-located
+  // with the decision to trust it: the phase that *reads* a verdict invalidates it,
+  // so a re-entry after the repair round waits for the next reviewer's fresh verdict
+  // instead of replaying this stale one. Without this, the round-2 reviewer is
+  // spawned but its verdict is never consumed — `review_round` is already at the cap,
+  // so the next tick reads the stale `review:changes` and misroutes to qa, silently
+  // defeating the two-review guarantee (mirror-replay drift, #2649). qa is safe by a
+  // different seam — `repair-fn` clears `qa:fail` on every repair spawn.
+  await removeLabel(work.prNumber, "review:changes", deps);
+
   if (round >= REVIEW_ROUND_CAP) {
     return {
       action: "goto",
