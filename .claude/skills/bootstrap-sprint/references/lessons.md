@@ -417,3 +417,22 @@ cluster. (Related: the gate may also be *masked* — if the ratchet runs after
 a flaky-crash-prone step, a teardown segfault can abort the run before the
 gate executes, letting the under-covered file slip onto `main` in the first
 place.)
+
+**39. The phase state machine's writes are the source of truth — never run
+it preview-only in the live loop.** If the orchestration engine persists
+phase state and a transition log (so later steps can infer "from" state),
+running its decision step in dry-run/preview mode in the actual loop skips
+those writes, and a subsequent transition fails with an "illegal/unapproved
+transition" error because the prior state was never recorded. Preview modes
+are for inspection, not for driving the pipeline. When bootstrapping, make
+the per-tick loop call the real (writing) command and reserve any
+`--dry-run` for ad-hoc inspection only.
+
+**40. Threshold gates are for the early/middle of a budget window — near
+reset, fire for effect.** A "freeze new work at ≥80% quota" rule protects
+*mid-window* sessions from running dry mid-task. It is wrong at the end of
+the window: if the budget resets in a few minutes and the pending work is
+small, holding it just wastes the carryover. Gate on time-to-reset, not
+utilization alone — spawn small work when the window is about to roll, and
+respect the freeze only when there's enough of the window left to strand a
+session.

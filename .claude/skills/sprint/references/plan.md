@@ -40,9 +40,9 @@ fi
 If `mcx claude ls` returns idle sessions, **inspect each one** before
 proceeding. Leftover sessions from a prior sprint can be `bye`'d with
 `--keep` (preserve worktree as evidence). But sessions you didn't spawn —
-or worktrees on `issue-1808-*` / patcher / TLS branches — belong to the
-user's parallel work; leave them alone (see
-`.claude/memory/feedback_parallel_p1_session.md`).
+or worktrees on branches from the user's own parallel work — belong to the
+user; leave them alone. Never blanket-prune sessions or worktrees, and
+never `bye` a session you didn't start.
 
 The run-phase pre-flight (`run.md`) repeats this check before spawning;
 that's intentional and idempotent when dist is already current.

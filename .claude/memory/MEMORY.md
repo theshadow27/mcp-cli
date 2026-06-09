@@ -11,34 +11,25 @@
 - [Codex retro learnings](feedback_codex_retro.md) — stale binaries, partial branches, protocol drift
 - [Codex broken (#2482)](codex_broken_2482.md) — codex spawn fully broken (RPC -32600) as of sprint 66; don't route to codex, use opus
 - [Git HTTPS push](feedback_git_https_push.md) — when agents get stuck pushing, tell them to use HTTPS
-- [Review context in PRs](feedback_review_pr_comments.md) — reviewers post to PR, repairers read PR comments first
-- [Open bun.report links](feedback_bun_report.md) — always `open` bun.report URLs to submit crash telemetry
-- [Workers are conversations](feedback_worker_interaction.md) — interact via `send`, don't just bye and respawn
-- [ScheduleWakeup is blind polling](feedback_schedulewakeup_orchestration.md) — during sprint orchestration use `mcx claude wait`, not ScheduleWakeup
+- [Wait on the monitor stream, not ScheduleWakeup](feedback_schedulewakeup_orchestration.md) — ScheduleWakeup is blind fixed-delay polling; wait on the `mcx monitor` event stream (default) and use its `heartbeat` event to observe wall-time + catch a silent worker; ScheduleWakeup only for idle quota-pause-to-`resetsAt`
 - [Background-task notifications work](feedback_background_task_notify.md) — workers "waiting for notification" is correct; ask duration, don't prescribe polling
 - [Don't bye spikes](feedback_dont_bye_spikes.md) — keep exploratory sessions alive for follow-up questions
 - [Flaky test handling](feedback_flaky_tests.md) — stub pointer; canonical rule lives in repo at `.claude/skills/sprint/references/investigations.md` (load-bearing — `mcx claude spawn`, NOT Agent tool, see #2009)
 - [Orchestrator context rot](feedback_context_rot.md) — long-running orchestrators degrade at ~300k tokens; verify "done" claims with a probe
 - [Bulk reads + serialized cascades](feedback_sprint_bulk_and_cascade.md) — no `for` loops for status (use bulk jq), single-pointer update-branch cascades (avoid N² CI)
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
-- [Phase run no --dry-run](feedback_phase_run_no_dry_run.md) — per-tick `mcx phase run <phase> --work-item` without --dry-run; never skip `impl` run (writes transition log + state)
-- [Quota end-of-block](feedback_quota_end_of_block.md) — 80% impl-freeze is for early/mid block; near quota reset, fire for effect so long as work won't overrun
-- [Claude 2.1.121 sdk-url break](feedback_claude_2_1_121_break.md) — pinned via `claudeBinary` config → archive 2.1.119 (chflags-uchg locked); user's PATH `claude` symlink auto-updates freely; #1808 tracks fix
-- [Don't touch parallel #1808 worktrees](feedback_parallel_p1_session.md) — user runs #1808 in a direct claude session; never blanket-prune; don't bye sessions you didn't spawn
 - [Verify auto-merge actually fired](feedback_verify_merge_actually_fired.md) — after qa:pass + `gh pr merge --auto`, poll until state=MERGED; QA verdict + auto-merge queue ≠ proof of merge
 - [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
-- [Worktree hooksPath inheritance](feedback_worktree_hookspath_inheritance.md) — mcp-cli base repo's local core.hooksPath is absolute; worktrees inherit it and pre-commit silently no-ops. Set `git config core.hooksPath .git-hooks` after creating any new worktree.
-- [QA label hygiene on flaky-CI merge](feedback_qa_label_hygiene.md) — when merging on a rerun-cleared qa:fail (impl was clean), flip the label to qa:pass with a comment first; sprint 58 #2143 #2177
 - [No rebase of sprint branch](feedback_no_rebase_sprint_branch.md) — sprint-{N} branch is meta-only and main is strict=false; commit on top, never rebase to "catch up" (sprint 59 startup fumble)
-- [Review churn → simplify](feedback_review_churn_simplify.md) — new findings each repair round = wrong design; step back + /simplify, don't patch. Canonical home is run.md (added sprint 62 retro)
 - [Agent briefs run full gate](feedback_agent_briefs_full_gate.md) — tell code-editing agents to run `bun run am-i-done`, not a subset; enumerate ALL packages when partitioning (#2344 missed codex)
-- [Guidance names the cause](feedback_guidance_names_cause.md) — rule/fix guidance explains the failure mechanism + non-exhaustive examples, never just "do X"
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
 - [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
-- [Quota = autonomous policy, never ask](feedback_quota_autonomous_policy.md) — at ≥95% don't AskUserQuestion (it suspended sprint 69 overnight); ScheduleWakeup to `resetsAt` + auto-resume
+- [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
+- [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
 
 ## Infra / Known Issues
 - [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
+- [CI suite SIGTERM at ~97%](ci-suite-sigterm-resource-leak.md) — large `bun test` killed near end with 0 failures, Linux-only, passes isolated = resource leak in test files, NOT a size threshold. A hang / near-end SIGTERM is a STOP-and-fix-root-cause signal — never a killer/reaper/timeout-bump (those caused the 69/70 collapse). Diagnose with bias-free adversarial review. #2641→#2644.
 
 ## Orchestration (non-sprint, general facts)
 - Orchestrator must never implement directly — always delegate to spawned sessions.
@@ -47,6 +38,7 @@
 - `mcx claude ls` and `wait` filter by current repo; use `--all` for cross-repo view.
 - `core.bare` arc closed in sprint 52 / #1860 / PR #1998 — `ensureCoreBareUnset()` removes the key entirely; daemon sweep deletes both true/false. Pre-flight invariant: `git config --local core.bare` should exit non-zero (key absent). The `git config core.bare false` hot-patch is no longer needed.
 - [Sprint operator north-star](project_sprint_operator.md) — orchestrator as k8s-style reconciler; backlog as declarative CRD (`mcx flow apply`); crash-resume = stateless reconcile; moat is the control plane not the LLM. Epic #2577. Near-term: Stage 0 review-labels + Stage 1 reconciler (#1942).
+- [Remote agent orchestration via sprite](project_sprites_remote_orchestration.md) — `mcx agent claude` subcommands work over `sprite x --` remote exec; stdout JSON + exit codes + no-TTY constraints must be preserved when changing the agent command surface
 
 ## Skills
 - `/sprint` — lifecycle: plan, run, review, retro. Detailed rules in `.claude/skills/sprint/references/*.md`.

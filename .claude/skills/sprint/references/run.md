@@ -371,6 +371,14 @@ consumes events through `ctx.waitForEvent` rather than its own polling.)
 **Key invariants** (orchestrator discipline, not enforced by scripts):
 - Use `mcx monitor` for orchestrator decisions; never `sleep`, and never
   `mcx claude wait` polling (legacy interactive CLI, loses enrichment)
+- Run `mcx phase run <phase> --work-item` **without** `--dry-run` in the
+  loop, and never skip `mcx phase run impl` for a tracked item (even when
+  you spawn manually). `--dry-run` and bypassing `impl` skip the `#1381`
+  persistence path — the `.mcx/transitions.jsonl` entry + the
+  `session_id="pending:*"` sentinel — so a later transition fails with
+  `(initial) → <target> is not an approved transition`. `--dry-run` is
+  preview-only; `--from impl` is a hack, not a fix (file an issue if you
+  reach for it)
 - `session.result` / `session.idle` mean *idle*, not ended — both surface
   the same payload shape, both come pre-enriched
 - Don't `bye` before verifying PR pushed
@@ -638,7 +646,16 @@ Quota exhaustion is predictable — `resetsAt` is in the `quota_status` payload
 
 Only escalate to the user for a genuinely irreducible choice (e.g. "abandon
 the sprint entirely?"), and even then prefer a safe default + notification
-over a blocking question. See memory `feedback_quota_autonomous_policy`.
+over a blocking question.
+
+**End-of-block exception to the 80% freeze.** The thresholds above protect
+*mid-window* work from running out of budget mid-session. They do not apply
+when the window is about to reset. If `resetsAt` is <15 min away and the
+pending work is sonnet-sized (≲ $5 est. and won't consume >20% of a fresh
+quota), **fire for effect** — spawn it; either it finishes before reset or
+it's mostly pre-paid. Respect the freeze only when >30 min from reset.
+(Overly literal gating deferred #1597 a whole sprint when it would have
+merged cleanly with 7 min to spare.)
 
 ## Handling stuck workers
 
