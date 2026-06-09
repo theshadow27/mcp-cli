@@ -19,6 +19,7 @@ export interface ReviewState {
 
 export interface ReviewDeps {
   gh(op: GhOp): Promise<GhResult>;
+  prEdit(prNumber: number, flags: string[]): Promise<void>;
   findModelInSprintPlan(issueNumber: number, repoRoot: string): "opus" | "sonnet" | null;
 }
 
@@ -35,51 +36,30 @@ export type ReviewResult =
   | { action: "wait"; reason: string; round: number; model?: "opus" | "sonnet" }
   | { action: "goto"; target: "repair" | "qa"; reason: string; round: number; model?: "opus" | "sonnet" };
 
-// ── verdict heuristic (#2007) ──
-// Layered match: explicit verdict line wins; if absent, fall back to
-// "naked" 🔴/🟡 — emoji on a line that does NOT also carry a resolution
-// marker (✅ / fixed / resolved / addressed / reverted / n/a). Surveyed
-// across 200 merged PRs (49 with stickies, 38 approved): the prior
-// `/🔴|🟡/.test()` regex flagged 38 of 38 approved PRs as blocked
-// because reviewers reference past 🔴/🟡 in delta tables alongside
-// ✅ Fixed in <sha>. The verdict-line check eliminates that whole
-// false-positive class; the same-line-resolution fallback handles
-// stickies the reviewer wrote without an explicit verdict header.
-const VERDICT_APPROVED_RE = /✅\s*\*?\*?\s*(approved|approve)\b/i;
-const VERDICT_CHANGES_RE = /(⚠️|🟡|🔴)\s*\*?\*?\s*changes\s*requested/i;
-const RESOLVED_TOKEN_RE = /(✅|☑|\bfixed\b|\bresolved\b|\baddressed\b|\breverted\b|\bn\/a\b|\bnot applicable\b|\bwon[''']t fix\b)/i;
-
-export async function scanReviewComments(
+// ── typed verdict channel (#2575) ──
+// The review verdict is read from a PR LABEL the reviewer sets transactionally
+// (`review:pass` / `review:changes`), mirroring qa's `qa:pass`/`qa:fail`. We do
+// NOT scrape the sticky comment body: prose is attacker-influenced free text in
+// a multi-agent environment, so a quoted/forwarded `✅ APPROVED` could advance a
+// PR no reviewer approved (the merge-gate prompt-injection vector). A label is a
+// structured signal the agent must deliberately apply — the only control signal
+// the gate trusts. The prior prose-scraping heuristic (#2007) is removed.
+export async function readReviewLabels(
   prNumber: number,
   deps: Pick<ReviewDeps, "gh">,
-): Promise<{ found: boolean; hasBlockers: boolean; summary: string }> {
-  const result = await deps.gh({ op: "pr:comments", prNumber });
-  if (result.exitCode !== 0) return { found: false, hasBlockers: false, summary: "gh pr view failed" };
-  const lastIdx = result.stdout.lastIndexOf("## Adversarial Review");
-  if (lastIdx === -1) return { found: false, hasBlockers: false, summary: "no sticky comment yet" };
-  const sticky = result.stdout.slice(lastIdx);
-  const lines = sticky.split("\n");
-  for (const line of lines) {
-    if (VERDICT_APPROVED_RE.test(line)) {
-      return { found: true, hasBlockers: false, summary: "verdict: approved" };
-    }
-    if (VERDICT_CHANGES_RE.test(line)) {
-      return { found: true, hasBlockers: true, summary: "verdict: changes requested" };
-    }
+): Promise<{ hasPass: boolean; hasChanges: boolean }> {
+  const result = await deps.gh({ op: "pr:labels", prNumber });
+  if (result.exitCode !== 0) return { hasPass: false, hasChanges: false };
+  const names = new Set(result.stdout.split(/\r?\n/).map((l) => l.trim()));
+  return { hasPass: names.has("review:pass"), hasChanges: names.has("review:changes") };
+}
+
+async function removeLabel(prNumber: number, label: string, deps: Pick<ReviewDeps, "prEdit">): Promise<void> {
+  try {
+    await deps.prEdit(prNumber, ["--remove-label", label]);
+  } catch {
+    /* best-effort */
   }
-  // No explicit verdict line — fall back to naked-emoji scan.
-  let nakedRed = 0;
-  let nakedYellow = 0;
-  for (const line of lines) {
-    if (!/🔴|🟡/.test(line)) continue;
-    if (RESOLVED_TOKEN_RE.test(line)) continue; // same-line resolution marker
-    nakedRed += (line.match(/🔴/g) ?? []).length;
-    nakedYellow += (line.match(/🟡/g) ?? []).length;
-  }
-  if (nakedRed + nakedYellow > 0) {
-    return { found: true, hasBlockers: true, summary: `blockers remain (🔴×${nakedRed}, 🟡×${nakedYellow}, no verdict line)` };
-  }
-  return { found: true, hasBlockers: false, summary: "all clear" };
 }
 
 export async function runReview(
@@ -127,14 +107,29 @@ export async function runReview(
   }
 
   const storedModel = (await state.get<string>("review_model")) as "opus" | "sonnet" | null;
-  const scan = await scanReviewComments(work.prNumber, deps);
-  if (!scan.found) {
-    return { action: "wait", reason: scan.summary, round, ...(storedModel ? { model: storedModel } : {}) };
+  const withModel = storedModel ? { model: storedModel } : {};
+  const { hasPass, hasChanges } = await readReviewLabels(work.prNumber, deps);
+
+  // No verdict label yet — the reviewer hasn't decided. Wait (never trust prose).
+  if (!hasPass && !hasChanges) {
+    return { action: "wait", reason: "review:pass / review:changes label not set yet", round, ...withModel };
   }
 
-  if (!scan.hasBlockers) {
-    return { action: "goto", target: "qa", reason: "review clean → qa", round, ...(storedModel ? { model: storedModel } : {}) };
+  // Approved wins if both are somehow set; clear the stale changes label.
+  if (hasPass) {
+    if (hasChanges) await removeLabel(work.prNumber, "review:changes", deps);
+    return { action: "goto", target: "qa", reason: "review:pass → qa", round, ...withModel };
   }
+
+  // review:changes — blockers remain. Consume (clear) the verdict label co-located
+  // with the decision to trust it: the phase that *reads* a verdict invalidates it,
+  // so a re-entry after the repair round waits for the next reviewer's fresh verdict
+  // instead of replaying this stale one. Without this, the round-2 reviewer is
+  // spawned but its verdict is never consumed — `review_round` is already at the cap,
+  // so the next tick reads the stale `review:changes` and misroutes to qa, silently
+  // defeating the two-review guarantee (mirror-replay drift, #2649). qa is safe by a
+  // different seam — `repair-fn` clears `qa:fail` on every repair spawn.
+  await removeLabel(work.prNumber, "review:changes", deps);
 
   if (round >= REVIEW_ROUND_CAP) {
     return {
@@ -142,11 +137,11 @@ export async function runReview(
       target: "qa",
       reason: `review round cap (${REVIEW_ROUND_CAP}) reached; deferring remaining items to qa`,
       round,
-      ...(storedModel ? { model: storedModel } : {}),
+      ...withModel,
     };
   }
 
   await state.set("review_round", round + 1);
   await state.set("previous_phase", "review");
-  return { action: "goto", target: "repair", reason: "blockers remain → repair", round, ...(storedModel ? { model: storedModel } : {}) };
+  return { action: "goto", target: "repair", reason: "review:changes → repair", round, ...withModel };
 }

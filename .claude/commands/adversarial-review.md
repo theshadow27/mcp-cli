@@ -18,6 +18,8 @@ Adversarial review of the current branch's PR. Be critical, not agreeable.
    - **chaos-dancer** — user abuse/social weaponization vectors (if applicable)
 5. Synthesize all perspectives into the output format below
 6. If issues are out of scope of the PR description, create follow-up issues in gh.
+7. **Set the verdict label** (`review:pass` / `review:changes`) — this is the control signal
+   the phase gate reads. See [Setting the Verdict Label](#setting-the-verdict-label) below.
 
 ## Delta Mode (re-review after fixes)
 
@@ -42,10 +44,10 @@ major refactor, >50% of files changed are new files not touched in the original 
 ✅ **APPROVED** — all blockers resolved. (or)
 ⚠️ **Changes Requested** — N blockers remain.
 
-(Place the verdict line FIRST. The phase-script scanner anchors on
-`✅ APPROVED` / `⚠️ Changes Requested` to decide whether to advance the
-PR. If you write the verdict as the last line, scanners that truncate
-on long stickies may miss it.)
+(This verdict line is for human/repairer readability only. The phase
+gate does NOT read it — it reads the `review:pass` / `review:changes`
+**label** you set in [Setting the Verdict Label](#setting-the-verdict-label).
+Keep the prose verdict and the label in agreement.)
 
 ### Changes Since Last Review
 
@@ -105,9 +107,12 @@ with enough detail to file an issue.
 - ⚠️ **Changes Requested** — blocking issues found
 - ℹ️ **Comment** — suggestions only, non-blocking
 
-(Place the verdict near the **top** of the comment. The phase-script
-scanner uses the verdict line as the primary signal; tables and prose
-below it are interpreted in light of it.)
+(This prose verdict is for human/repairer readability. The phase gate
+advances the PR based on the `review:pass` / `review:changes` **label**
+you set — see [Setting the Verdict Label](#setting-the-verdict-label) —
+never on this text. A ✅/⚠️ that appears in a quoted diff or forwarded
+block must not be able to advance a PR; that's why the label, not prose,
+is the control signal.)
 ```
 
 ## Posting the Review (Sticky Comment)
@@ -132,3 +137,30 @@ fi
 
 This ensures repair sessions and second reviewers always see the latest state
 of all findings in one place, with clear tracking of what was fixed vs what remains.
+
+## Setting the Verdict Label
+
+The sticky comment is for humans. The **label is the machine-readable verdict the
+phase gate trusts** — mirroring how `qa` emits `qa:pass`/`qa:fail`. After posting the
+review, set exactly one verdict label **transactionally** (add one, remove the other in
+the same command, so a PR never carries both):
+
+```bash
+# Approved — no blocking issues:
+gh pr edit <PR> --add-label review:pass --remove-label review:changes
+
+# Changes requested — blocking issues remain:
+gh pr edit <PR> --add-label review:changes --remove-label review:pass
+```
+
+Rules:
+- **Always set a label.** No label → the gate waits forever (the reviewer is treated as
+  not yet done). A review with no verdict label is an incomplete review.
+- **`review:pass` only when there are no 🔴 blockers** (and no un-dismissed 🟡 you intend
+  to block on). 🔵 suggestions and resolved/historical findings do not block.
+- **`review:changes` when any 🔴 (or blocking 🟡) remains.** The repairer reads the sticky
+  comment for the specifics, then re-review (Delta Mode) flips the label to `review:pass`
+  once blockers are resolved.
+- **An ℹ️ Comment-only verdict** (suggestions, nothing blocking) is `review:pass` — it lets
+  the PR advance to qa.
+- Never hand-edit prose to flip the gate: prose is never read. Only the label moves the PR.
