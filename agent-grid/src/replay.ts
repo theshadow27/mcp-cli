@@ -267,6 +267,13 @@ function validateMcpCorrelation(entries: RecordingEntry[], violations: ReplayVio
     if (id === undefined) continue;
 
     if ("method" in payload) {
+      if (pendingRequests.has(id)) {
+        violations.push({
+          line,
+          rule: "mcp-correlation",
+          message: `duplicate in-flight request id=${JSON.stringify(id)} (first seen at line ${pendingRequests.get(id)})`,
+        });
+      }
       pendingRequests.set(id, line);
     } else if ("result" in payload || "error" in payload) {
       if (!pendingRequests.has(id)) {

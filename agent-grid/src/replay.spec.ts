@@ -385,6 +385,18 @@ describe("MCP request/response correlation", () => {
     expect(report.violations.some((v) => v.rule === "mcp-correlation" && v.message.includes("99"))).toBe(true);
   });
 
+  test("duplicate in-flight request ID detected", () => {
+    const entries: RecordingEntry[] = [
+      INIT,
+      READY,
+      mcp("daemon->worker", { id: 1, method: "tools/list" }),
+      mcp("daemon->worker", { id: 1, method: "prompts/list" }),
+    ];
+    const report = validateRecording(entries, "bad.ndjson");
+    expect(report.pass).toBe(false);
+    expect(report.violations.some((v) => v.rule === "mcp-correlation" && v.message.includes("duplicate"))).toBe(true);
+  });
+
   test("notifications (no id) are not correlated", () => {
     const entries: RecordingEntry[] = [
       INIT,

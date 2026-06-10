@@ -7,7 +7,6 @@ import { gateTest } from "@mcp-cli/agent-grid";
 import { type AgentProvider, getProvider } from "@mcp-cli/core";
 import {
   type GridRunReport,
-  type ReplayOptions,
   type RunOptions,
   cmdAgentGrid,
   discoverTests,
