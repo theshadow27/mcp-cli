@@ -2,9 +2,8 @@
  * Shared session-display helpers used by `claude.ts` and `agent.ts`.
  */
 
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
-import { GIT_REV_PARSE_TIMEOUT_MS, spawnCaptureSync } from "@mcp-cli/core";
 import { c } from "../output";
 
 // ── Transcript walker ──
@@ -405,23 +404,6 @@ export function compactTranscript(entries: TranscriptEntry[], maxResultLen = 100
     }
     return entry;
   });
-}
-
-/**
- * Get the git repo root for the current working directory.
- * Uses --git-common-dir to resolve to the main repo root, not a worktree.
- */
-export function getGitRepoRoot(): string | null {
-  try {
-    const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
-    if (!result.ok) return null;
-    const commonDir = result.stdout.trim();
-    if (!commonDir) return null;
-    const resolved = resolve(commonDir);
-    return resolved.endsWith(".git") ? dirname(resolved) : resolved;
-  } catch {
-    return null;
-  }
 }
 
 /**

@@ -207,6 +207,12 @@ export interface GhIssueEditOptions {
   labels?: string[];
 }
 
+export interface GhLabelEvent {
+  actor: string;
+  label: string;
+  created_at: string;
+}
+
 export interface GhMergeOptions {
   method?: "merge" | "squash" | "rebase";
   auto?: boolean;
@@ -708,6 +714,27 @@ export class PrHandle {
         }
       }
     }
+  }
+
+  async labelEvents(): Promise<GhLabelEvent[]> {
+    const raw = await ghPaginated<{
+      event: string;
+      actor: { login: string };
+      label?: { name: string };
+      created_at: string;
+    }>(`/repos/${this.o}/${this.r}/issues/${this.n}/events`, this.reqOpts());
+    return raw
+      .filter((e) => e.event === "labeled" && e.label != null)
+      .map((e) => ({ actor: e.actor.login, label: e.label?.name ?? "", created_at: e.created_at }));
+  }
+
+  async headCommitDate(): Promise<string> {
+    const pr = await this.body();
+    const commit = await ghJson<{ commit: { committer: { date: string } } }>(
+      `/repos/${this.o}/${this.r}/commits/${pr.head.sha}`,
+      this.reqOpts(),
+    );
+    return commit.commit.committer.date;
   }
 
   async merge(opts?: GhMergeOptions): Promise<void> {

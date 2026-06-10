@@ -303,10 +303,10 @@ describe("buildImportGraph — real codebase", () => {
 
   test("barrel re-exports propagate through real core barrel", () => {
     const repoRoot = process.cwd();
-    const coreIndex = `${repoRoot}/packages/core/src/index.ts`;
-    const graph = buildImportGraph([coreIndex]);
+    const coreBarrel = `${repoRoot}/packages/core/src/alias-bundle-core.ts`;
+    const graph = buildImportGraph([coreBarrel]);
 
-    const fwd = graph.forward.get(coreIndex) ?? [];
+    const fwd = graph.forward.get(coreBarrel) ?? [];
     const barrels = fwd.filter((e) => e.isBarrelReExport);
     expect(barrels.length).toBeGreaterThan(20);
   });
