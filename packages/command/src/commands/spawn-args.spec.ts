@@ -134,8 +134,8 @@ describe("parseSharedSpawnArgs", () => {
   });
 
   it("passes full model ID through unchanged", () => {
-    const result = parseSharedSpawnArgs(["--model", "claude-opus-4-6", "--task", "x"]);
-    expect(result.model).toBe("claude-opus-4-6");
+    const result = parseSharedSpawnArgs(["--model", "claude-opus-4-8", "--task", "x"]);
+    expect(result.model).toBe("claude-opus-4-8");
   });
 
   it("--allow stops consuming at lowercase positional (worktree name)", () => {
