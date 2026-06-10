@@ -77,6 +77,9 @@ export async function readReviewLabels(
   } catch {
     return { hasPass: false, hasChanges: false, rejections: [`label-events JSON unparseable — fail closed`] };
   }
+  if (!Array.isArray(events)) {
+    return { hasPass: false, hasChanges: false, rejections: [`label-events not an array — fail closed`] };
+  }
 
   const vctx: VerdictContext = {
     prAuthor: authorResult.stdout.trim(),

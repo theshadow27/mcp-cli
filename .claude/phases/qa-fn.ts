@@ -70,6 +70,9 @@ export async function readQaLabels(
   } catch {
     return { hasPass: false, hasFail: false, rejections: [`label-events JSON unparseable — fail closed`] };
   }
+  if (!Array.isArray(events)) {
+    return { hasPass: false, hasFail: false, rejections: [`label-events not an array — fail closed`] };
+  }
 
   const vctx: VerdictContext = {
     prAuthor: authorResult.stdout.trim(),

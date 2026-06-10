@@ -135,6 +135,21 @@ describe("readQaLabels — verdict validation (#2652)", () => {
     expect(result.rejections[0]).toMatch(/unparseable/);
   });
 
+  test("fail closed: non-array label events rejects all verdicts", async () => {
+    const deps = makeDeps({
+      gh: async (op) => {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events") return { stdout: "{\"foo\":1}", stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
+    expect(result.hasPass).toBe(false);
+    expect(result.rejections.length).toBeGreaterThan(0);
+    expect(result.rejections[0]).toMatch(/label-events not an array/);
+  })
   test("rejects stale label predating session spawn (guard b)", async () => {
     const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T09:55:00Z" };
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"], labelEvents: [staleEvent] }) });
