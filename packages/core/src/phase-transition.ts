@@ -15,7 +15,17 @@
  * reasoning is preserved alongside the transition itself.
  */
 
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { Manifest } from "./manifest";
 
@@ -293,6 +303,39 @@ export function readAllTransitions(logPath: string): TransitionLogEntry[] {
     }
   }
   return out;
+}
+
+/**
+ * Remove stale transition log entries for a work item whose incarnation
+ * predates `cutoff`. Used by `mcx track` to clear history from prior
+ * sprints so a re-tracked item starts with a clean slate (issue #2463).
+ *
+ * Returns the number of entries pruned. Acquires `withTransitionLock` so
+ * concurrent phase runs can't race with the rewrite.
+ */
+export function pruneStaleHistory(logPath: string, workItemId: string, cutoff: Date): number {
+  return withTransitionLock(logPath, () => {
+    const all = readAllTransitions(logPath);
+    if (all.length === 0) return 0;
+
+    const cutoffMs = cutoff.getTime();
+    const kept: TransitionLogEntry[] = [];
+    let pruned = 0;
+    for (const entry of all) {
+      if (entry.workItemId === workItemId && new Date(entry.ts).getTime() < cutoffMs) {
+        pruned++;
+      } else {
+        kept.push(entry);
+      }
+    }
+
+    if (pruned === 0) return 0;
+
+    mkdirSync(dirname(logPath), { recursive: true });
+    const content = kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length > 0 ? "\n" : "");
+    writeFileSync(logPath, content, "utf-8");
+    return pruned;
+  });
 }
 
 /** Return the `to` field of every history entry, oldest first. */
