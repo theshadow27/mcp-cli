@@ -98,14 +98,16 @@ export async function runGridForProvider(
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
       try {
+        const testPromise = test.run({
+          provider,
+          cwd,
+          onCleanup: (fn) => {
+            cleanupFns.push(fn);
+          },
+        });
+        testPromise.catch(() => {});
         const result = await Promise.race([
-          test.run({
-            provider,
-            cwd,
-            onCleanup: (fn) => {
-              cleanupFns.push(fn);
-            },
-          }),
+          testPromise,
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error(`test timed out after ${timeoutMs}ms`)), timeoutMs);
           }),
