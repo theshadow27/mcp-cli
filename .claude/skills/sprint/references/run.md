@@ -544,6 +544,41 @@ gh pr view $PR --json labels -q '[.labels[].name]'
 If both `qa:pass` and `qa:fail` appear, hold the merge and resolve
 manually — the QA history needs review, not a silent label cleanup.
 
+### qa:fail override requires reading the implicated code + naming the mechanism
+
+Overriding a `qa:fail` — flipping the label to `qa:pass`, or merging/
+cancelling-CI in spite of it — is the single highest-leverage decision in
+the sprint, because it discards the only fresh-eyes verdict in the
+pipeline. The orchestrator may only do it after **both**:
+
+1. **Reading the implicated file(s).** Whatever the QA report names — the
+   failing test, the module it exercises, the diff hunk it points at — the
+   orchestrator opens and reads it before overriding. Not the QA summary
+   of it; the code.
+2. **Naming the failure mechanism in the override comment.** State *what
+   causes the observed failure and why it is safe to merge anyway* — a
+   specific mechanism ("the 143 is the runner's own teardown SIGTERM
+   propagating, see X"), not a category ("known flake", "pre-existing",
+   "non-required check"). If you cannot articulate the mechanism, you do
+   not understand the failure, and the override is not available — route
+   to flake-patrol or repair instead.
+
+Why this exists (sprint 69, PR #2609): QA returned `qa:fail` with the
+exact bug's name in the report — "Exit code 143 (SIGTERM)" on a test
+called "registerShutdownHandlers SIGTERM" — and the orchestrator overrode
+it to `qa:pass` reasoning "check-no-claude is non-required; the hang is
+the known bun-wedge flake," **without ever reading `isolation.ts`**. The
+merged commit made every consumer SIGTERM-immortal, wedged CI for two
+sprints, melted the box twice, and cost a multi-day forensic recovery
+(see `.claude/diary/20260530.70.md`, Post-Mortem Addendum). Reading the
+one file the QA report named would have stopped it. The mechanism-naming
+requirement is the test: "non-required check" and "known flake" both
+fail it, and both were the actual rationalizations used.
+
+This composes with the flake rule below: an override justified by "it's
+a flake" additionally requires flake-patrol's proof. There is no
+fast path where the orchestrator's own reasoning substitutes for either.
+
 ### Flakes are banned — a "flake" must be proven, not asserted
 
 "Flake" is the most dangerous word in the sprint. Once it enters the
