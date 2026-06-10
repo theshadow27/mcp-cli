@@ -87,6 +87,31 @@ correctness, pairs with future stdio work), #2471 (proc start-time source), #264
 rules work (next sprint candidate); #2576, #2553, #2507, #2506, #2485, #2393, #2182
 deferred to retro.
 
+## Results
+
+- **Released**: v1.14.1
+- **PRs merged**: 15/15 planned (#2663, #2668, #2672, #2671, #2674, #2676, #2677,
+  #2614, #2617, #2675, #2678, #2689, #2694, #2691, #2695) — first sprint at 100%
+  of a 15-PR target
+- **Issues closed**: 16 by PR (15 planned + dup #2468), plus 3 board-hygiene
+  closures at plan time (#2633, #2529, #2640)
+- **Issues dropped**: 0
+- **New issues filed**: 17 (#2665 model routing on work items, #2666 pre-push
+  empty-stdin, #2670 hook test gap, #2673 worktree lock resolution, #2679
+  stale-base worktree forks, #2680 replay cancellation follow-up, #2681
+  per-spawn binary/transport override, #2682 phase_state_set ACL, #2683 NaN
+  guard rule, #2684 E2E transition-error tests, #2685 atomic prune rewrite,
+  #2688 stdio dogfooding canary, #2690 host oversubscription, #2692 done-fn
+  stub drift, #2693 worktree containment escape, #2696 env-inherit rule,
+  #2698 QA-must-not-push) + data-point comments on #2656, #2648
+- **Wall clock**: 2h07m (23:00–01:07 EDT), ~$95 total session cost, quota
+  peaked ~7%
+- **Notable**: stdio-transport dogfooding gap discovered (sprint runs pinned
+  .119/ws; #2688 canaries it next sprint); fable-5 worker canary (#2645)
+  passed end-to-end; verdict-gate security chain (#2653→#2652→#2651) fully
+  landed; zero opus repair spawns — all repairs were reviewer micro-repairs
+  with independent fresh-eyes verification
+
 ## Context
 
 Sprint 70 recovered from the 69/70 test-infra collapse (#2637 reverted the killer
