@@ -73,6 +73,51 @@ events happen — trust this over end-of-sprint recollection.
   (#2628 $0.48/18t, #2659 $0.92/33t, #2653 $1.78/58t). No harness friction
   observed from the worker side.
 
+## Transport discovery + aborted stdio canary (04:00Z) — RETRO HEADLINE
+
+**We are not dogfooding our own transport.** User-prompted investigation
+revealed: every sprint session runs the legacy sdk-url/WS path because the
+agent-grid pins archived claude-2.1.119 (≤2.1.122 gates to ws). The stdio
+transport (#2234) is shipped, green in unit tests, and has NEVER run under
+real sprint load. The #2234 spike's unverified risks (pipe-buffer deadlock
+at multi-session concurrency — its own "#1 MVP risk" — and StuckDetector
+signal availability) are unverified precisely in the regime sprints run in.
+**Not dogfooding our own features is an antipattern** — flagged by user,
+must carry into next sprint's plan (early-sprint full-concurrency canary,
+filed as an issue; see also #2681).
+
+Canary attempt findings:
+- Per-spawn binary flip is unreliable: config set → spawn → restore raced
+  (or daemon caches); the "canary" came up .119+ws. Filed #2681 (per-spawn
+  --claude-binary/--transport override + define config read semantics).
+- Also learned: stdio drops the ws can_use_tool round-trip → worktree
+  containment guard never fires. Moving sprints to stdio is a threat-model
+  decision, not just a transport swap.
+- Deferred the canary to next sprint (user call): a tail-of-sprint canary
+  would test stdio at MINIMUM concurrency — dodging exactly the deadlock
+  regime that needs testing. Next sprint: pin >2.1.122 early at full fleet.
+
+## Mid-sprint quality signals (03:30–04:15Z)
+
+- **Review gate caught what the investigation missed twice**: #2463's
+  nerd-snipe wrote "both parse correctly with new Date()" — review round 1
+  found the SQLite-string-parsed-as-local-time cutoff bug. #2652's review
+  round 1 found a NaN bypass that silently disabled ALL three new security
+  guards + claimed-but-absent integration tests. Adversarial review is
+  earning its cost on exactly the high-scrutiny items the plan flagged.
+- **Micro-repair loop (reviewer fixes own findings, fresh session verifies)
+  ran 3× cleanly** (#2463 UTC fix → fresh QA; #2652 NaN+tests → round-2
+  review → fresh QA; #2614 thread fixes → fresh QA).
+- **QA-authored code caught and reversed**: #2463's QA pushed a fix commit
+  (stale-base duplicate); had it stayed, its own verdict would have covered
+  its own code. Rebase dropped it as already-upstream. Governance held.
+- **Stale-base churn** (3 incidents) → filed #2679 (fork worktrees from
+  origin/main). Fast merge trains make spawn-time base freshness matter.
+- **#2505 worker tried to absorb local SIGTERM crashes as "the known CI
+  issue"** — known issue is Linux-CI-only; protocol'd it to clean-main
+  comparison instead of letting "flake" framing leak in. (Resolution
+  pending as of this note.)
+
 ## Open questions to answer by retro
 
 - Did the batch-1→backfill slot model actually beat "spawn everything
