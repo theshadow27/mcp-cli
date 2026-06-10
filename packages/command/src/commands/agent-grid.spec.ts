@@ -16,6 +16,7 @@ import {
   parseRunArgs,
   resolveProviders,
   runGridForProvider,
+  warnStubFlags,
 } from "./agent-grid";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -127,13 +128,31 @@ describe("resolveProviders", () => {
     expect(providers[0].name).toBe("claude");
     expect(providers[1].name).toBe("codex");
   });
+
+  test("exits on unknown provider", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("EXIT");
+    });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    expect(() => resolveProviders(["nonexistent-provider-xyz"])).toThrow("EXIT");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
 });
 
 // ── discoverTests ──────────────────────────────────────────────────
 
 describe("discoverTests", () => {
-  test("returns empty array (skeleton)", () => {
-    expect(discoverTests()).toEqual([]);
+  test("returns batch 1 tests", () => {
+    const tests = discoverTests();
+    expect(tests.length).toBeGreaterThanOrEqual(5);
+    const names = tests.map((t) => t.name);
+    expect(names).toContain("spawn-in-dir");
+    expect(names).toContain("read-file");
+    expect(names).toContain("edit-file");
+    expect(names).toContain("run-bash");
+    expect(names).toContain("multi-turn");
   });
 });
 
@@ -221,6 +240,68 @@ describe("runGridForProvider", () => {
     };
     await runGridForProvider(claude, [gridTest], defaultOpts);
     expect(receivedCwd).toContain("agent-grid-claude-");
+  });
+
+  test("calls onCleanup on timeout", async () => {
+    let cleanupCalled = false;
+    const claude = mustGetProvider("claude");
+    const LONGER_THAN_TIMEOUT = 60_000;
+    const gridTest: GridTest = {
+      name: "slow-test",
+      requires: [],
+      run: async (ctx) => {
+        ctx.onCleanup?.(async () => {
+          cleanupCalled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, LONGER_THAN_TIMEOUT));
+        return { status: "pass" };
+      },
+    };
+    const report = await runGridForProvider(claude, [gridTest], { ...defaultOpts, timeoutMs: 100 });
+    expect(report.outcomes).toHaveLength(1);
+    expect(report.outcomes[0].result.status).toBe("fail");
+    expect((report.outcomes[0].result as { error: string }).error).toContain("timed out");
+    expect(cleanupCalled).toBe(true);
+  });
+
+  test("accumulates multiple onCleanup fns and runs LIFO on timeout", async () => {
+    const order: number[] = [];
+    const claude = mustGetProvider("claude");
+    const LONGER_THAN_TIMEOUT = 60_000;
+    const gridTest: GridTest = {
+      name: "multi-cleanup",
+      requires: [],
+      run: async (ctx) => {
+        ctx.onCleanup?.(async () => {
+          order.push(1);
+        });
+        ctx.onCleanup?.(async () => {
+          order.push(2);
+        });
+        ctx.onCleanup?.(async () => {
+          order.push(3);
+        });
+        await new Promise((resolve) => setTimeout(resolve, LONGER_THAN_TIMEOUT));
+        return { status: "pass" };
+      },
+    };
+    await runGridForProvider(claude, [gridTest], { ...defaultOpts, timeoutMs: 100 });
+    expect(order).toEqual([3, 2, 1]);
+  });
+
+  test("provides onCleanup in test context", async () => {
+    let hasOnCleanup = false;
+    const claude = mustGetProvider("claude");
+    const gridTest: GridTest = {
+      name: "cleanup-check",
+      requires: [],
+      run: async (ctx) => {
+        hasOnCleanup = typeof ctx.onCleanup === "function";
+        return { status: "pass" };
+      },
+    };
+    await runGridForProvider(claude, [gridTest], defaultOpts);
+    expect(hasOnCleanup).toBe(true);
   });
 });
 
@@ -329,49 +410,73 @@ describe("cmdAgentGrid", () => {
     expect(output).toContain("agent-grid run");
   });
 
-  test("run with empty suite warns on stderr", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--json"]);
-    expect(stderrLines().some((s: string) => s.includes("no tests registered"))).toBe(true);
+  test("unknown subcommand exits with error", async () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("EXIT");
+    });
+    await expect(cmdAgentGrid(["bogus"])).rejects.toThrow("EXIT");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalled();
+    const msg = stderrLines().join(" ");
+    expect(msg).toContain("unknown subcommand");
+    exitSpy.mockRestore();
+  });
+});
+
+// ── warnStubFlags ─────────────────────────────────────────────────
+
+describe("warnStubFlags", () => {
+  const base: RunOptions = {
+    providers: [],
+    version: null,
+    offline: false,
+    record: null,
+    commitOutcome: false,
+    json: false,
+  };
+
+  let errorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    errorSpy = spyOn(console, "error").mockImplementation(() => {});
   });
 
-  test("run --json outputs valid JSON", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--json"]);
-    expect(logSpy).toHaveBeenCalled();
-    const output = logSpy.mock.calls[0][0] as string;
-    const parsed = JSON.parse(output);
-    expect(parsed.providers).toBeArray();
-    expect(parsed.providers[0].provider).toBe("claude");
-    expect(parsed.elapsed_ms).toBeNumber();
+  afterEach(() => {
+    errorSpy.mockRestore();
   });
 
-  test("run text output includes provider name", async () => {
-    await cmdAgentGrid(["run", "--providers=codex"]);
-    expect(logSpy).toHaveBeenCalled();
-    const output = logSpy.mock.calls[0][0] as string;
-    expect(output).toContain("codex");
-    expect(output).toContain("(no tests registered)");
+  test("no warnings when no stub flags set", () => {
+    warnStubFlags(base);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  test("run --offline warns not yet implemented", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--offline", "--json"]);
-    expect(stderrLines().some((s: string) => s.includes("--offline") && s.includes("not yet implemented"))).toBe(true);
+  test("warns on --offline", () => {
+    warnStubFlags({ ...base, offline: true });
+    expect(errorSpy).toHaveBeenCalled();
+    expect(String(errorSpy.mock.calls[0][0])).toContain("--offline");
   });
 
-  test("run --record warns not yet implemented", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--record=./out.ndjson", "--json"]);
-    expect(stderrLines().some((s: string) => s.includes("--record") && s.includes("not yet implemented"))).toBe(true);
+  test("warns on --record", () => {
+    warnStubFlags({ ...base, record: "/tmp/rec" });
+    expect(errorSpy).toHaveBeenCalled();
+    expect(String(errorSpy.mock.calls[0][0])).toContain("--record");
   });
 
-  test("run --version warns not yet implemented", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--version=2.1.119", "--json"]);
-    expect(stderrLines().some((s: string) => s.includes("--version") && s.includes("not yet implemented"))).toBe(true);
+  test("warns on --version", () => {
+    warnStubFlags({ ...base, version: "1.0.0" });
+    expect(errorSpy).toHaveBeenCalled();
+    expect(String(errorSpy.mock.calls[0][0])).toContain("--version");
   });
 
-  test("run --commit-outcome warns not yet implemented", async () => {
-    await cmdAgentGrid(["run", "--providers=claude", "--commit-outcome", "--json"]);
-    expect(stderrLines().some((s: string) => s.includes("--commit-outcome") && s.includes("not yet implemented"))).toBe(
-      true,
-    );
+  test("warns on --commit-outcome", () => {
+    warnStubFlags({ ...base, commitOutcome: true });
+    expect(errorSpy).toHaveBeenCalled();
+    expect(String(errorSpy.mock.calls[0][0])).toContain("--commit-outcome");
+  });
+
+  test("warns on all stub flags combined", () => {
+    warnStubFlags({ ...base, offline: true, record: "/tmp/x", version: "1.0", commitOutcome: true });
+    expect(errorSpy.mock.calls.length).toBe(4);
   });
 });
 

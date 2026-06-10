@@ -9,7 +9,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { type GridResult, type GridTest, gateTest, parseRecording, validateRecording } from "@mcp-cli/agent-grid";
+import {
+  type CallToolFn,
+  type GridResult,
+  type GridTest,
+  gateTest,
+  makeEditFileTest,
+  makeMultiTurnTest,
+  makeReadFileTest,
+  makeRunBashTest,
+  makeSpawnInDirTest,
+  parseRecording,
+  validateRecording,
+} from "@mcp-cli/agent-grid";
 import { type AgentProvider, getAllProviders, getProvider } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { formatHelp, getHelp, hasHelpFlag, registerHelp } from "../help";
@@ -36,14 +48,32 @@ export interface GridRunReport {
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TEST_TIMEOUT_MS = 130_000;
 const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
 
 // ── Test discovery ─────────────────────────────────────────────────
 
+let _coreModule: typeof import("@mcp-cli/core") | undefined;
+async function getCoreModule() {
+  _coreModule ??= await import("@mcp-cli/core");
+  return _coreModule;
+}
+
+async function ipcCallTool(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+  const timeoutMs = tool.endsWith("_prompt") || tool.endsWith("_wait") ? 120_000 : undefined;
+  const m = await getCoreModule();
+  return m.ipcCall("callTool", { server, tool, arguments: args }, { timeoutMs });
+}
+
 export function discoverTests(): GridTest[] {
-  // Test implementations are added by later issues in the epic (#2538).
-  return [];
+  const deps = { callTool: ipcCallTool satisfies CallToolFn };
+  return [
+    makeSpawnInDirTest(deps),
+    makeReadFileTest(deps),
+    makeEditFileTest(deps),
+    makeRunBashTest(deps),
+    makeMultiTurnTest(deps),
+  ];
 }
 
 // ── Runner ─────────────────────────────────────────────────────────
@@ -51,7 +81,7 @@ export function discoverTests(): GridTest[] {
 export async function runGridForProvider(
   provider: AgentProvider,
   tests: GridTest[],
-  opts: { version: string | null; record: string | null; offline: boolean },
+  opts: { version: string | null; record: string | null; offline: boolean; timeoutMs?: number },
 ): Promise<ProviderReport> {
   const outcomes: TestOutcome[] = [];
   const cwd = mkdtempSync(resolve(tmpdir(), `agent-grid-${provider.name}-`));
@@ -63,18 +93,32 @@ export async function runGridForProvider(
         outcomes.push({ test: test.name, result: gateResult });
         continue;
       }
+
+      const cleanupFns: (() => Promise<void>)[] = [];
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
       try {
+        const testPromise = test.run({
+          provider,
+          cwd,
+          onCleanup: (fn) => {
+            cleanupFns.push(fn);
+          },
+        });
+        testPromise.catch(() => {});
         const result = await Promise.race([
-          test.run({ provider, cwd }),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`test timed out after ${DEFAULT_TEST_TIMEOUT_MS}ms`)),
-              DEFAULT_TEST_TIMEOUT_MS,
-            ),
-          ),
+          testPromise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`test timed out after ${timeoutMs}ms`)), timeoutMs);
+          }),
         ]);
+        clearTimeout(timer);
         outcomes.push({ test: test.name, result });
       } catch (err) {
+        clearTimeout(timer);
+        for (let i = cleanupFns.length - 1; i >= 0; i--) {
+          await cleanupFns[i]().catch(() => {});
+        }
         outcomes.push({
           test: test.name,
           result: { status: "fail", error: err instanceof Error ? err.message : String(err) },
@@ -244,7 +288,7 @@ export function resolveProviders(names: string[]): AgentProvider[] {
 
 // ── Stub flag warnings ─────────────────────────────────────────────
 
-function warnStubFlags(opts: RunOptions): void {
+export function warnStubFlags(opts: RunOptions): void {
   if (opts.offline) {
     console.error(`${c.yellow}--offline: not yet implemented; network access is not restricted${c.reset}`);
   }
