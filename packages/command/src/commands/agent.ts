@@ -11,14 +11,13 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import {
   type AgentFeatures,
   type AgentProvider,
   type LookupResult,
   type MailMessage,
   isLookupFailure,
-  lookupFailure,
   resolveGitRootOrCwd,
   validateAllowPatterns,
 } from "@mcp-cli/core";
@@ -28,7 +27,6 @@ import { emitMailEvent, pollMailUntil } from "./mail-wait";
 import "../help-claude";
 import {
   DEFAULT_TIMEOUT_MS,
-  GIT_REV_PARSE_TIMEOUT_MS,
   PROMPT_IPC_TIMEOUT_MS,
   WorktreeError,
   buildHookEnv,
@@ -52,8 +50,6 @@ import {
   type SharedSessionDeps,
   buildResumePrompt,
   cleanupWorktree,
-  defaultGetDiffStats,
-  defaultGetPrStatus,
   extractIssueNumber,
   parseApproveArgs,
   parseByeResult,
@@ -62,6 +58,7 @@ import {
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
+import { defaultGetDiffStats, defaultGetPrStatus, getGitRoot } from "./session-deps";
 import {
   colorState,
   extractContentSummary,
@@ -110,16 +107,6 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
     return ipcCall("callTool", { server: provider.serverName, tool, arguments: args }, { timeoutMs });
   };
-}
-
-function getGitRoot(): LookupResult<string | null> {
-  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
-  if (!result.ok)
-    return lookupFailure(`git rev-parse --git-common-dir failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
-  const commonDir = result.stdout.trim();
-  if (!commonDir) return null;
-  const resolved = resolve(commonDir);
-  return resolved.endsWith(".git") ? dirname(resolved) : resolved;
 }
 
 export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
