@@ -348,6 +348,11 @@ For each "remaining work" item from the issue, create a new GitHub issue using `
 
 This ensures no planned work is lost when the parent issue is closed.
 
+
+## Trust Boundaries
+
+QA must never push commits to the branch under judgment. If a fix is needed to proceed (e.g. a stale-base test failure), QA must stop, report the issue, and either (a) return `qa:fail` with a description of what needs fixing, or (b) apply the fix and explicitly flag it for independent verification — with the `qa:pass` verdict scoped to exclude the authored commit. QA is an auditor, not a co-author.
+
 ## Issue discipline
 
 **Claude is the user of this project.** mcx is built by Claude, for Claude. There are no human users filing bug reports. Every Claude — orchestrator, implementer, QA — is responsible for filing issues when problems are encountered.
