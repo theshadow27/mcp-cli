@@ -160,8 +160,8 @@ export async function runReview(
   const storedModel = (await state.get<string>("review_model")) as "opus" | "sonnet" | null;
   const withModel = storedModel ? { model: storedModel } : {};
   const roundStartedAt = (await state.get<number>("review_spawned_at")) ?? 0;
-  if (roundStartedAt === 0) {
-    return { action: "wait", reason: "review_spawned_at missing from state — fail closed; re-spawn to populate", round, ...withModel };
+  if (roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
+    return { action: "wait", reason: "review_spawned_at missing or invalid in state — fail closed; re-spawn to populate", round, ...withModel };
   }
   const { hasPass, hasChanges, rejections } = await readReviewLabels(work.prNumber, deps, roundStartedAt);
 

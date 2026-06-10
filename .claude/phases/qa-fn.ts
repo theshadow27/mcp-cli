@@ -136,8 +136,8 @@ export async function runQa(
   }
 
   const roundStartedAt = (await state.get<number>("qa_spawned_at")) ?? 0;
-  if (roundStartedAt === 0) {
-    return { action: "wait", reason: "qa_spawned_at missing from state — fail closed; re-spawn to populate", model: qaModel, prompt: qaPrompt };
+  if (roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
+    return { action: "wait", reason: "qa_spawned_at missing or invalid in state — fail closed; re-spawn to populate", model: qaModel, prompt: qaPrompt };
   }
   const { hasPass, hasFail, rejections } = await readQaLabels(work.prNumber, deps, roundStartedAt);
   if (!hasPass && !hasFail) {

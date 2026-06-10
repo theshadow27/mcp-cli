@@ -129,6 +129,67 @@ describe("readQaLabels — parsing", () => {
     expect(result).toMatchObject({ hasPass: true, hasFail: true });
   });
 
+  test("label-events fetch failure → fail closed (both false)", async () => {
+    const result = await readQaLabels(
+      100,
+      { gh: makeGh({ labels: ["qa:pass"], eventsExitCode: 1 }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
+    expect(result.rejections.length).toBeGreaterThan(0);
+    expect(result.rejections[0]).toMatch(/label-events fetch failed/);
+  });
+
+  test("unparseable label-events JSON → fail closed", async () => {
+    const gh: QaDeps["gh"] = async (op) => {
+      if (op.op === "pr:labels") return ok("qa:pass");
+      if (op.op === "pr:label-events") return { stdout: "not-json{{{", stderr: "", exitCode: 0 };
+      if (op.op === "pr:author") return ok(DEFAULT_AUTHOR);
+      if (op.op === "pr:head-date") return ok(DEFAULT_HEAD_DATE);
+      return { stdout: "", stderr: "", exitCode: 1 };
+    };
+    const result = await readQaLabels(100, { gh }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
+    expect(result.rejections[0]).toMatch(/unparseable/);
+  });
+
+  test("stale label (predates session spawn) → hasPass false + rejection", async () => {
+    const staleEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T09:55:00Z" };
+    const result = await readQaLabels(
+      100,
+      { gh: makeGh({ labels: ["qa:pass"], labelEvents: [staleEvent] }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
+    expect(result.rejections[0]).toMatch(/stale verdict/);
+  });
+
+  test("label predates head commit → hasPass false + rejection", async () => {
+    const earlyEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T10:05:00Z" };
+    const result = await readQaLabels(
+      100,
+      { gh: makeGh({ labels: ["qa:pass"], labelEvents: [earlyEvent], headDate: "2026-06-09T10:10:00Z" }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
+    expect(result.rejections[0]).toMatch(/verdict on stale code/);
+  });
+
+  test("no events fetched when no verdict label present", async () => {
+    let eventsFetched = false;
+    const gh: QaDeps["gh"] = async (op) => {
+      if (op.op === "pr:labels") return ok("bug\nenhancement");
+      if (op.op === "pr:label-events") {
+        eventsFetched = true;
+        return ok("[]");
+      }
+      return ok("");
+    };
+    const result = await readQaLabels(100, { gh }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasFail: false, rejections: [] });
+    expect(eventsFetched).toBe(false);
+  });
+
   test("passes correct op to gh", async () => {
     let captured: GhOp | undefined;
     await readQaLabels(

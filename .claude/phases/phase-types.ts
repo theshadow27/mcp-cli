@@ -74,6 +74,10 @@ export function validateVerdictLabel(
   events: GhLabelEvent[],
   ctx: VerdictContext,
 ): { valid: true; actorNote?: string } | { valid: false; rejection: string } {
+  if (Number.isNaN(ctx.roundStartedAt)) {
+    return { valid: false, rejection: `roundStartedAt is NaN — fail closed` };
+  }
+
   const matching = events
     .filter((e) => e.label === label)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -88,7 +92,13 @@ export function validateVerdictLabel(
     return { valid: false, rejection: `unparseable timestamp on ${label} event (${event.created_at}) — fail closed` };
   }
 
-  // Guard (b): freshness — must postdate session spawn
+  // Guard (b): freshness — must postdate session spawn.
+  // Uses `<` (not `<=`): a label timestamped at the exact spawn instant is accepted
+  // as borderline-fresh. Guard (c) below uses `<=` (strictly after) because a label
+  // at the exact committer-date second could be pre-planted before the push propagated.
+  // Known limitation: roundStartedAt is Date.now() (local clock) while event.created_at
+  // is a GitHub server timestamp. Clock skew can cause false rejections; the failure
+  // mode is fail-closed (verdict treated as absent), which is the preferred direction.
   if (eventTime < ctx.roundStartedAt) {
     return {
       valid: false,

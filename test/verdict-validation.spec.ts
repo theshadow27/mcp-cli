@@ -119,4 +119,11 @@ describe("validateVerdictLabel (#2652)", () => {
     const result = validateVerdictLabel("review:pass", [event], makeCtx());
     expect(result.valid).toBe(true);
   });
+
+  test("fail closed: rejects when roundStartedAt is NaN", () => {
+    const ctx = makeCtx({ roundStartedAt: Number.NaN });
+    const result = validateVerdictLabel("review:pass", [makeEvent()], ctx);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.rejection).toMatch(/NaN/);
+  });
 });
