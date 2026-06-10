@@ -34,7 +34,7 @@ if [ -z "${SKIP_PRIVACY_CHECK:-}" ]; then
   # Grep added lines only (not context, not removed). -U disables newline
   # normalization so we can reliably match within single diff lines.
   privacy_hits=$(git diff --cached -U0 --no-color -- $staged_files \
-    | grep -E "^\+" | grep -E "$privacy_pattern" || true)
+    | grep '^+' | grep -E "$privacy_pattern" || true)
   if [ -n "$privacy_hits" ]; then
     echo "pre-commit: refusing to stage lines containing local home paths" >&2
     echo "pattern: $privacy_pattern" >&2
@@ -80,7 +80,7 @@ if [ -n "$recording_files" ]; then
     exit 1
   }
   added_content=$(printf '%s\n' "$diff_output" \
-    | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//') || {
+    | grep '^+' | grep -v '^+++' | sed 's/^+//') || {
     rc=$?
     if [ "$rc" -gt 1 ]; then
       echo "pre-commit: content extraction failed (fail-closed)" >&2
