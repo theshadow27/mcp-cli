@@ -667,10 +667,43 @@ describe("replayThroughMock", () => {
 
     const report = await replayThroughMock(entries, "extra.ndjson", {
       workerPath: MOCK_WORKER_PATH,
+      timeoutMs: 500, // short timeout — testing count detection, not timeout duration
     });
 
     expect(report.pass).toBe(false);
     expect(report.violations.some((v) => v.rule === "mock-replay-count")).toBe(true);
+  });
+
+  test("Phase-2 worker crash produces mock-worker-crash violation, not silent count mismatch", async () => {
+    // Worker that sends ready on init but crashes on the next message
+    const crashWorkerPath = tmpFile("crash-worker.ts");
+    writeFileSync(
+      crashWorkerPath,
+      `self.onmessage = (ev) => {
+  if (ev.data?.type === "init") {
+    self.postMessage({ type: "ready", supported_protocol_version: 1 });
+    self.onmessage = () => { throw new Error("intentional phase-2 crash"); };
+  }
+};`,
+    );
+
+    const entries: RecordingEntry[] = [
+      entry({ dir: "daemon->worker", kind: "control", payload: { type: "init", protocol_version: 1 } }),
+      entry({ dir: "worker->daemon", kind: "control", payload: { type: "ready", supported_protocol_version: 1 } }),
+      // Extra expected message that won't arrive because the worker crashes
+      db("db:end", { sessionId: "test" }),
+      // Trigger message that causes the crash
+      entry({ dir: "daemon->worker", kind: "control", payload: { type: "shutdown" } }),
+    ];
+
+    const report = await replayThroughMock(entries, "crash.ndjson", {
+      workerPath: crashWorkerPath,
+      timeoutMs: 3000,
+    });
+
+    expect(report.pass).toBe(false);
+    // Crash must surface as mock-worker-crash, not silently as count mismatch alone
+    expect(report.violations.some((v) => v.rule === "mock-worker-crash")).toBe(true);
   });
 });
 
