@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem } from "@mcp-cli/core";
-import { loadManifest } from "@mcp-cli/core";
+import { appendTransitionLog, loadManifest, readAllTransitions } from "@mcp-cli/core";
 import type { TrackDeps } from "./track";
 import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow, parseMetadataFlags } from "./track";
 
@@ -898,5 +901,157 @@ describe("formatWorkItemRow", () => {
       expect(parsed[0].state).toEqual({ scrutiny: "high" });
       expect(parsed[0].state.session_id).toBeUndefined();
     });
+  });
+});
+
+describe("pruneStaleHistory integration (#2463)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "track-prune-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("re-tracking an issue prunes stale transition log entries", async () => {
+    const logPath = join(dir, ".mcx", "transitions.jsonl");
+
+    appendTransitionLog(logPath, {
+      ts: "2026-05-01T00:00:00Z",
+      workItemId: "#2135",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(logPath, {
+      ts: "2026-05-01T01:00:00Z",
+      workItemId: "#2135",
+      from: "impl",
+      to: "triage",
+      status: "committed",
+    });
+    appendTransitionLog(logPath, {
+      ts: "2026-05-01T00:30:00Z",
+      workItemId: "#99",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const freshCreatedAt = "2026-05-27 14:49:10";
+    const item = makeWorkItem({
+      id: "#2135",
+      issueNumber: 2135,
+      createdAt: freshCreatedAt,
+      version: 1,
+    });
+
+    const deps: TrackDeps = {
+      ipcCall: async <M extends IpcMethod>(method: M): Promise<IpcMethodResult[M]> => {
+        if (method === "trackWorkItem") return item as IpcMethodResult[M];
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      cwd: () => dir,
+    };
+
+    await cmdTrack(["2135"], deps);
+
+    const remaining = readAllTransitions(logPath);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].workItemId).toBe("#99");
+  });
+
+  test("re-tracking a branch prunes stale transition log entries", async () => {
+    const logPath = join(dir, ".mcx", "transitions.jsonl");
+
+    appendTransitionLog(logPath, {
+      ts: "2026-04-01T00:00:00Z",
+      workItemId: "branch:feat/test",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const freshCreatedAt = "2026-05-01T00:00:00Z";
+    const item = makeWorkItem({
+      id: "branch:feat/test",
+      branch: "feat/test",
+      createdAt: freshCreatedAt,
+      version: 1,
+    });
+
+    const deps: TrackDeps = {
+      ipcCall: async <M extends IpcMethod>(method: M): Promise<IpcMethodResult[M]> => {
+        if (method === "trackWorkItem") return item as IpcMethodResult[M];
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      cwd: () => dir,
+    };
+
+    await cmdTrack(["--branch", "feat/test"], deps);
+
+    const remaining = readAllTransitions(logPath);
+    expect(remaining).toHaveLength(0);
+  });
+
+  test("preserves current-incarnation entries when re-tracking existing item", async () => {
+    const logPath = join(dir, ".mcx", "transitions.jsonl");
+
+    const createdAt = "2026-05-01T00:00:00Z";
+    appendTransitionLog(logPath, {
+      ts: "2026-05-01T00:01:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const item = makeWorkItem({
+      id: "#42",
+      issueNumber: 42,
+      createdAt,
+      version: 2,
+    });
+
+    const deps: TrackDeps = {
+      ipcCall: async <M extends IpcMethod>(method: M): Promise<IpcMethodResult[M]> => {
+        if (method === "trackWorkItem") return item as IpcMethodResult[M];
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      cwd: () => dir,
+    };
+
+    await cmdTrack(["42"], deps);
+
+    const remaining = readAllTransitions(logPath);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].workItemId).toBe("#42");
+  });
+
+  test("no-op when log file does not exist", async () => {
+    const item = makeWorkItem();
+    const deps: TrackDeps = {
+      ipcCall: async <M extends IpcMethod>(method: M): Promise<IpcMethodResult[M]> => {
+        if (method === "trackWorkItem") return item as IpcMethodResult[M];
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      cwd: () => dir,
+    };
+
+    await cmdTrack(["1135"], deps);
   });
 });

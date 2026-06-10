@@ -9,6 +9,7 @@
  *          mcx tracked --json           Machine-readable output
  */
 
+import { join } from "node:path";
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem, WorkItemPhase } from "@mcp-cli/core";
 import {
   ManifestVersionError,
@@ -17,6 +18,7 @@ import {
   getTrackableFields,
   ipcCall,
   loadManifest,
+  pruneStaleHistory,
   validateTrackValue,
 } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
@@ -178,6 +180,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
         ...(automationOverrides ? { automationOverrides } : {}),
         repoRoot: cwd,
       });
+      pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, new Date(item.createdAt));
       await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
       console.error(`Tracking branch ${branch} (${item.id})`);
     } catch (err) {
@@ -201,6 +204,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       ...(automationOverrides ? { automationOverrides } : {}),
       repoRoot: cwd,
     });
+    pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, new Date(item.createdAt));
     await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
     console.error(`Tracking #${num} (${item.id})`);
   } catch (err) {

@@ -11,6 +11,7 @@ import {
   commitTransition,
   historyTargets,
   levenshtein,
+  pruneStaleHistory,
   readAllTransitions,
   readTransitionHistory,
   suggestPhases,
@@ -391,5 +392,137 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
       { staleMs: 1000, timeoutMs: 500 },
     );
     expect(ran).toBe(true);
+  });
+});
+
+describe("pruneStaleHistory (#2463)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "prune-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("removes entries for the work item older than cutoff, preserves others", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, {
+      ts: "2026-05-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(log, {
+      ts: "2026-05-01T01:00:00Z",
+      workItemId: "#42",
+      from: "impl",
+      to: "triage",
+      status: "committed",
+    });
+    appendTransitionLog(log, {
+      ts: "2026-05-01T00:30:00Z",
+      workItemId: "#99",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(log, {
+      ts: "2026-06-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const cutoff = new Date("2026-05-27T14:49:10Z");
+    const pruned = pruneStaleHistory(log, "#42", cutoff);
+
+    expect(pruned).toBe(2);
+    const remaining = readAllTransitions(log);
+    expect(remaining).toHaveLength(2);
+    expect(remaining[0].workItemId).toBe("#99");
+    expect(remaining[1].workItemId).toBe("#42");
+    expect(remaining[1].ts).toBe("2026-06-01T00:00:00Z");
+  });
+
+  test("returns 0 and does not rewrite when no entries match", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, {
+      ts: "2026-06-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const cutoff = new Date("2026-05-01T00:00:00Z");
+    const pruned = pruneStaleHistory(log, "#42", cutoff);
+
+    expect(pruned).toBe(0);
+    expect(readAllTransitions(log)).toHaveLength(1);
+  });
+
+  test("returns 0 when log file does not exist (ENOENT)", () => {
+    const log = join(dir, "nonexistent", "transitions.jsonl");
+    const pruned = pruneStaleHistory(log, "#42", new Date());
+    expect(pruned).toBe(0);
+  });
+
+  test("returns 0 when log is empty", () => {
+    const log = join(dir, "transitions.jsonl");
+    require("node:fs").mkdirSync(dir, { recursive: true });
+    require("node:fs").writeFileSync(log, "", "utf-8");
+
+    const pruned = pruneStaleHistory(log, "#42", new Date());
+    expect(pruned).toBe(0);
+  });
+
+  test("removes all stale entries when every entry for the item is stale", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#10",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+    appendTransitionLog(log, {
+      ts: "2026-01-02T00:00:00Z",
+      workItemId: "#10",
+      from: "impl",
+      to: "triage",
+      status: "committed",
+    });
+
+    const pruned = pruneStaleHistory(log, "#10", new Date("2026-06-01T00:00:00Z"));
+    expect(pruned).toBe(2);
+    expect(readAllTransitions(log)).toHaveLength(0);
+  });
+
+  test("preserves attempted entries older than cutoff for other work items", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#50",
+      from: null,
+      to: "impl",
+      status: "attempted",
+    });
+    appendTransitionLog(log, {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "attempted",
+    });
+
+    const pruned = pruneStaleHistory(log, "#42", new Date("2026-06-01T00:00:00Z"));
+    expect(pruned).toBe(1);
+    const remaining = readAllTransitions(log);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].workItemId).toBe("#50");
   });
 });
