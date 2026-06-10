@@ -6,8 +6,17 @@ import { join } from "node:path";
 import { isLookupFailure } from "@mcp-cli/core";
 import { defaultGetDiffStats, defaultGetPrStatus, getGitRoot, parseDiffShortstat } from "./session-deps";
 
+const {
+  GIT_DIR: _d,
+  GIT_WORK_TREE: _w,
+  GIT_COMMON_DIR: _c,
+  GIT_INDEX_FILE: _i,
+  GIT_OBJECT_DIRECTORY: _o,
+  ...baseEnv
+} = process.env;
+
 const GIT_ENV = {
-  ...process.env,
+  ...baseEnv,
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_AUTHOR_NAME: "t",
   GIT_AUTHOR_EMAIL: "t@t",

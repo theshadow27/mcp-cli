@@ -13,8 +13,26 @@ import {
   lookupFailure,
   resolveRealpath,
   runOrLookupFailure,
+  spawnCapture,
   spawnCaptureSync,
 } from "@mcp-cli/core";
+
+/**
+ * Strip git-hook env vars (GIT_DIR, GIT_INDEX_FILE, etc.) so that git
+ * subprocesses use cwd-based repository detection instead of the hook's
+ * injected context.  This matters when mcx is invoked from inside a git hook.
+ */
+function cleanGitHookEnv(): NodeJS.ProcessEnv {
+  const {
+    GIT_DIR: _d,
+    GIT_WORK_TREE: _w,
+    GIT_COMMON_DIR: _c,
+    GIT_INDEX_FILE: _i,
+    GIT_OBJECT_DIRECTORY: _o,
+    ...rest
+  } = process.env;
+  return rest;
+}
 
 // ── Types ──
 
@@ -32,7 +50,10 @@ export interface PrStatus {
  * Returns null if not inside a git repo.
  */
 export function getGitRoot(): LookupResult<string | null> {
-  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], { timeoutMs: GIT_REV_PARSE_TIMEOUT_MS });
+  const result = spawnCaptureSync("git", ["rev-parse", "--git-common-dir"], {
+    timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
+    env: cleanGitHookEnv(),
+  });
   if (!result.ok)
     return lookupFailure(`git rev-parse --git-common-dir failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
   const commonDir = result.stdout.trim();
@@ -66,17 +87,21 @@ export function parseDiffShortstat(output: string): string | null {
 }
 
 export async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
-  const stdout = await runOrLookupFailure("git", ["diff", "--shortstat"], { cwd: worktreePath });
-  if (isLookupFailure(stdout)) return stdout;
-  return parseDiffShortstat(stdout);
+  const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath, env: cleanGitHookEnv() });
+  if (!result.ok) return lookupFailure(`git diff failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  return parseDiffShortstat(result.stdout);
 }
 
 // ── PR status ──
 
 export async function defaultGetPrStatus(worktreePath: string): Promise<LookupResult<PrStatus | null>> {
-  const branchOut = await runOrLookupFailure("git", ["branch", "--show-current"], { cwd: worktreePath });
-  if (isLookupFailure(branchOut)) return branchOut;
-  const branch = branchOut.trim();
+  const branchResult = await spawnCapture("git", ["branch", "--show-current"], {
+    cwd: worktreePath,
+    env: cleanGitHookEnv(),
+  });
+  if (!branchResult.ok)
+    return lookupFailure(`git branch failed (exit ${branchResult.exitCode}): ${branchResult.stderr.trim()}`);
+  const branch = branchResult.stdout.trim();
   if (!branch) return null;
 
   const prOut = await runOrLookupFailure("gh", [
