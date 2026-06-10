@@ -1,9 +1,52 @@
 import { describe, expect, test } from "bun:test";
+import type { GhLabelEvent } from "../.claude/phases/phase-types";
 import type { GhOp, GhResult } from "../.claude/phases/qa-fn";
 import { QA_FAIL_CAP, type QaDeps, type QaState, type QaWork, readQaLabels, runQa } from "../.claude/phases/qa-fn";
 
+const DEFAULT_SPAWNED_AT = new Date("2026-06-09T10:00:00Z").getTime();
+const DEFAULT_HEAD_DATE = "2026-06-09T09:50:00Z";
+const DEFAULT_EVENT_TIME = "2026-06-09T10:05:00Z";
+const DEFAULT_AUTHOR = "bot-user";
+
 function ok(stdout = ""): GhResult {
   return { stdout, stderr: "", exitCode: 0 };
+}
+
+function validEventsFor(labels: string[]): GhLabelEvent[] {
+  return labels
+    .filter((l) => l.startsWith("qa:") || l.startsWith("review:"))
+    .map((l) => ({ actor: DEFAULT_AUTHOR, label: l, created_at: DEFAULT_EVENT_TIME }));
+}
+
+interface GhStubOpts {
+  labels?: string[];
+  labelEvents?: GhLabelEvent[];
+  author?: string;
+  headDate?: string;
+  labelsExitCode?: number;
+  eventsExitCode?: number;
+}
+
+function makeGh(opts: GhStubOpts = {}): QaDeps["gh"] {
+  const labels = opts.labels ?? [];
+  const events = opts.labelEvents ?? validEventsFor(labels);
+  return async (op: GhOp) => {
+    if (op.op === "pr:labels") {
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
+    }
+    if (op.op === "pr:label-events") {
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events error", exitCode: opts.eventsExitCode ?? 1 };
+      return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
+    }
+    if (op.op === "pr:author") return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+    if (op.op === "pr:head-date") return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+    return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
+  };
 }
 
 function makeWork(overrides: Partial<QaWork> = {}): QaWork {
@@ -31,7 +74,7 @@ function makeState(initial: Record<string, unknown> = {}): QaState {
 
 function makeDeps(overrides: Partial<QaDeps> = {}): QaDeps {
   return {
-    gh: async () => ok(""),
+    gh: makeGh(),
     prEdit: async () => {},
     ...overrides,
   };
@@ -41,45 +84,63 @@ function makeDeps(overrides: Partial<QaDeps> = {}): QaDeps {
 
 describe("readQaLabels — parsing", () => {
   test("empty labels → hasPass: false, hasFail: false", async () => {
-    const result = await readQaLabels(100, { gh: async () => ok("") });
-    expect(result).toEqual({ hasPass: false, hasFail: false });
+    const result = await readQaLabels(100, { gh: makeGh() }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
   });
 
   test("qa:pass only", async () => {
-    const result = await readQaLabels(100, { gh: async () => ok("qa:pass") });
-    expect(result).toEqual({ hasPass: true, hasFail: false });
+    const result = await readQaLabels(100, { gh: makeGh({ labels: ["qa:pass"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: true, hasFail: false });
   });
 
   test("qa:fail only", async () => {
-    const result = await readQaLabels(100, { gh: async () => ok("qa:fail") });
-    expect(result).toEqual({ hasPass: false, hasFail: true });
+    const result = await readQaLabels(100, { gh: makeGh({ labels: ["qa:fail"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasFail: true });
   });
 
   test("both qa:pass and qa:fail", async () => {
-    const result = await readQaLabels(100, { gh: async () => ok("qa:pass\nqa:fail") });
-    expect(result).toEqual({ hasPass: true, hasFail: true });
+    const result = await readQaLabels(100, { gh: makeGh({ labels: ["qa:pass", "qa:fail"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: true, hasFail: true });
   });
 
   test("gh call fails → both false", async () => {
-    const result = await readQaLabels(100, {
-      gh: async () => ({ stdout: "", stderr: "not found", exitCode: 1 }),
-    });
-    expect(result).toEqual({ hasPass: false, hasFail: false });
+    const result = await readQaLabels(
+      100,
+      {
+        gh: async () => ({ stdout: "", stderr: "not found", exitCode: 1 }),
+      },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasFail: false });
   });
 
   test("labels with extra whitespace are trimmed", async () => {
-    const result = await readQaLabels(100, { gh: async () => ok("  qa:pass  \n  qa:fail  ") });
-    expect(result).toEqual({ hasPass: true, hasFail: true });
+    const deps: Pick<QaDeps, "gh"> = {
+      gh: async (op) => {
+        if (op.op === "pr:labels") return ok("  qa:pass  \n  qa:fail  ");
+        if (op.op === "pr:label-events")
+          return { stdout: JSON.stringify(validEventsFor(["qa:pass", "qa:fail"])), stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return ok(DEFAULT_AUTHOR);
+        if (op.op === "pr:head-date") return ok(DEFAULT_HEAD_DATE);
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    };
+    const result = await readQaLabels(100, deps, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: true, hasFail: true });
   });
 
   test("passes correct op to gh", async () => {
     let captured: GhOp | undefined;
-    await readQaLabels(99, {
-      gh: async (op) => {
-        captured = op;
-        return ok("");
+    await readQaLabels(
+      99,
+      {
+        gh: async (op) => {
+          if (!captured) captured = op;
+          return ok("");
+        },
       },
-    });
+      DEFAULT_SPAWNED_AT,
+    );
     expect(captured).toEqual({ op: "pr:labels", prNumber: 99 });
   });
 });
@@ -144,7 +205,7 @@ describe("runQa — spawn path", () => {
     }
   });
 
-  test("writes qa_session_id sentinel", async () => {
+  test("writes qa_session_id sentinel and qa_spawned_at", async () => {
     const writes: Record<string, unknown> = {};
     const state = makeState();
     const trackingState: QaState = {
@@ -157,6 +218,7 @@ describe("runQa — spawn path", () => {
     };
     await runQa({ provider: "claude" }, makeWork(), trackingState, makeDeps());
     expect(String(writes.qa_session_id)).toMatch(/^pending:/);
+    expect(writes.qa_spawned_at).toBeGreaterThan(0);
   });
 });
 
@@ -167,10 +229,21 @@ describe("runQa — wait path", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123" }),
-      makeDeps({ gh: async () => ok("") }),
+      makeState({ qa_session_id: "sess_123", qa_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh() }),
     );
     expect(result.action).toBe("wait");
+  });
+
+  test("missing qa_spawned_at → wait (fail closed)", async () => {
+    const result = await runQa(
+      { provider: "claude" },
+      makeWork(),
+      makeState({ qa_session_id: "sess_123" }),
+      makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) }),
+    );
+    expect(result.action).toBe("wait");
+    if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
   });
 });
 
@@ -181,8 +254,8 @@ describe("runQa — qa:pass verdict", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123" }),
-      makeDeps({ gh: async () => ok("qa:pass") }),
+      makeState({ qa_session_id: "sess_123", qa_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) }),
     );
     expect(result).toMatchObject({ action: "goto", target: "done" });
   });
@@ -192,9 +265,9 @@ describe("runQa — qa:pass verdict", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123" }),
+      makeState({ qa_session_id: "sess_123", qa_spawned_at: DEFAULT_SPAWNED_AT }),
       makeDeps({
-        gh: async () => ok("qa:pass\nqa:fail"),
+        gh: makeGh({ labels: ["qa:pass", "qa:fail"] }),
         prEdit: async (prNumber, flags) => {
           editCalls.push({ prNumber, flags });
         },
@@ -210,8 +283,8 @@ describe("runQa — qa:fail verdict", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123", qa_fail_round: 0 }),
-      makeDeps({ gh: async () => ok("qa:fail") }),
+      makeState({ qa_session_id: "sess_123", qa_fail_round: 0, qa_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) }),
     );
     expect(result).toMatchObject({ action: "goto", target: "repair" });
   });
@@ -220,8 +293,8 @@ describe("runQa — qa:fail verdict", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123", qa_fail_round: QA_FAIL_CAP }),
-      makeDeps({ gh: async () => ok("qa:fail") }),
+      makeState({ qa_session_id: "sess_123", qa_fail_round: QA_FAIL_CAP, qa_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) }),
     );
     expect(result).toMatchObject({ action: "goto", target: "needs-attention" });
     expect(result.action).toBe("goto");
@@ -230,7 +303,7 @@ describe("runQa — qa:fail verdict", () => {
 
   test("qa:fail writes qa_fail_round and previous_phase", async () => {
     const writes: Record<string, unknown> = {};
-    const state = makeState({ qa_session_id: "sess_123" });
+    const state = makeState({ qa_session_id: "sess_123", qa_spawned_at: DEFAULT_SPAWNED_AT });
     const trackingState: QaState = {
       get: state.get,
       set: async (key, value) => {
@@ -239,7 +312,7 @@ describe("runQa — qa:fail verdict", () => {
       },
       delete: state.delete,
     };
-    await runQa({ provider: "claude" }, makeWork(), trackingState, makeDeps({ gh: async () => ok("qa:fail") }));
+    await runQa({ provider: "claude" }, makeWork(), trackingState, makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) }));
     expect(writes.qa_fail_round).toBe(1);
     expect(writes.previous_phase).toBe("qa");
   });
@@ -248,8 +321,8 @@ describe("runQa — qa:fail verdict", () => {
     const result = await runQa(
       { provider: "claude" },
       makeWork(),
-      makeState({ qa_session_id: "sess_123", qa_fail_round: 1 }),
-      makeDeps({ gh: async () => ok("qa:fail") }),
+      makeState({ qa_session_id: "sess_123", qa_fail_round: 1, qa_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) }),
     );
     expect(result).toMatchObject({ action: "goto", target: "repair" });
     expect(result.action).toBe("goto");

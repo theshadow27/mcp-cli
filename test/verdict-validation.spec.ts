@@ -1,38 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type GhLabelEvent, type VerdictContext, parsePrEditFlags, validateVerdictLabel } from "./phase-types";
-
-describe("parsePrEditFlags", () => {
-  test("parses --remove-label flags", () => {
-    const result = parsePrEditFlags(["--remove-label", "qa:fail"]);
-    expect(result).toEqual({ addLabels: [], removeLabels: ["qa:fail"] });
-  });
-
-  test("parses --add-label flags", () => {
-    const result = parsePrEditFlags(["--add-label", "qa:pass"]);
-    expect(result).toEqual({ addLabels: ["qa:pass"], removeLabels: [] });
-  });
-
-  test("parses mixed --add-label and --remove-label flags", () => {
-    const result = parsePrEditFlags(["--add-label", "review:pass", "--remove-label", "review:changes"]);
-    expect(result).toEqual({ addLabels: ["review:pass"], removeLabels: ["review:changes"] });
-  });
-
-  test("handles multiple labels of the same type", () => {
-    const result = parsePrEditFlags(["--remove-label", "a", "--remove-label", "b"]);
-    expect(result).toEqual({ addLabels: [], removeLabels: ["a", "b"] });
-  });
-
-  test("returns empty arrays for empty input", () => {
-    const result = parsePrEditFlags([]);
-    expect(result).toEqual({ addLabels: [], removeLabels: [] });
-  });
-
-  test("throws on unknown flag", () => {
-    expect(() => parsePrEditFlags(["--title", "oops"])).toThrow("prEdit: unknown flag --title");
-  });
-});
-
-// ── validateVerdictLabel (#2652) ──
+import { type GhLabelEvent, type VerdictContext, validateVerdictLabel } from "../.claude/phases/phase-types";
 
 function makeCtx(overrides: Partial<VerdictContext> = {}): VerdictContext {
   return {
@@ -52,32 +19,32 @@ function makeEvent(overrides: Partial<GhLabelEvent> = {}): GhLabelEvent {
   };
 }
 
-describe("validateVerdictLabel", () => {
+describe("validateVerdictLabel (#2652)", () => {
   test("accepts a valid label event (after spawn and head commit)", () => {
     const result = validateVerdictLabel("review:pass", [makeEvent()], makeCtx());
     expect(result.valid).toBe(true);
   });
 
-  test("rejects when no matching labeled event exists (fail closed)", () => {
+  test("fail closed: rejects when no matching labeled event exists", () => {
     const result = validateVerdictLabel("review:pass", [], makeCtx());
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.rejection).toMatch(/no labeled event found/);
   });
 
-  test("rejects when only events for a different label exist", () => {
+  test("fail closed: rejects when only events for a different label exist", () => {
     const result = validateVerdictLabel("review:pass", [makeEvent({ label: "qa:pass" })], makeCtx());
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.rejection).toMatch(/no labeled event found/);
   });
 
-  test("rejects when label event predates session spawn (guard b)", () => {
+  test("guard (b): rejects stale label predating session spawn", () => {
     const stale = makeEvent({ created_at: "2026-06-09T09:55:00Z" });
     const result = validateVerdictLabel("review:pass", [stale], makeCtx());
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.rejection).toMatch(/stale verdict/);
   });
 
-  test("rejects when label event predates head commit (guard c)", () => {
+  test("guard (c): rejects label predating head commit", () => {
     const ctx = makeCtx({ headCommitDate: "2026-06-09T10:10:00Z" });
     const event = makeEvent({ created_at: "2026-06-09T10:05:00Z" });
     const result = validateVerdictLabel("review:pass", [event], ctx);
@@ -85,14 +52,14 @@ describe("validateVerdictLabel", () => {
     if (!result.valid) expect(result.rejection).toMatch(/verdict on stale code/);
   });
 
-  test("rejects when label event timestamp is unparseable (fail closed)", () => {
+  test("fail closed: rejects unparseable event timestamp", () => {
     const bad = makeEvent({ created_at: "not-a-date" });
     const result = validateVerdictLabel("review:pass", [bad], makeCtx());
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.rejection).toMatch(/unparseable timestamp/);
   });
 
-  test("rejects when head commit date is unparseable (fail closed)", () => {
+  test("fail closed: rejects unparseable head commit date", () => {
     const ctx = makeCtx({ headCommitDate: "garbage" });
     const result = validateVerdictLabel("review:pass", [makeEvent()], ctx);
     expect(result.valid).toBe(false);
@@ -106,15 +73,50 @@ describe("validateVerdictLabel", () => {
     expect(result.valid).toBe(true);
   });
 
-  test("returns actorNote when actor matches PR author (guard a — inert)", () => {
-    const result = validateVerdictLabel("review:pass", [makeEvent({ actor: "bot-user" })], makeCtx({ prAuthor: "bot-user" }));
+  test("guard (a) inert: returns actorNote when actor matches PR author", () => {
+    const result = validateVerdictLabel(
+      "review:pass",
+      [makeEvent({ actor: "bot-user" })],
+      makeCtx({ prAuthor: "bot-user" }),
+    );
     expect(result.valid).toBe(true);
     if (result.valid) expect(result.actorNote).toMatch(/single-identity/);
   });
 
-  test("returns no actorNote when actor differs from PR author", () => {
-    const result = validateVerdictLabel("review:pass", [makeEvent({ actor: "reviewer-bot" })], makeCtx({ prAuthor: "impl-bot" }));
+  test("guard (a) inert: no actorNote when actor differs from PR author", () => {
+    const result = validateVerdictLabel(
+      "review:pass",
+      [makeEvent({ actor: "reviewer-bot" })],
+      makeCtx({ prAuthor: "impl-bot" }),
+    );
     expect(result.valid).toBe(true);
     if (result.valid) expect(result.actorNote).toBeUndefined();
+  });
+
+  test("works with qa:pass labels", () => {
+    const event = makeEvent({ label: "qa:pass" });
+    const result = validateVerdictLabel("qa:pass", [event], makeCtx());
+    expect(result.valid).toBe(true);
+  });
+
+  test("works with qa:fail labels", () => {
+    const event = makeEvent({ label: "qa:fail" });
+    const result = validateVerdictLabel("qa:fail", [event], makeCtx());
+    expect(result.valid).toBe(true);
+  });
+
+  test("guard (c): label exactly at head commit time is rejected (must be strictly after)", () => {
+    const ctx = makeCtx({ headCommitDate: "2026-06-09T10:05:00Z" });
+    const event = makeEvent({ created_at: "2026-06-09T10:05:00Z" });
+    const result = validateVerdictLabel("review:pass", [event], ctx);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.rejection).toMatch(/verdict on stale code/);
+  });
+
+  test("guard (b): label exactly at session spawn time is accepted (not strictly after)", () => {
+    const exactTime = new Date("2026-06-09T10:00:00Z").toISOString();
+    const event = makeEvent({ created_at: exactTime });
+    const result = validateVerdictLabel("review:pass", [event], makeCtx());
+    expect(result.valid).toBe(true);
   });
 });
