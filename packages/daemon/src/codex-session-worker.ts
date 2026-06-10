@@ -434,19 +434,22 @@ async function handleWait(args: Record<string, unknown>): Promise<{
     return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
   }
 
-  // Wait for any session — race all waiters and suppress timeout rejections
-  // from the losers to prevent unhandled promise rejections from leaked timers.
+  // Wait for any session
   if (sessions.size === 0) {
     return { content: [{ type: "text", text: JSON.stringify([]) }] };
   }
 
   const waiters = [...sessions.values()].map((s) => s.waitForEvent(timeoutMs));
-  const event = await Promise.race(waiters);
-  // Swallow timeout rejections from losing waiters
-  for (const p of waiters) {
-    p.catch(() => {});
+  try {
+    const event = await Promise.race(waiters);
+    return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
+  } finally {
+    // Cancel losing waiters to prevent timer/reference leaks
+    for (const p of waiters) {
+      if (typeof p.cancel === "function") p.cancel();
+      p.catch(() => {});
+    }
   }
-  return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
 }
 
 function handleApprove(args: Record<string, unknown>): {

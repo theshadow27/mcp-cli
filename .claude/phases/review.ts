@@ -27,6 +27,7 @@
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
+import { parsePrEditFlags } from "./phase-types";
 import { runReview } from "./review-fn";
 
 const ProviderSchema = z
@@ -78,17 +79,26 @@ defineAlias({
               const pr = await ctx.gh.pr(op.prNumber).body();
               return { stdout: pr.labels.join("\n"), stderr: "", exitCode: 0 };
             }
+            if (op.op === "pr:label-events") {
+              const events = await ctx.gh.pr(op.prNumber).labelEvents();
+              return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
+            }
+            if (op.op === "pr:head-date") {
+              const date = await ctx.gh.pr(op.prNumber).headCommitDate();
+              return { stdout: date, stderr: "", exitCode: 0 };
+            }
+            if (op.op === "pr:author") {
+              const pr = await ctx.gh.pr(op.prNumber).body();
+              return { stdout: pr.user, stderr: "", exitCode: 0 };
+            }
             return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
           } catch (err) {
             return { stdout: "", stderr: err instanceof Error ? err.message : String(err), exitCode: 1 };
           }
         },
         async prEdit(prNumber, flags) {
-          const removeLabels: string[] = [];
-          for (let i = 0; i < flags.length; i += 2) {
-            if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
-          }
-          await ctx.gh.pr(prNumber).edit({ removeLabels });
+          const { addLabels, removeLabels } = parsePrEditFlags(flags);
+          await ctx.gh.pr(prNumber).edit({ addLabels, removeLabels });
         },
         findModelInSprintPlan,
       },

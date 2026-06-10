@@ -1,4 +1,5 @@
-// Re-exports all of @mcp-cli/core except alias-bundle itself.
+// Single source of truth for the cycle-free subset of @mcp-cli/core exports.
+// index.ts re-exports this plus ./alias-bundle, making it a strict superset.
 // Used as __mcp_core__ inside evalBundledJs so that phase scripts that write
 //   import { X } from "@mcp-cli/core"
 // can resolve X at eval time without creating the barrel-induced import cycle.
@@ -52,6 +53,7 @@ export * from "./pr-churn";
 export * from "./monitor-event";
 export * from "./event-filter";
 export * from "./gh-client";
+export * from "./agent-protocol";
 export * from "./errors";
 export * from "./telemetry";
 export * from "./phase-source";
@@ -60,5 +62,9 @@ export * from "./bun-version";
 export * from "./sprint-plan";
 export * from "./claude-patch";
 export * from "./automation";
+export * from "./recording";
+export * from "./sanitizer";
 export * from "./subprocess";
 export * from "./mcp-result";
+export * from "./lookup-result";
+export * from "./spawn-lookup";

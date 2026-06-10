@@ -256,7 +256,7 @@ describe("parseSpawnArgs", () => {
 
   test("parses -m shorthand", () => {
     const result = parseSpawnArgs(["-m", "haiku", "-t", "x"]);
-    expect(result.model).toBe("claude-haiku-4-5-20251001");
+    expect(result.model).toBe("claude-haiku-4-5");
   });
 
   test("passes through full model ID", () => {
@@ -337,7 +337,7 @@ describe("parseSpawnArgs", () => {
 
 describe("resolveModelName", () => {
   test("resolves opus shortname", () => {
-    expect(resolveModelName("opus")).toBe("claude-opus-4-6");
+    expect(resolveModelName("opus")).toBe("claude-opus-4-8");
   });
 
   test("resolves sonnet shortname", () => {
@@ -345,16 +345,20 @@ describe("resolveModelName", () => {
   });
 
   test("resolves haiku shortname", () => {
-    expect(resolveModelName("haiku")).toBe("claude-haiku-4-5-20251001");
+    expect(resolveModelName("haiku")).toBe("claude-haiku-4-5");
+  });
+
+  test("resolves fable shortname", () => {
+    expect(resolveModelName("fable")).toBe("claude-fable-5");
   });
 
   test("is case-insensitive", () => {
-    expect(resolveModelName("Opus")).toBe("claude-opus-4-6");
+    expect(resolveModelName("Opus")).toBe("claude-opus-4-8");
     expect(resolveModelName("SONNET")).toBe("claude-sonnet-4-6");
   });
 
   test("passes through unknown model IDs", () => {
-    expect(resolveModelName("claude-opus-4-6")).toBe("claude-opus-4-6");
+    expect(resolveModelName("claude-opus-4-8")).toBe("claude-opus-4-8");
     expect(resolveModelName("some-custom-model")).toBe("some-custom-model");
   });
 });

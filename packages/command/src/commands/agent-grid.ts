@@ -9,7 +9,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { type GridResult, type GridTest, gateTest } from "@mcp-cli/agent-grid";
+import {
+  type CallToolFn,
+  type GridResult,
+  type GridTest,
+  type MockReplayReport,
+  gateTest,
+  makeEditFileTest,
+  makeMultiTurnTest,
+  makeReadFileTest,
+  makeRunBashTest,
+  makeSpawnInDirTest,
+  parseRecording,
+  replayThroughMock,
+  validateRecording,
+} from "@mcp-cli/agent-grid";
 import { type AgentProvider, getAllProviders, getProvider } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { formatHelp, getHelp, hasHelpFlag, registerHelp } from "../help";
@@ -36,14 +50,32 @@ export interface GridRunReport {
 
 // ── Constants ──────────────────────────────────────────────────────
 
-const DEFAULT_TEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TEST_TIMEOUT_MS = 130_000;
 const EXCLUDED_DEFAULT_PROVIDERS = new Set(["mock"]);
 
 // ── Test discovery ─────────────────────────────────────────────────
 
+let _coreModule: typeof import("@mcp-cli/core") | undefined;
+async function getCoreModule() {
+  _coreModule ??= await import("@mcp-cli/core");
+  return _coreModule;
+}
+
+async function ipcCallTool(server: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
+  const timeoutMs = tool.endsWith("_prompt") || tool.endsWith("_wait") ? 120_000 : undefined;
+  const m = await getCoreModule();
+  return m.ipcCall("callTool", { server, tool, arguments: args }, { timeoutMs });
+}
+
 export function discoverTests(): GridTest[] {
-  // Test implementations are added by later issues in the epic (#2538).
-  return [];
+  const deps = { callTool: ipcCallTool satisfies CallToolFn };
+  return [
+    makeSpawnInDirTest(deps),
+    makeReadFileTest(deps),
+    makeEditFileTest(deps),
+    makeRunBashTest(deps),
+    makeMultiTurnTest(deps),
+  ];
 }
 
 // ── Runner ─────────────────────────────────────────────────────────
@@ -51,7 +83,7 @@ export function discoverTests(): GridTest[] {
 export async function runGridForProvider(
   provider: AgentProvider,
   tests: GridTest[],
-  opts: { version: string | null; record: string | null; offline: boolean },
+  opts: { version: string | null; record: string | null; offline: boolean; timeoutMs?: number },
 ): Promise<ProviderReport> {
   const outcomes: TestOutcome[] = [];
   const cwd = mkdtempSync(resolve(tmpdir(), `agent-grid-${provider.name}-`));
@@ -63,18 +95,32 @@ export async function runGridForProvider(
         outcomes.push({ test: test.name, result: gateResult });
         continue;
       }
+
+      const cleanupFns: (() => Promise<void>)[] = [];
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
       try {
+        const testPromise = test.run({
+          provider,
+          cwd,
+          onCleanup: (fn) => {
+            cleanupFns.push(fn);
+          },
+        });
+        testPromise.catch(() => {});
         const result = await Promise.race([
-          test.run({ provider, cwd }),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`test timed out after ${DEFAULT_TEST_TIMEOUT_MS}ms`)),
-              DEFAULT_TEST_TIMEOUT_MS,
-            ),
-          ),
+          testPromise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`test timed out after ${timeoutMs}ms`)), timeoutMs);
+          }),
         ]);
+        clearTimeout(timer);
         outcomes.push({ test: test.name, result });
       } catch (err) {
+        clearTimeout(timer);
+        for (let i = cleanupFns.length - 1; i >= 0; i--) {
+          await cleanupFns[i]().catch(() => {});
+        }
         outcomes.push({
           test: test.name,
           result: { status: "fail", error: err instanceof Error ? err.message : String(err) },
@@ -139,8 +185,11 @@ export function formatReportText(report: GridRunReport): string {
 
 registerHelp("agent-grid", {
   name: "agent-grid",
-  summary: "Agent capability grid — run tests, inspect results",
-  usage: ["mcx agent-grid run [--providers=X,Y] [--version=V] [--offline] [--record=path] [--commit-outcome]"],
+  summary: "Agent capability grid — run tests, inspect results, replay recordings",
+  usage: [
+    "mcx agent-grid run [--providers=X,Y] [--version=V] [--offline] [--record=path] [--commit-outcome]",
+    "mcx agent-grid replay <recording> [--json]",
+  ],
   options: [
     ["--providers, -p <names>", "Comma-separated provider names (default: all enabled)"],
     ["--version <ver>", "Test a specific version (default: latest)"],
@@ -153,6 +202,7 @@ registerHelp("agent-grid", {
     "mcx agent-grid run --providers=codex",
     "mcx agent-grid run --providers=claude --version=2.1.119 --record=./out.ndjson",
     "mcx agent-grid run --json",
+    "mcx agent-grid replay ./session.ndjson",
   ],
 });
 
@@ -240,7 +290,7 @@ export function resolveProviders(names: string[]): AgentProvider[] {
 
 // ── Stub flag warnings ─────────────────────────────────────────────
 
-function warnStubFlags(opts: RunOptions): void {
+export function warnStubFlags(opts: RunOptions): void {
   if (opts.offline) {
     console.error(`${c.yellow}--offline: not yet implemented; network access is not restricted${c.reset}`);
   }
@@ -299,6 +349,127 @@ async function agentGridRun(args: string[]): Promise<void> {
   if (anyFail) process.exit(1);
 }
 
+// ── Replay ────────────────────────────────────────────────────────
+
+registerHelp("agent-grid replay", {
+  name: "agent-grid replay",
+  summary: "Replay a recorded NDJSON exchange and validate protocol conformance",
+  usage: ["mcx agent-grid replay <recording> [flags]"],
+  options: [["--json", "Output raw JSON instead of formatted text"]],
+  examples: ["mcx agent-grid replay ./session.ndjson", "mcx agent-grid replay ./session.ndjson --json"],
+});
+
+export interface ReplayOptions {
+  file: string;
+  json: boolean;
+}
+
+export function parseReplayArgs(args: string[]): ReplayOptions | null {
+  const { flags, positionals, errors, help } = parseFlags(args, {
+    json: { type: "boolean" },
+  });
+
+  if (help) return null;
+
+  if (errors.length > 0) {
+    for (const e of errors) printError(e);
+    process.exit(1);
+  }
+
+  if (positionals.length === 0) {
+    printError("missing required argument: <recording>");
+    console.error('Run "mcx agent-grid replay --help" for usage.');
+    process.exit(1);
+  }
+
+  return {
+    file: positionals[0],
+    json: flags.json === true,
+  };
+}
+
+export function formatReplayText(report: ReturnType<typeof validateRecording>): string {
+  const lines: string[] = [];
+
+  lines.push(`${c.bold}replay${c.reset}: ${report.file}`);
+  lines.push(`${c.dim}entries: ${report.entries}${c.reset}`);
+  lines.push("");
+
+  if (report.pass) {
+    lines.push(`${c.green}pass${c.reset} — recording conforms to the agent protocol spec`);
+  } else {
+    lines.push(`${c.red}fail${c.reset} — ${report.violations.length} violation(s):\n`);
+    for (const v of report.violations) {
+      lines.push(`  ${c.red}line ${v.line}${c.reset}  [${v.rule}]  ${v.message}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatMockReplayText(report: MockReplayReport): string {
+  const lines: string[] = [];
+
+  lines.push(`${c.bold}mock replay${c.reset}: ${report.file}`);
+  lines.push(
+    `${c.dim}entries: ${report.entries} | expected: ${report.expectedWorkerMessages} | actual: ${report.actualWorkerMessages}${c.reset}`,
+  );
+  lines.push("");
+
+  if (report.pass) {
+    lines.push(`${c.green}pass${c.reset} — mock worker reproduced the recording`);
+  } else {
+    lines.push(`${c.red}fail${c.reset} — ${report.violations.length} mock-replay violation(s):\n`);
+    for (const v of report.violations) {
+      lines.push(`  ${c.red}line ${v.line}${c.reset}  [${v.rule}]  ${v.message}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function agentGridReplay(args: string[]): Promise<void> {
+  const opts = parseReplayArgs(args);
+  if (!opts) {
+    const h = getHelp("agent-grid replay");
+    if (h) console.log(formatHelp(h));
+    return;
+  }
+
+  let entries: ReturnType<typeof parseRecording>;
+  try {
+    entries = parseRecording(opts.file);
+  } catch (err) {
+    printError(`failed to parse recording: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  // Phase 1: static validation (fast pre-flight)
+  const staticReport = validateRecording(entries, opts.file);
+
+  if (!staticReport.pass) {
+    if (opts.json) {
+      console.log(JSON.stringify({ static: staticReport, mock: null }, null, 2));
+    } else {
+      console.log(formatReplayText(staticReport));
+    }
+    process.exit(1);
+  }
+
+  // Phase 2: mock-driver replay (drives the actual mock worker)
+  const mockReport = await replayThroughMock(entries, opts.file);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ static: staticReport, mock: mockReport }, null, 2));
+  } else {
+    console.log(formatReplayText(staticReport));
+    console.log("");
+    console.log(formatMockReplayText(mockReport));
+  }
+
+  if (!mockReport.pass) process.exit(1);
+}
+
 // ── Main entry ─────────────────────────────────────────────────────
 
 export async function cmdAgentGrid(args: string[]): Promise<void> {
@@ -309,12 +480,20 @@ export async function cmdAgentGrid(args: string[]): Promise<void> {
     return;
   }
 
+  if (sub === "replay") {
+    await agentGridReplay(args.slice(1));
+    return;
+  }
+
   if (!sub || hasHelpFlag(args)) {
     const help = formatHelp({
       name: "agent-grid",
-      summary: "Agent capability grid — run tests, inspect results",
+      summary: "Agent capability grid — run tests, inspect results, replay recordings",
       usage: ["mcx agent-grid <subcommand> [flags]"],
-      options: [["run", "Run capability tests against agent providers"]],
+      options: [
+        ["run", "Run capability tests against agent providers"],
+        ["replay", "Replay a recorded NDJSON exchange and validate protocol conformance"],
+      ],
     });
     console.log(help);
     return;

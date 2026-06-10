@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,6 +32,10 @@ describe("loadTimings / saveTimings", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "test-timings-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("returns empty object when file does not exist", () => {
@@ -114,6 +118,10 @@ describe("findChangedFiles", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "test-timings-changed-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("marks all files as changed when cache is empty", async () => {

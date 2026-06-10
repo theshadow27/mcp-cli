@@ -232,12 +232,15 @@ export class CodexSession {
     });
   }
 
-  /** Wait for any actionable event. */
-  waitForEvent(timeoutMs: number): Promise<AgentSessionEvent> {
+  /** Wait for any actionable event. Returns a cancellable promise. */
+  waitForEvent(timeoutMs: number): Promise<AgentSessionEvent> & { cancel?: () => void } {
     if (this.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
     }
-    return new Promise<AgentSessionEvent>((resolve, reject) => {
+
+    let cancelFn: (() => void) | undefined;
+
+    const promise = new Promise<AgentSessionEvent>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
         reject(new Error(`waitForEvent timeout (${timeoutMs}ms)`));
@@ -248,8 +251,24 @@ export class CodexSession {
         this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
         resolve(event);
       };
+
+      cancelFn = () => {
+        clearTimeout(timer);
+        this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
+        reject(new Error("waitForEvent cancelled"));
+      };
+
       this.eventWaiters.push(waiter);
-    });
+
+      if (this.state === "ended") {
+        clearTimeout(timer);
+        this.eventWaiters = this.eventWaiters.filter((w) => w !== waiter);
+        resolve({ type: "session:ended" });
+      }
+    }) as Promise<AgentSessionEvent> & { cancel?: () => void };
+
+    promise.cancel = cancelFn;
+    return promise;
   }
 
   /** Get current session info. */

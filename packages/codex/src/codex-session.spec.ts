@@ -84,6 +84,14 @@ describe("CodexSession (no process)", () => {
     await expect(session.waitForEvent(10)).rejects.toThrow("waitForEvent timeout");
   });
 
+  test("waitForEvent() cancel rejects and cleans up timer", async () => {
+    const { session } = makeSession();
+    const p = session.waitForEvent(5000);
+    expect(typeof p.cancel).toBe("function");
+    p.cancel?.();
+    await expect(p).rejects.toThrow("waitForEvent cancelled");
+  });
+
   test("terminate() resolves pending waitForResult with session:ended", async () => {
     const { session } = makeSession();
     const p = session.waitForResult(5000);

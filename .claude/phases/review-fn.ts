@@ -1,6 +1,6 @@
 /** Core review-phase logic, extracted for testability via dependency injection. */
 
-import type { GhOp, GhResult } from "./phase-types";
+import { type GhLabelEvent, type GhOp, type GhResult, type VerdictContext, validateVerdictLabel } from "./phase-types";
 export type { GhOp, GhResult };
 
 export const REVIEW_ROUND_CAP = 2;
@@ -36,22 +36,71 @@ export type ReviewResult =
   | { action: "wait"; reason: string; round: number; model?: "opus" | "sonnet" }
   | { action: "goto"; target: "repair" | "qa"; reason: string; round: number; model?: "opus" | "sonnet" };
 
-// ── typed verdict channel (#2575) ──
+// ── typed verdict channel (#2575, hardened #2652) ──
 // The review verdict is read from a PR LABEL the reviewer sets transactionally
-// (`review:pass` / `review:changes`), mirroring qa's `qa:pass`/`qa:fail`. We do
-// NOT scrape the sticky comment body: prose is attacker-influenced free text in
-// a multi-agent environment, so a quoted/forwarded `✅ APPROVED` could advance a
-// PR no reviewer approved (the merge-gate prompt-injection vector). A label is a
-// structured signal the agent must deliberately apply — the only control signal
-// the gate trusts. The prior prose-scraping heuristic (#2007) is removed.
+// (`review:pass` / `review:changes`). Labels are validated against the GitHub
+// issue-events timeline before being honored:
+//   (b) Freshness — label event must postdate the reviewer session spawn.
+//   (c) Head commit — label event must postdate the PR head commit date.
+//   (a) Actor — logged but inert under single-identity deployments.
+// Fail-closed: if events are unavailable or validation fails, the verdict is
+// treated as absent. See #2652 for the full threat model.
 export async function readReviewLabels(
   prNumber: number,
   deps: Pick<ReviewDeps, "gh">,
-): Promise<{ hasPass: boolean; hasChanges: boolean }> {
+  roundStartedAt: number,
+): Promise<{ hasPass: boolean; hasChanges: boolean; rejections: string[] }> {
   const result = await deps.gh({ op: "pr:labels", prNumber });
-  if (result.exitCode !== 0) return { hasPass: false, hasChanges: false };
+  if (result.exitCode !== 0) return { hasPass: false, hasChanges: false, rejections: [] };
   const names = new Set(result.stdout.split(/\r?\n/).map((l) => l.trim()));
-  return { hasPass: names.has("review:pass"), hasChanges: names.has("review:changes") };
+
+  let hasPass = names.has("review:pass");
+  let hasChanges = names.has("review:changes");
+  if (!hasPass && !hasChanges) return { hasPass: false, hasChanges: false, rejections: [] };
+
+  const [eventsResult, authorResult, headDateResult] = await Promise.all([
+    deps.gh({ op: "pr:label-events", prNumber }),
+    deps.gh({ op: "pr:author", prNumber }),
+    deps.gh({ op: "pr:head-date", prNumber }),
+  ]);
+
+  if (eventsResult.exitCode !== 0) {
+    return { hasPass: false, hasChanges: false, rejections: [`label-events fetch failed (${eventsResult.stderr}) — fail closed`] };
+  }
+  if (authorResult.exitCode !== 0 || headDateResult.exitCode !== 0) {
+    return { hasPass: false, hasChanges: false, rejections: [`verdict context fetch failed — fail closed`] };
+  }
+
+  let events: GhLabelEvent[];
+  try {
+    events = JSON.parse(eventsResult.stdout);
+  } catch {
+    return { hasPass: false, hasChanges: false, rejections: [`label-events JSON unparseable — fail closed`] };
+  }
+
+  const vctx: VerdictContext = {
+    prAuthor: authorResult.stdout.trim(),
+    roundStartedAt,
+    headCommitDate: headDateResult.stdout.trim(),
+  };
+  const rejections: string[] = [];
+
+  if (hasPass) {
+    const v = validateVerdictLabel("review:pass", events, vctx);
+    if (!v.valid) {
+      hasPass = false;
+      rejections.push(v.rejection);
+    }
+  }
+  if (hasChanges) {
+    const v = validateVerdictLabel("review:changes", events, vctx);
+    if (!v.valid) {
+      hasChanges = false;
+      rejections.push(v.rejection);
+    }
+  }
+
+  return { hasPass, hasChanges, rejections };
 }
 
 async function removeLabel(prNumber: number, label: string, deps: Pick<ReviewDeps, "prEdit">): Promise<void> {
@@ -92,9 +141,11 @@ export async function runReview(
       : ["mcx", input.provider, "spawn"];
     const command = [...cmdBase, "--worktree", "--model", model, "-t", prompt, "--allow", ...allowTools];
 
+    const spawnedAt = Date.now();
     await state.set("review_round", round);
     await state.set("review_model", model);
-    await state.set("review_session_id", `pending:${Date.now()}`);
+    await state.set("review_session_id", `pending:${spawnedAt}`);
+    await state.set("review_spawned_at", spawnedAt);
     return {
       action: "spawn",
       reason: `review round ${round} starting`,
@@ -108,11 +159,16 @@ export async function runReview(
 
   const storedModel = (await state.get<string>("review_model")) as "opus" | "sonnet" | null;
   const withModel = storedModel ? { model: storedModel } : {};
-  const { hasPass, hasChanges } = await readReviewLabels(work.prNumber, deps);
+  const roundStartedAt = (await state.get<number>("review_spawned_at")) ?? 0;
+  if (roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
+    return { action: "wait", reason: "review_spawned_at missing or invalid in state — fail closed; re-spawn to populate", round, ...withModel };
+  }
+  const { hasPass, hasChanges, rejections } = await readReviewLabels(work.prNumber, deps, roundStartedAt);
 
   // No verdict label yet — the reviewer hasn't decided. Wait (never trust prose).
   if (!hasPass && !hasChanges) {
-    return { action: "wait", reason: "review:pass / review:changes label not set yet", round, ...withModel };
+    const suffix = rejections.length > 0 ? ` (rejected: ${rejections.join("; ")})` : "";
+    return { action: "wait", reason: `review:pass / review:changes label not set yet${suffix}`, round, ...withModel };
   }
 
   // Approved wins if both are somehow set; clear the stale changes label.
