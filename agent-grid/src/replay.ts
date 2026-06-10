@@ -454,7 +454,9 @@ function structurallyEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(normalizeForComparison(a)) === JSON.stringify(normalizeForComparison(b));
 }
 
-const MOCK_WORKER_PATH = join(import.meta.dir, "../../packages/daemon/src/mock-session-worker.ts");
+function defaultMockWorkerPath(): string {
+  return join(import.meta.dir, "../../packages/daemon/src/mock-session-worker.ts");
+}
 
 export interface ReplayThroughMockOptions {
   workerPath?: string;
@@ -467,11 +469,15 @@ export async function replayThroughMock(
   opts?: ReplayThroughMockOptions,
 ): Promise<MockReplayReport> {
   const violations: ReplayViolation[] = [];
-  const workerFile = opts?.workerPath ?? MOCK_WORKER_PATH;
+  const workerFile = opts?.workerPath ?? defaultMockWorkerPath();
   const timeoutMs = opts?.timeoutMs ?? 10_000;
 
   const daemonEntries = entries.filter((e) => e.dir === "daemon->worker");
   const expectedWorkerEntries = entries.filter((e) => e.dir === "worker->daemon");
+
+  // Pre-build index for O(1) line-number lookups during comparison
+  const entryLineMap = new Map<RecordingEntry, number>();
+  for (let i = 0; i < entries.length; i++) entryLineMap.set(entries[i], i + 1);
 
   if (daemonEntries.length === 0) {
     return {
@@ -497,16 +503,19 @@ export async function replayThroughMock(
   }
 
   const collectedMessages: unknown[] = [];
-  const worker = new Worker(workerFile);
+  let worker: Worker | null = null;
 
   try {
+    worker = new Worker(workerFile);
+    const w = worker;
+
     // Phase 1: send init, wait for ready/error
     const readyResult = await new Promise<"ready" | "error">((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error("mock worker init timeout"));
       }, timeoutMs);
 
-      worker.onmessage = (event: MessageEvent) => {
+      w.onmessage = (event: MessageEvent) => {
         const data = event.data;
         collectedMessages.push(data);
         const type = getType(data);
@@ -519,17 +528,16 @@ export async function replayThroughMock(
         }
       };
 
-      worker.onerror = (event: ErrorEvent | Event) => {
+      w.onerror = (event: ErrorEvent | Event) => {
         clearTimeout(timer);
         const msg = event instanceof ErrorEvent ? event.message : String(event);
         reject(new Error(`mock worker error: ${msg}`));
       };
 
-      worker.postMessage(initEntry.payload);
+      w.postMessage(initEntry.payload);
     });
 
     if (readyResult === "error") {
-      // Worker reported error — check if recording expected error too
       const firstExpected = expectedWorkerEntries[0];
       if (firstExpected && getType(firstExpected.payload) === "error") {
         return {
@@ -556,62 +564,56 @@ export async function replayThroughMock(
       };
     }
 
-    // Phase 2: feed remaining daemon→worker messages (MCP JSON-RPC + control)
-    // and collect all worker→daemon responses.
+    // Phase 2: feed remaining daemon→worker messages and collect responses.
     //
-    // The mock worker processes messages asynchronously (runScript spawns in
-    // background). We send all daemon→worker messages then wait for the worker
-    // to quiesce — detected when no new messages arrive within a settle window.
+    // Completion is detected by counting: resolve when the worker has emitted
+    // exactly as many messages as the recording expects (the count is known).
+    // The overall timeout is the only fallback — no time-based settle window.
     const remainingDaemon = daemonEntries.slice(1);
+    const expectedTotal = expectedWorkerEntries.length;
 
-    let overallTimer: ReturnType<typeof setTimeout> | undefined;
-    const settlePromise = new Promise<void>((resolve) => {
-      let settleTimer: ReturnType<typeof setTimeout> | null = null;
-      const SETTLE_MS = 500;
+    if (collectedMessages.length < expectedTotal) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), timeoutMs);
 
-      const doResolve = () => {
-        clearTimeout(overallTimer);
-        resolve();
-      };
+        w.onmessage = (event: MessageEvent) => {
+          collectedMessages.push(event.data);
+          if (collectedMessages.length >= expectedTotal) {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
 
-      const resetSettle = () => {
-        if (settleTimer) clearTimeout(settleTimer);
-        settleTimer = setTimeout(doResolve, SETTLE_MS);
-      };
+        w.onerror = (event: ErrorEvent | Event) => {
+          clearTimeout(timer);
+          const msg = event instanceof ErrorEvent ? event.message : String(event);
+          violations.push({ line: 0, rule: "mock-worker-crash", message: `worker error during replay: ${msg}` });
+          resolve();
+        };
 
-      overallTimer = setTimeout(() => {
-        if (settleTimer) clearTimeout(settleTimer);
-        doResolve();
-      }, timeoutMs);
-
-      worker.onmessage = (event: MessageEvent) => {
-        collectedMessages.push(event.data);
-        resetSettle();
-      };
-
-      resetSettle();
-    });
-
-    for (const entry of remainingDaemon) {
-      worker.postMessage(entry.payload);
-    }
-
-    await settlePromise;
-
-    // Phase 3: compare collected worker→daemon messages against expected
-    if (collectedMessages.length !== expectedWorkerEntries.length) {
-      violations.push({
-        line: 0,
-        rule: "mock-replay-count",
-        message: `expected ${expectedWorkerEntries.length} worker→daemon messages, got ${collectedMessages.length}`,
+        for (const entry of remainingDaemon) {
+          w.postMessage(entry.payload);
+        }
       });
     }
 
-    const compareLen = Math.min(collectedMessages.length, expectedWorkerEntries.length);
+    // Detach handler before comparison so no late messages can sneak in
+    w.onmessage = null;
+
+    // Phase 3: compare collected worker→daemon messages against expected
+    if (collectedMessages.length !== expectedTotal) {
+      violations.push({
+        line: 0,
+        rule: "mock-replay-count",
+        message: `expected ${expectedTotal} worker→daemon messages, got ${collectedMessages.length}`,
+      });
+    }
+
+    const compareLen = Math.min(collectedMessages.length, expectedTotal);
     for (let i = 0; i < compareLen; i++) {
       const actual = collectedMessages[i];
       const expected = expectedWorkerEntries[i];
-      const recordingLine = entries.indexOf(expected) + 1;
+      const recordingLine = entryLineMap.get(expected) ?? 0;
 
       if (!structurallyEqual(actual, expected.payload)) {
         violations.push({
@@ -622,9 +624,11 @@ export async function replayThroughMock(
       }
     }
   } finally {
-    worker.onmessage = null;
-    worker.onerror = null;
-    worker.terminate();
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+    }
   }
 
   return {
