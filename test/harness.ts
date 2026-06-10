@@ -154,10 +154,15 @@ export async function pollUntil(
   intervalMs = 10,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!(await condition()) && Date.now() < deadline) {
+  let met = false;
+  while (Date.now() < deadline) {
+    if (await condition()) {
+      met = true;
+      break;
+    }
     await Bun.sleep(intervalMs);
   }
-  if (!(await condition())) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+  if (!met) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
 }
 
 /**
