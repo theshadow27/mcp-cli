@@ -118,6 +118,37 @@ Canary attempt findings:
   comparison instead of letting "flake" framing leak in. (Resolution
   pending as of this note.)
 
+## Late sprint (04:20–04:55Z)
+
+- **Worktree escape (#2693)**: #2463's impl session wrote its implementation
+  into the orchestrator's MAIN checkout (mtime 03:22:34Z, exactly the 4 impl
+  files, pre-repair version) — discovered an hour later when my `git pull`
+  aborted. The .active sentinel blocked commits (worked as designed) but
+  nothing guards writes. Likely cause: absolute main-checkout paths quoted in
+  the investigation comment. ws containment guard didn't fire — gap is
+  probably Edit/Write path-args vs Bash-cwd-only checking.
+- **Host oversubscription (#2690)**: ~10 concurrent sessions × parallel
+  am-i-done test phases → transient mass-SIGTERM storms (8.9s runs, 104
+  "failures"). Two workers hit it; one tried to absorb it as "the known CI
+  issue" (wrong — that's Linux-only). Clean-main protocol resolved it without
+  a single flake label. Orchestrator should stagger gate-running workers, or
+  a flock-based test-phase token (issue filed).
+- **Micro-repair pattern dominated the tail**: 5 of the last 6 PRs went
+  review→reviewer-self-repair→fresh-QA-verifies. Zero opus repair spawns all
+  sprint. Every repair commit got independent fresh-eyes verification before
+  merge. One hygiene slip: merged #2691 with the stale round-1 review:changes
+  still attached (audit comment added post-merge; #2675 did it pre-merge —
+  the pre-merge swap should be mechanized in done-fn).
+- **Triage scrutiny vs plan scrutiny disagreed 4×** (#2463 low-vs-high,
+  #2505 high-vs-low, #2651 low-vs-high, churn-based both ways). Orchestrator
+  overrode toward the STRICTER of the two each time. Plan's scrutiny column
+  should probably flow into the work item at track time so triage can take
+  max(plan, churn) mechanically.
+- **#2651 reviewer reviewed changes to its own role prompt** (recursion
+  noted in spawn prompt) — handled it on the merits, found real asymmetry
+  yellows, applied them, fresh QA verified. The universal-contract constraint
+  held.
+
 ## Open questions to answer by retro
 
 - Did the batch-1→backfill slot model actually beat "spawn everything
