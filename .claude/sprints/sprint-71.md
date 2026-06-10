@@ -1,6 +1,6 @@
 # Sprint 71
 
-> Planned 2026-06-09 (evening EDT). Target: 15 PRs. Started 2026-06-09 23:00 EDT.
+> Planned 2026-06-09 (evening EDT). Target: 15 PRs. Started 2026-06-09 23:00 EDT. Ended 2026-06-10 01:07 EDT — 15/15 merged.
 
 ## Goal
 
