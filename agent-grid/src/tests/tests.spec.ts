@@ -7,10 +7,15 @@ import { getProvider } from "@mcp-cli/core";
 import type { AgentProvider } from "@mcp-cli/core";
 import { gateTest } from "../capability-gate";
 import { makeEditFileTest } from "./edit-file";
+import { makeFixTypescriptTest } from "./fix-typescript";
 import type { CallToolFn } from "./helpers";
 import { byeSession, extractSessionId, extractText, promptAndWait, promptFollowUp, promptNoWait } from "./helpers";
+import { makeInterruptAndRecoverTest } from "./interrupt-and-recover";
 import { makeMultiTurnTest } from "./multi-turn";
+import { makePermissionBaselineTest } from "./permission-baseline";
 import { makeReadFileTest } from "./read-file";
+import { makeReportCostTest } from "./report-cost";
+import { makeResumeSessionTest } from "./resume-session";
 import { makeRunBashTest } from "./run-bash";
 import { makeSpawnInDirTest } from "./spawn-in-dir";
 
@@ -233,14 +238,19 @@ function buildAllTests(callTool: CallToolFn) {
     makeEditFileTest({ callTool }),
     makeRunBashTest({ callTool }),
     makeMultiTurnTest({ callTool }),
+    makeInterruptAndRecoverTest({ callTool }),
+    makeFixTypescriptTest({ callTool }),
+    makeReportCostTest({ callTool }),
+    makePermissionBaselineTest({ callTool }),
+    makeResumeSessionTest({ callTool }),
   ];
 }
 
 describe("test registry", () => {
   const tests = buildAllTests(stubCallTool);
 
-  test("contains exactly 5 tests", () => {
-    expect(tests).toHaveLength(5);
+  test("contains exactly 10 tests", () => {
+    expect(tests).toHaveLength(10);
   });
 
   test("test names are unique", () => {
@@ -255,6 +265,11 @@ describe("test registry", () => {
     expect(names).toContain("edit-file");
     expect(names).toContain("run-bash");
     expect(names).toContain("multi-turn");
+    expect(names).toContain("interrupt-and-recover");
+    expect(names).toContain("fix-typescript");
+    expect(names).toContain("report-cost");
+    expect(names).toContain("permission-baseline");
+    expect(names).toContain("resume-session");
   });
 });
 
@@ -599,6 +614,474 @@ describe("multi-turn", () => {
     };
 
     const t = makeMultiTurnTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
+  });
+});
+
+// ── interrupt-and-recover ────────────────────────────────────────
+
+describe("interrupt-and-recover", () => {
+  const test_ = makeInterruptAndRecoverTest({ callTool: stubCallTool });
+
+  test("has correct name and requires", () => {
+    expect(test_.name).toBe("interrupt-and-recover");
+    expect(test_.requires).toEqual(["interruptAck"]);
+  });
+
+  test("gated for providers lacking interruptAck", () => {
+    const provider = { ...requireProvider("claude"), native: {} };
+    const result = gateTest(test_, provider);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("n/a");
+  });
+
+  test("not gated for claude", () => {
+    expect(gateTest(test_, requireProvider("claude"))).toBeNull();
+  });
+
+  test("passes when recovery prompt creates proof file", async () => {
+    const cwd = makeTmpDir();
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
+      callCount++;
+      if (callCount === 1) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      }
+      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
+      return mcpPromptResult("sess-int-2", "done");
+    };
+
+    const t = makeInterruptAndRecoverTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("fails when proof file not created", async () => {
+    const cwd = makeTmpDir();
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
+      callCount++;
+      if (callCount === 1) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      }
+      return mcpPromptResult("sess-int-2", "done");
+    };
+
+    const t = makeInterruptAndRecoverTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("not created");
+  });
+
+  test("fails when proof file has wrong content", async () => {
+    const cwd = makeTmpDir();
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
+      callCount++;
+      if (callCount === 1) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      }
+      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "wrong content");
+      return mcpPromptResult("sess-int-2", "done");
+    };
+
+    const t = makeInterruptAndRecoverTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("missing marker");
+  });
+
+  test("registers onCleanup", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
+      callCount++;
+      if (callCount === 1) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      }
+      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
+      return mcpPromptResult("sess-int-2", "done");
+    };
+
+    const t = makeInterruptAndRecoverTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
+  });
+});
+
+// ── fix-typescript ───────────────────────────────────────────────
+
+describe("fix-typescript", () => {
+  const test_ = makeFixTypescriptTest({ callTool: stubCallTool });
+
+  test("has correct name and requires", () => {
+    expect(test_.name).toBe("fix-typescript");
+    expect(test_.requires).toEqual([]);
+  });
+
+  test("not gated for any provider", () => {
+    expect(gateTest(test_, requireProvider("claude"))).toBeNull();
+    expect(gateTest(test_, requireProvider("codex"))).toBeNull();
+  });
+
+  test("passes when callTool fixes the type error", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      const filePath = join(cwd, "grid-fix-ts.ts");
+      writeFileSync(filePath, 'const greeting: string = "hello world";\nconsole.log(greeting);\n');
+      return mcpPromptResult("sess-fix", "done");
+    };
+
+    const t = makeFixTypescriptTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("passes when value is changed to match type", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      const filePath = join(cwd, "grid-fix-ts.ts");
+      writeFileSync(filePath, "const greeting: number = 42;\nconsole.log(greeting);\n");
+      return mcpPromptResult("sess-fix", "done");
+    };
+
+    const t = makeFixTypescriptTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("fails when type error not fixed", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpPromptResult("sess-fix", "done");
+    };
+
+    const t = makeFixTypescriptTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("type error not fixed");
+  });
+
+  test("fails when console.log removed", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      const filePath = join(cwd, "grid-fix-ts.ts");
+      writeFileSync(filePath, 'const greeting: string = "hello world";\n');
+      return mcpPromptResult("sess-fix", "done");
+    };
+
+    const t = makeFixTypescriptTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("console.log");
+  });
+});
+
+// ── report-cost ──────────────────────────────────────────────────
+
+describe("report-cost", () => {
+  const test_ = makeReportCostTest({ callTool: stubCallTool });
+
+  test("has correct name and requires", () => {
+    expect(test_.name).toBe("report-cost");
+    expect(test_.requires).toEqual(["costTracking"]);
+  });
+
+  test("gated for providers lacking costTracking", () => {
+    const provider = { ...requireProvider("claude"), native: {} };
+    const result = gateTest(test_, provider);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("n/a");
+  });
+
+  test("not gated for claude", () => {
+    expect(gateTest(test_, requireProvider("claude"))).toBeNull();
+  });
+
+  test("passes when result contains cost > 0", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_session_list")) {
+        return mcpTextResult(JSON.stringify([]));
+      }
+      return mcpTextResult(
+        JSON.stringify({
+          sessionId: "sess-cost",
+          result: { result: "hello", cost: 0.0015, tokens: 200, numTurns: 1 },
+        }),
+      );
+    };
+
+    const t = makeReportCostTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("passes when session_list contains cost > 0", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_session_list")) {
+        return mcpTextResult(JSON.stringify([{ sessionId: "sess-cost", cost: 0.003, tokens: 400 }]));
+      }
+      return mcpPromptResult("sess-cost", "hello");
+    };
+
+    const t = makeReportCostTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("fails when no cost reported anywhere", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_session_list")) {
+        return mcpTextResult(JSON.stringify([{ sessionId: "sess-cost", cost: 0, tokens: 0 }]));
+      }
+      return mcpPromptResult("sess-cost", "hello");
+    };
+
+    const t = makeReportCostTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("no cost > 0");
+  });
+});
+
+// ── permission-baseline ──────────────────────────────────────────
+
+describe("permission-baseline", () => {
+  const test_ = makePermissionBaselineTest({ callTool: stubCallTool });
+
+  test("has correct name and requires", () => {
+    expect(test_.name).toBe("permission-baseline");
+    expect(test_.requires).toEqual(["permissionRoundtrip"]);
+  });
+
+  test("gated for providers lacking permissionRoundtrip", () => {
+    const provider = { ...requireProvider("claude"), native: {} };
+    const result = gateTest(test_, provider);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("n/a");
+  });
+
+  test("not gated for claude", () => {
+    expect(gateTest(test_, requireProvider("claude"))).toBeNull();
+  });
+
+  test("passes when permission round-trip completes", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_prompt")) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-perm" }));
+      }
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(
+          JSON.stringify({
+            type: "session:permission_request",
+            request: { requestId: "req-1", toolName: "Write", input: {} },
+            seq: 1,
+            sessionId: "sess-perm",
+          }),
+        );
+      }
+      if (tool.endsWith("_approve")) {
+        return mcpTextResult(JSON.stringify({ approved: true, requestId: "req-1" }));
+      }
+      return mcpTextResult("ok");
+    };
+
+    const t = makePermissionBaselineTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("fails when no permission request received", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_prompt")) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-perm" }));
+      }
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(
+          JSON.stringify({
+            type: "session:result",
+            sessionId: "sess-perm",
+            result: { result: "done", cost: 0, tokens: 0, numTurns: 1 },
+          }),
+        );
+      }
+      return mcpTextResult("ok");
+    };
+
+    const t = makePermissionBaselineTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("no permission request");
+  });
+
+  test("registers onCleanup", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_prompt")) {
+        return mcpTextResult(JSON.stringify({ sessionId: "sess-perm" }));
+      }
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(
+          JSON.stringify({
+            type: "session:permission_request",
+            request: { requestId: "req-1", toolName: "Write", input: {} },
+            seq: 1,
+            sessionId: "sess-perm",
+          }),
+        );
+      }
+      if (tool.endsWith("_approve")) {
+        return mcpTextResult(JSON.stringify({ approved: true, requestId: "req-1" }));
+      }
+      return mcpTextResult("ok");
+    };
+
+    const t = makePermissionBaselineTest({ callTool });
+    await t.run({
+      provider: requireProvider("claude"),
+      cwd,
+      onCleanup: () => {
+        cleanupRegistered = true;
+      },
+    });
+    expect(cleanupRegistered).toBe(true);
+  });
+});
+
+// ── resume-session ───────────────────────────────────────────────
+
+describe("resume-session", () => {
+  const test_ = makeResumeSessionTest({ callTool: stubCallTool });
+
+  test("has correct name and requires", () => {
+    expect(test_.name).toBe("resume-session");
+    expect(test_.requires).toEqual(["resume"]);
+  });
+
+  test("gated for providers lacking resume", () => {
+    const provider = { ...requireProvider("claude"), native: { resume: false } };
+    const result = gateTest(test_, provider);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("n/a");
+  });
+
+  test("not gated for claude", () => {
+    expect(gateTest(test_, requireProvider("claude"))).toBeNull();
+  });
+
+  test("passes when context is retained after resume", async () => {
+    const cwd = makeTmpDir();
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      callCount++;
+      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
+      if (callCount === 2) return mcpPromptResult("sess-res", "GRID_RESUME_a3f9");
+      return mcpPromptResult("sess-res", "unexpected");
+    };
+
+    const t = makeResumeSessionTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("pass");
+  });
+
+  test("fails when context not retained after resume", async () => {
+    const cwd = makeTmpDir();
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      callCount++;
+      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
+      if (callCount === 2) return mcpPromptResult("sess-res", "I don't remember");
+      return mcpPromptResult("sess-res", "unexpected");
+    };
+
+    const t = makeResumeSessionTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("context not retained");
+  });
+
+  test("throws when no sessionId from initial prompt", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      return mcpTextResult("plain text no session id");
+    };
+
+    const t = makeResumeSessionTest({ callTool });
+    expect(t.run({ provider: requireProvider("claude"), cwd })).rejects.toThrow("no sessionId");
+  });
+
+  test("registers onCleanup", async () => {
+    const cwd = makeTmpDir();
+    let cleanupRegistered = false;
+    let callCount = 0;
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      callCount++;
+      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
+      if (callCount === 2) return mcpPromptResult("sess-res", "GRID_RESUME_a3f9");
+      return mcpPromptResult("sess-res", "unexpected");
+    };
+
+    const t = makeResumeSessionTest({ callTool });
     await t.run({
       provider: requireProvider("claude"),
       cwd,
