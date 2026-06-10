@@ -6,7 +6,14 @@ import { join } from "node:path";
 import { isLookupFailure } from "@mcp-cli/core";
 import { defaultGetDiffStats, defaultGetPrStatus, getGitRoot, parseDiffShortstat } from "./session-deps";
 
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+const GIT_ENV = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+};
 
 // ── parseDiffShortstat ──
 
