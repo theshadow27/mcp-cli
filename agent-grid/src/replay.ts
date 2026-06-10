@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type RecordingEntry, type RecordingKind, classifyMessageKind } from "@mcp-cli/core";
 
 export interface ReplayViolation {
@@ -12,6 +13,15 @@ export interface ReplayReport {
   entries: number;
   violations: ReplayViolation[];
   pass: boolean;
+}
+
+export interface MockReplayReport {
+  file: string;
+  entries: number;
+  violations: ReplayViolation[];
+  pass: boolean;
+  expectedWorkerMessages: number;
+  actualWorkerMessages: number;
 }
 
 const VALID_DIRECTIONS = new Set(["daemon->worker", "worker->daemon"]);
@@ -32,18 +42,6 @@ const KNOWN_DB_TYPES = new Set([
 ]);
 
 const KNOWN_CONTROL_TYPES = new Set([...DAEMON_TO_WORKER_CONTROL_TYPES, ...WORKER_TO_DAEMON_CONTROL_TYPES]);
-
-// Session state transitions that forwardSessionEvent can produce.
-// Mirrors the mock-session-worker's session lifecycle:
-//   handlePrompt → db:upsert(connecting)
-//   runScript    → db:state(active) → db:upsert(init) → [work] → db:state(idle) → db:end
-const VALID_STATE_TRANSITIONS: Record<string, ReadonlySet<string>> = {
-  connecting: new Set(["active"]),
-  active: new Set(["init", "idle", "waiting_permission"]),
-  init: new Set(["active", "idle", "waiting_permission"]),
-  waiting_permission: new Set(["active", "idle"]),
-  idle: new Set(["active", "connecting", "ended"]),
-};
 
 function getType(payload: unknown): string | undefined {
   if (typeof payload === "object" && payload !== null && "type" in payload) {
@@ -89,15 +87,65 @@ function validateRequiredFields(entry: RecordingEntry, line: number, violations:
     case "error":
       if (!hasStringField(entry.payload, "message")) fail("message", "string");
       break;
-    case "restore_sessions":
-      if (!Array.isArray(getField(entry.payload, "sessions"))) fail("sessions", "array");
+    case "restore_sessions": {
+      const sessions = getField(entry.payload, "sessions");
+      if (!Array.isArray(sessions)) {
+        fail("sessions", "array");
+      } else {
+        for (let j = 0; j < sessions.length; j++) {
+          const el = sessions[j];
+          if (typeof el !== "object" || el === null || Array.isArray(el)) {
+            violations.push({
+              line,
+              rule: "required-field",
+              message: `restore_sessions.sessions[${j}] must be an object`,
+            });
+          } else {
+            if (!hasStringField(el, "sessionId")) {
+              violations.push({
+                line,
+                rule: "required-field",
+                message: `restore_sessions.sessions[${j}] missing required field "sessionId" (expected string)`,
+              });
+            }
+            if (!hasStringField(el, "provider")) {
+              violations.push({
+                line,
+                rule: "required-field",
+                message: `restore_sessions.sessions[${j}] missing required field "provider" (expected string)`,
+              });
+            }
+          }
+        }
+      }
       break;
-    case "work_item_event":
-      if (!hasField(entry.payload, "event")) fail("event", "object");
+    }
+    case "work_item_event": {
+      const event = getField(entry.payload, "event");
+      if (!event) {
+        fail("event", "object");
+      } else if (typeof event !== "object" || event === null) {
+        violations.push({
+          line,
+          rule: "required-field",
+          message: `work_item_event.event must be an object, got ${typeof event}`,
+        });
+      }
       break;
-    case "monitor:event":
-      if (!hasField(entry.payload, "input")) fail("input", "object");
+    }
+    case "monitor:event": {
+      const input = getField(entry.payload, "input");
+      if (!input) {
+        fail("input", "object");
+      } else if (typeof input !== "object" || input === null) {
+        violations.push({
+          line,
+          rule: "required-field",
+          message: `monitor:event.input must be an object, got ${typeof input}`,
+        });
+      }
       break;
+    }
     case "db:upsert": {
       const session = getField(entry.payload, "session");
       if (typeof session !== "object" || session === null) {
@@ -145,109 +193,45 @@ function validateMcpMessage(payload: unknown, line: number, violations: ReplayVi
       rule: "mcp-format",
       message: `MCP message must have jsonrpc: "2.0", got ${JSON.stringify(obj.jsonrpc)}`,
     });
+    return;
   }
-}
 
-// ── Session lifecycle replay ──────────────────────────────────────
-// Models the mock-session-worker's forwardSessionEvent + handlePrompt
-// to validate that DB events form a legal session lifecycle.
+  const hasMethod = "method" in obj;
+  const hasResult = "result" in obj;
+  const hasError = "error" in obj;
+  const hasId = "id" in obj;
 
-interface SessionState {
-  state: string;
-  ended: boolean;
-}
-
-function getSessionIdFromPayload(payload: unknown): string | undefined {
-  const sessionId = getField(payload, "sessionId") as string | undefined;
-  if (sessionId) return sessionId;
-  const session = getField(payload, "session");
-  if (typeof session === "object" && session !== null) {
-    return getField(session, "sessionId") as string | undefined;
+  if (hasResult && hasError) {
+    violations.push({
+      line,
+      rule: "mcp-format",
+      message: "MCP message cannot have both result and error (mutual exclusion)",
+    });
   }
-  return undefined;
-}
 
-function getStateFromPayload(type: string, payload: unknown): string | undefined {
-  if (type === "db:state") return getField(payload, "state") as string | undefined;
-  if (type === "db:upsert") {
-    const session = getField(payload, "session");
-    if (typeof session === "object" && session !== null) {
-      return getField(session, "state") as string | undefined;
-    }
-  }
-  return undefined;
-}
-
-function replaySessionLifecycle(entries: RecordingEntry[], violations: ReplayViolation[]): void {
-  const sessions = new Map<string, SessionState>();
-
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (entry.kind !== "db") continue;
-    const line = i + 1;
-    const type = getType(entry.payload);
-    if (!type) continue;
-
-    const sessionId = getSessionIdFromPayload(entry.payload);
-    if (!sessionId) continue;
-
-    const session = sessions.get(sessionId);
-
-    if (session?.ended) {
+  if (hasResult || hasError) {
+    if (!hasId) {
       violations.push({
         line,
-        rule: "lifecycle",
-        message: `session "${sessionId}" received ${type} after db:end`,
+        rule: "mcp-format",
+        message: "MCP response must have an id field",
       });
-      continue;
     }
-
-    if (type === "db:upsert") {
-      const newState = getStateFromPayload(type, entry.payload);
-      if (!session) {
-        sessions.set(sessionId, { state: newState ?? "connecting", ended: false });
-      } else if (newState) {
-        const allowed = VALID_STATE_TRANSITIONS[session.state];
-        if (allowed && !allowed.has(newState)) {
-          violations.push({
-            line,
-            rule: "lifecycle",
-            message: `session "${sessionId}" invalid state transition: "${session.state}" → "${newState}" (via ${type})`,
-          });
-        }
-        session.state = newState;
-      }
-      continue;
-    }
-
-    if (!session) {
+    if (hasMethod) {
       violations.push({
         line,
-        rule: "lifecycle",
-        message: `session "${sessionId}" received ${type} before db:upsert`,
+        rule: "mcp-format",
+        message: "MCP response must not have a method field",
       });
-      continue;
     }
+  }
 
-    if (type === "db:state") {
-      const newState = getStateFromPayload(type, entry.payload);
-      if (newState) {
-        const allowed = VALID_STATE_TRANSITIONS[session.state];
-        if (allowed && !allowed.has(newState)) {
-          violations.push({
-            line,
-            rule: "lifecycle",
-            message: `session "${sessionId}" invalid state transition: "${session.state}" → "${newState}" (via ${type})`,
-          });
-        }
-        session.state = newState;
-      }
-    } else if (type === "db:end") {
-      session.ended = true;
-      session.state = "ended";
-    } else if (type === "db:disconnected") {
-      session.state = "disconnected";
-    }
+  if (hasMethod && typeof obj.method !== "string") {
+    violations.push({
+      line,
+      rule: "mcp-format",
+      message: `MCP method must be a string, got ${typeof obj.method}`,
+    });
   }
 }
 
@@ -289,7 +273,7 @@ function validateMcpCorrelation(entries: RecordingEntry[], violations: ReplayVio
   }
 }
 
-// ── Main validation ───────────────────────────────────────────────
+// ── Main static validation ────────────────────────────────────────
 
 export function validateRecording(entries: RecordingEntry[], file: string): ReplayReport {
   const violations: ReplayViolation[] = [];
@@ -403,7 +387,6 @@ export function validateRecording(entries: RecordingEntry[], file: string): Repl
   }
 
   if (entries.length > 0 && sawReady) {
-    replaySessionLifecycle(entries, violations);
     validateMcpCorrelation(entries, violations);
   }
 
@@ -414,6 +397,251 @@ export function validateRecording(entries: RecordingEntry[], file: string): Repl
     pass: violations.length === 0,
   };
 }
+
+// ── Mock-driver replay ────────────────────────────────────────────
+//
+// Spawns the actual mock-session-worker as a Bun Worker, feeds it the
+// recorded daemon→worker messages, collects the worker→daemon output,
+// and structurally compares against the recording.
+//
+// IGNORED FIELDS during structural comparison (exhaustive list):
+//   - t             : timestamps differ across runs
+//   - sessionId     : mock worker generates fresh UUIDs each run
+//   - session.sessionId : nested variant inside db:upsert
+//   - id            : MCP JSON-RPC ids are auto-incremented by the SDK
+//   - seq           : event buffer sequence numbers
+//   - requestId     : mock worker auto-generates permission request ids
+//   - createdAt     : session creation timestamp
+//   - supported_protocol_version : may differ across builds
+//   - daemonId      : daemon instance identifier
+//
+// Additionally, UUID values embedded in JSON-encoded string fields (e.g.
+// tool response `text` containing `{"sessionId":"..."}`) are normalized
+// to a placeholder. This handles the mock worker generating fresh UUIDs
+// inside serialized payloads.
+//
+// Everything else must match structurally. Adding a field to this list
+// requires updating this comment and the IGNORED_COMPARISON_KEYS set.
+
+const IGNORED_COMPARISON_KEYS = new Set([
+  "t",
+  "sessionId",
+  "id",
+  "seq",
+  "requestId",
+  "createdAt",
+  "supported_protocol_version",
+  "daemonId",
+]);
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const UUID_PLACEHOLDER = "<UUID>";
+
+function normalizeForComparison(obj: unknown): unknown {
+  if (typeof obj === "string") return obj.replace(UUID_RE, UUID_PLACEHOLDER);
+  if (typeof obj !== "object" || obj === null) return obj;
+  if (Array.isArray(obj)) return obj.map(normalizeForComparison);
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (IGNORED_COMPARISON_KEYS.has(key)) continue;
+    result[key] = normalizeForComparison(value);
+  }
+  return result;
+}
+
+function structurallyEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(normalizeForComparison(a)) === JSON.stringify(normalizeForComparison(b));
+}
+
+function defaultMockWorkerPath(): string {
+  return join(import.meta.dir, "../../packages/daemon/src/mock-session-worker.ts");
+}
+
+export interface ReplayThroughMockOptions {
+  workerPath?: string;
+  timeoutMs?: number;
+}
+
+export async function replayThroughMock(
+  entries: RecordingEntry[],
+  file: string,
+  opts?: ReplayThroughMockOptions,
+): Promise<MockReplayReport> {
+  const violations: ReplayViolation[] = [];
+  const workerFile = opts?.workerPath ?? defaultMockWorkerPath();
+  const timeoutMs = opts?.timeoutMs ?? 10_000;
+
+  const daemonEntries = entries.filter((e) => e.dir === "daemon->worker");
+  const expectedWorkerEntries = entries.filter((e) => e.dir === "worker->daemon");
+
+  // Pre-build index for O(1) line-number lookups during comparison
+  const entryLineMap = new Map<RecordingEntry, number>();
+  for (let i = 0; i < entries.length; i++) entryLineMap.set(entries[i], i + 1);
+
+  if (daemonEntries.length === 0) {
+    return {
+      file,
+      entries: entries.length,
+      violations: [{ line: 0, rule: "mock-replay", message: "no daemon→worker messages to replay" }],
+      pass: false,
+      expectedWorkerMessages: 0,
+      actualWorkerMessages: 0,
+    };
+  }
+
+  const initEntry = daemonEntries[0];
+  if (getType(initEntry.payload) !== "init") {
+    return {
+      file,
+      entries: entries.length,
+      violations: [{ line: 1, rule: "mock-replay", message: "first daemon→worker message must be init" }],
+      pass: false,
+      expectedWorkerMessages: expectedWorkerEntries.length,
+      actualWorkerMessages: 0,
+    };
+  }
+
+  const collectedMessages: unknown[] = [];
+  let worker: Worker | null = null;
+
+  try {
+    worker = new Worker(workerFile);
+    const w = worker;
+
+    // Phase 1: send init, wait for ready/error
+    const readyResult = await new Promise<"ready" | "error">((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("mock worker init timeout"));
+      }, timeoutMs);
+
+      w.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        collectedMessages.push(data);
+        const type = getType(data);
+        if (type === "ready") {
+          clearTimeout(timer);
+          resolve("ready");
+        } else if (type === "error") {
+          clearTimeout(timer);
+          resolve("error");
+        }
+      };
+
+      w.onerror = (event: ErrorEvent | Event) => {
+        clearTimeout(timer);
+        const msg = event instanceof ErrorEvent ? event.message : String(event);
+        reject(new Error(`mock worker error: ${msg}`));
+      };
+
+      w.postMessage(initEntry.payload);
+    });
+
+    if (readyResult === "error") {
+      const firstExpected = expectedWorkerEntries[0];
+      if (firstExpected && getType(firstExpected.payload) === "error") {
+        return {
+          file,
+          entries: entries.length,
+          violations,
+          pass: violations.length === 0,
+          expectedWorkerMessages: expectedWorkerEntries.length,
+          actualWorkerMessages: collectedMessages.length,
+        };
+      }
+      violations.push({
+        line: 0,
+        rule: "mock-replay",
+        message: "mock worker returned error but recording expected ready",
+      });
+      return {
+        file,
+        entries: entries.length,
+        violations,
+        pass: false,
+        expectedWorkerMessages: expectedWorkerEntries.length,
+        actualWorkerMessages: collectedMessages.length,
+      };
+    }
+
+    // Phase 2: feed remaining daemon→worker messages and collect responses.
+    //
+    // Completion is detected by counting: resolve when the worker has emitted
+    // exactly as many messages as the recording expects (the count is known).
+    // The overall timeout is the only fallback — no time-based settle window.
+    const remainingDaemon = daemonEntries.slice(1);
+    const expectedTotal = expectedWorkerEntries.length;
+
+    if (collectedMessages.length < expectedTotal) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), timeoutMs);
+
+        w.onmessage = (event: MessageEvent) => {
+          collectedMessages.push(event.data);
+          if (collectedMessages.length >= expectedTotal) {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+
+        w.onerror = (event: ErrorEvent | Event) => {
+          clearTimeout(timer);
+          const msg = event instanceof ErrorEvent ? event.message : String(event);
+          violations.push({ line: 0, rule: "mock-worker-crash", message: `worker error during replay: ${msg}` });
+          resolve();
+        };
+
+        for (const entry of remainingDaemon) {
+          w.postMessage(entry.payload);
+        }
+      });
+    }
+
+    // Detach handler before comparison so no late messages can sneak in
+    w.onmessage = null;
+
+    // Phase 3: compare collected worker→daemon messages against expected
+    if (collectedMessages.length !== expectedTotal) {
+      violations.push({
+        line: 0,
+        rule: "mock-replay-count",
+        message: `expected ${expectedTotal} worker→daemon messages, got ${collectedMessages.length}`,
+      });
+    }
+
+    const compareLen = Math.min(collectedMessages.length, expectedTotal);
+    for (let i = 0; i < compareLen; i++) {
+      const actual = collectedMessages[i];
+      const expected = expectedWorkerEntries[i];
+      const recordingLine = entryLineMap.get(expected) ?? 0;
+
+      if (!structurallyEqual(actual, expected.payload)) {
+        violations.push({
+          line: recordingLine,
+          rule: "mock-replay-mismatch",
+          message: `worker message ${i + 1} differs: expected ${JSON.stringify(normalizeForComparison(expected.payload))}, got ${JSON.stringify(normalizeForComparison(actual))}`,
+        });
+      }
+    }
+  } finally {
+    if (worker) {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+    }
+  }
+
+  return {
+    file,
+    entries: entries.length,
+    violations,
+    pass: violations.length === 0,
+    expectedWorkerMessages: expectedWorkerEntries.length,
+    actualWorkerMessages: collectedMessages.length,
+  };
+}
+
+// ── NDJSON parsing ────────────────────────────────────────────────
 
 export function parseRecording(filePath: string): RecordingEntry[] {
   const content = readFileSync(filePath, "utf-8");

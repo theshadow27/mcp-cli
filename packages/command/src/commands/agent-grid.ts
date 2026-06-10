@@ -13,6 +13,7 @@ import {
   type CallToolFn,
   type GridResult,
   type GridTest,
+  type MockReplayReport,
   gateTest,
   makeEditFileTest,
   makeMultiTurnTest,
@@ -20,6 +21,7 @@ import {
   makeRunBashTest,
   makeSpawnInDirTest,
   parseRecording,
+  replayThroughMock,
   validateRecording,
 } from "@mcp-cli/agent-grid";
 import { type AgentProvider, getAllProviders, getProvider } from "@mcp-cli/core";
@@ -405,6 +407,27 @@ export function formatReplayText(report: ReturnType<typeof validateRecording>): 
   return lines.join("\n");
 }
 
+function formatMockReplayText(report: MockReplayReport): string {
+  const lines: string[] = [];
+
+  lines.push(`${c.bold}mock replay${c.reset}: ${report.file}`);
+  lines.push(
+    `${c.dim}entries: ${report.entries} | expected: ${report.expectedWorkerMessages} | actual: ${report.actualWorkerMessages}${c.reset}`,
+  );
+  lines.push("");
+
+  if (report.pass) {
+    lines.push(`${c.green}pass${c.reset} — mock worker reproduced the recording`);
+  } else {
+    lines.push(`${c.red}fail${c.reset} — ${report.violations.length} mock-replay violation(s):\n`);
+    for (const v of report.violations) {
+      lines.push(`  ${c.red}line ${v.line}${c.reset}  [${v.rule}]  ${v.message}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 async function agentGridReplay(args: string[]): Promise<void> {
   const opts = parseReplayArgs(args);
   if (!opts) {
@@ -421,15 +444,30 @@ async function agentGridReplay(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const report = validateRecording(entries, opts.file);
+  // Phase 1: static validation (fast pre-flight)
+  const staticReport = validateRecording(entries, opts.file);
 
-  if (opts.json) {
-    console.log(JSON.stringify(report, null, 2));
-  } else {
-    console.log(formatReplayText(report));
+  if (!staticReport.pass) {
+    if (opts.json) {
+      console.log(JSON.stringify({ static: staticReport, mock: null }, null, 2));
+    } else {
+      console.log(formatReplayText(staticReport));
+    }
+    process.exit(1);
   }
 
-  if (!report.pass) process.exit(1);
+  // Phase 2: mock-driver replay (drives the actual mock worker)
+  const mockReport = await replayThroughMock(entries, opts.file);
+
+  if (opts.json) {
+    console.log(JSON.stringify({ static: staticReport, mock: mockReport }, null, 2));
+  } else {
+    console.log(formatReplayText(staticReport));
+    console.log("");
+    console.log(formatMockReplayText(mockReport));
+  }
+
+  if (!mockReport.pass) process.exit(1);
 }
 
 // ── Main entry ─────────────────────────────────────────────────────
