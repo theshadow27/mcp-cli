@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GridTest } from "../grid-test";
 import { type CallToolFn, byeSession, promptAndWait } from "./helpers";
@@ -23,6 +23,10 @@ export function makeFixTypescriptTest(deps: { callTool: CallToolFn }): GridTest 
       ctx.onCleanup?.(() => byeSession(ctx.provider, result.sessionId, deps.callTool));
 
       try {
+        if (!existsSync(filePath)) {
+          return { status: "fail", error: "agent deleted the fixture file instead of fixing it" };
+        }
+
         const content = readFileSync(filePath, "utf-8");
 
         if (/const\s+greeting\s*:\s*number\s*=\s*"/.test(content)) {

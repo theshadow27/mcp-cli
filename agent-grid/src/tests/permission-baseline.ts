@@ -17,7 +17,10 @@ export function makePermissionBaselineTest(deps: { callTool: CallToolFn }): Grid
       ctx.onCleanup?.(() => byeSession(ctx.provider, sessionId, callTool));
 
       try {
-        const waitRaw = await callTool(ctx.provider.serverName, `${ctx.provider.toolPrefix}_wait`, { sessionId });
+        const waitRaw = await callTool(ctx.provider.serverName, `${ctx.provider.toolPrefix}_wait`, {
+          sessionId,
+          timeout: 30000,
+        });
         const waitText = extractText(waitRaw);
 
         const requestId = extractRequestId(waitText);

@@ -648,17 +648,19 @@ describe("interrupt-and-recover", () => {
 
   test("passes when recovery prompt creates proof file", async () => {
     const cwd = makeTmpDir();
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
       if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
-      callCount++;
-      if (callCount === 1) {
-        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(JSON.stringify({ event: "session:result", sessionId: "sess-int-1", cost: 0, tokens: 0 }));
       }
-      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
-      return mcpPromptResult("sess-int-2", "done");
+      if (tool.endsWith("_prompt")) {
+        if (!args?.wait) return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+        writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
+        return mcpPromptResult("sess-int-1", "done");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeInterruptAndRecoverTest({ callTool });
@@ -668,16 +670,18 @@ describe("interrupt-and-recover", () => {
 
   test("fails when proof file not created", async () => {
     const cwd = makeTmpDir();
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
       if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
-      callCount++;
-      if (callCount === 1) {
-        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(JSON.stringify({ event: "session:result", sessionId: "sess-int-1" }));
       }
-      return mcpPromptResult("sess-int-2", "done");
+      if (tool.endsWith("_prompt")) {
+        if (!args?.wait) return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+        return mcpPromptResult("sess-int-1", "done");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeInterruptAndRecoverTest({ callTool });
@@ -688,17 +692,19 @@ describe("interrupt-and-recover", () => {
 
   test("fails when proof file has wrong content", async () => {
     const cwd = makeTmpDir();
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
       if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
-      callCount++;
-      if (callCount === 1) {
-        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(JSON.stringify({ event: "session:result", sessionId: "sess-int-1" }));
       }
-      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "wrong content");
-      return mcpPromptResult("sess-int-2", "done");
+      if (tool.endsWith("_prompt")) {
+        if (!args?.wait) return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+        writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "wrong content");
+        return mcpPromptResult("sess-int-1", "done");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeInterruptAndRecoverTest({ callTool });
@@ -707,20 +713,44 @@ describe("interrupt-and-recover", () => {
     expect((result as { error: string }).error).toContain("missing marker");
   });
 
+  test("fails when wait after interrupt returns error", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool, args) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult("timeout waiting for session", true);
+      }
+      if (tool.endsWith("_prompt")) {
+        if (!args?.wait) return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+        return mcpPromptResult("sess-int-1", "done");
+      }
+      return mcpTextResult("ok");
+    };
+
+    const t = makeInterruptAndRecoverTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("did not stop after interrupt");
+  });
+
   test("registers onCleanup", async () => {
     const cwd = makeTmpDir();
     let cleanupRegistered = false;
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
       if (tool.endsWith("_interrupt")) return mcpTextResult(JSON.stringify({ interrupted: true }));
-      callCount++;
-      if (callCount === 1) {
-        return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+      if (tool.endsWith("_wait")) {
+        return mcpTextResult(JSON.stringify({ event: "session:result", sessionId: "sess-int-1" }));
       }
-      writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
-      return mcpPromptResult("sess-int-2", "done");
+      if (tool.endsWith("_prompt")) {
+        if (!args?.wait) return mcpTextResult(JSON.stringify({ sessionId: "sess-int-1" }));
+        writeFileSync(join(cwd, "grid-interrupt-proof.txt"), "GRID_INTERRUPT_RECOVER_5e7a");
+        return mcpPromptResult("sess-int-1", "done");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeInterruptAndRecoverTest({ callTool });
@@ -808,6 +838,22 @@ describe("fix-typescript", () => {
     const result = await t.run({ provider: requireProvider("claude"), cwd });
     expect(result.status).toBe("fail");
     expect((result as { error: string }).error).toContain("console.log");
+  });
+
+  test("fails when agent deletes the fixture file", async () => {
+    const cwd = makeTmpDir();
+    const { unlinkSync } = await import("node:fs");
+
+    const callTool: CallToolFn = async (_server, tool) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      unlinkSync(join(cwd, "grid-fix-ts.ts"));
+      return mcpPromptResult("sess-fix", "done");
+    };
+
+    const t = makeFixTypescriptTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("deleted the fixture file");
   });
 });
 
@@ -1023,14 +1069,16 @@ describe("resume-session", () => {
 
   test("passes when context is retained after resume", async () => {
     const cwd = makeTmpDir();
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
-      callCount++;
-      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
-      if (callCount === 2) return mcpPromptResult("sess-res", "GRID_RESUME_a3f9");
-      return mcpPromptResult("sess-res", "unexpected");
+      if (tool.endsWith("_prompt")) {
+        if (args.resumeSessionId === "continue") {
+          return mcpPromptResult("sess-res-2", "GRID_RESUME_a3f9");
+        }
+        return mcpPromptResult("sess-res", "OK");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeResumeSessionTest({ callTool });
@@ -1040,14 +1088,16 @@ describe("resume-session", () => {
 
   test("fails when context not retained after resume", async () => {
     const cwd = makeTmpDir();
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
-      callCount++;
-      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
-      if (callCount === 2) return mcpPromptResult("sess-res", "I don't remember");
-      return mcpPromptResult("sess-res", "unexpected");
+      if (tool.endsWith("_prompt")) {
+        if (args.resumeSessionId === "continue") {
+          return mcpPromptResult("sess-res-2", "I don't remember");
+        }
+        return mcpPromptResult("sess-res", "OK");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeResumeSessionTest({ callTool });
@@ -1068,17 +1118,39 @@ describe("resume-session", () => {
     expect(t.run({ provider: requireProvider("claude"), cwd })).rejects.toThrow("no sessionId");
   });
 
+  test("fails when resume prompt returns error", async () => {
+    const cwd = makeTmpDir();
+
+    const callTool: CallToolFn = async (_server, tool, args) => {
+      if (tool.endsWith("_bye")) return mcpTextResult("ok");
+      if (tool.endsWith("_prompt")) {
+        if (args.resumeSessionId === "continue") {
+          return mcpTextResult("no session to resume", true);
+        }
+        return mcpPromptResult("sess-res", "OK");
+      }
+      return mcpTextResult("ok");
+    };
+
+    const t = makeResumeSessionTest({ callTool });
+    const result = await t.run({ provider: requireProvider("claude"), cwd });
+    expect(result.status).toBe("fail");
+    expect((result as { error: string }).error).toContain("resume prompt failed");
+  });
+
   test("registers onCleanup", async () => {
     const cwd = makeTmpDir();
     let cleanupRegistered = false;
-    let callCount = 0;
 
-    const callTool: CallToolFn = async (_server, tool) => {
+    const callTool: CallToolFn = async (_server, tool, args) => {
       if (tool.endsWith("_bye")) return mcpTextResult("ok");
-      callCount++;
-      if (callCount === 1) return mcpPromptResult("sess-res", "OK");
-      if (callCount === 2) return mcpPromptResult("sess-res", "GRID_RESUME_a3f9");
-      return mcpPromptResult("sess-res", "unexpected");
+      if (tool.endsWith("_prompt")) {
+        if (args.resumeSessionId === "continue") {
+          return mcpPromptResult("sess-res-2", "GRID_RESUME_a3f9");
+        }
+        return mcpPromptResult("sess-res", "OK");
+      }
+      return mcpTextResult("ok");
     };
 
     const t = makeResumeSessionTest({ callTool });

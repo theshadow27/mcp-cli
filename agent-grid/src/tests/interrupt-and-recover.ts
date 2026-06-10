@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GridTest } from "../grid-test";
-import { type CallToolFn, byeSession, promptAndWait, promptNoWait } from "./helpers";
+import { type CallToolFn, byeSession, extractText, promptFollowUp, promptNoWait } from "./helpers";
 
 const MARKER = "GRID_INTERRUPT_RECOVER_5e7a";
 const PROOF_FILE = "grid-interrupt-proof.txt";
@@ -26,13 +26,25 @@ export function makeInterruptAndRecoverTest(deps: { callTool: CallToolFn }): Gri
           sessionId,
         });
 
-        const recovery = await promptAndWait(ctx.provider, {
+        // Wait for the interrupted turn to settle. If interrupt is a no-op the
+        // session stays active and this blocks until timeout — failing the test.
+        const waitRaw = await callTool(ctx.provider.serverName, `${ctx.provider.toolPrefix}_wait`, {
+          sessionId,
+          timeout: 30000,
+        });
+        const waitText = extractText(waitRaw);
+        if (typeof waitRaw === "object" && waitRaw !== null && (waitRaw as Record<string, unknown>).isError) {
+          return { status: "fail", error: `session did not stop after interrupt: ${waitText.slice(0, 300)}` };
+        }
+
+        // Send recovery prompt to the SAME session — proves the session is
+        // responsive after the interrupt, not just that a new session works.
+        const recovery = await promptFollowUp(ctx.provider, {
+          sessionId,
           task: `Write the exact text "${MARKER}" to a file called ${PROOF_FILE} in your current directory. Nothing else.`,
           cwd: ctx.cwd,
           callTool,
         });
-
-        ctx.onCleanup?.(() => byeSession(ctx.provider, recovery.sessionId, callTool));
 
         const proofPath = join(ctx.cwd, PROOF_FILE);
         if (!existsSync(proofPath)) {
