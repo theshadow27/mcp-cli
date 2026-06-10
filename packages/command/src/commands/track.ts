@@ -24,6 +24,12 @@ import {
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
 
+/** Parse SQLite `datetime('now')` format ("YYYY-MM-DD HH:MM:SS", UTC without timezone indicator) as UTC. `new Date()` would parse it as local time. */
+function parseSqliteUtc(s: string): Date {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return new Date(`${s.replace(" ", "T")}Z`);
+  return new Date(s);
+}
+
 /** Load a manifest from the given directory, swallowing parse errors so they don't break CLI commands. Rethrows ManifestVersionError so callers can report version mismatches explicitly. */
 function tryLoadManifest(dir: string): Manifest | null {
   try {
@@ -180,7 +186,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
         ...(automationOverrides ? { automationOverrides } : {}),
         repoRoot: cwd,
       });
-      pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, new Date(item.createdAt));
+      pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
       await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
       console.error(`Tracking branch ${branch} (${item.id})`);
     } catch (err) {
@@ -204,7 +210,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       ...(automationOverrides ? { automationOverrides } : {}),
       repoRoot: cwd,
     });
-    pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, new Date(item.createdAt));
+    pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
     await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
     console.error(`Tracking #${num} (${item.id})`);
   } catch (err) {

@@ -1054,4 +1054,53 @@ describe("pruneStaleHistory integration (#2463)", () => {
 
     await cmdTrack(["1135"], deps);
   });
+
+  test("createdAt in SQLite format (no TZ) is parsed as UTC, not local time", async () => {
+    const logPath = join(dir, ".mcx", "transitions.jsonl");
+
+    // Entry 30 minutes AFTER createdAt — must be preserved (current incarnation).
+    // If createdAt were parsed as local time on a UTC-4 machine, the cutoff
+    // would shift +4h and this entry would be incorrectly pruned.
+    const createdAt = "2026-06-01 12:00:00";
+    appendTransitionLog(logPath, {
+      ts: "2026-06-01T12:30:00Z",
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    // Stale entry from prior sprint — must be pruned.
+    appendTransitionLog(logPath, {
+      ts: "2026-05-01T00:00:00Z",
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const item = makeWorkItem({
+      id: "#77",
+      issueNumber: 77,
+      createdAt,
+      version: 1,
+    });
+
+    const deps: TrackDeps = {
+      ipcCall: async <M extends IpcMethod>(method: M): Promise<IpcMethodResult[M]> => {
+        if (method === "trackWorkItem") return item as IpcMethodResult[M];
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      cwd: () => dir,
+    };
+
+    await cmdTrack(["77"], deps);
+
+    const remaining = readAllTransitions(logPath);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].ts).toBe("2026-06-01T12:30:00Z");
+  });
 });
