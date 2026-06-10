@@ -586,9 +586,12 @@ describe("cmdAgentGrid replay", () => {
     expect(logSpy).toHaveBeenCalled();
     const output = logSpy.mock.calls[0][0] as string;
     const parsed = JSON.parse(output);
-    expect(parsed.pass).toBe(true);
-    expect(parsed.entries).toBe(2);
-    expect(parsed.violations).toEqual([]);
+    expect(parsed.static.pass).toBe(true);
+    expect(parsed.static.entries).toBe(2);
+    expect(parsed.static.violations).toEqual([]);
+    expect(parsed.mock.pass).toBe(true);
+    expect(parsed.mock.expectedWorkerMessages).toBe(1);
+    expect(parsed.mock.actualWorkerMessages).toBe(1);
   });
 
   test("help includes replay subcommand", async () => {
