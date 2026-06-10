@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { GhLabelEvent } from "../.claude/phases/phase-types";
 import type { GhOp, GhResult } from "../.claude/phases/review-fn";
 import {
   REVIEW_ROUND_CAP,
@@ -9,16 +10,48 @@ import {
   runReview,
 } from "../.claude/phases/review-fn";
 
+const DEFAULT_SPAWNED_AT = new Date("2026-06-09T10:00:00Z").getTime();
+const DEFAULT_HEAD_DATE = "2026-06-09T09:50:00Z";
+const DEFAULT_EVENT_TIME = "2026-06-09T10:05:00Z";
+const DEFAULT_AUTHOR = "bot-user";
+
 function ok(stdout = ""): GhResult {
   return { stdout, stderr: "", exitCode: 0 };
 }
 
-/** gh() stub returning the given label names for the `pr:labels` op. */
-function labelsGh(labels: string[], exitCode = 0): ReviewDeps["gh"] {
+function validEventsFor(labels: string[]): GhLabelEvent[] {
+  return labels
+    .filter((l) => l.startsWith("review:") || l.startsWith("qa:"))
+    .map((l) => ({ actor: DEFAULT_AUTHOR, label: l, created_at: DEFAULT_EVENT_TIME }));
+}
+
+interface GhStubOpts {
+  labels?: string[];
+  labelEvents?: GhLabelEvent[];
+  author?: string;
+  headDate?: string;
+  labelsExitCode?: number;
+  eventsExitCode?: number;
+}
+
+function makeGh(opts: GhStubOpts = {}): ReviewDeps["gh"] {
+  const labels = opts.labels ?? [];
+  const events = opts.labelEvents ?? validEventsFor(labels);
   return async (op: GhOp) => {
     if (op.op === "pr:labels") {
-      return { stdout: exitCode === 0 ? labels.join("\n") : "", stderr: "", exitCode };
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
     }
+    if (op.op === "pr:label-events") {
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events error", exitCode: opts.eventsExitCode ?? 1 };
+      return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
+    }
+    if (op.op === "pr:author") return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+    if (op.op === "pr:head-date") return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
     return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
   };
 }
@@ -45,59 +78,122 @@ function makeState(initial: Record<string, unknown> = {}): ReviewState {
 
 function makeDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps {
   return {
-    gh: labelsGh([]),
+    gh: makeGh(),
     prEdit: async () => {},
     findModelInSprintPlan: () => null,
     ...overrides,
   };
 }
 
-// ── readReviewLabels: the typed verdict channel (#2575) ──
+// ── readReviewLabels: the typed verdict channel (#2575, hardened #2652) ──
 
 describe("readReviewLabels — typed verdict channel", () => {
   test("gh failure → both false", async () => {
-    expect(await readReviewLabels(100, { gh: labelsGh(["review:pass"], 1) })).toEqual({
-      hasPass: false,
-      hasChanges: false,
-    });
+    const result = await readReviewLabels(
+      100,
+      { gh: makeGh({ labels: ["review:pass"], labelsExitCode: 1 }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
   });
 
-  test("review:pass present → hasPass", async () => {
-    expect(await readReviewLabels(100, { gh: labelsGh(["bug", "review:pass"]) })).toEqual({
-      hasPass: true,
-      hasChanges: false,
-    });
+  test("review:pass present and valid → hasPass", async () => {
+    const result = await readReviewLabels(100, { gh: makeGh({ labels: ["bug", "review:pass"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: true, hasChanges: false });
   });
 
-  test("review:changes present → hasChanges", async () => {
-    expect(await readReviewLabels(100, { gh: labelsGh(["review:changes"]) })).toEqual({
-      hasPass: false,
-      hasChanges: true,
-    });
+  test("review:changes present and valid → hasChanges", async () => {
+    const result = await readReviewLabels(100, { gh: makeGh({ labels: ["review:changes"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasChanges: true });
   });
 
-  test("both present → both true", async () => {
-    expect(await readReviewLabels(100, { gh: labelsGh(["review:pass", "review:changes"]) })).toEqual({
-      hasPass: true,
-      hasChanges: true,
-    });
+  test("both present and valid → both true", async () => {
+    const result = await readReviewLabels(
+      100,
+      { gh: makeGh({ labels: ["review:pass", "review:changes"] }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: true, hasChanges: true });
   });
 
   test("neither present → both false (no verdict yet)", async () => {
-    expect(await readReviewLabels(100, { gh: labelsGh(["bug", "enhancement"]) })).toEqual({
-      hasPass: false,
-      hasChanges: false,
-    });
+    const result = await readReviewLabels(100, { gh: makeGh({ labels: ["bug", "enhancement"] }) }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
+  });
+
+  test("label-events fetch failure → fail closed (both false)", async () => {
+    const result = await readReviewLabels(
+      100,
+      { gh: makeGh({ labels: ["review:pass"], eventsExitCode: 1 }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
+    expect(result.rejections.length).toBeGreaterThan(0);
+    expect(result.rejections[0]).toMatch(/label-events fetch failed/);
+  });
+
+  test("unparseable label-events JSON → fail closed", async () => {
+    const gh: ReviewDeps["gh"] = async (op) => {
+      if (op.op === "pr:labels") return ok("review:pass");
+      if (op.op === "pr:label-events") return { stdout: "not-json{{{", stderr: "", exitCode: 0 };
+      if (op.op === "pr:author") return ok(DEFAULT_AUTHOR);
+      if (op.op === "pr:head-date") return ok(DEFAULT_HEAD_DATE);
+      return { stdout: "", stderr: "", exitCode: 1 };
+    };
+    const result = await readReviewLabels(100, { gh }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
+    expect(result.rejections[0]).toMatch(/unparseable/);
+  });
+
+  test("stale label (predates session spawn) → hasPass false + rejection", async () => {
+    const staleEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T09:55:00Z" };
+    const result = await readReviewLabels(
+      100,
+      { gh: makeGh({ labels: ["review:pass"], labelEvents: [staleEvent] }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
+    expect(result.rejections[0]).toMatch(/stale verdict/);
+  });
+
+  test("label predates head commit → hasPass false + rejection", async () => {
+    const earlyEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T10:05:00Z" };
+    const result = await readReviewLabels(
+      100,
+      { gh: makeGh({ labels: ["review:pass"], labelEvents: [earlyEvent], headDate: "2026-06-09T10:10:00Z" }) },
+      DEFAULT_SPAWNED_AT,
+    );
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false });
+    expect(result.rejections[0]).toMatch(/verdict on stale code/);
+  });
+
+  test("no events fetched when no verdict label present", async () => {
+    let eventsFetched = false;
+    const gh: ReviewDeps["gh"] = async (op) => {
+      if (op.op === "pr:labels") return ok("bug\nenhancement");
+      if (op.op === "pr:label-events") {
+        eventsFetched = true;
+        return ok("[]");
+      }
+      return ok("");
+    };
+    const result = await readReviewLabels(100, { gh }, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: false, hasChanges: false, rejections: [] });
+    expect(eventsFetched).toBe(false);
   });
 
   test("passes the pr:labels op (never pr:comments — prose is not consulted)", async () => {
     let captured: GhOp | undefined;
-    await readReviewLabels(99, {
-      gh: async (op) => {
-        captured = op;
-        return ok("");
+    await readReviewLabels(
+      99,
+      {
+        gh: async (op) => {
+          if (!captured) captured = op;
+          return ok("");
+        },
       },
-    });
+      DEFAULT_SPAWNED_AT,
+    );
     expect(captured).toEqual({ op: "pr:labels", prNumber: 99 });
   });
 });
@@ -193,7 +289,7 @@ describe("runReview — spawn path", () => {
     }
   });
 
-  test("writes review_round, review_model, review_session_id to state", async () => {
+  test("writes review_round, review_model, review_session_id, review_spawned_at to state", async () => {
     const state = makeState();
     const writes: Record<string, unknown> = {};
     const trackingState: ReviewState = {
@@ -207,6 +303,7 @@ describe("runReview — spawn path", () => {
     expect(writes.review_round).toBe(1);
     expect(writes.review_model).toBe("sonnet");
     expect(String(writes.review_session_id)).toMatch(/^pending:/);
+    expect(writes.review_spawned_at).toBeGreaterThan(0);
   });
 });
 
@@ -217,8 +314,8 @@ describe("runReview — wait path", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1 }),
-      makeDeps({ gh: labelsGh(["bug"]) }),
+      makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["bug"] }) }),
       "__none__",
     );
     expect(result.action).toBe("wait");
@@ -228,12 +325,29 @@ describe("runReview — wait path", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1, review_model: "opus" }),
-      makeDeps({ gh: labelsGh([]) }),
+      makeState({
+        review_session_id: "sess_123",
+        review_round: 1,
+        review_model: "opus",
+        review_spawned_at: DEFAULT_SPAWNED_AT,
+      }),
+      makeDeps({ gh: makeGh() }),
       "__none__",
     );
     expect(result.action).toBe("wait");
     if (result.action === "wait") expect(result.model).toBe("opus");
+  });
+
+  test("missing review_spawned_at → wait (fail closed)", async () => {
+    const result = await runReview(
+      { provider: "claude" },
+      makeWork(),
+      makeState({ review_session_id: "sess_123", review_round: 1 }),
+      makeDeps({ gh: makeGh({ labels: ["review:pass"] }) }),
+      "__none__",
+    );
+    expect(result.action).toBe("wait");
+    if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
   });
 });
 
@@ -242,8 +356,8 @@ describe("runReview — goto qa (review:pass)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1 }),
-      makeDeps({ gh: labelsGh(["review:pass"]) }),
+      makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["review:pass"] }) }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
@@ -254,9 +368,9 @@ describe("runReview — goto qa (review:pass)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1 }),
+      makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT }),
       makeDeps({
-        gh: labelsGh(["review:pass", "review:changes"]),
+        gh: makeGh({ labels: ["review:pass", "review:changes"] }),
         prEdit: async (_pr, flags) => {
           for (let i = 0; i < flags.length; i += 2) {
             if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
@@ -275,8 +389,8 @@ describe("runReview — goto repair (review:changes)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1 }),
-      makeDeps({ gh: labelsGh(["review:changes"]) }),
+      makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT }),
+      makeDeps({ gh: makeGh({ labels: ["review:changes"] }) }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "repair" });
@@ -286,8 +400,12 @@ describe("runReview — goto repair (review:changes)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: REVIEW_ROUND_CAP }),
-      makeDeps({ gh: labelsGh(["review:changes"]) }),
+      makeState({
+        review_session_id: "sess_123",
+        review_round: REVIEW_ROUND_CAP,
+        review_spawned_at: DEFAULT_SPAWNED_AT,
+      }),
+      makeDeps({ gh: makeGh({ labels: ["review:changes"] }) }),
       "__none__",
     );
     expect(result).toMatchObject({ action: "goto", target: "qa" });
@@ -297,7 +415,7 @@ describe("runReview — goto repair (review:changes)", () => {
 
   test("review:changes below cap increments review_round and sets previous_phase", async () => {
     const writes: Record<string, unknown> = {};
-    const state = makeState({ review_session_id: "sess_123", review_round: 1 });
+    const state = makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
     const trackingState: ReviewState = {
       get: state.get,
       set: async (key, value) => {
@@ -309,7 +427,7 @@ describe("runReview — goto repair (review:changes)", () => {
       { provider: "claude" },
       makeWork(),
       trackingState,
-      makeDeps({ gh: labelsGh(["review:changes"]) }),
+      makeDeps({ gh: makeGh({ labels: ["review:changes"] }) }),
       "__none__",
     );
     expect(writes.review_round).toBe(2);
@@ -321,9 +439,9 @@ describe("runReview — goto repair (review:changes)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: 1 }),
+      makeState({ review_session_id: "sess_123", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT }),
       makeDeps({
-        gh: labelsGh(["review:changes"]),
+        gh: makeGh({ labels: ["review:changes"] }),
         prEdit: async (_pr, flags) => {
           for (let i = 0; i < flags.length; i += 2) {
             if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
@@ -341,9 +459,13 @@ describe("runReview — goto repair (review:changes)", () => {
     const result = await runReview(
       { provider: "claude" },
       makeWork(),
-      makeState({ review_session_id: "sess_123", review_round: REVIEW_ROUND_CAP }),
+      makeState({
+        review_session_id: "sess_123",
+        review_round: REVIEW_ROUND_CAP,
+        review_spawned_at: DEFAULT_SPAWNED_AT,
+      }),
       makeDeps({
-        gh: labelsGh(["review:changes"]),
+        gh: makeGh({ labels: ["review:changes"] }),
         prEdit: async (_pr, flags) => {
           for (let i = 0; i < flags.length; i += 2) {
             if (flags[i] === "--remove-label") removed.push(flags[i + 1]);
@@ -358,43 +480,37 @@ describe("runReview — goto repair (review:changes)", () => {
 });
 
 // ── Multi-tick lifecycle: stale verdict must not survive the repair round (#2649) ──
-//
-// Regression for the mirror-replay drift caught in adversarial review: the read side
-// (`readReviewLabels`) mirrored qa, but the *clear* did not. The qa loop is safe only
-// because `repair-fn` clears `qa:fail` on every repair spawn; review left
-// `review:changes` on the PR, so on re-entry — with `review_round` already at the cap —
-// the gate replayed the stale label and misrouted the round-2 reviewer to qa.
-// This drives the real lifecycle over a SHARED, MUTABLE label set + state map, the only
-// shape that exercises the cross-tick invariant (every other test pre-seeds its label).
 describe("runReview — lifecycle (#2649)", () => {
   test("stale review:changes does not survive into the round-2 re-entry", async () => {
-    // Shared label set: prEdit --remove-label mutates it; pr:labels reads it back.
     const labels = new Set<string>(["review:changes"]);
     const deps = makeDeps({
-      gh: async (op: GhOp) =>
-        op.op === "pr:labels"
-          ? { stdout: [...labels].join("\n"), stderr: "", exitCode: 0 }
-          : { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 },
+      gh: async (op: GhOp) => {
+        if (op.op === "pr:labels") return { stdout: [...labels].join("\n"), stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events") {
+          const events = [...labels]
+            .filter((l) => l.startsWith("review:"))
+            .map((l) => ({ actor: DEFAULT_AUTHOR, label: l, created_at: DEFAULT_EVENT_TIME }));
+          return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
+        }
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
+      },
       prEdit: async (_pr, flags) => {
         for (let i = 0; i < flags.length; i += 2) {
           if (flags[i] === "--remove-label") labels.delete(flags[i + 1]);
         }
       },
     });
-    const state = makeState({ review_session_id: "sess_r1", review_round: 1 });
+    const state = makeState({ review_session_id: "sess_r1", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
 
-    // Round 1: review:changes → repair, and the verdict label is consumed.
     const r1 = await runReview({ provider: "claude" }, makeWork(), state, deps, "__none__");
     expect(r1).toMatchObject({ action: "goto", target: "repair" });
     expect(labels.has("review:changes")).toBe(false);
-    expect(await state.get<number>("review_round")).toBe(REVIEW_ROUND_CAP); // 1 → 2
+    expect(await state.get<number>("review_round")).toBe(REVIEW_ROUND_CAP);
 
-    // Repair clears the session sentinel and spawns a fresh round-2 reviewer.
     await state.set("review_session_id", "sess_r2");
 
-    // Round-2 re-entry BEFORE the new reviewer renders a verdict: with the stale label
-    // gone the gate WAITS, rather than reading round >= cap + a phantom review:changes
-    // and misrouting to qa (the orphaned-reviewer bug).
     const r2 = await runReview({ provider: "claude" }, makeWork(), state, deps, "__none__");
     expect(r2.action).toBe("wait");
   });
