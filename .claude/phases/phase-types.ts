@@ -6,6 +6,22 @@ export interface GhResult {
   exitCode: number;
 }
 
+export interface ParsedPrEditFlags {
+  addLabels: string[];
+  removeLabels: string[];
+}
+
+export function parsePrEditFlags(flags: string[]): ParsedPrEditFlags {
+  const addLabels: string[] = [];
+  const removeLabels: string[] = [];
+  for (let i = 0; i < flags.length; i += 2) {
+    if (flags[i] === "--add-label") addLabels.push(flags[i + 1]);
+    else if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
+    else throw new Error(`prEdit: unknown flag ${flags[i]}`);
+  }
+  return { addLabels, removeLabels };
+}
+
 /**
  * Typed GH operations for the gh() dependency injection point.
  * Each variant maps to a specific ctx.gh method call; adapters dispatch on op.op.

@@ -15,6 +15,7 @@
  * session ID after spawn; delete it on spawn failure.
  */
 import { defineAlias, z } from "mcp-cli";
+import { parsePrEditFlags } from "./phase-types";
 import { runQa } from "./qa-fn";
 
 const ProviderSchema = z
@@ -72,11 +73,8 @@ defineAlias({
           }
         },
         async prEdit(prNumber, flags) {
-          const removeLabels: string[] = [];
-          for (let i = 0; i < flags.length; i += 2) {
-            if (flags[i] === "--remove-label") removeLabels.push(flags[i + 1]);
-          }
-          await ctx.gh.pr(prNumber).edit({ removeLabels });
+          const { addLabels, removeLabels } = parsePrEditFlags(flags);
+          await ctx.gh.pr(prNumber).edit({ addLabels, removeLabels });
         },
       },
     );
