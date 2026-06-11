@@ -77,6 +77,9 @@ export async function readReviewLabels(
   } catch {
     return { hasPass: false, hasChanges: false, rejections: [`label-events JSON unparseable — fail closed`] };
   }
+  if (!Array.isArray(events)) {
+    return { hasPass: false, hasChanges: false, rejections: [`label-events not an array — fail closed`] };
+  }
 
   const vctx: VerdictContext = {
     prAuthor: authorResult.stdout.trim(),
@@ -160,7 +163,7 @@ export async function runReview(
   const storedModel = (await state.get<string>("review_model")) as "opus" | "sonnet" | null;
   const withModel = storedModel ? { model: storedModel } : {};
   const roundStartedAt = (await state.get<number>("review_spawned_at")) ?? 0;
-  if (roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
+  if (typeof roundStartedAt !== "number" || roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
     return { action: "wait", reason: "review_spawned_at missing or invalid in state — fail closed; re-spawn to populate", round, ...withModel };
   }
   const { hasPass, hasChanges, rejections } = await readReviewLabels(work.prNumber, deps, roundStartedAt);

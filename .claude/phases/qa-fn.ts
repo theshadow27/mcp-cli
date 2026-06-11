@@ -70,6 +70,9 @@ export async function readQaLabels(
   } catch {
     return { hasPass: false, hasFail: false, rejections: [`label-events JSON unparseable — fail closed`] };
   }
+  if (!Array.isArray(events)) {
+    return { hasPass: false, hasFail: false, rejections: [`label-events not an array — fail closed`] };
+  }
 
   const vctx: VerdictContext = {
     prAuthor: authorResult.stdout.trim(),
@@ -136,7 +139,7 @@ export async function runQa(
   }
 
   const roundStartedAt = (await state.get<number>("qa_spawned_at")) ?? 0;
-  if (roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
+  if (typeof roundStartedAt !== "number" || roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
     return { action: "wait", reason: "qa_spawned_at missing or invalid in state — fail closed; re-spawn to populate", model: qaModel, prompt: qaPrompt };
   }
   const { hasPass, hasFail, rejections } = await readQaLabels(work.prNumber, deps, roundStartedAt);
