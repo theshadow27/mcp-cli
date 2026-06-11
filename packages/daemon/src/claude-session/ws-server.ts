@@ -125,6 +125,14 @@ export interface SessionConfig {
    * Default: `"ws"` (preserves legacy behavior).
    */
   transport?: "ws" | "stdio";
+  /**
+   * Per-session claude binary override (#2681). When set, this binary is spawned
+   * instead of the daemon's startup-resolved `binaryPath`, and the global
+   * spawn-disabled guard is bypassed (the caller vouches for this binary).
+   * Used by `mcx claude spawn --claude-binary <path>` to canary a binary on a
+   * single worker without mutating global config.
+   */
+  binaryPath?: string;
 }
 
 export interface TranscriptEntry {
@@ -813,7 +821,10 @@ export class ClaudeWsServer {
     // Store traceparent so respawn after clear can reuse it
     if (traceparent) session.traceparent = traceparent;
 
-    if (this.spawnDisabledReason !== null) {
+    // A per-session binary override (--claude-binary) vouches for its own binary,
+    // so it bypasses the startup spawn-disabled guard (e.g. daemon couldn't resolve
+    // a default binary, but the caller is canarying a known-good one) (#2681).
+    if (this.spawnDisabledReason !== null && !session.config.binaryPath) {
       throw new Error(this.spawnDisabledReason);
     }
 
@@ -968,7 +979,9 @@ export class ClaudeWsServer {
    * Stdio transport: no --sdk-url, no empty -p; initial prompt delivered via stdin.
    */
   private buildSpawnCmd(sessionId: string, session: WsSession, useStdio: boolean): string[] {
-    const cmd = [this.binaryPath];
+    // Per-session override (--claude-binary) wins over the daemon's startup-resolved
+    // binary, so a single session can be pinned to a different binary (#2681).
+    const cmd = [session.config.binaryPath ?? this.binaryPath];
 
     if (!useStdio) {
       const port = this.port;

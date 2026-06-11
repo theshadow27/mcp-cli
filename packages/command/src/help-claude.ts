@@ -15,6 +15,7 @@ registerHelp("claude spawn", {
     'mcx claude spawn --task "description" --allow Bash Read Write',
     'mcx claude spawn --task "description" --worktree my-feature',
     'mcx claude spawn --headed --task "description"',
+    'mcx claude spawn --task "description" --claude-binary /path/to/claude --transport stdio',
   ],
   options: [
     ["--task, -t <string>", "Task prompt for the session (required unless --resume)"],
@@ -31,6 +32,14 @@ registerHelp("claude spawn", {
     ["--wait", "Block until Claude produces a result"],
     ["--timeout <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)`],
     ["--work-item <id>", "Work item ID (#N); writes null→initial transition on spawn"],
+    [
+      "--claude-binary <path>",
+      "Per-spawn binary override for this session only (bypasses global claude-binary config; resolved at dispatch)",
+    ],
+    [
+      "--transport <stdio|sdk-url>",
+      "Per-spawn transport override for this session only (bypasses global transport config)",
+    ],
   ],
   examples: [
     'mcx claude spawn --task "run the test suite and fix failures"',

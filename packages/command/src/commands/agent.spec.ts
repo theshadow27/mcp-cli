@@ -224,6 +224,39 @@ describe("parseAgentSpawnArgs", () => {
     const result = parseAgentSpawnArgs(["--resume"], claudeConfig);
     expect(result.error).toContain("--resume requires a session ID");
   });
+
+  // ── Per-spawn overrides (#2681) — must be reachable from the agent.ts path, the
+  // real route taken by `mcx claude spawn` in production (#2706 dead-code regression).
+  test("parses --claude-binary and --transport for Claude", () => {
+    const result = parseAgentSpawnArgs(
+      ["--task", "x", "--claude-binary", "/usr/bin/true", "--transport", "stdio"],
+      claudeConfig,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.claudeBinary).toBe("/usr/bin/true");
+    expect(result.transport).toBe("stdio");
+  });
+
+  test("rejects --claude-binary for non-Claude providers", () => {
+    const result = parseAgentSpawnArgs(["--task", "x", "--claude-binary", "/usr/bin/true"], codexConfig);
+    expect(result.error).toContain("--claude-binary is not supported");
+  });
+
+  test("rejects --transport for non-Claude providers", () => {
+    const result = parseAgentSpawnArgs(["--task", "x", "--transport", "stdio"], codexConfig);
+    expect(result.error).toContain("--transport is not supported");
+  });
+
+  test("--claude-binary without a path produces error", () => {
+    const result = parseAgentSpawnArgs(["--task", "x", "--claude-binary"], claudeConfig);
+    expect(result.error).toContain("--claude-binary requires a path");
+  });
+
+  test("--transport with bad value produces error and does not consume the token", () => {
+    const result = parseAgentSpawnArgs(["--task", "x", "--transport", "bogus"], claudeConfig);
+    expect(result.error).toContain('--transport must be "stdio" or "sdk-url"');
+    expect(result.transport).toBeUndefined();
+  });
 });
 
 // ── Codex via agent ──
@@ -284,6 +317,55 @@ describe("agent codex spawn", () => {
     });
     await expect(cmdAgent(["codex", "spawn", "--task", "@/tmp/missing.md"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("does not exist"));
+  });
+});
+
+// ── Claude per-spawn overrides via the REAL dispatch (#2681 / #2706) ──
+// `mcx claude spawn` routes through cmdAgent (claude.ts delegates to agent.ts when no
+// deps are injected). These tests drive that same agent path — NOT cmdClaudeInternal —
+// so the dead-code regression of #2706 (flags wired only into the deps-injected path)
+// cannot pass again.
+describe("agent claude spawn overrides", () => {
+  test("plumbs --claude-binary (resolved to absolute) and --transport into claude_prompt", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1", state: "active" })),
+    });
+    // process.execPath is guaranteed absolute + executable on every platform.
+    await cmdAgent(
+      ["claude", "spawn", "--task", "x", "--claude-binary", process.execPath, "--transport", "sdk-url"],
+      deps,
+    );
+    expect(deps.printError).not.toHaveBeenCalled();
+    expect(deps.callTool).toHaveBeenCalledWith(
+      "claude_prompt",
+      expect.objectContaining({ claudeBinary: process.execPath, transport: "sdk-url" }),
+    );
+  });
+
+  test("rejects a non-executable --claude-binary before dispatch", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await expect(
+      cmdAgent(["claude", "spawn", "--task", "x", "--claude-binary", "/no/such/binary/xyz"], deps),
+    ).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("is not an executable file"));
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("spawn --help surfaces both flags for claude", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["claude", "spawn", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).toContain("--claude-binary");
+    expect(output).toContain("--transport");
+  });
+
+  test("spawn --help omits claude-only flags for codex", async () => {
+    const deps = makeDeps();
+    await cmdAgent(["codex", "spawn", "--help"], deps);
+    const output = logCalls(deps).join("\n");
+    expect(output).not.toContain("--claude-binary");
   });
 });
 
