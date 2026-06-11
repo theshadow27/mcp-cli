@@ -1,7 +1,8 @@
 // Worktree containment enforcement — see #1441 for design.
 
 import { isAbsolute, resolve } from "node:path";
-import { isPathContained, resolveRealpath } from "@mcp-cli/core";
+import type { AgentSessionEvent } from "./agent-session";
+import { isPathContained, resolveRealpath } from "./fs";
 
 // ── Types ──
 
@@ -478,4 +479,31 @@ export class ContainmentGuard {
       strikes: this._strikes,
     };
   }
+}
+
+// ── Shared provider gating ──
+
+/**
+ * Evaluate a tool call against a session's containment guard and emit the
+ * corresponding `AgentSessionEvent` for observability. This is the shared
+ * "noun" all non-Claude providers (codex, acp, opencode) call before they
+ * dispatch a tool invocation; the per-protocol deny *response* (decline /
+ * reject / fs error) is left to each caller. Returns null when the session has
+ * no worktree guard, otherwise the full result so callers can branch on
+ * `action === "deny"`.
+ */
+export function gateContainment(
+  guard: ContainmentGuard | null,
+  toolName: string,
+  input: Record<string, unknown>,
+  emit: (event: AgentSessionEvent) => void,
+): ContainmentResult | null {
+  if (!guard) return null;
+  const result = guard.evaluate(toolName, input);
+  if (result.event === "session:containment_warning") {
+    emit({ type: "session:containment_warning", toolName, reason: result.reason, strikes: result.strikes });
+  } else if (result.action === "deny") {
+    emit({ type: "session:containment_denied", toolName, reason: result.reason, strikes: result.strikes });
+  }
+  return result;
 }

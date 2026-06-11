@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
 import { AcpSession, WATCHDOG_TIMEOUT_MS } from "./acp-session";
@@ -348,6 +350,68 @@ describe("AcpSession server requests", () => {
     session.terminate();
     const endedCount2 = events.filter((e) => e.type === "session:ended").length;
     expect(endedCount2).toBe(endedCount1);
+  });
+});
+
+// ── Worktree containment tests (#2519) ──
+
+describe("AcpSession worktree containment (#2519)", () => {
+  const ESCAPE_PATH = "/etc/acp-containment-escape-probe.txt";
+
+  function makeWorktreeSession(agent: string): {
+    session: AcpSession;
+    events: AgentSessionEvent[];
+    worktree: string;
+  } {
+    const worktree = mkdtempSync(join(tmpdir(), "acp-containment-"));
+    const { session, events } = makeSession({ agent, cwd: worktree, worktree });
+    return { session, events, worktree };
+  }
+
+  test("fs/write to an absolute path outside the worktree is denied and never written", async () => {
+    const { existsSync } = await import("node:fs");
+    const { session, events, worktree } = makeWorktreeSession("fs-write-escape");
+    try {
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(existsSync(ESCAPE_PATH)).toBe(false);
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+    } finally {
+      session.terminate();
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("terminal/create with a command targeting outside the worktree is denied", async () => {
+    const { session, events, worktree } = makeWorktreeSession("terminal-escape");
+    try {
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+    } finally {
+      session.terminate();
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("terminal/create with a benign command but a cwd outside the worktree is denied", async () => {
+    // The command parser can't catch `touch pwned.txt`; only constraining the
+    // spawn cwd to the worktree root stops the escape (#2519, #2720).
+    const { session, events, worktree } = makeWorktreeSession("terminal-cwd-escape");
+    try {
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+    } finally {
+      session.terminate();
+      rmSync(worktree, { recursive: true, force: true });
+    }
   });
 });
 

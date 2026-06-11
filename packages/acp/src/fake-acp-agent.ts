@@ -11,7 +11,10 @@
  *   fs-write        — handshake + session/new + sends fs/write_text_file request, then completes
  *   fs-read         — handshake + session/new + sends fs/read_text_file request, then completes
  *   fs-write-traversal — sends fs/write with path traversal (../outside.txt), then completes
+ *   fs-write-escape — sends fs/write to an absolute non-/tmp path the containment guard denies
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
+ *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
+ *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
  */
 import { createInterface } from "node:readline";
 
@@ -160,6 +163,16 @@ function schedulePromptEvents(): void {
       });
       setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
+  } else if (mode === "fs-write-escape") {
+    // Absolute path outside the worktree AND outside the /tmp allowlist — the
+    // containment guard must deny this for a worktree session (#2519).
+    setTimeout(() => {
+      sendServerRequest("fs-4", "fs/write_text_file", {
+        path: "/etc/acp-containment-escape-probe.txt",
+        content: "should be blocked",
+      });
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "terminal") {
     setTimeout(() => {
       sendServerRequest("term-1", "terminal/create", {
@@ -168,6 +181,28 @@ function schedulePromptEvents(): void {
         cwd: process.cwd(),
       });
       // After terminal/create response, request output and release
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "terminal-escape") {
+    // Command writes outside the worktree root — containment guard denies (#2519).
+    setTimeout(() => {
+      sendServerRequest("term-2", "terminal/create", {
+        command: "git",
+        args: ["-C", "/etc", "commit", "-m", "pwned"],
+        cwd: process.cwd(),
+      });
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "terminal-cwd-escape") {
+    // Benign-looking command (not a denylisted writer) but cwd escapes the
+    // worktree — only the cwd constraint catches this, not the command parser
+    // (#2519, #2720).
+    setTimeout(() => {
+      sendServerRequest("term-3", "terminal/create", {
+        command: "touch",
+        args: ["pwned.txt"],
+        cwd: "/etc",
+      });
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
   }
