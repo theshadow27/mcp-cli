@@ -4,6 +4,7 @@ import {
   type WorkItemPhase,
   canTransition,
   createWorkItem,
+  isReservedPhaseStateKey,
   isStandardPhase,
   reachablePhases,
 } from "./work-item";
@@ -95,6 +96,37 @@ describe("isStandardPhase", () => {
   it("returns false for manifest-declared phases", () => {
     expect(isStandardPhase("triage")).toBe(false);
     expect(isStandardPhase("needs-attention")).toBe(false);
+  });
+});
+
+describe("isReservedPhaseStateKey", () => {
+  it("reserves the phase-runner-owned freshness, round, and transition sentinels", () => {
+    for (const key of [
+      "review_spawned_at",
+      "qa_spawned_at",
+      "review_round",
+      "repair_round",
+      "qa_fail_round",
+      "previous_phase",
+    ]) {
+      expect(isReservedPhaseStateKey(key)).toBe(true);
+    }
+  });
+
+  it("does not reserve the orchestrator-writable session-id family or general keys", () => {
+    for (const key of [
+      "session_id",
+      "review_session_id",
+      "repair_session_id",
+      "qa_session_id",
+      "worktree_path",
+      "model",
+      "provider",
+      "labels",
+      "scrutiny",
+    ]) {
+      expect(isReservedPhaseStateKey(key)).toBe(false);
+    }
   });
 });
 

@@ -115,6 +115,34 @@ export function isStandardPhase(phase: string): phase is WorkItemPhase {
   return WORK_ITEM_PHASE_SET.has(phase);
 }
 
+/**
+ * Phase-runner-owned state keys that drive merge-gate security and loop-bound
+ * integrity decisions. These are written exclusively by the daemon-controlled
+ * phase runner (`mcx phase run` → ctx.state → IPC aliasStateSet), never by a
+ * session or the orchestrator through the `phase_state_set` MCP tool.
+ *
+ * The session-facing `phase_state_set` / `phase_state_delete` tools MUST refuse
+ * to write or delete a reserved key (#2682): both the phase runner and the MCP
+ * tool write the same `workitem:<id>` namespace, so without this guard any
+ * session with Bash can shell out to `mcx call _work_items phase_state_set` and
+ * forge a sentinel — e.g. setting `review_spawned_at` to epoch-start makes any
+ * stale verdict label pass the #2652 freshness guard, or zeroing a `*_round`
+ * counter bypasses the "two reviews max" / QA fail-cap loop bounds.
+ *
+ * Reserved patterns:
+ *   - `*_spawned_at`   — session-spawn timestamp; load-bearing for verdict freshness
+ *   - `*_round`        — round-cap counters (review_round, repair_round, qa_fail_round)
+ *   - `previous_phase` — transition provenance
+ *
+ * NOT reserved: the `*_session_id` family (session_id, review_session_id,
+ * repair_session_id, qa_session_id). The orchestrator legitimately writes those
+ * via the MCP tool to replace the phase runner's `pending:*` sentinel with the
+ * real session id, and deletes them between rounds.
+ */
+export function isReservedPhaseStateKey(key: string): boolean {
+  return key.endsWith("_spawned_at") || key.endsWith("_round") || key === "previous_phase";
+}
+
 /** Updatable subset of WorkItem — excludes server-managed fields. */
 export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "createdAt" | "updatedAt" | "version">>;
 
