@@ -46,11 +46,15 @@ defineAlias({
         }
       },
       async runEstimate(prNumber: number) {
-        const proc = Bun.spawn(
-          ["bun", ".claude/skills/estimate/triage.ts", "--pr", String(prNumber), "--json"],
-          { stdout: "pipe", stderr: "pipe" },
-        );
-        const timer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
+        const proc = Bun.spawn(["bun", ".claude/skills/estimate/triage.ts", "--pr", String(prNumber), "--json"], {
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const timer = setTimeout(() => {
+          try {
+            proc.kill();
+          } catch {}
+        }, 30_000);
         const [stdout, stderr, exitCode] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),

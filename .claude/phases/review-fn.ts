@@ -65,7 +65,11 @@ export async function readReviewLabels(
   ]);
 
   if (eventsResult.exitCode !== 0) {
-    return { hasPass: false, hasChanges: false, rejections: [`label-events fetch failed (${eventsResult.stderr}) — fail closed`] };
+    return {
+      hasPass: false,
+      hasChanges: false,
+      rejections: [`label-events fetch failed (${eventsResult.stderr}) — fail closed`],
+    };
   }
   if (authorResult.exitCode !== 0 || headDateResult.exitCode !== 0) {
     return { hasPass: false, hasChanges: false, rejections: [`verdict context fetch failed — fail closed`] };
@@ -164,7 +168,12 @@ export async function runReview(
   const withModel = storedModel ? { model: storedModel } : {};
   const roundStartedAt = (await state.get<number>("review_spawned_at")) ?? 0;
   if (typeof roundStartedAt !== "number" || roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
-    return { action: "wait", reason: "review_spawned_at missing or invalid in state — fail closed; re-spawn to populate", round, ...withModel };
+    return {
+      action: "wait",
+      reason: "review_spawned_at missing or invalid in state — fail closed; re-spawn to populate",
+      round,
+      ...withModel,
+    };
   }
   const { hasPass, hasChanges, rejections } = await readReviewLabels(work.prNumber, deps, roundStartedAt);
 

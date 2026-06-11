@@ -31,7 +31,12 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./_runner/ci-steps";
+import {
+  bunTestWithCrashTolerance,
+  changedTestsStep,
+  coverageWithCrashTolerance,
+  phasesTestWithCrashTolerance,
+} from "./_runner/ci-steps";
 import { detectContext, isCi, isPreCommit, isPrePush } from "./_runner/context";
 import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
 import { StepRunner } from "./_runner/runner";
@@ -171,6 +176,22 @@ const TEST_DAEMON_CI: Step = {
   ],
 };
 
+const TEST_PHASES_CI: Step = {
+  name: "test-phases",
+  description:
+    "phase fn-specs (.claude/phases/*-fn.spec.ts) — co-located specs excluded from bunfig pathIgnorePatterns (#2648)",
+  command: phasesTestWithCrashTolerance({
+    phasesDir: resolve(REPO_ROOT, ".claude/phases"),
+    logName: "test_phases",
+  }),
+  source: "scripts/_runner/ci-steps.ts",
+  onFailure: [
+    "run `bun run test:phases` locally to reproduce",
+    "specs live in .claude/phases/*-fn.spec.ts — co-located next to each phase module",
+    "log artefact: /tmp/test_phases.txt",
+  ],
+};
+
 const COVERAGE_CI: Step = {
   name: "coverage",
   description: "coverage --ci (ratchet + #1419/#1004 retry handling)",
@@ -231,7 +252,17 @@ const STALE_TODOS_CI: Step = {
 
 const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID];
 const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED];
-const COMPREHENSIVE: Step[] = [INSTALL, TYPECHECK, LINT, RULES, AGENT_GRID, TEST_PARALLEL, TEST_CONTROL, COVERAGE];
+const COMPREHENSIVE: Step[] = [
+  INSTALL,
+  TYPECHECK,
+  LINT,
+  RULES,
+  AGENT_GRID,
+  TEST_PARALLEL,
+  TEST_CONTROL,
+  TEST_PHASES_CI,
+  COVERAGE,
+];
 const CI: Step[] = [
   INSTALL,
   TYPECHECK,
@@ -241,6 +272,7 @@ const CI: Step[] = [
   STALE_TODOS_CI,
   TEST_NON_DAEMON_CI,
   TEST_DAEMON_CI,
+  TEST_PHASES_CI,
   COVERAGE_CI,
 ];
 
@@ -251,12 +283,12 @@ function selectSteps(): { steps: Step[]; label: string } {
   return { steps: COMPREHENSIVE, label: "default" };
 }
 
-function parseFlag(argv: string[], flag: string): string | undefined {
+export function parseFlag(argv: string[], flag: string): string | undefined {
   const i = argv.indexOf(flag);
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
 }
 
-function parseRepeatableFlag(argv: string[], flag: string): string[] {
+export function parseRepeatableFlag(argv: string[], flag: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === flag && i + 1 < argv.length) out.push(argv[i + 1] as string);

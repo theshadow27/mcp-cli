@@ -25,10 +25,7 @@ export interface TriageDeps {
     reasons: string[];
     metrics?: Record<string, unknown>;
   }>;
-  waitForEvent(
-    filter: TriageEventFilter,
-    opts?: { timeoutMs?: number; since?: number },
-  ): Promise<TriageEvent>;
+  waitForEvent(filter: TriageEventFilter, opts?: { timeoutMs?: number; since?: number }): Promise<TriageEvent>;
   stateGet<T>(key: string): Promise<T | undefined>;
   stateSet(key: string, value: unknown): Promise<void>;
   updateWorkItem(id: string, prNumber: number): Promise<void>;
@@ -107,9 +104,7 @@ export async function runTriage(
   const isFlaky = labels.includes("flaky");
   const scrutiny = isFlaky ? "high" : raw.scrutiny;
   const reasons =
-    isFlaky && raw.scrutiny !== "high"
-      ? [...raw.reasons, "label:flaky forces high scrutiny"]
-      : raw.reasons;
+    isFlaky && raw.scrutiny !== "high" ? [...raw.reasons, "label:flaky forces high scrutiny"] : raw.reasons;
   const decision = scrutiny === "high" ? "review" : "qa";
 
   await deps.stateSet("triage_scrutiny", scrutiny);

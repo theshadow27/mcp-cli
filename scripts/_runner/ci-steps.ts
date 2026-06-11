@@ -125,6 +125,7 @@ async function runBun(
   logger: Logger,
   env: Record<string, string | undefined> = process.env,
   junitPath?: string,
+  cwd?: string,
 ): Promise<RunOutcome> {
   // spawn() rejects undefined env values — drop them so explicit `unset`
   // semantics aren't required upstream. Matches runShell() in runner.ts.
@@ -135,7 +136,7 @@ async function runBun(
   const fullArgs =
     junitPath && args[0] === "test" ? [...args, "--reporter", "junit", `--reporter-outfile=${junitPath}`] : args;
   const buf: string[] = [];
-  const child = spawn("bun", fullArgs, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("bun", fullArgs, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (d: string) => {
@@ -213,6 +214,34 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       return { success: true };
     }
     return { success: false, error: `exit ${second.code}` };
+  };
+}
+
+interface PhasesTestOpts {
+  /** Stem used for `<TMP>/<logName>.txt` artefact preservation. */
+  logName: string;
+  /** Absolute path to the `.claude/phases` directory. */
+  phasesDir: string;
+}
+
+/**
+ * Run `bun test --no-orphans` from within `.claude/phases/` so the files
+ * are discovered relative to that CWD — bypassing the root bunfig.toml
+ * `pathIgnorePatterns = [".claude/**"]` exclusion that silences them when
+ * run from the repo root (#2648). Carries the same #1004 crash-after-pass
+ * tolerance as `bunTestWithCrashTolerance`.
+ */
+export function phasesTestWithCrashTolerance(opts: PhasesTestOpts): ScriptFunction {
+  return async ({ logger, env }) => {
+    const args = ["test", "--no-orphans"];
+    const first = await runBun(args, logger, env, junitTmpPath(opts.logName), opts.phasesDir);
+    persistLog(opts.logName, first.output);
+    if (first.code === 0) return { success: true };
+    if (hasZeroJunitFailures(first)) {
+      logger.warn(`bun crash (exit ${first.code}) after phase tests passed — treating as pass (#1004)`);
+      return { success: true };
+    }
+    return { success: false, error: `exit ${first.code}` };
   };
 }
 
