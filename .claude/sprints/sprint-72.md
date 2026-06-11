@@ -140,3 +140,15 @@ phase_state_set lets any session overwrite sentinel keys (#2682, with #2683/#268
 many picks touch the phase-script/verdict surface the orchestrator itself runs on —
 the blockedBy chains above serialize the hot files, and `mcx phase install` must
 run after each phase-source merge.
+
+## Results
+
+- **Released**: v1.14.2 (release commit on sprint branch; tag after sprint PR merges at retro)
+- **PRs merged**: 15/15 — #2704, #2705, #2706, #2710, #2711, #2712, #2713, #2715, #2718, #2720, #2725, #2726, #2728, #2730, #2731
+- **Issues closed**: 18 — all 15 slots incl. paired #2520, #2571, #2687; #2683 verified already-fixed-on-main (tests-only PR)
+- **Issues dropped**: 0
+- **New issues filed**: 12 — #2707, #2708, #2709, #2714, #2716, #2721, #2727, #2729, #2732, #2733, #2734, #2737; #1328 reopened as regression; data-point comments on #2597 (×2), #2666, #2703, #1475, #2688
+- **Board hygiene**: closed degenerate PR #2699 (dup of merged #2701); superseded + closed stale PR #2700 via #2711; untracked 21 stale sprint-62 work-item rows (#2091 evidence)
+- **Canaries**: stdio transport ABORTED per protocol — both canary workers died at spawn (`spawn exited`), transport-attributable, evidence on #2688; fable expansion PASSED 2/2 (#2685/PR #2715, #2679/PR #2730 merged end-to-end)
+- **QA highlights**: #2706 qa:fail caught flags as dead code on the production CLI path after two green review rounds (dist-binary check); #2728's own phase-lock gate caught its stale lock in CI
+- **Host incident**: 2–3 wedged day-old `bun test --test-worker` processes pinned cores all sprint (kill denied by policy — operator cleanup pending); 4 of 5 batch-3 pre-push gates hit crash cascades, all resolved by load-eased retries, zero gate bypasses
