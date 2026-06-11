@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Manifest } from "./manifest";
@@ -8,6 +8,7 @@ import {
   RegressionError,
   UnknownPhaseError,
   appendTransitionLog,
+  atomicWriteFileSync,
   commitTransition,
   historyTargets,
   levenshtein,
@@ -524,5 +525,78 @@ describe("pruneStaleHistory (#2463)", () => {
     const remaining = readAllTransitions(log);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].workItemId).toBe("#50");
+  });
+
+  test("rewrite leaves no temp files behind (#2685)", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, {
+      ts: "2026-01-01T00:00:00Z",
+      workItemId: "#42",
+      from: null,
+      to: "impl",
+      status: "committed",
+    });
+
+    const pruned = pruneStaleHistory(log, "#42", new Date("2026-06-01T00:00:00Z"));
+    expect(pruned).toBe(1);
+    expect(readdirSync(dir).sort()).toEqual(["transitions.jsonl"]);
+  });
+});
+
+describe("atomicWriteFileSync (#2685)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("replaces target content and removes the temp file", () => {
+    const target = join(dir, "log.jsonl");
+    writeFileSync(target, "old\n", "utf-8");
+
+    atomicWriteFileSync(target, "new\n");
+
+    expect(readFileSync(target, "utf-8")).toBe("new\n");
+    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
+  });
+
+  test("creates parent directories when missing", () => {
+    const target = join(dir, "nested", "deep", "log.jsonl");
+    atomicWriteFileSync(target, "content\n");
+    expect(readFileSync(target, "utf-8")).toBe("content\n");
+  });
+
+  test("crash mid-write: target keeps old content, partial file never observed", () => {
+    const target = join(dir, "log.jsonl");
+    writeFileSync(target, "old-line-1\nold-line-2\n", "utf-8");
+
+    const crashingWrite = (path: string, content: string, encoding: "utf-8") => {
+      writeFileSync(path, content.slice(0, 5), encoding);
+      throw new Error("simulated crash mid-write");
+    };
+
+    expect(() => atomicWriteFileSync(target, "new-line-1\nnew-line-2\n", crashingWrite)).toThrow(
+      "simulated crash mid-write",
+    );
+
+    expect(readFileSync(target, "utf-8")).toBe("old-line-1\nold-line-2\n");
+    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
+  });
+
+  test("crash before any bytes written: target untouched, no temp leftovers", () => {
+    const target = join(dir, "log.jsonl");
+    writeFileSync(target, "old\n", "utf-8");
+
+    const failingWrite = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+
+    expect(() => atomicWriteFileSync(target, "new\n", failingWrite)).toThrow("ENOSPC");
+    expect(readFileSync(target, "utf-8")).toBe("old\n");
+    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
   });
 });
