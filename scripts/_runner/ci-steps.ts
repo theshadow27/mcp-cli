@@ -44,19 +44,31 @@ const LOG_DIR = "/tmp";
 interface RunOutcome {
   code: number;
   output: string;
-  /** Failure count from the junit XML written by --reporter junit, or null if unavailable. */
+  /**
+   * Fault count from the junit XML written by --reporter junit (`failures` +
+   * `errors`), or null if unavailable. Bun's "unhandled error between tests"
+   * (a module-scope throw between test registrations) increments `errors`, not
+   * `failures` — both must be counted or such a run is misclassified as clean
+   * (#2669).
+   */
   junitFailures: number | null;
 }
 
 /**
- * Parse the `failures` attribute from a bun junit XML report.
- * Returns null when the file is absent or unparseable.
+ * Parse the fault count from a bun junit XML report: the `failures` attribute
+ * PLUS the `errors` attribute. Returns null when the file is absent or has
+ * neither attribute. An "unhandled error between tests" reports failures="0"
+ * errors="1", so summing is what makes the gate fail on it (#2669).
  */
 function parseJunitFailures(xmlPath: string): number | null {
   try {
     const xml = readFileSync(xmlPath, "utf8");
-    const m = xml.match(/failures="(\d+)"/);
-    return m ? Number.parseInt(m[1], 10) : null;
+    const fm = xml.match(/failures="(\d+)"/);
+    const em = xml.match(/errors="(\d+)"/);
+    if (!fm && !em) return null;
+    const failures = fm ? Number.parseInt(fm[1], 10) : 0;
+    const errors = em ? Number.parseInt(em[1], 10) : 0;
+    return failures + errors;
   } catch {
     return null;
   }
@@ -91,8 +103,21 @@ function junitTmpPath(stem: string): string {
  */
 function hasZeroJunitFailures(outcome: RunOutcome): boolean {
   if (outcome.junitFailures === 0) return true;
-  if (outcome.junitFailures === null) return ZERO_FAIL_RE.test(outcome.output);
+  if (outcome.junitFailures === null) return ZERO_FAIL_RE.test(outcome.output) && !hasUnhandledError(outcome.output);
   return false;
+}
+
+// Bun emits "# Unhandled error between tests" plus a nonzero "N errors" summary
+// line when a module-scope throw aborts test registration. Neither increments
+// the junit `failures` attribute, and a teardown crash that also drops the
+// junit sidecar (#1004) would leave only the stdout " 0 fail" line — which the
+// prose fallback would otherwise read as clean. Detect the error markers so a
+// run with an unhandled between-tests error is never promoted to a pass (#2669).
+const UNHANDLED_ERROR_RE = /Unhandled error between tests/;
+const NONZERO_ERRORS_RE = /^\s*([1-9]\d*) errors?\b/m;
+
+function hasUnhandledError(output: string): boolean {
+  return UNHANDLED_ERROR_RE.test(output) || NONZERO_ERRORS_RE.test(output);
 }
 
 async function runBun(
@@ -236,7 +261,7 @@ function classifyCoverage({ code, output, junitFailures }: RunOutcome, logger: L
   // Fallback: check-coverage.ts crashes before writing its summary file — the
   // inner bun's " 0 fail" line still reaches our stdout (#2401 hybrid).
   const cleanTests = junitFailures === 0 || (junitFailures === null && ZERO_FAIL_RE.test(output));
-  if (cleanTests && !FAIL_LINE_RE.test(output)) {
+  if (cleanTests && !FAIL_LINE_RE.test(output) && !hasUnhandledError(output)) {
     logger.warn(`bun crash (exit ${code}) after all coverage tests passed — treating as pass (#1419)`);
     return { success: true };
   }
