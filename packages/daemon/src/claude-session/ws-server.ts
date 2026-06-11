@@ -2746,7 +2746,7 @@ export function extractToolFields(toolName: string, input: Record<string, unknow
       break;
     }
     case "NotebookEdit": {
-      const fp = input.file_path;
+      const fp = input.notebook_path ?? input.file_path;
       if (typeof fp === "string") {
         fields.filePath = fp;
         fields.dirPath = dirname(fp);

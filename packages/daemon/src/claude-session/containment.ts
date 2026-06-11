@@ -242,18 +242,51 @@ function extractBashWriteTargets(command: string): string[] {
 
 // ── Containment-gated tool sets ──
 
+// Write-capable file tools. Their path argument is resolved and must stay
+// inside the worktree; a call whose path can't be extracted fails closed.
 export const CONTAINMENT_WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+// Read-class file tools. Out-of-worktree access is warned, never denied.
+const CONTAINMENT_READ_TOOLS: ReadonlySet<string> = new Set(["Read", "Glob", "Grep"]);
+
+// Built-in tools that cannot write to an arbitrary filesystem path via a tool
+// argument. Bash is handled separately (command parsing). Everything not in any
+// known set — including a future write-capable tool the guard doesn't yet
+// recognize — fails closed (#2520) so containment can't be silently bypassed.
+const CONTAINMENT_SAFE_TOOLS: ReadonlySet<string> = new Set([
+  "NotebookRead",
+  "WebFetch",
+  "WebSearch",
+  "Task",
+  "Agent",
+  "TodoWrite",
+  "TodoRead",
+  "ExitPlanMode",
+  "BashOutput",
+  "KillShell",
+  "KillBash",
+  "SlashCommand",
+  "Skill",
+  // Read-only MCP discovery built-ins (no `mcp__` prefix — they're built-ins,
+  // not server-namespaced tool calls).
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+]);
+
+// MCP tools execute in the daemon / external servers, not the worktree's
+// filesystem surface, and are the core purpose of mcp-cli — allow by prefix.
+const MCP_TOOL_PREFIX = "mcp__";
 
 // ── File path extraction ──
 
 function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
-  if (
-    toolName === "Write" ||
-    toolName === "Edit" ||
-    toolName === "MultiEdit" ||
-    toolName === "Read" ||
-    toolName === "NotebookEdit"
-  ) {
+  if (toolName === "NotebookEdit") {
+    // The live NotebookEdit tool's path parameter is `notebook_path`; fall back
+    // to `file_path` for older/aliased shapes.
+    const np = input.notebook_path ?? input.file_path;
+    return typeof np === "string" ? np : null;
+  }
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "Read") {
     const fp = input.file_path;
     return typeof fp === "string" ? fp : null;
   }
@@ -336,13 +369,47 @@ export class ContainmentGuard {
       return this.evaluateBash(input);
     }
 
-    // File-path tools
-    const filePath = extractFilePath(toolName, input);
-    if (filePath && isPathOutside(filePath, this.worktreeRoot)) {
-      return this.evaluateFileAccess(toolName, filePath);
+    // Write-capable file tools — resolve the path and deny if it escapes the
+    // worktree. A write call whose path can't be extracted fails closed (#2520):
+    // a malformed or unrecognized-shape write must never be silently allowed.
+    if (CONTAINMENT_WRITE_TOOLS.has(toolName)) {
+      const filePath = extractFilePath(toolName, input);
+      if (filePath === null) {
+        return {
+          action: "deny",
+          reason: `${toolName} call has no resolvable file path; containment cannot verify it stays inside ${this.worktreeRoot}. Denied.`,
+          event: "session:containment_denied",
+          strikes: this._strikes,
+        };
+      }
+      if (isPathOutside(filePath, this.worktreeRoot)) {
+        return this.evaluateFileAccess(toolName, filePath);
+      }
+      return { action: "allow", reason: "", strikes: this._strikes };
     }
 
-    return { action: "allow", reason: "", strikes: this._strikes };
+    // Read-class file tools — out-of-worktree access is warned, not denied.
+    if (CONTAINMENT_READ_TOOLS.has(toolName)) {
+      const filePath = extractFilePath(toolName, input);
+      if (filePath && isPathOutside(filePath, this.worktreeRoot)) {
+        return this.evaluateFileAccess(toolName, filePath);
+      }
+      return { action: "allow", reason: "", strikes: this._strikes };
+    }
+
+    // Known non-filesystem tools and daemon-hosted MCP tools are allowed.
+    if (CONTAINMENT_SAFE_TOOLS.has(toolName) || toolName.startsWith(MCP_TOOL_PREFIX)) {
+      return { action: "allow", reason: "", strikes: this._strikes };
+    }
+
+    // Unrecognized tool — fail closed (#2520). A write-capable tool the guard
+    // doesn't yet know about must not silently bypass worktree containment.
+    return {
+      action: "deny",
+      reason: `Tool "${toolName}" is not recognized by the worktree containment guard and is denied by default. If this tool is safe, add it to the containment allowlist.`,
+      event: "session:containment_denied",
+      strikes: this._strikes,
+    };
   }
 
   private evaluateBash(input: Record<string, unknown>): ContainmentResult {
