@@ -9,12 +9,15 @@
  * The handler is idempotent on re-entry: if `session_id` is already set in
  * state, it returns the existing session plus `action: "in-flight"`.
  *
- * Model resolution order (first match wins):
+ * Model resolution order (first match wins, see resolveImplModel):
  *   1. `input.model` — explicit override from the orchestrator
  *   2. `ctx.state.get("model")` — pre-populated by a prior call or mcx track
- *   3. Sprint plan table — reads the latest `.claude/sprints/sprint-*.md` and
- *      locates the Model column for this issue number (fixes #1437)
- *   4. `pickModel(labels)` — label-based heuristic fallback
+ *   3. Sprint plan table — the Model column for this issue, any Claude model
+ *      shortname or full ID, e.g. a `claude-fable-5` canary (fixes #1437, #2665)
+ *   4. label-based heuristic fallback
+ *
+ * When the sprint plan overrides the heuristic default, a `model override`
+ * line is logged so a per-item canary assignment is never silently dropped.
  *
  * State writes (this handler): model, provider, labels, session_id sentinel.
  * Orchestrator responsibility: replace session_id "pending:*" with the real
@@ -23,9 +26,7 @@
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
-import { buildImplPrompt } from "./impl-fn";
-
-type Provider = "claude" | "copilot" | "gemini" | "grok" | `acp:${string}`;
+import { type Provider, buildImplCommand, buildImplPrompt, resolveImplModel } from "./impl-fn";
 
 const ProviderSchema = z
   .string()
@@ -36,41 +37,20 @@ const ProviderSchema = z
     },
   );
 
-function commandForProvider(provider: Provider): string[] {
-  if (provider.startsWith("acp:")) {
-    const agent = provider.slice("acp:".length);
-    return ["mcx", "acp", "spawn", "--agent", agent];
-  }
-  return ["mcx", provider, "spawn"];
-}
-
-function pickModel(labels: string[]): "opus" | "sonnet" {
-  // Flaky work always needs deep analysis (see run.md history).
-  // Orchestrator gate: a flaky issue must have a nerd-snipe root-cause
-  // comment on the issue before reaching this phase — see
-  // .claude/memory/feedback_flaky_tests.md and run.md "Flaky / CI-instability
-  // issues — nerd-snipe gate before impl". Without it, expect symptom-masking
-  // patches (sprint 47 / #1870).
-  if (labels.includes("flaky")) return "opus";
-  // Docs-only is cheap; everything else defaults to opus.
-  if (labels.includes("docs-only") || labels.includes("documentation")) return "sonnet";
-  return "opus";
-}
-
 defineAlias({
   name: "phase-impl",
   description: "Sprint phase: spawn implementation session for a tracked issue.",
   input: z.object({
     provider: ProviderSchema.default("claude"),
     labels: z.array(z.string()).default([]),
-    model: z.enum(["opus", "sonnet"]).optional(),
+    model: z.string().optional(),
   }),
   output: z.object({
     action: z.enum(["spawn", "in-flight"]),
     command: z.array(z.string()),
     allowTools: z.array(z.string()),
     prompt: z.string(),
-    model: z.enum(["opus", "sonnet"]),
+    model: z.string(),
     provider: ProviderSchema,
     sessionId: z.string().optional(),
     worktreePath: z.string().optional(),
@@ -88,41 +68,33 @@ defineAlias({
         command: [],
         allowTools: [],
         prompt: "",
-        model: ((await ctx.state.get<string>("model")) as "opus" | "sonnet") ?? "opus",
+        model: (await ctx.state.get<string>("model")) ?? "opus",
         provider: ((await ctx.state.get<string>("provider")) as Provider) ?? input.provider,
         sessionId: existing,
         worktreePath: (await ctx.state.get<string>("worktree_path")) ?? undefined,
       };
     }
 
-    // Resolve model: explicit input → pre-set state → sprint plan → label heuristic
-    let model: "opus" | "sonnet";
-    if (input.model) {
-      model = input.model;
-    } else {
-      const stateModel = await ctx.state.get<string>("model");
-      if (stateModel === "opus" || stateModel === "sonnet") {
-        model = stateModel;
-      } else {
-        const planModel = ctx.repoRoot !== NO_REPO_ROOT ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot) : null;
-        model = planModel ?? pickModel(input.labels);
-      }
+    const stateModel = await ctx.state.get<string>("model");
+    const planModel =
+      ctx.repoRoot !== NO_REPO_ROOT ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot) : null;
+    const { model, override } = resolveImplModel({
+      inputModel: input.model,
+      stateModel,
+      planModel,
+      labels: input.labels,
+    });
+    if (override) {
+      console.error(
+        `work item #${work.issueNumber} model override: ${override.planModel} (default: ${override.heuristic})`,
+      );
     }
 
     const provider = input.provider;
     const supportsWorktree = provider === "claude";
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
     const prompt = buildImplPrompt(work.issueNumber, work.prNumber ?? null);
-    const command = [
-      ...commandForProvider(provider),
-      ...(supportsWorktree ? ["--worktree"] : []),
-      "--model",
-      model,
-      "-t",
-      prompt,
-      "--allow",
-      ...allowTools,
-    ];
+    const command = buildImplCommand({ provider, model, supportsWorktree, prompt, allowTools });
 
     await ctx.state.set("provider", provider);
     await ctx.state.set("model", model);
