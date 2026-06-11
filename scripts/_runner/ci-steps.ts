@@ -174,7 +174,12 @@ function persistLog(logName: string, output: string): void {
 // BEFORE flushing the file (the #1004 scenario). Stdout is written incrementally
 // and survives a teardown crash even when the sidecar file does not.
 const ZERO_FAIL_RE = /^ 0 fail$/m;
-const COVERAGE_PASS_RE = /PASS: All coverage thresholds met/;
+// Anchored to line start: check-coverage.ts prints this at column 0. Inner test
+// runs echo `(pass) … > … `PASS: All coverage thresholds met` …` test NAMES to
+// stdout (the literal at ci-steps.spec.ts), where the phrase sits mid-line behind
+// a backtick — an unanchored match there silently classified a genuine ratchet
+// FAILURE as a #1419 crash-after-pass and let CI swallow it (#2744).
+const COVERAGE_PASS_RE = /^PASS: All coverage thresholds met/m;
 const FAIL_LINE_RE = /^FAIL:/m;
 
 interface TestOpts {
@@ -282,7 +287,10 @@ export function coverageWithCrashTolerance(opts: CoverageOpts): ScriptFunction {
 
 function classifyCoverage({ code, output, junitFailures }: RunOutcome, logger: Logger): StepResult {
   if (code === 0) return { success: true };
-  if (COVERAGE_PASS_RE.test(output)) {
+  // A run that printed its own `FAIL:` line at column 0 did NOT pass, regardless
+  // of any `PASS:` text elsewhere in the output — the #1419 crash-after-pass
+  // tolerance only applies to a clean run that crashed in teardown (#2744).
+  if (COVERAGE_PASS_RE.test(output) && !FAIL_LINE_RE.test(output)) {
     logger.warn(`bun crash (exit ${code}) after coverage check passed — treating as pass (#1419)`);
     return { success: true };
   }

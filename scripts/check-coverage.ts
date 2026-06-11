@@ -116,6 +116,8 @@ const EXCLUSIONS: Record<string, string> = {
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
+  "scripts/doing-it-wrong.ts":
+    "Rule-engine CLI entry; runRules() is covered by doing-it-wrong.spec.ts — residual is main()/process.exit/import.meta.main plumbing, untestable in-process",
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
