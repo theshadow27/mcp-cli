@@ -1359,6 +1359,42 @@ phases:
     const { deps: checkDeps } = makeDriftDeps(dir);
     expect(detectDrift(checkDeps).status).toBe("ok");
   }, 20_000);
+
+  test("detects drift when a transitive import changes (#2656)", async () => {
+    // Entry imports a sibling helper; editing the helper (not the entry) used
+    // to leave contentHash unchanged because only the entry file was hashed.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 1;\n");
+    const importingAlias = `
+import { defineAlias, z } from "mcp-cli";
+import { SUFFIX } from "./helper";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "Implement phase",
+  input: z.object({ issue: z.number() }),
+  output: z.object({ pr: z.number() }),
+  fn: async (input) => ({ pr: input.issue + SUFFIX }),
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), importingAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Clean install → no drift.
+    expect(detectDrift(makeDriftDeps(dir).deps).status).toBe("ok");
+
+    // Edit only the transitive import.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 2;\n");
+    const result = detectDrift(makeDriftDeps(dir).deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      const phase = result.entries.find((e) => e.kind === "phase-source");
+      expect(phase).toBeDefined();
+      // Drift is attributed to the entry phase, even though helper.ts changed.
+      expect(phase?.path).toBe("impl.ts");
+    }
+  }, 20_000);
 });
 
 describe("formatDriftWarning", () => {

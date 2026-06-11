@@ -54,6 +54,7 @@ import {
   extractMetadata,
   findGitRoot,
   hashFileSync,
+  hashImportClosureSync,
   historyTargets,
   ipcCall,
   isCommitted,
@@ -193,7 +194,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
 
     let contentHash: string;
     try {
-      contentHash = deps.hashFileSync(resolvedAbs);
+      contentHash = hashImportClosureSync(resolvedAbs, cwd);
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e?.code === "ENOENT") {
@@ -247,7 +248,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
 
       let contentHash: string;
       try {
-        contentHash = deps.hashFileSync(resolvedAbs);
+        contentHash = hashImportClosureSync(resolvedAbs, cwd);
       } catch (err) {
         const e = err as NodeJS.ErrnoException;
         if (e?.code === "ENOENT") {
@@ -519,7 +520,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
     const abs = resolvePath(cwd, locked.resolvedPath);
     let actualHash: string;
     try {
-      actualHash = deps.hashFileSync(abs);
+      actualHash = hashImportClosureSync(abs, cwd);
     } catch {
       entries.push({
         kind: "phase-source",
@@ -570,7 +571,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
     const abs = resolvePath(cwd, locked.resolvedPath);
     let actualHash: string;
     try {
-      actualHash = deps.hashFileSync(abs);
+      actualHash = hashImportClosureSync(abs, cwd);
     } catch {
       entries.push({
         kind: "automation-source",

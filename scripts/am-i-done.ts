@@ -86,6 +86,20 @@ const AGENT_GRID: Step = {
   onFailure: ["fix the validation errors reported above", "schema: agent-grid/versions-schema.ts"],
 };
 
+// Catches a committed .mcx.lock that has drifted from the phase/automation
+// sources — including edits to a *transitive* import (e.g. review-fn.ts), which
+// the entry-file-only hash used to miss (#2656). `phase check` hashes the full
+// local-import closure and exits non-zero on any mismatch.
+const PHASE_LOCK: Step = {
+  name: "phase-lock",
+  description: "verify .mcx.lock matches phase/automation source closure (#2656) — `mcx phase check`",
+  command: "bun packages/command/src/main.ts phase check",
+  onFailure: [
+    "a phase/automation source changed without re-install — including a transitive import like *-fn.ts",
+    "run `bun packages/command/src/main.ts phase install` and commit the updated .mcx.lock",
+  ],
+};
+
 const RULES: Step = {
   name: "doing-it-wrong",
   description: "architectural rule engine (scripts/rules/*.rule.ts)",
@@ -250,14 +264,15 @@ const STALE_TODOS_CI: Step = {
 // Default (no flag): the developer-friendly path — parallel tests for
 //   speed, `biome --write` for auto-fix, and the simpler coverage step.
 
-const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID];
-const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED];
+const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, PHASE_LOCK];
+const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, PHASE_LOCK, TEST_CHANGED];
 const COMPREHENSIVE: Step[] = [
   INSTALL,
   TYPECHECK,
   LINT,
   RULES,
   AGENT_GRID,
+  PHASE_LOCK,
   TEST_PARALLEL,
   TEST_CONTROL,
   TEST_PHASES_CI,
@@ -269,6 +284,7 @@ const CI: Step[] = [
   LINT_CHECK,
   RULES,
   AGENT_GRID,
+  PHASE_LOCK,
   STALE_TODOS_CI,
   TEST_NON_DAEMON_CI,
   TEST_DAEMON_CI,
