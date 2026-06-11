@@ -6,7 +6,8 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
-import { join } from "node:path";
+import { constants, accessSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
 import {
@@ -356,7 +357,9 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
         return 1;
       }
       extraError = '--transport must be "stdio" or "sdk-url"';
-      return next && !next.startsWith("-") ? 1 : 0;
+      // Don't consume the bad value: matches --claude-binary's error path and avoids
+      // desyncing the shared parser's index when extraError is masked by a shared error.
+      return 0;
     }
     return undefined;
   });
@@ -487,6 +490,22 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (staleWarning) {
     d.printError(staleWarning);
     d.exit(1);
+  }
+
+  // Resolve --claude-binary to an absolute path against the caller's shell cwd (a bare
+  // relative path would otherwise resolve against the daemon/worktree cwd at exec time),
+  // then verify it's executable here — a named error beats a silent connect-timeout after
+  // the daemon spawns a bad path (and bypasses the spawn-disabled guard) (#2681, #2706).
+  if (parsed.claudeBinary) {
+    const binPath = isAbsolute(parsed.claudeBinary) ? parsed.claudeBinary : resolve(process.cwd(), parsed.claudeBinary);
+    try {
+      accessSync(binPath, constants.X_OK);
+    } catch {
+      d.printError(`--claude-binary: ${binPath} is not an executable file`);
+      d.exit(1);
+      return;
+    }
+    parsed.claudeBinary = binPath;
   }
 
   const rawTask = parsed.task ?? "Continue from where you left off.";

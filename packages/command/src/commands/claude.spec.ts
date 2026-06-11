@@ -610,6 +610,33 @@ describe("resolveSessionId", () => {
   });
 });
 
+// ── cmdClaude spawn: --claude-binary validation (#2681, #2706) ──
+
+describe("cmdClaude spawn --claude-binary validation", () => {
+  test("rejects a non-executable binary path with a named error before dispatch", async () => {
+    const deps = makeDeps();
+    await expect(
+      cmdClaude(["spawn", "--task", "x", "--claude-binary", "/no/such/claude-binary-xyz"], deps),
+    ).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("is not an executable file"));
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("resolves an executable binary to an absolute path and plumbs it into the RPC", async () => {
+    const deps = makeDeps();
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--claude-binary", process.execPath], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const call = (deps.callTool as Mock<(...a: unknown[]) => unknown>).mock.calls.find((c) => c[0] === "claude_prompt");
+    expect(call).toBeDefined();
+    expect((call?.[1] as { claudeBinary?: string }).claudeBinary).toBe(process.execPath);
+  });
+});
+
 // ── cmdClaude dispatch ──
 
 describe("cmdClaude", () => {
