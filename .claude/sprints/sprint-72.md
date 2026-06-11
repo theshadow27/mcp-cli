@@ -60,11 +60,47 @@ Paired issues (`+NNNN`) are same-file pairs: one worker, one PR, closes both.
 
 ## Run-phase directives
 
-- **#2688 stdio canary (arguably P1, from sprint-71 retro)**: after #2681 merges,
-  rebuild + restart daemon, then spawn 2 batch-2/3 sessions using the per-spawn
-  stdio transport override. Watch the monitor stream for protocol anomalies; file
-  everything. If #2681 slips or the override doesn't ship, do NOT flip global
-  config mid-sprint — file the finding on #2688 and defer the canary.
+- **#2688 stdio canary (arguably P1, from sprint-71 retro)** — explicit protocol,
+  in order. The whole point of gating on #2681 is recoverability: per-spawn flags
+  mean the blast radius is exactly the canary sessions, with no global state to
+  restore. Never improvise around the gate.
+  1. **Hard gate**: #2681 merged AND shipped both halves of its fix — per-spawn
+     `--claude-binary <path>` / `--transport stdio|sdk-url` flags (fix a) plus
+     spawn-dispatch-time config read (fix b). Verify after rebuild:
+     `dist/mcx claude spawn --help | grep -E 'claude-binary|transport'`. If the
+     flags aren't there, the canary is OFF this sprint — do NOT flip
+     `mcx config set claude-binary` globally mid-sprint (that's the exact
+     sprint-71 abort, and the config write is itself racy per #2681). File the
+     gap on #2688 and move on.
+  2. **When**: the batch-2 → batch-3 boundary. #2681 changes the spawn RPC, so
+     the **daemon must be restarted on the new binary** first, and a mid-sprint
+     daemon restart is only safe at a drained boundary: `mcx claude ls` must
+     show zero in-flight sessions, then `bun run build && mcx shutdown && mcx
+     status`. If batch boundaries never fully drain, skip the canary and note it
+     on #2688 — never restart the daemon under live sessions.
+  3. **Scope**: exactly 2 batch-3 sessions, on **opus + stdio** — use #2654 and
+     #2665. Never combine canaries: #2679/#2685 are the fable slots and stay on
+     the default transport (two experimental variables in one session means an
+     anomaly can't be attributed). All other sessions stay on the default
+     transport. The orchestrator's own daemon connection is unaffected — this
+     only changes worker transport.
+  4. **Watch** (monitor stream, per canary session ID): spawn→first-event
+     latency, sessions stuck in `starting`, permission round-trip behavior,
+     interrupt/resume handling, missing heartbeats, worker exit codes — compared
+     against sibling ws sessions in the same batch.
+  5. **Rollback (single failure)**: interrupt, `bye --keep` (preserve the
+     worktree as evidence), respawn the same issue with no transport flag
+     (default ws), file session IDs + `mcx claude log` + daemon log excerpts on
+     #2688. Nothing else to undo — no config was touched.
+  6. **Abort (both canaries fail the same way)**: stop, do not spawn a third,
+     finish the sprint on ws, write the pattern up on #2688. Widening stdio to
+     the full grid is a **next-sprint decision** even if both canaries pass —
+     success this sprint means two issues shipped end-to-end (impl → review/QA →
+     merge) with zero transport-attributable anomalies, noted on #2688.
+  - **Worker brief for #2681** must state the acceptance criteria explicitly:
+    both per-spawn flags AND the spawn-time config read, with a spec test
+    proving a spawned session uses the caller-supplied binary/transport even if
+    global config changes immediately after spawn returns.
 - **Fable worker expansion**: sprint 71's fable canary (#2645) passed end-to-end;
   this sprint routes two low-scrutiny slots (#2685, #2679) to fable. If either
   misbehaves, fall back to opus on respawn and file a data point.
