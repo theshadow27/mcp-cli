@@ -15,18 +15,20 @@
  * reasoning is preserved alongside the transition itself.
  */
 
+import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Manifest } from "./manifest";
 
 /**
@@ -306,6 +308,33 @@ export function readAllTransitions(logPath: string): TransitionLogEntry[] {
 }
 
 /**
+ * Replace `path` with `content` atomically: write to a temp file in the
+ * same directory, then `rename(2)` over the target. Readers see either the
+ * old file or the new file, never a truncated/partial write (issue #2685).
+ *
+ * `writeFn` is injectable for crash-mid-write tests (DI, not mock.module).
+ */
+export function atomicWriteFileSync(
+  path: string,
+  content: string,
+  writeFn: (path: string, content: string, encoding: "utf-8") => void = writeFileSync,
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = join(dirname(path), `.tmp-${randomBytes(6).toString("hex")}`);
+  try {
+    writeFn(tmpPath, content, "utf-8");
+    renameSync(tmpPath, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // best effort — temp may not exist
+    }
+    throw err;
+  }
+}
+
+/**
  * Remove stale transition log entries for a work item whose incarnation
  * predates `cutoff`. Used by `mcx track` to clear history from prior
  * sprints so a re-tracked item starts with a clean slate (issue #2463).
@@ -331,9 +360,8 @@ export function pruneStaleHistory(logPath: string, workItemId: string, cutoff: D
 
     if (pruned === 0) return 0;
 
-    mkdirSync(dirname(logPath), { recursive: true });
     const content = kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length > 0 ? "\n" : "");
-    writeFileSync(logPath, content, "utf-8");
+    atomicWriteFileSync(logPath, content);
     return pruned;
   });
 }
