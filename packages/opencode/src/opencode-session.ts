@@ -14,6 +14,7 @@
  */
 
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
+import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { OpenCodeClient } from "./opencode-client";
 import {
@@ -76,6 +77,7 @@ export class OpenCodeSession {
   private openCodeSessionId: string | null = null;
   private readonly config: OpenCodeSessionConfig;
   private readonly rules: PermissionRule[];
+  private readonly containment: ContainmentGuard | null;
   private readonly pendingPermissions = new Map<string, AgentPermissionRequest>();
   private readonly transcript: TranscriptEntry[] = [];
   private sessionName: string | null = null;
@@ -96,6 +98,7 @@ export class OpenCodeSession {
     this.eventState = createOpenCodeEventMapState();
     this.transcriptState = createTranscriptState();
     this.rules = buildRules(config.allowedTools, config.disallowedTools);
+    this.containment = config.worktree ? new ContainmentGuard(config.worktree) : null;
     this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? WATCHDOG_TIMEOUT_MS;
     this.sessionName = config.name ?? null;
   }
@@ -415,6 +418,16 @@ export class OpenCodeSession {
   private handlePermissionAsked(event: OpenCodeSseEvent): void {
     const permission = mapPermissionRequest(event.data);
     const requestId = event.data.id as string;
+
+    // Worktree containment runs before the permission rules so a worktree
+    // session can never approve a tool call that escapes the worktree root (#2519).
+    const containment = gateContainment(this.containment, permission.toolName, permission.input, (e) => this.emit(e));
+    if (containment?.action === "deny") {
+      this.client?.replyPermission(requestId, "reject").catch((err: unknown) => {
+        console.error(`[opencode-session:${this.sessionId}] Containment reply error: ${err}`);
+      });
+      return;
+    }
 
     // Evaluate against permission rules
     const decision = evaluatePermission(permission, this.rules);

@@ -24,6 +24,8 @@ import {
   CHECKS_FAILED,
   CHECKS_PASSED,
   CHECKS_STARTED,
+  CONTAINMENT_WRITE_TOOLS,
+  ContainmentGuard,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
@@ -56,7 +58,6 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
-import { CONTAINMENT_WRITE_TOOLS, ContainmentGuard } from "./containment";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";

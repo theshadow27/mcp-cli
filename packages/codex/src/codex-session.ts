@@ -7,6 +7,7 @@
  */
 
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
+import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import {
   type EventMapState,
@@ -70,6 +71,7 @@ export class CodexSession {
   private currentTurn: Turn | null = null;
   private readonly config: CodexSessionConfig;
   private readonly rules: PermissionRule[];
+  private readonly containment: ContainmentGuard | null;
   private readonly pendingPermissions = new Map<string, AgentPermissionRequest>();
   private readonly transcript: TranscriptEntry[] = [];
   private model: string | null = null;
@@ -87,6 +89,7 @@ export class CodexSession {
     this.eventHandler = onEvent;
     this.eventState = createEventMapState();
     this.rules = buildRules(config.allowedTools, config.disallowedTools);
+    this.containment = config.worktree ? new ContainmentGuard(config.worktree) : null;
     this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? WATCHDOG_TIMEOUT_MS;
   }
 
@@ -363,6 +366,15 @@ export class CodexSession {
     const permission = mapApprovalToPermission(method, params, this.eventState);
     if (!permission) {
       // Unknown server request — auto-decline
+      this.rpc?.respondToServerRequest(id, { decision: "decline" });
+      return;
+    }
+
+    // Worktree containment runs FIRST — before the auto_approve short-circuit —
+    // so a worktree session can never be configured to approve a write that
+    // escapes the worktree root (#2519). Mirrors the Claude can_use_tool flow.
+    const containment = gateContainment(this.containment, permission.toolName, permission.input, (e) => this.emit(e));
+    if (containment?.action === "deny") {
       this.rpc?.respondToServerRequest(id, { decision: "decline" });
       return;
     }

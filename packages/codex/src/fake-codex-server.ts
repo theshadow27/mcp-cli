@@ -94,6 +94,20 @@ function scheduleEvents(): void {
       // Complete the turn regardless of approval response
       setTimeout(() => sendTurnCompleted(), POST_APPROVAL_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
+  } else if (mode === "approval-escape") {
+    // Request approval for a git write that targets a path OUTSIDE the worktree.
+    // A worktree session's containment guard must deny this regardless of policy.
+    setTimeout(() => {
+      process.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "approval-1",
+          method: "item/commandExecution/requestApproval",
+          params: { approvalId: "approval-1", command: "git -C /etc commit -m pwned", cwd: process.cwd() },
+        })}\n`,
+      );
+      setTimeout(() => sendTurnCompleted(), POST_APPROVAL_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "crash-after-turn") {
     setTimeout(() => {
       sendTurnCompleted();

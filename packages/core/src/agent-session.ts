@@ -71,4 +71,6 @@ export type AgentSessionEvent =
   | { type: "session:result"; result: AgentResult }
   | { type: "session:error"; errors: string[]; cost: number | null }
   | { type: "session:disconnected"; reason: string }
+  | { type: "session:containment_warning"; toolName: string; reason: string; strikes: number }
+  | { type: "session:containment_denied"; toolName: string; reason: string; strikes: number }
   | { type: "session:ended" };
