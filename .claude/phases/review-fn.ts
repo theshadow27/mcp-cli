@@ -5,6 +5,18 @@ export type { GhOp, GhResult };
 
 export const REVIEW_ROUND_CAP = 2;
 
+// ── dead-session backstop (#2654) ──
+// The verdict gate waits on a PR label the reviewer session sets. If that
+// session dies mid-run (quota wall, OOM, segfault, partial execution) the
+// label never lands and the gate would idle forever. After this many
+// consecutive label-less ticks the session is presumed dead and we route to
+// a deterministic outcome (one bounded respawn, then needs-attention) rather
+// than waiting indefinitely. Tick-count (not wall-clock) keeps the logic pure
+// and deterministically testable; the cap is high enough that a live-but-slow
+// reviewer clears its verdict well before tripping it.
+export const REVIEW_STUCK_TICK_CAP = 5;
+export const REVIEW_RESPAWN_CAP = 1;
+
 export interface ReviewWork {
   id: string;
   prNumber: number;
@@ -15,6 +27,7 @@ export interface ReviewWork {
 export interface ReviewState {
   get<T>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 export interface ReviewDeps {
@@ -34,7 +47,13 @@ export type ReviewResult =
       model: "opus" | "sonnet";
     }
   | { action: "wait"; reason: string; round: number; model?: "opus" | "sonnet" }
-  | { action: "goto"; target: "repair" | "qa"; reason: string; round: number; model?: "opus" | "sonnet" };
+  | {
+      action: "goto";
+      target: "repair" | "qa" | "needs-attention";
+      reason: string;
+      round: number;
+      model?: "opus" | "sonnet";
+    };
 
 // ── typed verdict channel (#2575, hardened #2652) ──
 // The review verdict is read from a PR LABEL the reviewer sets transactionally
@@ -153,6 +172,7 @@ export async function runReview(
     await state.set("review_model", model);
     await state.set("review_session_id", `pending:${spawnedAt}`);
     await state.set("review_spawned_at", spawnedAt);
+    await state.set("review_stuck_ticks", 0);
     return {
       action: "spawn",
       reason: `review round ${round} starting`,
@@ -177,10 +197,36 @@ export async function runReview(
   }
   const { hasPass, hasChanges, rejections } = await readReviewLabels(work.prNumber, deps, roundStartedAt);
 
-  // No verdict label yet — the reviewer hasn't decided. Wait (never trust prose).
+  // No verdict label yet — the reviewer hasn't decided. Wait (never trust prose),
+  // but back the wait with a dead-session circuit breaker (#2654): a silently dead
+  // reviewer would otherwise idle this gate forever.
   if (!hasPass && !hasChanges) {
     const suffix = rejections.length > 0 ? ` (rejected: ${rejections.join("; ")})` : "";
-    return { action: "wait", reason: `review:pass / review:changes label not set yet${suffix}`, round, ...withModel };
+    const ticks = ((await state.get<number>("review_stuck_ticks")) ?? 0) + 1;
+    if (ticks >= REVIEW_STUCK_TICK_CAP) {
+      const respawns = (await state.get<number>("review_respawns")) ?? 0;
+      if (respawns >= REVIEW_RESPAWN_CAP) {
+        return {
+          action: "goto",
+          target: "needs-attention",
+          reason: `review stuck: no verdict after ${ticks} ticks across ${respawns} respawn(s) — reviewer session presumed dead, escalating${suffix}`,
+          round,
+          ...withModel,
+        };
+      }
+      // Presumed-dead reviewer: clear the session sentinel so the next entry
+      // spawns a fresh reviewer, and re-enter to emit that spawn plan now.
+      await state.set("review_respawns", respawns + 1);
+      await state.delete("review_session_id");
+      return runReview(input, work, state, deps, repoRoot);
+    }
+    await state.set("review_stuck_ticks", ticks);
+    return {
+      action: "wait",
+      reason: `review:pass / review:changes label not set yet${suffix} (stuck tick ${ticks}/${REVIEW_STUCK_TICK_CAP})`,
+      round,
+      ...withModel,
+    };
   }
 
   // Approved wins if both are somehow set; clear the stale changes label.

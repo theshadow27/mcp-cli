@@ -5,6 +5,14 @@ export type { GhOp, GhResult };
 
 export const QA_FAIL_CAP = 2;
 
+// ── dead-session backstop (#2654) ──
+// Mirror of review-fn: if the QA session dies before setting its verdict
+// label, the gate would idle forever. After this many consecutive label-less
+// ticks the session is presumed dead — do one bounded respawn, then escalate
+// to needs-attention rather than waiting indefinitely. See review-fn.ts.
+export const QA_STUCK_TICK_CAP = 5;
+export const QA_RESPAWN_CAP = 1;
+
 export interface QaWork {
   id: string;
   prNumber: number;
@@ -139,6 +147,7 @@ export async function runQa(
     const spawnedAt = Date.now();
     await state.set("qa_session_id", `pending:${spawnedAt}`);
     await state.set("qa_spawned_at", spawnedAt);
+    await state.set("qa_stuck_ticks", 0);
     return {
       action: "spawn",
       reason: "qa session starting",
@@ -161,7 +170,31 @@ export async function runQa(
   const { hasPass, hasFail, rejections } = await readQaLabels(work.prNumber, deps, roundStartedAt);
   if (!hasPass && !hasFail) {
     const suffix = rejections.length > 0 ? ` (rejected: ${rejections.join("; ")})` : "";
-    return { action: "wait", reason: `qa:pass / qa:fail label not set yet${suffix}`, model: qaModel, prompt: qaPrompt };
+    const ticks = ((await state.get<number>("qa_stuck_ticks")) ?? 0) + 1;
+    if (ticks >= QA_STUCK_TICK_CAP) {
+      const respawns = (await state.get<number>("qa_respawns")) ?? 0;
+      if (respawns >= QA_RESPAWN_CAP) {
+        return {
+          action: "goto",
+          target: "needs-attention",
+          reason: `qa stuck: no verdict after ${ticks} ticks across ${respawns} respawn(s) — QA session presumed dead, escalating${suffix}`,
+          model: qaModel,
+          prompt: qaPrompt,
+        };
+      }
+      // Presumed-dead QA session: clear the sentinel so the next entry spawns a
+      // fresh QA session, and re-enter to emit that spawn plan now.
+      await state.set("qa_respawns", respawns + 1);
+      await state.delete("qa_session_id");
+      return runQa(input, work, state, deps);
+    }
+    await state.set("qa_stuck_ticks", ticks);
+    return {
+      action: "wait",
+      reason: `qa:pass / qa:fail label not set yet${suffix} (stuck tick ${ticks}/${QA_STUCK_TICK_CAP})`,
+      model: qaModel,
+      prompt: qaPrompt,
+    };
   }
 
   if (hasPass) {
