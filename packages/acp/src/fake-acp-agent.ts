@@ -14,6 +14,7 @@
  *   fs-write-escape — sends fs/write to an absolute non-/tmp path the containment guard denies
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
+ *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
  */
 import { createInterface } from "node:readline";
 
@@ -189,6 +190,18 @@ function schedulePromptEvents(): void {
         command: "git",
         args: ["-C", "/etc", "commit", "-m", "pwned"],
         cwd: process.cwd(),
+      });
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "terminal-cwd-escape") {
+    // Benign-looking command (not a denylisted writer) but cwd escapes the
+    // worktree — only the cwd constraint catches this, not the command parser
+    // (#2519, #2720).
+    setTimeout(() => {
+      sendServerRequest("term-3", "terminal/create", {
+        command: "touch",
+        args: ["pwned.txt"],
+        cwd: "/etc",
       });
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);

@@ -15,7 +15,7 @@
 
 import { resolve } from "node:path";
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
-import { ContainmentGuard, gateContainment, spawnCapture } from "@mcp-cli/core";
+import { ContainmentGuard, gateContainment, isPathContained, resolveRealpath, spawnCapture } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { type AcpEventMapState, buildTurnResult, createAcpEventMapState, mapSessionUpdate } from "./acp-event-map";
 import { buildRules, evaluatePermission, findOptionId, mapPermissionRequest } from "./acp-permission-adapter";
@@ -568,9 +568,27 @@ export class AcpSession {
       return;
     }
 
+    // The command parser is heuristic and the daemon spawns directly (no OS
+    // sandbox), so an unconstrained cwd is itself an escape: a non-denylisted
+    // writer (touch, python -c, ./script.sh) or a relative-path redirect run
+    // with a cwd outside the worktree writes anywhere. Constrain the spawn cwd
+    // to the worktree root for worktree sessions (#2519).
+    const effectiveCwd = this.constrainTerminalCwd(cmdCwd);
+    if (effectiveCwd === null) {
+      const reason = `terminal/create cwd "${cmdCwd}" is outside worktree ${this.containment?.worktreeRoot}; denied.`;
+      this.emit({
+        type: "session:containment_denied",
+        toolName: "Bash",
+        reason,
+        strikes: this.containment?.strikes ?? 0,
+      });
+      this.rpc?.respondWithError(id, -1, reason);
+      return;
+    }
+
     try {
       const result = await spawnCapture(cmd, cmdArgs, {
-        cwd: cmdCwd,
+        cwd: effectiveCwd,
         timeoutMs: AcpSession.TERMINAL_TIMEOUT_MS,
       });
 
@@ -585,6 +603,19 @@ export class AcpSession {
     } catch (err) {
       this.rpc?.respondWithError(id, -1, String(err));
     }
+  }
+
+  /**
+   * Clamp a terminal/create cwd to the worktree root. Returns the resolved cwd
+   * when it stays inside the worktree, or null when it escapes (caller denies).
+   * Non-worktree sessions are unconstrained, matching the guard's null-guard
+   * semantics elsewhere.
+   */
+  private constrainTerminalCwd(cwd: string): string | null {
+    const guard = this.containment;
+    if (!guard) return cwd;
+    const resolved = resolveRealpath(resolve(cwd));
+    return isPathContained(resolved, guard.worktreeRoot) ? resolved : null;
   }
 
   private handleTerminalOutput(id: number | string, params: Record<string, unknown>): void {

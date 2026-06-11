@@ -58,6 +58,16 @@ export function mapPermissionRequest(data: Record<string, unknown>): AgentPermis
   const toolName = PERMISSION_MAP[permission] ?? capitalize(permission);
   const input: Record<string, unknown> = { ...metadata };
 
+  // The shared ContainmentGuard reads the path under `file_path`, but OpenCode
+  // keys it as `file` (and some tools as `filePath`/`path`). Without this
+  // normalization the guard sees no resolvable path and fail-closes every
+  // worktree write — the real metadata shape never reaches the boundary check
+  // (#2519). Bash keeps its `command` key, which the guard already reads.
+  if (typeof input.file_path !== "string") {
+    const altPath = input.file ?? input.filePath ?? input.path;
+    if (typeof altPath === "string") input.file_path = altPath;
+  }
+
   // Build a human-readable summary
   const summary = patterns.length > 0 ? `${permission}: ${patterns.join(", ")}` : `${permission} request`;
 

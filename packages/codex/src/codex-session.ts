@@ -7,7 +7,7 @@
  */
 
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
-import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
+import { ContainmentGuard } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import {
   type EventMapState,
@@ -16,7 +16,7 @@ import {
   mapApprovalToPermission,
   mapNotification,
 } from "./codex-event-map";
-import { buildRules, evaluateApproval } from "./codex-permission-adapter";
+import { buildRules, evaluateApproval, gateApprovalContainment } from "./codex-permission-adapter";
 import { CodexProcess } from "./codex-process";
 import { CodexRpcClient } from "./codex-rpc";
 import { type TranscriptEntry, itemToTranscript } from "./codex-transcript";
@@ -372,8 +372,10 @@ export class CodexSession {
 
     // Worktree containment runs FIRST — before the auto_approve short-circuit —
     // so a worktree session can never be configured to approve a write that
-    // escapes the worktree root (#2519). Mirrors the Claude can_use_tool flow.
-    const containment = gateContainment(this.containment, permission.toolName, permission.input, (e) => this.emit(e));
+    // escapes the worktree root (#2519). A fileChange patch can touch multiple
+    // files, so every path is validated (not just files[0]). Mirrors the Claude
+    // can_use_tool flow.
+    const containment = gateApprovalContainment(this.containment, permission, (e) => this.emit(e));
     if (containment?.action === "deny") {
       this.rpc?.respondToServerRequest(id, { decision: "decline" });
       return;

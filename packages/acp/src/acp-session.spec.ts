@@ -397,6 +397,22 @@ describe("AcpSession worktree containment (#2519)", () => {
       rmSync(worktree, { recursive: true, force: true });
     }
   });
+
+  test("terminal/create with a benign command but a cwd outside the worktree is denied", async () => {
+    // The command parser can't catch `touch pwned.txt`; only constraining the
+    // spawn cwd to the worktree root stops the escape (#2519, #2720).
+    const { session, events, worktree } = makeWorktreeSession("terminal-cwd-escape");
+    try {
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+    } finally {
+      session.terminate();
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Watchdog tests ──

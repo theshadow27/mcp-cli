@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
 import { buildRules, evaluatePermission, mapPermissionRequest } from "./opencode-permission-adapter";
 
 describe("mapPermissionRequest", () => {
@@ -22,6 +26,16 @@ describe("mapPermissionRequest", () => {
       metadata: { file: "/foo/bar.ts" },
     });
     expect(result.toolName).toBe("Write");
+  });
+
+  test("normalizes OpenCode's `file` metadata key to the guard-native `file_path`", () => {
+    const result = mapPermissionRequest({
+      id: "perm-2b",
+      permission: "write",
+      patterns: ["/foo/bar.ts"],
+      metadata: { file: "/foo/bar.ts" },
+    });
+    expect(result.input.file_path).toBe("/foo/bar.ts");
   });
 
   test("maps read permission to Read tool", () => {
@@ -130,5 +144,62 @@ describe("buildRules", () => {
   test("empty inputs produce empty rules", () => {
     expect(buildRules()).toHaveLength(0);
     expect(buildRules([], [])).toHaveLength(0);
+  });
+});
+
+// ── Containment contract (#2519, #2720) ──
+// Drives the adapter's REAL metadata shape through the shared ContainmentGuard.
+// This is the test that would have caught the file/file_path key mismatch:
+// the guard fail-closes on any write whose real path it can't resolve.
+describe("opencode adapter → ContainmentGuard contract", () => {
+  test("a write inside the worktree (real `file` key) resolves to allow", () => {
+    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const perm = mapPermissionRequest({
+        id: "c1",
+        permission: "write",
+        patterns: [],
+        metadata: { file: join(wt, "ok.ts") },
+      });
+      const result = gateContainment(guard, perm.toolName, perm.input, () => {});
+      expect(result?.action).toBe("allow");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  test("a write outside the worktree (real `file` key) is denied", () => {
+    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const perm = mapPermissionRequest({
+        id: "c2",
+        permission: "write",
+        patterns: [],
+        metadata: { file: "/etc/oc-contract-escape.txt" },
+      });
+      const result = gateContainment(guard, perm.toolName, perm.input, () => {});
+      expect(result?.action).toBe("deny");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  test("a bash command (real `command` key) escaping the worktree is denied", () => {
+    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const perm = mapPermissionRequest({
+        id: "c3",
+        permission: "bash",
+        patterns: [],
+        metadata: { command: "git -C /etc commit -m pwned" },
+      });
+      const result = gateContainment(guard, perm.toolName, perm.input, () => {});
+      expect(result?.action).toBe("deny");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
   });
 });

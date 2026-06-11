@@ -422,6 +422,28 @@ describe("CodexSession worktree containment", () => {
     }
   });
 
+  test("denies a multi-file patch when a LATER file escapes the worktree", async () => {
+    // files[0] is inside the worktree; a later file targets /etc. Validating
+    // only files[0] would approve the whole patch — the guard must check every
+    // path (#2519).
+    const worktree = mkdtempSync(join(tmpdir(), "codex-containment-"));
+    try {
+      const { session, events } = makeWorktreeSession(worktree, {
+        command: fakeCommand("filechange-escape"),
+        approvalPolicy: "auto_approve",
+      });
+
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+      expect(events.some((e) => e.type === "session:permission_request")).toBe(false);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
   test("non-worktree session does not gate the same out-of-bounds command", async () => {
     // No worktree → guard inactive → auto_approve accepts, no containment event.
     const { session, events } = makeWorktreeSession(undefined, {

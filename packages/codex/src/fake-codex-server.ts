@@ -108,6 +108,43 @@ function scheduleEvents(): void {
       );
       setTimeout(() => sendTurnCompleted(), POST_APPROVAL_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
+  } else if (mode === "filechange-escape") {
+    // A multi-file patch whose FIRST file is inside the worktree but a later
+    // file escapes it. Containment must validate every path, not just files[0],
+    // and deny the whole patch (#2519). item/started populates the tracked file
+    // set; the fileChange approval then references that itemId.
+    setTimeout(() => {
+      process.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: {
+              id: "item-1",
+              type: "fileChange",
+              status: "inProgress",
+              changes: [
+                { path: "ok.ts", kind: "modify", diff: "" },
+                { path: "/etc/codex-filechange-escape.txt", kind: "add", diff: "" },
+              ],
+            },
+          },
+        })}\n`,
+      );
+      setTimeout(() => {
+        process.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: "approval-1",
+            method: "item/fileChange/requestApproval",
+            params: { approvalId: "approval-1", itemId: "item-1" },
+          })}\n`,
+        );
+        setTimeout(() => sendTurnCompleted(), POST_APPROVAL_COMPLETE_DELAY_MS);
+      }, STEP_DELAY_MS);
+    }, STEP_DELAY_MS);
   } else if (mode === "crash-after-turn") {
     setTimeout(() => {
       sendTurnCompleted();

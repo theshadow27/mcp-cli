@@ -22,10 +22,12 @@ function makeSession(overrides: Partial<ConstructorParameters<typeof OpenCodeSes
   return { session, events };
 }
 
+// Uses the REAL OpenCode metadata key (`file`), not the guard-native `file_path`,
+// so these tests exercise the adapter→guard normalization the real provider needs (#2519).
 function permissionAsked(filePath: string): OpenCodeSseEvent {
   return {
     type: "permission.asked",
-    data: { id: "perm-1", permission: "write", metadata: { file_path: filePath } },
+    data: { id: "perm-1", permission: "write", metadata: { file: filePath } },
   };
 }
 
