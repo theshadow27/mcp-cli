@@ -1883,7 +1883,7 @@ export function buildPhaseList(manifest: Manifest, lock: Lockfile | null, cwd: s
       status = "missing";
     } else {
       try {
-        const currentHash = hashFileSync(resolvePhaseSource(phase.source, cwd));
+        const currentHash = hashImportClosureSync(resolvePhaseSource(phase.source, cwd), cwd);
         status = currentHash === locked.contentHash ? "ok" : "drift";
       } catch {
         status = "not-found";
@@ -1940,7 +1940,7 @@ export function buildPhaseShow(
     const abs = resolvePhaseSource(phase.source, cwd);
     resolvedPath = relative(cwd, abs).split("\\").join("/") || ".";
     try {
-      contentHash = hashFileSync(abs);
+      contentHash = hashImportClosureSync(abs, cwd);
       const text = readFileSync(abs, "utf-8");
       const lines = text.split("\n");
       if (!full && lines.length > 20) {

@@ -123,11 +123,21 @@ function resolveLocalImport(spec: string, fromFile: string): string | null {
  */
 export function hashImportClosureSync(entryPath: string, repoRoot: string): string {
   const contentByPath = new Map<string, string>();
-  const stack = [resolve(entryPath)];
+  const entryAbs = resolve(entryPath);
+  const stack = [entryAbs];
   while (stack.length > 0) {
     const file = stack.pop() as string;
     if (contentByPath.has(file)) continue;
-    const buf = readFileSync(file);
+    let buf: Buffer;
+    try {
+      buf = readFileSync(file);
+    } catch (err) {
+      // The entry file must exist — callers map its ENOENT to a "file missing"
+      // drift. A *sibling* that vanished between resolve-time and now is simply
+      // excluded, matching the resolve-time existence check.
+      if (file === entryAbs) throw err;
+      continue;
+    }
     contentByPath.set(file, sha256Hex(buf));
     let imports: { path: string }[];
     try {

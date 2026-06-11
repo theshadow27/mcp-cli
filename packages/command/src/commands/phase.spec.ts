@@ -1395,6 +1395,45 @@ defineAlias(({ z }) => ({
       expect(phase?.path).toBe("impl.ts");
     }
   }, 20_000);
+
+  test("phase list/show report no drift on a clean tree, including transitive imports (#2656)", async () => {
+    // Regression: buildPhaseList/buildPhaseShow hashed the entry file only,
+    // but the lock now stores the closure hash — so every phase falsely showed
+    // "drift" on a clean tree even though `phase check` passed. Pin list==check.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 1;\n");
+    const importingAlias = `
+import { defineAlias, z } from "mcp-cli";
+import { SUFFIX } from "./helper";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "Implement phase",
+  input: z.object({ issue: z.number() }),
+  output: z.object({ pr: z.number() }),
+  fn: async (input) => ({ pr: input.issue + SUFFIX }),
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), importingAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    const loaded = loadManifest(dir);
+    if (!loaded) throw new Error("manifest failed to load");
+    const lock = parseLockfile(readFileSync(join(dir, ".mcx.lock"), "utf-8"));
+
+    // `phase check`'s view (detectDrift) is clean…
+    expect(detectDrift(makeDriftDeps(dir).deps).status).toBe("ok");
+
+    // …and so must `phase list`'s view — no phantom drift from a stale mirror.
+    const rows = buildPhaseList(loaded.manifest, lock, dir);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.status).toBe("ok");
+
+    // `phase show` must agree: displayed contentHash == the locked hash.
+    const show = buildPhaseShow("implement", loaded.manifest.phases.implement, loaded.manifest, lock, dir, false);
+    expect(show.contentHash).toBe(show.lockedHash);
+  }, 20_000);
 });
 
 describe("formatDriftWarning", () => {
