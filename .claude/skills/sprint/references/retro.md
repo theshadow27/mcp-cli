@@ -224,16 +224,31 @@ git worktree remove .claude/worktrees/sprint-{N}
 git branch -D sprint-{N}   # local branch (remote was --delete-branch'd by gh pr merge)
 ```
 
-## Introspection cadence (sprints ending in 7)
+## Introspection cadence (sprints ending in 7) — MECHANICALLY GATED
 
 If the sprint number ends in 7 (17, 27, 37, 47, ~~57~~ (skipped — see #2506), 67…), queue a
 code-first introspection round to feed the *next* sprint's plan. The round
 runs as part of this retro: spawn one Explore agent with the prompt template
 at `.claude/skills/sprint/references/introspection.md`, triage findings with
 the user, and file the load-bearing ones as initiative issues. They land in
-sprint-{N+1}'s plan as Bucket-1 candidates.
+sprint-{N+1}'s plan as Bucket-1 candidates. The round's tracking issue must
+be titled like `epic: sprint-{N} introspection round — tracking` (the #2511
+convention) — that title is what the mechanical guard matches.
 
-Skip if the sprint number does not end in 7.
+**Load-bearing guard (#2506) — run for EVERY retro, before clearing the
+sprint sentinel:**
+
+```bash
+bun scripts/check-introspection-round.ts {N}
+```
+
+Exit 1 **blocks the retro** — it means the sprint ends in 7 and no
+introspection-round tracking issue exists (or GitHub was unreachable). Run
+the round and file its tracking issue, then re-run the guard. Do not clear
+the sentinel or convert the sprint PR to ready while this fails. For sprints
+not ending in 7 the guard exits 0 immediately — running it unconditionally is
+what makes the cadence skip-proof (the sprint-57 round was lost because the
+check was prose-only).
 
 The first round (sprint 47 → sprint 48) produced #1856–#1866; #1867 tracks
 the cadence. See `introspection.md` for the prompt + triage flow.
