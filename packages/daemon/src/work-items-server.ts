@@ -7,7 +7,14 @@
 
 import { isAbsolute, resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
-import { WORK_ITEMS_SERVER_NAME, canTransition, consoleLogger, isStandardPhase, resolveRealpath } from "@mcp-cli/core";
+import {
+  WORK_ITEMS_SERVER_NAME,
+  canTransition,
+  consoleLogger,
+  isReservedPhaseStateKey,
+  isStandardPhase,
+  resolveRealpath,
+} from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -176,7 +183,7 @@ const TOOLS = [
   {
     name: "phase_state_set",
     description:
-      "Write a key to a work item's phase-scoped key-value store. Value must be JSON-serialisable and under 256 KB.",
+      "Write a key to a work item's phase-scoped key-value store. Value must be JSON-serialisable and under 256 KB. Reserved phase-runner sentinels (keys ending in _spawned_at or _round, and previous_phase) are rejected — they gate verdict freshness and round caps and are written only by the phase runner.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -567,6 +574,17 @@ export class WorkItemsServer {
                 isError: true,
               };
             }
+            if (isReservedPhaseStateKey(key)) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Refusing to write reserved phase-runner sentinel "${key}". Keys ending in _spawned_at or _round, and previous_phase, are written exclusively by the phase runner (they gate verdict freshness and round caps). This tool is for orchestrator bookkeeping (e.g. the *_session_id family).`,
+                  },
+                ],
+                isError: true,
+              };
+            }
             const ns = `workitem:${workItemId}`;
             this.stateDb.setAliasState(repoRoot, ns, key, a.value);
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key }) }] };
@@ -598,6 +616,17 @@ export class WorkItemsServer {
             if (!this.workItemDb.getWorkItem(workItemId)) {
               return {
                 content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
+                isError: true,
+              };
+            }
+            if (isReservedPhaseStateKey(key)) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Refusing to delete reserved phase-runner sentinel "${key}". Keys ending in _spawned_at or _round, and previous_phase, are managed exclusively by the phase runner (they gate verdict freshness and round caps).`,
+                  },
+                ],
                 isError: true,
               };
             }

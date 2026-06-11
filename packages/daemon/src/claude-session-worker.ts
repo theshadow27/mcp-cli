@@ -236,6 +236,14 @@ export async function handlePrompt(
       ? effectiveTools.map((tool) => ({ tool, action: "allow" as const }))
       : undefined;
 
+    // Per-spawn overrides (#2681). These are captured in the RPC args at dispatch
+    // time (when `mcx claude spawn` ran), so a later `mcx config set` can't change
+    // what this session uses. Omitting them preserves the pinned-grid default.
+    const binaryOverride = typeof args.claudeBinary === "string" ? args.claudeBinary : undefined;
+    const transportArg = args.transport === "stdio" || args.transport === "sdk-url" ? args.transport : undefined;
+    const transportOverride: "ws" | "stdio" | undefined =
+      transportArg === "stdio" ? "stdio" : transportArg === "sdk-url" ? "ws" : undefined;
+
     let sessionName: string;
     let sessionTransport: "ws" | "stdio";
     try {
@@ -250,6 +258,8 @@ export async function handlePrompt(
         model: args.model ? resolveModelName(args.model as string) : undefined,
         resumeSessionId: args.resumeSessionId as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
+        transport: transportOverride,
+        binaryPath: binaryOverride,
       });
       sessionName = prepared.name;
       sessionTransport = prepared.transport;

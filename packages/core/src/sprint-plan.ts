@@ -2,12 +2,27 @@
  * Utilities for reading the sprint plan markdown file.
  *
  * Sprint plans live at `.claude/sprints/sprint-<N>.md` and contain a markdown
- * table with a `#` column (issue number) and a `Model` column (opus/sonnet).
- * The impl phase uses these to pick the right model per issue (#1437).
+ * table with a `#` column (issue number) and a `Model` column. The impl phase
+ * uses these to pick the right model per issue (#1437). The Model column may
+ * name any Claude model — a shortname (`opus`, `sonnet`, `fable`, `haiku`) or a
+ * full ID (`claude-fable-5`) — not just opus/sonnet, so per-item canary
+ * assignments (e.g. a fable A/B run) survive the phase-run path (#2665).
  */
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { MODEL_SHORTNAMES } from "./model";
+
+/**
+ * A Model-column cell counts as a model when it is a known shortname or a full
+ * Claude model ID. Unrecognized values (typos, non-Claude names like "gpt4")
+ * are ignored so the impl phase falls back to its label heuristic rather than
+ * forwarding a bad `--model` value.
+ */
+function isRecognizedModel(value: string): boolean {
+  if (value in MODEL_SHORTNAMES) return true;
+  return /^claude-[a-z0-9.-]+$/.test(value);
+}
 
 /**
  * Parse the Model column from a sprint plan markdown table for the given issue.
@@ -16,9 +31,9 @@ import { join } from "node:path";
  * Multiple tables per file are supported — each non-table line between
  * table blocks resets column state so the next table header is picked up.
  *
- * Returns "opus" | "sonnet" | null.
+ * Returns the recognized model name verbatim (shortname or full ID), or null.
  */
-export function parseModelFromSprintTable(text: string, issueNumber: number): "opus" | "sonnet" | null {
+export function parseModelFromSprintTable(text: string, issueNumber: number): string | null {
   let modelColIdx = -1;
   let issueColIdx = -1;
 
@@ -58,7 +73,7 @@ export function parseModelFromSprintTable(text: string, issueNumber: number): "o
     if (!numMatch || Number.parseInt(numMatch[0], 10) !== issueNumber) continue;
 
     const modelCell = (cols[modelColIdx] ?? "").toLowerCase().trim();
-    if (modelCell === "opus" || modelCell === "sonnet") return modelCell;
+    if (modelCell && isRecognizedModel(modelCell)) return modelCell;
   }
 
   return null;
@@ -68,7 +83,7 @@ export function parseModelFromSprintTable(text: string, issueNumber: number): "o
  * Scan `.claude/sprints/sprint-*.md` files (latest sprint first) and return
  * the model declared for the given issue number, or null if not found.
  */
-export function findModelInSprintPlan(issueNumber: number, repoRoot: string): "opus" | "sonnet" | null {
+export function findModelInSprintPlan(issueNumber: number, repoRoot: string): string | null {
   const sprintDir = join(repoRoot, ".claude", "sprints");
   let files: string[];
   try {

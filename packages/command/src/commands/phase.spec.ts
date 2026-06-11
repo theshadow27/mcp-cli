@@ -10,6 +10,7 @@ import {
   historyTargets,
   parseLockfile,
   readTransitionHistory,
+  serializeLockfile,
 } from "@mcp-cli/core";
 import {
   bundleAlias,
@@ -1199,6 +1200,43 @@ function makeDriftDeps(cwd: string) {
   return { deps, logs, errs, getExitCode: () => exitCode };
 }
 
+describe("cmdPhase root resolution from a worktree (#2673)", () => {
+  test("phase check resolves .mcx.lock from the main checkout root, not the worktree CWD", async () => {
+    // Main checkout: manifest + source + a freshly installed (in-sync) lock.
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+    const { deps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], deps);
+
+    // Worktree checkout: identical sources but a STALE committed lock — this is
+    // the #2570 scenario where the lock at HEAD lagged the source.
+    const worktree = mkdtempSync(join(tmpdir(), "mcx-phase-wt-"));
+    try {
+      writeFileSync(join(worktree, ".mcx.yaml"), simpleManifest);
+      writeFileSync(join(worktree, "impl.ts"), simpleAlias);
+      const stale = parseLockfile(readFileSync(join(dir, ".mcx.lock"), "utf-8"));
+      stale.phases[0].contentHash = "0".repeat(64);
+      writeFileSync(join(worktree, ".mcx.lock"), serializeLockfile(stale));
+
+      // Control: with no root mapping, checking from the worktree reads the
+      // worktree's stale lock and falsely reports drift.
+      const control = await catchExit(() => cmdPhase(["check"], { cwd: () => worktree, resolveRoot: (c) => c }));
+      expect(control.code).toBe(1);
+      expect(control.err).toContain("out of date");
+
+      // Fix: mapping the worktree CWD back to the main checkout root reads the
+      // in-sync lock and reports ok.
+      const mapped = await catchExit(() =>
+        cmdPhase(["check"], { cwd: () => worktree, resolveRoot: (c) => (c === worktree ? dir : c) }),
+      );
+      expect(mapped.code).toBeUndefined();
+      expect(mapped.out).toContain("lockfile ok");
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("detectDrift", () => {
   async function installFixture(extraPhase?: { name: string; src: string }) {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
@@ -1320,6 +1358,81 @@ phases:
     await cmdPhase(["install"], reDeps);
     const { deps: checkDeps } = makeDriftDeps(dir);
     expect(detectDrift(checkDeps).status).toBe("ok");
+  }, 20_000);
+
+  test("detects drift when a transitive import changes (#2656)", async () => {
+    // Entry imports a sibling helper; editing the helper (not the entry) used
+    // to leave contentHash unchanged because only the entry file was hashed.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 1;\n");
+    const importingAlias = `
+import { defineAlias, z } from "mcp-cli";
+import { SUFFIX } from "./helper";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "Implement phase",
+  input: z.object({ issue: z.number() }),
+  output: z.object({ pr: z.number() }),
+  fn: async (input) => ({ pr: input.issue + SUFFIX }),
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), importingAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    // Clean install → no drift.
+    expect(detectDrift(makeDriftDeps(dir).deps).status).toBe("ok");
+
+    // Edit only the transitive import.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 2;\n");
+    const result = detectDrift(makeDriftDeps(dir).deps);
+    expect(result.status).toBe("drift");
+    if (result.status === "drift") {
+      const phase = result.entries.find((e) => e.kind === "phase-source");
+      expect(phase).toBeDefined();
+      // Drift is attributed to the entry phase, even though helper.ts changed.
+      expect(phase?.path).toBe("impl.ts");
+    }
+  }, 20_000);
+
+  test("phase list/show report no drift on a clean tree, including transitive imports (#2656)", async () => {
+    // Regression: buildPhaseList/buildPhaseShow hashed the entry file only,
+    // but the lock now stores the closure hash — so every phase falsely showed
+    // "drift" on a clean tree even though `phase check` passed. Pin list==check.
+    writeFileSync(join(dir, "helper.ts"), "export const SUFFIX = 1;\n");
+    const importingAlias = `
+import { defineAlias, z } from "mcp-cli";
+import { SUFFIX } from "./helper";
+
+defineAlias(({ z }) => ({
+  name: "implement",
+  description: "Implement phase",
+  input: z.object({ issue: z.number() }),
+  output: z.object({ pr: z.number() }),
+  fn: async (input) => ({ pr: input.issue + SUFFIX }),
+}));
+`.trim();
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), importingAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    const loaded = loadManifest(dir);
+    if (!loaded) throw new Error("manifest failed to load");
+    const lock = parseLockfile(readFileSync(join(dir, ".mcx.lock"), "utf-8"));
+
+    // `phase check`'s view (detectDrift) is clean…
+    expect(detectDrift(makeDriftDeps(dir).deps).status).toBe("ok");
+
+    // …and so must `phase list`'s view — no phantom drift from a stale mirror.
+    const rows = buildPhaseList(loaded.manifest, lock, dir);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.status).toBe("ok");
+
+    // `phase show` must agree: displayed contentHash == the locked hash.
+    const show = buildPhaseShow("implement", loaded.manifest.phases.implement, loaded.manifest, lock, dir, false);
+    expect(show.contentHash).toBe(show.lockedHash);
   }, 20_000);
 });
 

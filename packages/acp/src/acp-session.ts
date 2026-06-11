@@ -15,7 +15,7 @@
 
 import { resolve } from "node:path";
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
-import { spawnCapture } from "@mcp-cli/core";
+import { ContainmentGuard, gateContainment, isPathContained, resolveRealpath, spawnCapture } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { type AcpEventMapState, buildTurnResult, createAcpEventMapState, mapSessionUpdate } from "./acp-event-map";
 import { buildRules, evaluatePermission, findOptionId, mapPermissionRequest } from "./acp-permission-adapter";
@@ -73,6 +73,7 @@ export class AcpSession {
   private acpSessionId: string | null = null;
   private readonly config: AcpSessionConfig;
   private readonly rules: PermissionRule[];
+  private readonly containment: ContainmentGuard | null;
   private readonly pendingPermissions = new Map<string, AgentPermissionRequest>();
   private readonly transcript: TranscriptEntry[] = [];
   private model: string | null = null;
@@ -95,6 +96,7 @@ export class AcpSession {
     this.eventState = createAcpEventMapState();
     this.transcriptState = createTranscriptState();
     this.rules = buildRules(config.allowedTools, config.disallowedTools);
+    this.containment = config.worktree ? new ContainmentGuard(config.worktree) : null;
     this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? WATCHDOG_TIMEOUT_MS;
     this.agentDisplayName = config.agent;
   }
@@ -449,6 +451,17 @@ export class AcpSession {
   private handlePermissionRequest(id: number | string, params: PermissionRequestParams): void {
     const permission = mapPermissionRequest(params);
 
+    // Worktree containment runs before the permission rules so a worktree
+    // session can never approve a tool call that escapes the worktree root (#2519).
+    const containment = gateContainment(this.containment, permission.toolName, permission.input, (e) => this.emit(e));
+    if (containment?.action === "deny") {
+      const optionId = findOptionId(params.options, "reject_once") ?? params.options[0]?.optionId;
+      if (optionId) {
+        this.rpc?.respondToServerRequest(id, { outcome: { outcome: "selected", optionId } });
+      }
+      return;
+    }
+
     // Evaluate against permission rules
     const decision = evaluatePermission(permission, this.rules);
 
@@ -492,9 +505,19 @@ export class AcpSession {
     const path = params.path as string;
     const content = params.content as string;
 
-    // Validate path is under session cwd
+    // Resolve to an absolute path so containment/cwd checks compare like for like.
     const resolved = resolve(this.config.cwd, path);
-    if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
+
+    // Worktree containment (#2519): the ACP agent asks the daemon to perform
+    // this write directly, so the guard is the authoritative bound for worktree
+    // sessions. Falls back to the cwd traversal check when no worktree is set.
+    if (this.containment) {
+      const containment = gateContainment(this.containment, "Write", { file_path: resolved }, (e) => this.emit(e));
+      if (containment?.action === "deny") {
+        this.rpc?.respondWithError(id, -1, containment.reason);
+        return;
+      }
+    } else if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
       this.rpc?.respondWithError(id, -1, `Path traversal denied: ${path} is outside session cwd`);
       return;
     }
@@ -533,9 +556,39 @@ export class AcpSession {
     const cmd = params.command as string;
     const cmdArgs = (params.args as string[]) ?? [];
     const cmdCwd = (params.cwd as string) ?? this.config.cwd;
+
+    // Worktree containment (#2519): the daemon runs this command on behalf of
+    // the agent, so gate git-write / shell-write escapes the same way Bash tool
+    // calls are gated for Claude sessions.
+    const containment = gateContainment(this.containment, "Bash", { command: [cmd, ...cmdArgs].join(" ") }, (e) =>
+      this.emit(e),
+    );
+    if (containment?.action === "deny") {
+      this.rpc?.respondWithError(id, -1, containment.reason);
+      return;
+    }
+
+    // The command parser is heuristic and the daemon spawns directly (no OS
+    // sandbox), so an unconstrained cwd is itself an escape: a non-denylisted
+    // writer (touch, python -c, ./script.sh) or a relative-path redirect run
+    // with a cwd outside the worktree writes anywhere. Constrain the spawn cwd
+    // to the worktree root for worktree sessions (#2519).
+    const effectiveCwd = this.constrainTerminalCwd(cmdCwd);
+    if (effectiveCwd === null) {
+      const reason = `terminal/create cwd "${cmdCwd}" is outside worktree ${this.containment?.worktreeRoot}; denied.`;
+      this.emit({
+        type: "session:containment_denied",
+        toolName: "Bash",
+        reason,
+        strikes: this.containment?.strikes ?? 0,
+      });
+      this.rpc?.respondWithError(id, -1, reason);
+      return;
+    }
+
     try {
       const result = await spawnCapture(cmd, cmdArgs, {
-        cwd: cmdCwd,
+        cwd: effectiveCwd,
         timeoutMs: AcpSession.TERMINAL_TIMEOUT_MS,
       });
 
@@ -550,6 +603,19 @@ export class AcpSession {
     } catch (err) {
       this.rpc?.respondWithError(id, -1, String(err));
     }
+  }
+
+  /**
+   * Clamp a terminal/create cwd to the worktree root. Returns the resolved cwd
+   * when it stays inside the worktree, or null when it escapes (caller denies).
+   * Non-worktree sessions are unconstrained, matching the guard's null-guard
+   * semantics elsewhere.
+   */
+  private constrainTerminalCwd(cwd: string): string | null {
+    const guard = this.containment;
+    if (!guard) return cwd;
+    const resolved = resolveRealpath(resolve(cwd));
+    return isPathContained(resolved, guard.worktreeRoot) ? resolved : null;
   }
 
   private handleTerminalOutput(id: number | string, params: Record<string, unknown>): void {

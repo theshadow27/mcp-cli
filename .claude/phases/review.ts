@@ -32,10 +32,9 @@ import { runReview } from "./review-fn";
 
 const ProviderSchema = z
   .string()
-  .refine(
-    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
-    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
-  );
+  .refine((v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"), {
+    message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"',
+  });
 
 defineAlias({
   name: "phase-review",
@@ -46,7 +45,7 @@ defineAlias({
   }),
   output: z.object({
     action: z.enum(["spawn", "wait", "goto"]),
-    target: z.enum(["repair", "qa"]).optional(),
+    target: z.enum(["repair", "qa", "needs-attention"]).optional(),
     reason: z.string(),
     round: z.number(),
     command: z.array(z.string()).optional(),

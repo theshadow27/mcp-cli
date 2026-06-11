@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentPermissionRequest } from "@mcp-cli/core";
-import { buildRules, evaluateApproval } from "./codex-permission-adapter";
+import { ContainmentGuard } from "@mcp-cli/core";
+import { buildRules, evaluateApproval, gateApprovalContainment } from "./codex-permission-adapter";
 
 function bashRequest(command: string): AgentPermissionRequest {
   return {
@@ -110,5 +114,64 @@ describe("buildRules", () => {
   test("handles undefined inputs", () => {
     expect(buildRules()).toEqual([]);
     expect(buildRules(undefined, undefined)).toEqual([]);
+  });
+});
+
+// ── Containment contract (#2519, #2720) ──
+// A codex fileChange patch carries every changed path in `input.files`.
+// gateApprovalContainment must validate ALL of them, not just files[0].
+describe("gateApprovalContainment", () => {
+  test("null guard → null (no worktree, no gating)", () => {
+    const result = gateApprovalContainment(null, writeRequest("/anywhere.ts"), () => {});
+    expect(result).toBeNull();
+  });
+
+  test("multi-file patch fully inside the worktree → allow", () => {
+    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const perm = writeRequest(join(wt, "a.ts"), [join(wt, "a.ts"), join(wt, "b.ts")]);
+      const result = gateApprovalContainment(guard, perm, () => {});
+      expect(result?.action).toBe("allow");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  test("multi-file patch escaping only in a LATER file → deny", () => {
+    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    const events: string[] = [];
+    try {
+      const guard = new ContainmentGuard(wt);
+      // files[0] inside, files[1] escapes — the exact #2519 bypass.
+      const perm = writeRequest(join(wt, "a.ts"), [join(wt, "a.ts"), "/etc/codex-contract-escape.txt"]);
+      const result = gateApprovalContainment(guard, perm, (e) => events.push(e.type));
+      expect(result?.action).toBe("deny");
+      expect(events).toContain("session:containment_denied");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  test("empty change set fails closed (no synthesized path)", () => {
+    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const result = gateApprovalContainment(guard, writeRequest("unknown", []), () => {});
+      expect(result?.action).toBe("deny");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  test("command-execution approval (no files[]) gates via the Bash path", () => {
+    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    try {
+      const guard = new ContainmentGuard(wt);
+      const result = gateApprovalContainment(guard, bashRequest("git -C /etc commit -m pwned"), () => {});
+      expect(result?.action).toBe("deny");
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
   });
 });

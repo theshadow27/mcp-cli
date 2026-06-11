@@ -16,6 +16,7 @@ export * from "./cli-config";
 export * from "./constants";
 export * from "./env";
 export * from "./fs";
+export * from "./containment";
 export * from "./schema-display";
 export * from "./model";
 export * from "./agent-provider";

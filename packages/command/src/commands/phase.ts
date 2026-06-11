@@ -54,6 +54,7 @@ import {
   extractMetadata,
   findGitRoot,
   hashFileSync,
+  hashImportClosureSync,
   historyTargets,
   ipcCall,
   isCommitted,
@@ -90,6 +91,7 @@ export interface PhaseInstallDeps {
   readFile: (path: string) => Promise<string>;
   executeAliasBundled: typeof executeAliasBundled;
   cwd: () => string;
+  resolveRoot: (cwd: string) => string;
   log: (msg: string) => void;
   logError: (msg: string) => void;
   exit: (code: number) => never;
@@ -106,6 +108,7 @@ const defaultDeps: PhaseInstallDeps = {
   readFile: (path) => Bun.file(path).text(),
   executeAliasBundled,
   cwd: () => process.cwd(),
+  resolveRoot: (cwd) => findGitRoot(cwd) ?? cwd,
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
   exit: (code) => process.exit(code),
@@ -191,7 +194,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
 
     let contentHash: string;
     try {
-      contentHash = deps.hashFileSync(resolvedAbs);
+      contentHash = hashImportClosureSync(resolvedAbs, cwd);
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e?.code === "ENOENT") {
@@ -245,7 +248,7 @@ export async function installPhases(cwd: string, deps: PhaseInstallDeps): Promis
 
       let contentHash: string;
       try {
-        contentHash = deps.hashFileSync(resolvedAbs);
+        contentHash = hashImportClosureSync(resolvedAbs, cwd);
       } catch (err) {
         const e = err as NodeJS.ErrnoException;
         if (e?.code === "ENOENT") {
@@ -517,7 +520,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
     const abs = resolvePath(cwd, locked.resolvedPath);
     let actualHash: string;
     try {
-      actualHash = deps.hashFileSync(abs);
+      actualHash = hashImportClosureSync(abs, cwd);
     } catch {
       entries.push({
         kind: "phase-source",
@@ -568,7 +571,7 @@ export function detectDrift(deps: DriftDeps): DriftResult {
     const abs = resolvePath(cwd, locked.resolvedPath);
     let actualHash: string;
     try {
-      actualHash = deps.hashFileSync(abs);
+      actualHash = hashImportClosureSync(abs, cwd);
     } catch {
       entries.push({
         kind: "automation-source",
@@ -725,6 +728,14 @@ export async function cmdPhase(
   execDeps?: Partial<PhaseExecuteDeps>,
 ): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
+  // Resolve manifest / .mcx.lock / transition-log lookups from the main
+  // checkout root, not the raw CWD. From a linked worktree, process.cwd() is
+  // the worktree checkout whose committed .mcx.lock can be stale, while phase
+  // *state* is keyed by findGitRoot's main-checkout root — so a lock that is in
+  // sync at the root falsely reports "out of date" from a worktree. Mapping the
+  // lookup root through the same resolver keeps both consistent (#2673).
+  const rawCwd = d.cwd;
+  d.cwd = () => d.resolveRoot(rawCwd());
   const sub = args[0];
 
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -1872,7 +1883,7 @@ export function buildPhaseList(manifest: Manifest, lock: Lockfile | null, cwd: s
       status = "missing";
     } else {
       try {
-        const currentHash = hashFileSync(resolvePhaseSource(phase.source, cwd));
+        const currentHash = hashImportClosureSync(resolvePhaseSource(phase.source, cwd), cwd);
         status = currentHash === locked.contentHash ? "ok" : "drift";
       } catch {
         status = "not-found";
@@ -1929,7 +1940,7 @@ export function buildPhaseShow(
     const abs = resolvePhaseSource(phase.source, cwd);
     resolvedPath = relative(cwd, abs).split("\\").join("/") || ".";
     try {
-      contentHash = hashFileSync(abs);
+      contentHash = hashImportClosureSync(abs, cwd);
       const text = readFileSync(abs, "utf-8");
       const lines = text.split("\n");
       if (!full && lines.length > 20) {

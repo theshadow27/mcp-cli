@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { GhLabelEvent } from "./phase-types";
 import {
+  REVIEW_RESPAWN_CAP,
   REVIEW_ROUND_CAP,
+  REVIEW_STUCK_TICK_CAP,
   type ReviewDeps,
   type ReviewState,
   type ReviewWork,
@@ -26,6 +28,9 @@ function makeState(initial: Record<string, unknown> = {}): ReviewState {
     },
     async set(key, value) {
       store.set(key, value);
+    },
+    async delete(key) {
+      store.delete(key);
     },
   };
 }
@@ -52,18 +57,25 @@ function makeGh(opts: GhStubOpts = {}): ReviewDeps["gh"] {
   const events = opts.labelEvents ?? validEventsFor(labels);
   return async (op) => {
     if (op.op === "pr:labels") {
-      return { stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "", stderr: "", exitCode: opts.labelsExitCode ?? 0 };
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
     }
     if (op.op === "pr:label-events") {
-      if ((opts.eventsExitCode ?? 0) !== 0) return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
       return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:author") {
-      if ((opts.authorExitCode ?? 0) !== 0) return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
+      if ((opts.authorExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
       return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:head-date") {
-      if ((opts.headDateExitCode ?? 0) !== 0) return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
+      if ((opts.headDateExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
       return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
     }
     return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
@@ -118,7 +130,8 @@ describe("readReviewLabels", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: " review:pass \n bug \n", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") return { stdout: JSON.stringify(validEventsFor(["review:pass"])), stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events")
+          return { stdout: JSON.stringify(validEventsFor(["review:pass"])), stderr: "", exitCode: 0 };
         if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
         if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 1 };
@@ -173,8 +186,27 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
     expect(result.rejections[0]).toMatch(/unparseable/);
   });
 
+  test("fail closed: non-array label events rejects all verdicts (#2686)", async () => {
+    const deps = makeDeps({
+      gh: async (op) => {
+        if (op.op === "pr:labels") return { stdout: "review:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events") return { stdout: '{"message":"Not Found"}', stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    const result = await readReviewLabels(20, deps, DEFAULT_SPAWNED_AT);
+    expect(result.hasPass).toBe(false);
+    expect(result.rejections[0]).toMatch(/label-events not an array/);
+  });
+
   test("rejects stale label predating session spawn (guard b)", async () => {
-    const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T09:55:00Z" };
+    const staleEvent: GhLabelEvent = {
+      actor: DEFAULT_AUTHOR,
+      label: "review:pass",
+      created_at: "2026-06-09T09:55:00Z",
+    };
     const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [staleEvent] }) });
     const result = await readReviewLabels(20, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
@@ -183,7 +215,9 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
 
   test("rejects label predating head commit (guard c)", async () => {
     const event: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T10:05:00Z" };
-    const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }) });
+    const deps = makeDeps({
+      gh: makeGh({ labels: ["review:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }),
+    });
     const result = await readReviewLabels(20, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
     expect(result.rejections[0]).toMatch(/verdict on stale code/);
@@ -194,7 +228,10 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: "bug\nenhancement", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") { eventsFetched = true; return { stdout: "[]", stderr: "", exitCode: 0 }; }
+        if (op.op === "pr:label-events") {
+          eventsFetched = true;
+          return { stdout: "[]", stderr: "", exitCode: 0 };
+        }
         return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
@@ -307,6 +344,14 @@ describe("runReview — session exists", () => {
     if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
   });
 
+  test("returns wait when review_spawned_at is a string (typeof guard #2687)", async () => {
+    const state = makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: "1718000000000" as unknown as number });
+    const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"] }) });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(result.action).toBe("wait");
+    if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
+  });
+
   test("returns goto qa when review:pass label is set and valid", async () => {
     const state = makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"] }) });
@@ -341,7 +386,11 @@ describe("runReview — session exists", () => {
   });
 
   test("returns goto qa when round cap reached even with review:changes", async () => {
-    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP, review_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      review_session_id: "abc",
+      review_round: REVIEW_ROUND_CAP,
+      review_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:changes"] }) });
     const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
     expect(result.action).toBe("goto");
@@ -382,7 +431,11 @@ describe("runReview — session exists", () => {
 
   test("clears review:changes even when the round cap routes to qa", async () => {
     const removed: string[] = [];
-    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP, review_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      review_session_id: "abc",
+      review_round: REVIEW_ROUND_CAP,
+      review_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({
       gh: makeGh({ labels: ["review:changes"] }),
       async prEdit(_prNumber, flags) {
@@ -398,12 +451,68 @@ describe("runReview — session exists", () => {
   });
 
   test("rejects stale review:pass and returns wait with rejection reason", async () => {
-    const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T09:55:00Z" };
+    const staleEvent: GhLabelEvent = {
+      actor: DEFAULT_AUTHOR,
+      label: "review:pass",
+      created_at: "2026-06-09T09:55:00Z",
+    };
     const state = makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [staleEvent] }) });
     const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
     expect(result.action).toBe("wait");
     if (result.action === "wait") expect(result.reason).toMatch(/rejected.*stale/i);
+  });
+});
+
+// Regression for #2654: a reviewer session that dies before setting its verdict
+// label must not idle the gate forever. The no-verdict-yet branch counts ticks
+// and routes to a deterministic outcome (bounded respawn, then needs-attention).
+describe("runReview — dead-session backstop (#2654)", () => {
+  const stuckState = (overrides: Record<string, unknown> = {}) =>
+    makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT, ...overrides });
+  const noLabelDeps = () => makeDeps({ gh: makeGh({ labels: ["bug"] }) });
+
+  test("waits and increments the stuck tick while under the cap", async () => {
+    const state = stuckState();
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("wait");
+    expect(await state.get<number>("review_stuck_ticks")).toBe(1);
+  });
+
+  test("respawns the reviewer when the stuck tick cap is reached", async () => {
+    const state = stuckState({ review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1 });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    expect(await state.get<number>("review_respawns")).toBe(1);
+    expect(await state.get<string>("review_session_id")).toMatch(/^pending:/);
+    expect(await state.get<number>("review_stuck_ticks")).toBe(0);
+  });
+
+  test("escalates to needs-attention once the respawn budget is exhausted", async () => {
+    const state = stuckState({
+      review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1,
+      review_respawns: REVIEW_RESPAWN_CAP,
+    });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.target).toBe("needs-attention");
+      expect(result.reason).toMatch(/presumed dead/i);
+    }
+  });
+
+  test("a valid verdict still routes normally despite accumulated stuck ticks", async () => {
+    const state = stuckState({ review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1 });
+    const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"] }) });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("qa");
+  });
+
+  test("a fresh spawn resets the stuck tick counter", async () => {
+    const state = makeState({ review_stuck_ticks: 3 });
+    await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(await state.get<number>("review_stuck_ticks")).toBe(0);
   });
 });
 

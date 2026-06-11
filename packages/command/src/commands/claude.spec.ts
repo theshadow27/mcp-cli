@@ -191,6 +191,34 @@ describe("parseSpawnArgs", () => {
     }
   });
 
+  test("parses --claude-binary override (#2681)", () => {
+    const result = parseSpawnArgs(["--claude-binary", "/path/to/claude", "-t", "x"]);
+    expect(result.claudeBinary).toBe("/path/to/claude");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("--claude-binary without a path is an error (#2681)", () => {
+    const result = parseSpawnArgs(["--claude-binary", "-t", "x"]);
+    expect(result.error).toBe("--claude-binary requires a path");
+  });
+
+  test("parses --transport stdio and sdk-url (#2681)", () => {
+    expect(parseSpawnArgs(["--transport", "stdio", "-t", "x"]).transport).toBe("stdio");
+    expect(parseSpawnArgs(["--transport", "sdk-url", "-t", "x"]).transport).toBe("sdk-url");
+  });
+
+  test("--transport rejects unknown values (#2681)", () => {
+    const result = parseSpawnArgs(["--transport", "ws", "-t", "x"]);
+    expect(result.error).toBe('--transport must be "stdio" or "sdk-url"');
+    expect(result.transport).toBeUndefined();
+  });
+
+  test("overrides default to undefined when omitted (#2681)", () => {
+    const result = parseSpawnArgs(["-t", "x"]);
+    expect(result.claudeBinary).toBeUndefined();
+    expect(result.transport).toBeUndefined();
+  });
+
   test("parses -w shorthand", () => {
     const result = parseSpawnArgs(["-w", "feat", "-t", "x"]);
     expect(result.worktree).toBe("feat");
@@ -579,6 +607,33 @@ describe("resolveSessionId", () => {
     });
     const id = await resolveSessionId("Bob", deps);
     expect(id).toBe("def67890-aaaa-bbbb-cccc-dddddddddddd");
+  });
+});
+
+// ── cmdClaude spawn: --claude-binary validation (#2681, #2706) ──
+
+describe("cmdClaude spawn --claude-binary validation", () => {
+  test("rejects a non-executable binary path with a named error before dispatch", async () => {
+    const deps = makeDeps();
+    await expect(
+      cmdClaude(["spawn", "--task", "x", "--claude-binary", "/no/such/claude-binary-xyz"], deps),
+    ).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("is not an executable file"));
+    expect(deps.callTool).not.toHaveBeenCalled();
+  });
+
+  test("resolves an executable binary to an absolute path and plumbs it into the RPC", async () => {
+    const deps = makeDeps();
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--claude-binary", process.execPath], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const call = (deps.callTool as Mock<(...a: unknown[]) => unknown>).mock.calls.find((c) => c[0] === "claude_prompt");
+    expect(call).toBeDefined();
+    expect((call?.[1] as { claudeBinary?: string }).claudeBinary).toBe(process.execPath);
   });
 });
 

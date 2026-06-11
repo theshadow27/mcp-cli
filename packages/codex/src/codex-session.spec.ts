@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
 import { CodexSession, WATCHDOG_TIMEOUT_MS } from "./codex-session";
@@ -380,6 +382,80 @@ describe("CodexSession (with fake codex server)", () => {
 
     // currentTurn is null after turn/completed
     await expect(session.interrupt()).resolves.toBeUndefined();
+  });
+});
+
+// ── Worktree containment (#2519) ────────────────────────────────────────────
+
+describe("CodexSession worktree containment", () => {
+  function makeWorktreeSession(
+    worktreeRoot: string | undefined,
+    overrides: Partial<ConstructorParameters<typeof CodexSession>[1]> = {},
+  ): { session: CodexSession; events: AgentSessionEvent[] } {
+    const events: AgentSessionEvent[] = [];
+    const session = new CodexSession(
+      "test-session",
+      { cwd: worktreeRoot ?? TEST_CWD, prompt: "hello", worktree: worktreeRoot, ...overrides },
+      (e) => events.push(e),
+    );
+    return { session, events };
+  }
+
+  test("denies out-of-worktree write BEFORE the auto_approve short-circuit", async () => {
+    const worktree = mkdtempSync(join(tmpdir(), "codex-containment-"));
+    try {
+      // auto_approve would normally accept everything — containment must still deny.
+      const { session, events } = makeWorktreeSession(worktree, {
+        command: fakeCommand("approval-escape"),
+        approvalPolicy: "auto_approve",
+      });
+
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+      // Containment short-circuits before rules → never surfaces as a manual request.
+      expect(events.some((e) => e.type === "session:permission_request")).toBe(false);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("denies a multi-file patch when a LATER file escapes the worktree", async () => {
+    // files[0] is inside the worktree; a later file targets /etc. Validating
+    // only files[0] would approve the whole patch — the guard must check every
+    // path (#2519).
+    const worktree = mkdtempSync(join(tmpdir(), "codex-containment-"));
+    try {
+      const { session, events } = makeWorktreeSession(worktree, {
+        command: fakeCommand("filechange-escape"),
+        approvalPolicy: "auto_approve",
+      });
+
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(true);
+      expect(events.some((e) => e.type === "session:permission_request")).toBe(false);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("non-worktree session does not gate the same out-of-bounds command", async () => {
+    // No worktree → guard inactive → auto_approve accepts, no containment event.
+    const { session, events } = makeWorktreeSession(undefined, {
+      command: fakeCommand("approval-escape"),
+      approvalPolicy: "auto_approve",
+    });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    await resultPromise;
+
+    expect(events.some((e) => e.type === "session:containment_denied")).toBe(false);
   });
 });
 

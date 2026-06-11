@@ -300,3 +300,117 @@ describe("handlePrompt: per-request traceparent propagation (#1244)", () => {
     expect(recording.lastEnv()).toBeUndefined();
   });
 });
+
+// ── handlePrompt: per-spawn binary/transport override (#2681) ──
+
+describe("handlePrompt: per-spawn binary/transport override (#2681)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  test("caller-supplied binary/transport win over the startup default and stay frozen across a respawn after the global binary changes", async () => {
+    const recording = makeRecordingSpawn();
+    // Daemon's startup-resolved binary (the "pinned grid" default).
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger, binaryPath: "/startup/claude" });
+    await server.start();
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    const result = await handlePrompt(server, {
+      prompt: "canary run",
+      claudeBinary: "/canary/2.1.170",
+      transport: "stdio",
+    });
+    const { sessionId } = JSON.parse(result.content[0].text) as { sessionId: string };
+
+    // The caller-supplied binary is spawned — not the startup default.
+    const cmd = recording.lastCmd();
+    expect(cmd[0]).toBe("/canary/2.1.170");
+    // stdio transport: no --sdk-url WS bootstrap.
+    expect(cmd).not.toContain("--sdk-url");
+
+    // The session is recorded with the stdio transport (carried on the db:upsert).
+    type UpsertMsg = { type: string; session?: { transport?: string } };
+    const transportUpsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.transport !== undefined,
+    ) as UpsertMsg | undefined;
+    expect(transportUpsert?.session?.transport).toBe("stdio");
+
+    // Mutate the channel the spawn path actually consults as the "global" binary —
+    // the server's startup-resolved `binaryPath`, used via `config.binaryPath ?? this.binaryPath`.
+    (server as unknown as { binaryPath: string }).binaryPath = "/global/changed/claude";
+
+    // Respawn the same session (re-runs buildSpawnCmd). The per-session override was frozen
+    // onto session.config at dispatch, so it must still win over the mutated global default.
+    server.spawnClaude(sessionId);
+    expect(recording.lastCmd()[0]).toBe("/canary/2.1.170");
+  });
+
+  test("explicit --transport sdk-url override spawns the WS bootstrap (--sdk-url) and records ws", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger, binaryPath: "/startup/claude" });
+    await server.start();
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    await handlePrompt(server, { prompt: "canary run", transport: "sdk-url" });
+
+    // sdk-url maps to the WS transport: --sdk-url present in the spawn cmd.
+    expect(recording.lastCmd()).toContain("--sdk-url");
+
+    type UpsertMsg = { type: string; session?: { transport?: string } };
+    const transportUpsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.transport !== undefined,
+    ) as UpsertMsg | undefined;
+    expect(transportUpsert?.session?.transport).toBe("ws");
+  });
+
+  test("omitting overrides preserves the pinned default (startup binary + sdk-url WS)", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger, binaryPath: "/startup/claude" });
+    await server.start();
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    await handlePrompt(server, { prompt: "normal run" });
+
+    const cmd = recording.lastCmd();
+    expect(cmd[0]).toBe("/startup/claude");
+    expect(cmd).toContain("--sdk-url");
+
+    type UpsertMsg = { type: string; session?: { transport?: string } };
+    const transportUpsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.transport !== undefined,
+    ) as UpsertMsg | undefined;
+    expect(transportUpsert?.session?.transport).toBe("ws");
+  });
+
+  test("binary override spawns even when the daemon's default binary is unresolved (spawn disabled)", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({
+      spawn: recording.spawn,
+      logger: silentLogger,
+      spawnDisabledReason: "claude 2.1.123 requires a patched copy",
+    });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const result = await handlePrompt(server, {
+      prompt: "canary run",
+      claudeBinary: "/canary/2.1.170",
+      transport: "stdio",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(recording.lastCmd()[0]).toBe("/canary/2.1.170");
+  });
+});

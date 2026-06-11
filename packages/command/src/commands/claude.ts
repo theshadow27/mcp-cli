@@ -6,7 +6,8 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
-import { join } from "node:path";
+import { constants, accessSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
 import {
@@ -71,7 +72,7 @@ export interface SharedSessionDeps {
   /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
   exec: (
     cmd: string[],
-    opts?: { env?: Record<string, string> },
+    opts?: { env?: Record<string, string>; timeoutMs?: number },
   ) => { stdout: string; stderr: string; exitCode: number };
 }
 
@@ -122,7 +123,7 @@ export const defaultDeps: ClaudeDeps = {
     // spawnCaptureSync replaces the env when provided; merge with process.env
     // here so callers that pass a few extra vars still inherit PATH etc.
     const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
-    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
+    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env, timeoutMs: opts?.timeoutMs });
     return {
       stdout: result.stdout.trim(),
       stderr: result.stderr.trim(),
@@ -284,6 +285,10 @@ export interface SpawnArgs extends SharedSpawnArgs {
   name: string | undefined;
   /** Work item ID for transition log bookkeeping. When set, spawn writes a null→initial entry. */
   workItemId: string | undefined;
+  /** Per-spawn claude binary override. Bypasses the daemon's global claudeBinary config for this session only. */
+  claudeBinary: string | undefined;
+  /** Per-spawn transport override. Bypasses the daemon's global transport config for this session only. */
+  transport: "stdio" | "sdk-url" | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
@@ -292,6 +297,8 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let headed = false;
   let name: string | undefined;
   let workItemId: string | undefined;
+  let claudeBinary: string | undefined;
+  let transport: "stdio" | "sdk-url" | undefined;
   let extraError: string | undefined;
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
@@ -334,11 +341,41 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       if (!workItemId) extraError = "--work-item requires an id";
       return 0;
     }
+    if (arg === "--claude-binary") {
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      if (next && !next.startsWith("-")) {
+        claudeBinary = next;
+        return 1;
+      }
+      extraError = "--claude-binary requires a path";
+      return 0;
+    }
+    if (arg === "--transport") {
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      if (next === "stdio" || next === "sdk-url") {
+        transport = next;
+        return 1;
+      }
+      extraError = '--transport must be "stdio" or "sdk-url"';
+      // Don't consume the bad value: matches --claude-binary's error path and avoids
+      // desyncing the shared parser's index when extraError is masked by a shared error.
+      return 0;
+    }
     return undefined;
   });
 
   // shared.error wins: it reflects a bad shared flag; extraError covers provider-specific failures
-  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed, name, workItemId };
+  return {
+    ...shared,
+    error: shared.error ?? extraError,
+    worktree,
+    resume,
+    headed,
+    name,
+    workItemId,
+    claudeBinary,
+    transport,
+  };
 }
 
 /**
@@ -455,6 +492,22 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     d.exit(1);
   }
 
+  // Resolve --claude-binary to an absolute path against the caller's shell cwd (a bare
+  // relative path would otherwise resolve against the daemon/worktree cwd at exec time),
+  // then verify it's executable here — a named error beats a silent connect-timeout after
+  // the daemon spawns a bad path (and bypasses the spawn-disabled guard) (#2681, #2706).
+  if (parsed.claudeBinary) {
+    const binPath = isAbsolute(parsed.claudeBinary) ? parsed.claudeBinary : resolve(process.cwd(), parsed.claudeBinary);
+    try {
+      accessSync(binPath, constants.X_OK);
+    } catch {
+      d.printError(`--claude-binary: ${binPath} is not an executable file`);
+      d.exit(1);
+      return;
+    }
+    parsed.claudeBinary = binPath;
+  }
+
   const rawTask = parsed.task ?? "Continue from where you left off.";
   let task = rawTask;
   try {
@@ -496,6 +549,10 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;
   if (parsed.wait) toolArgs.wait = true;
+  // Per-spawn overrides: captured here, at dispatch time, and frozen into the RPC
+  // so a later `mcx config set` cannot change what this session uses (#2681).
+  if (parsed.claudeBinary) toolArgs.claudeBinary = parsed.claudeBinary;
+  if (parsed.transport) toolArgs.transport = parsed.transport;
 
   // Handle worktree: always pre-create via shim so cwd points to the worktree.
   // Without cwd, Claude inherits the daemon's cwd (main repo) and file

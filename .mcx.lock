@@ -5,43 +5,43 @@
     {
       "name": "done",
       "resolvedPath": ".claude/phases/done.ts",
-      "contentHash": "11673a02b960efd7d4b4411639b21219fc1059d88c769f8dd266264794048892",
+      "contentHash": "c2f06149a306e11fcf86c5e6f258f9a1d254dba350a6f7db63a1b92b97cde0f7",
       "schemaHash": "65b20b69643a6f7b1250b4949e0d1dffd022aa9573aadd952a07759879ebc98f"
     },
     {
       "name": "impl",
       "resolvedPath": ".claude/phases/impl.ts",
-      "contentHash": "636261f4ecf2f645e837ed9c0a5e05c76a69ae80fc971e4a1dcba53953f18de8",
+      "contentHash": "4ea18c3194c7dc7708a7f9ff55f774ebd03bf8e5c7c9dccfc8917557a11b26e1",
       "schemaHash": "ffdce08965415cdf4bff93169087ae60b05a84fa07892fece8793b0bc06690b2"
     },
     {
       "name": "needs-attention",
       "resolvedPath": ".claude/phases/needs-attention.ts",
-      "contentHash": "83672d3dd36268fe4a2275e9056a33729dd17e642b11a5b8568e2e08548a8b77",
+      "contentHash": "30404ba095e4aa1f23d52484d46bb3008597a8fbfcc9e343914b86b4eac76a4a",
       "schemaHash": "acee09becf66bc4ce4a92a0a0533840eb0c988f0f2eb0f6eac3a77227ed5267a"
     },
     {
       "name": "qa",
       "resolvedPath": ".claude/phases/qa.ts",
-      "contentHash": "1b9b7bf979b7a9ab082d278db4743a4096d32a21d0faac0f297cd4f50e26d48d",
+      "contentHash": "3d973ec4fa0d9b47bbd609b2047498d4a2fd9af6f790765e3d9cae4c949f4ec8",
       "schemaHash": "2c3159b3558360d1a25caf8e7f4401da2dba237bf3799807bc8c68497290cd40"
     },
     {
       "name": "repair",
       "resolvedPath": ".claude/phases/repair.ts",
-      "contentHash": "778e86326cbff5d229a4c912f452ca86f418588e10bf8b1cea2dcd1b58e5de6a",
+      "contentHash": "e905e31f1db726dee1a926b1ca93febabc6fd9841b1dc5a51e70c9101958bc95",
       "schemaHash": "46d347d6bccd711c2069e8927617eb4a921e2c97f4b7038d4b5e5cdc90897c3a"
     },
     {
       "name": "review",
       "resolvedPath": ".claude/phases/review.ts",
-      "contentHash": "3f2852d3d02e968029648b09f6122455938c0545a88489255dec993d1c518fcf",
+      "contentHash": "23f5836df4aa597a1ef0b5844277c5cc135fb8a99d5491653a5969b42ffad6f1",
       "schemaHash": "722c5636d497444124371fe5ddabf15a1ca14b0b95fed8e066b3c2cacf1e8080"
     },
     {
       "name": "triage",
       "resolvedPath": ".claude/phases/triage.ts",
-      "contentHash": "9ce2cdb651ddb5b4530d2b3171b9727e83518e9f5680fc69b5f535d4a581e41c",
+      "contentHash": "310873836d6e75965d5a4034731c5553b6f79adb4bccb9fbbe7409231f22606f",
       "schemaHash": "03a042ac366a29c9f33de68cf1b24300bc899126e4084a4fa1303247afbc772c"
     }
   ],
@@ -49,7 +49,7 @@
     {
       "name": "cleanup",
       "resolvedPath": ".claude/automation/cleanup.ts",
-      "contentHash": "605790118bd7c1465949f4c0cf9c7c125be97af1da7aa140a4a3b8829a4221c1",
+      "contentHash": "344a6baf3f8428de0d4330272f92de7cf7b6956ce1eab763aadd79508608ae96",
       "events": [
         "pr.merged"
       ],

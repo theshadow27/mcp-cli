@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { GhLabelEvent } from "./phase-types";
-import { QA_FAIL_CAP, type QaDeps, type QaState, type QaWork, readQaLabels, runQa } from "./qa-fn";
+import {
+  QA_FAIL_CAP,
+  QA_RESPAWN_CAP,
+  QA_STUCK_TICK_CAP,
+  type QaDeps,
+  type QaState,
+  type QaWork,
+  readQaLabels,
+  runQa,
+} from "./qa-fn";
 
 const DEFAULT_SPAWNED_AT = new Date("2026-06-09T10:00:00Z").getTime();
 const DEFAULT_HEAD_DATE = "2026-06-09T09:50:00Z";
@@ -48,18 +57,25 @@ function makeGh(opts: GhStubOpts = {}): QaDeps["gh"] {
   const events = opts.labelEvents ?? validEventsFor(labels);
   return async (op) => {
     if (op.op === "pr:labels") {
-      return { stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "", stderr: "", exitCode: opts.labelsExitCode ?? 0 };
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
     }
     if (op.op === "pr:label-events") {
-      if ((opts.eventsExitCode ?? 0) !== 0) return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
       return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:author") {
-      if ((opts.authorExitCode ?? 0) !== 0) return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
+      if ((opts.authorExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
       return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:head-date") {
-      if ((opts.headDateExitCode ?? 0) !== 0) return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
+      if ((opts.headDateExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
       return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
     }
     return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
@@ -135,6 +151,21 @@ describe("readQaLabels — verdict validation (#2652)", () => {
     expect(result.rejections[0]).toMatch(/unparseable/);
   });
 
+  test("fail closed: non-array label events rejects all verdicts (#2686)", async () => {
+    const deps = makeDeps({
+      gh: async (op) => {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events") return { stdout: '{"foo":1}', stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
+    expect(result.hasPass).toBe(false);
+    expect(result.rejections[0]).toMatch(/label-events not an array/);
+  });
+
   test("rejects stale label predating session spawn (guard b)", async () => {
     const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T09:55:00Z" };
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"], labelEvents: [staleEvent] }) });
@@ -145,7 +176,9 @@ describe("readQaLabels — verdict validation (#2652)", () => {
 
   test("rejects label predating head commit (guard c)", async () => {
     const event: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T10:05:00Z" };
-    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }) });
+    const deps = makeDeps({
+      gh: makeGh({ labels: ["qa:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }),
+    });
     const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
     expect(result.rejections[0]).toMatch(/verdict on stale code/);
@@ -156,7 +189,10 @@ describe("readQaLabels — verdict validation (#2652)", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: "bug\nenhancement", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") { eventsFetched = true; return { stdout: "[]", stderr: "", exitCode: 0 }; }
+        if (op.op === "pr:label-events") {
+          eventsFetched = true;
+          return { stdout: "[]", stderr: "", exitCode: 0 };
+        }
         return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
@@ -235,6 +271,62 @@ describe("runQa — session exists, waiting for labels", () => {
     expect(result.action).toBe("wait");
     if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
   });
+
+  test("returns wait when qa_spawned_at is a string (typeof guard #2687)", async () => {
+    const state = makeState({ qa_session_id: "abc-123", qa_spawned_at: "1718000000000" as unknown as number });
+    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
+    expect(result.action).toBe("wait");
+    if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
+  });
+});
+
+// Regression for #2654: a QA session that dies before setting its verdict label
+// must not idle the gate forever — bounded respawn, then needs-attention.
+describe("runQa — dead-session backstop (#2654)", () => {
+  const stuckState = (overrides: Record<string, unknown> = {}) =>
+    makeState({ qa_session_id: "abc-123", qa_spawned_at: DEFAULT_SPAWNED_AT, ...overrides });
+  const noLabelDeps = () => makeDeps({ gh: makeGh({ labels: ["enhancement"] }) });
+
+  test("waits and increments the stuck tick while under the cap", async () => {
+    const state = stuckState();
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("wait");
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(1);
+  });
+
+  test("respawns the QA session when the stuck tick cap is reached", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1 });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("spawn");
+    expect(await state.get<number>("qa_respawns")).toBe(1);
+    expect(await state.get<string>("qa_session_id")).toMatch(/^pending:/);
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(0);
+  });
+
+  test("escalates to needs-attention once the respawn budget is exhausted", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1, qa_respawns: QA_RESPAWN_CAP });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.target).toBe("needs-attention");
+      expect(result.reason).toMatch(/presumed dead/i);
+    }
+  });
+
+  test("a valid verdict still routes normally despite accumulated stuck ticks", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1 });
+    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("done");
+  });
+
+  test("a fresh spawn resets the stuck tick counter", async () => {
+    const state = makeState({ qa_stuck_ticks: 3 });
+    await runQa({ provider: "claude" }, makeWork(), state, makeDeps());
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(0);
+  });
 });
 
 describe("runQa — session exists, qa:pass", () => {
@@ -299,7 +391,11 @@ describe("runQa — session exists, qa:fail", () => {
   });
 
   test("returns goto needs-attention when fail cap exceeded", async () => {
-    const state = makeState({ qa_session_id: "abc-123", qa_fail_round: QA_FAIL_CAP, qa_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      qa_session_id: "abc-123",
+      qa_fail_round: QA_FAIL_CAP,
+      qa_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) });
     const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
     expect(result.action).toBe("goto");

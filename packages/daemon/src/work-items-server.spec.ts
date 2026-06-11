@@ -1449,4 +1449,86 @@ describe("phase_state tools", () => {
     const text = (result.content as Array<{ text: string }>)[0].text;
     expect(text).toContain("exceeds max size");
   });
+
+  // #2682 — ACL: the session-facing MCP tool must refuse to forge phase-runner
+  // sentinels. A session with Bash can call `mcx call _work_items phase_state_set`,
+  // so without this guard it could set review_spawned_at=1 to defeat the #2652
+  // freshness guard, or zero a *_round counter to bypass loop caps.
+  test("phase_state_set rejects forging the review_spawned_at freshness sentinel", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
+
+    const result = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:100", repoRoot: "/repo", key: "review_spawned_at", value: 1 },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toContain("reserved phase-runner sentinel");
+
+    // The forged value must not have landed.
+    const got = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:100", repoRoot: "/repo", key: "review_spawned_at" },
+    });
+    expect(JSON.parse((got.content as Array<{ text: string }>)[0].text).value).toBeUndefined();
+  });
+
+  test("phase_state_set rejects every reserved sentinel pattern", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 101 } });
+
+    for (const key of ["qa_spawned_at", "review_round", "repair_round", "qa_fail_round", "previous_phase"]) {
+      const result = await client.callTool({
+        name: "phase_state_set",
+        arguments: { workItemId: "issue:101", repoRoot: "/repo", key, value: 0 },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content as Array<{ text: string }>)[0].text).toContain("reserved phase-runner sentinel");
+    }
+  });
+
+  test("phase_state_set still allows the orchestrator's *_session_id writes", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 102 } });
+
+    for (const key of ["session_id", "review_session_id", "repair_session_id", "qa_session_id"]) {
+      const result = await client.callTool({
+        name: "phase_state_set",
+        arguments: { workItemId: "issue:102", repoRoot: "/repo", key, value: "real-id" },
+      });
+      expect(result.isError).toBeFalsy();
+    }
+  });
+
+  test("phase_state_delete rejects deleting a reserved sentinel", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 103 } });
+
+    const result = await client.callTool({
+      name: "phase_state_delete",
+      arguments: { workItemId: "issue:103", repoRoot: "/repo", key: "qa_spawned_at" },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toContain("reserved phase-runner sentinel");
+  });
 });

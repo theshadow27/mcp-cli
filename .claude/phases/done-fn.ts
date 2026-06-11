@@ -22,8 +22,7 @@ export async function spawnWithTimeout(
   opts?: { timeoutMs?: number },
   _testDeps: SpawnTimeoutTestDeps = {},
 ): Promise<GhResult> {
-  const spawner: Spawner =
-    _testDeps.spawner ?? ((c, o) => Bun.spawn(c, o) as unknown as ProcessHandle);
+  const spawner: Spawner = _testDeps.spawner ?? ((c, o) => Bun.spawn(c, o) as unknown as ProcessHandle);
   const sigkillDelayMs = _testDeps.sigkillDelayMs ?? 5_000;
   const proc = spawner(cmd, { stdout: "pipe", stderr: "pipe" });
   let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
@@ -53,12 +52,7 @@ export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
   | {
       ok: false;
-      reason:
-        | "ci_not_green"
-        | "missing_qa_pass"
-        | "conflicts"
-        | "missing_required_check"
-        | "merge_failed";
+      reason: "ci_not_green" | "missing_qa_pass" | "conflicts" | "missing_required_check" | "merge_failed";
       nextAction: string;
       detail?: string;
     };

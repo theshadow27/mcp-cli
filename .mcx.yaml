@@ -21,6 +21,10 @@ state:
   review_round: number?
   repair_round: number?
   qa_fail_round: number?
+  review_stuck_ticks: number?
+  review_respawns: number?
+  qa_stuck_ticks: number?
+  qa_respawns: number?
   previous_phase: string?
   provider: string?
   labels: string?
@@ -39,7 +43,7 @@ phases:
 
   review:
     source: ./.claude/phases/review.ts
-    next: [repair, qa]
+    next: [repair, qa, needs-attention]
 
   repair:
     source: ./.claude/phases/repair.ts

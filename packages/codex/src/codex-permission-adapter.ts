@@ -10,7 +10,8 @@
  * Claude and Codex sessions.
  */
 
-import type { AgentPermissionRequest } from "@mcp-cli/core";
+import type { AgentPermissionRequest, AgentSessionEvent, ContainmentGuard, ContainmentResult } from "@mcp-cli/core";
+import { gateContainment } from "@mcp-cli/core";
 import { type PermissionDecision, type PermissionRequest, type PermissionRule, evaluate } from "@mcp-cli/permissions";
 
 export interface AdapterDecision {
@@ -51,6 +52,46 @@ export function evaluateApproval(
   }
 
   return { resolved: true, allow: decision.allow, request };
+}
+
+/**
+ * Gate a Codex approval against the worktree containment guard.
+ *
+ * A Codex `fileChange` patch can touch multiple files, surfaced as
+ * `input.files`. Checking only `files[0]` (the guard's single-path view) lets
+ * an out-of-worktree path in any later entry bypass containment (#2519), so
+ * every path is validated and the first escape denies the whole patch. A
+ * change set that is empty or carries a non-string path fails closed rather
+ * than being silently approved. Non-fileChange approvals (command execution)
+ * fall through to the guard's normal single-call evaluation.
+ */
+export function gateApprovalContainment(
+  guard: ContainmentGuard | null,
+  permission: AgentPermissionRequest,
+  emit: (event: AgentSessionEvent) => void,
+): ContainmentResult | null {
+  if (!guard) return null;
+
+  const files = permission.input.files;
+  if (Array.isArray(files)) {
+    if (files.length === 0) {
+      const reason = `Codex file-change approval has no resolvable file paths; containment cannot verify it stays inside ${guard.worktreeRoot}. Denied.`;
+      emit({ type: "session:containment_denied", toolName: permission.toolName, reason, strikes: guard.strikes });
+      return { action: "deny", reason, strikes: guard.strikes };
+    }
+    for (const file of files) {
+      if (typeof file !== "string") {
+        const reason = `Codex file-change approval contains a non-string file path; containment cannot verify it stays inside ${guard.worktreeRoot}. Denied.`;
+        emit({ type: "session:containment_denied", toolName: permission.toolName, reason, strikes: guard.strikes });
+        return { action: "deny", reason, strikes: guard.strikes };
+      }
+      const result = gateContainment(guard, "Write", { file_path: file }, emit);
+      if (result?.action === "deny") return result;
+    }
+    return { action: "allow", reason: "", strikes: guard.strikes };
+  }
+
+  return gateContainment(guard, permission.toolName, permission.input, emit);
 }
 
 /**

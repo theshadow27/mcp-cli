@@ -20,10 +20,9 @@ import { runQa } from "./qa-fn";
 
 const ProviderSchema = z
   .string()
-  .refine(
-    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
-    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
-  );
+  .refine((v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"), {
+    message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"',
+  });
 
 defineAlias({
   name: "phase-qa",

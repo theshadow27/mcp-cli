@@ -22,11 +22,14 @@ import {
 
 // ── Types ──
 
+/** Bound the pre-fork `git fetch` so an unreachable remote can't hang spawn. */
+const WORKTREE_FETCH_TIMEOUT_MS = 15_000;
+
 /** Minimal dependency interface for worktree operations. */
 export interface WorktreeShimDeps {
   exec: (
     cmd: string[],
-    opts?: { env?: Record<string, string> },
+    opts?: { env?: Record<string, string>; timeoutMs?: number },
   ) => { stdout: string; stderr: string; exitCode: number };
   printError: (msg: string) => void;
   /** Print an informational status message (no "Error:" prefix). Used for successful operations. */
@@ -93,6 +96,40 @@ export interface WorktreePruneResult {
 // ── Create ──
 
 /**
+ * Resolve the start point for a new worktree branch.
+ *
+ * During an active merge train the local default branch lags origin, so forking
+ * from local HEAD produces stale bases (#2679). Fetch origin's default branch
+ * and fork from `origin/<branch>` instead. Falls back to HEAD silently when the
+ * repo has no origin remote, and with a loud warning when the fetch fails
+ * (offline, auth, unreachable).
+ */
+export function resolveWorktreeStartPoint(repoRoot: string, deps: WorktreeShimDeps): string {
+  const remote = deps.exec(["git", "-C", repoRoot, "remote", "get-url", "origin"]);
+  if (remote.exitCode !== 0) return "HEAD";
+
+  const defaultBranch = getDefaultBranch(deps, repoRoot);
+  const fetch = deps.exec(["git", "-C", repoRoot, "fetch", "origin", defaultBranch], {
+    timeoutMs: WORKTREE_FETCH_TIMEOUT_MS,
+  });
+  if (fetch.exitCode !== 0) {
+    deps.printError(
+      `Warning: git fetch origin ${defaultBranch} failed — forking worktree from local HEAD, which may be stale (#2679): ${fetch.stderr.trim().slice(0, 200)}`,
+    );
+    return "HEAD";
+  }
+
+  const verify = deps.exec(["git", "-C", repoRoot, "rev-parse", "--verify", `refs/remotes/origin/${defaultBranch}`]);
+  if (verify.exitCode !== 0) {
+    deps.printError(
+      `Warning: origin/${defaultBranch} not found after fetch — forking worktree from local HEAD, which may be stale (#2679)`,
+    );
+    return "HEAD";
+  }
+  return `origin/${defaultBranch}`;
+}
+
+/**
  * Create a worktree for a provider session.
  *
  * Handles three cases:
@@ -136,8 +173,18 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 2: branchPrefix: false — create with raw branch name
   if (wtConfig?.branchPrefix === false) {
     const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
+    const startPoint2 = resolveWorktreeStartPoint(repoRoot, deps);
     const bareBeforeAdd2 = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
-    const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", name, "HEAD"]);
+    const { exitCode, stderr } = deps.exec([
+      "git",
+      "worktree",
+      "add",
+      "--no-track",
+      worktreePath,
+      "-b",
+      name,
+      startPoint2,
+    ]);
     if (exitCode !== 0) {
       throw new WorktreeError(`Failed to create worktree: ${stderr}`);
     }
@@ -172,8 +219,18 @@ export function createWorktree(opts: WorktreeCreateOptions, deps: WorktreeShimDe
   // Case 4: Shim creates worktree with prefixed branch name
   const worktreePath = resolveWorktreePath(repoRoot, name, wtConfig);
   const gitBranch = branchPrefix ? `${branchPrefix}${name}` : name;
+  const startPoint4 = resolveWorktreeStartPoint(repoRoot, deps);
   const bareBeforeAdd4 = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
-  const { exitCode, stderr } = deps.exec(["git", "worktree", "add", worktreePath, "-b", gitBranch, "HEAD"]);
+  const { exitCode, stderr } = deps.exec([
+    "git",
+    "worktree",
+    "add",
+    "--no-track",
+    worktreePath,
+    "-b",
+    gitBranch,
+    startPoint4,
+  ]);
   if (exitCode !== 0) {
     throw new WorktreeError(`Failed to create worktree: ${stderr}`);
   }

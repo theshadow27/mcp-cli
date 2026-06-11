@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildImplPrompt } from "./impl-fn";
+import { buildImplCommand, buildImplPrompt, resolveImplModel } from "./impl-fn";
 
 describe("buildImplPrompt", () => {
   test("includes the issue number", () => {
@@ -23,5 +23,73 @@ describe("buildImplPrompt", () => {
 
   test("resolve step references the correct pr number", () => {
     expect(buildImplPrompt(10, 99)).toContain("mcx pr comments 99 resolve --all-addressed");
+  });
+});
+
+describe("resolveImplModel", () => {
+  test("explicit input overrides everything", () => {
+    const r = resolveImplModel({ inputModel: "sonnet", stateModel: "opus", planModel: "fable", labels: [] });
+    expect(r.model).toBe("sonnet");
+    expect(r.override).toBeNull();
+  });
+
+  test("pre-set work-item state wins over the plan", () => {
+    const r = resolveImplModel({ stateModel: "claude-fable-5", planModel: "opus", labels: [] });
+    expect(r.model).toBe("claude-fable-5");
+    expect(r.override).toBeNull();
+  });
+
+  test("uses the sprint-plan model when no input/state is set", () => {
+    const r = resolveImplModel({ planModel: "claude-fable-5", labels: [] });
+    expect(r.model).toBe("claude-fable-5");
+  });
+
+  test("reports an override when the plan model differs from the heuristic", () => {
+    // #2665: a fable canary plan row must survive — not be narrowed to opus.
+    const r = resolveImplModel({ planModel: "claude-fable-5", labels: [] });
+    expect(r.override).toEqual({ planModel: "claude-fable-5", heuristic: "opus" });
+  });
+
+  test("no override when the plan model matches the heuristic", () => {
+    const r = resolveImplModel({ planModel: "opus", labels: [] });
+    expect(r.override).toBeNull();
+  });
+
+  test("falls back to the label heuristic when nothing is assigned", () => {
+    expect(resolveImplModel({ labels: [] }).model).toBe("opus");
+    expect(resolveImplModel({ labels: ["docs-only"] }).model).toBe("sonnet");
+    expect(resolveImplModel({ labels: ["flaky"] }).model).toBe("opus");
+  });
+});
+
+describe("buildImplCommand", () => {
+  test("a fable plan row yields a fable spawn command", () => {
+    // End-to-end of the #2665 fix: plan says fable → the emitted spawn command
+    // carries --model claude-fable-5, not the opus default.
+    const { model } = resolveImplModel({ planModel: "claude-fable-5", labels: [] });
+    const command = buildImplCommand({
+      provider: "claude",
+      model,
+      supportsWorktree: true,
+      prompt: "/implement 2645",
+      allowTools: ["Read", "Edit"],
+    });
+    const modelIdx = command.indexOf("--model");
+    expect(modelIdx).toBeGreaterThanOrEqual(0);
+    expect(command[modelIdx + 1]).toBe("claude-fable-5");
+    expect(command.slice(0, 2)).toEqual(["mcx", "claude"]);
+    expect(command).toContain("--worktree");
+  });
+
+  test("omits --worktree for providers that do not support it", () => {
+    const command = buildImplCommand({
+      provider: "gemini",
+      model: "opus",
+      supportsWorktree: false,
+      prompt: "/implement 1",
+      allowTools: ["Read"],
+    });
+    expect(command).not.toContain("--worktree");
+    expect(command.slice(0, 3)).toEqual(["mcx", "gemini", "spawn"]);
   });
 });
