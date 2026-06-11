@@ -52,18 +52,25 @@ function makeGh(opts: GhStubOpts = {}): ReviewDeps["gh"] {
   const events = opts.labelEvents ?? validEventsFor(labels);
   return async (op) => {
     if (op.op === "pr:labels") {
-      return { stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "", stderr: "", exitCode: opts.labelsExitCode ?? 0 };
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
     }
     if (op.op === "pr:label-events") {
-      if ((opts.eventsExitCode ?? 0) !== 0) return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
       return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:author") {
-      if ((opts.authorExitCode ?? 0) !== 0) return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
+      if ((opts.authorExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
       return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:head-date") {
-      if ((opts.headDateExitCode ?? 0) !== 0) return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
+      if ((opts.headDateExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
       return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
     }
     return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
@@ -118,7 +125,8 @@ describe("readReviewLabels", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: " review:pass \n bug \n", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") return { stdout: JSON.stringify(validEventsFor(["review:pass"])), stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events")
+          return { stdout: JSON.stringify(validEventsFor(["review:pass"])), stderr: "", exitCode: 0 };
         if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
         if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 1 };
@@ -189,7 +197,11 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
   });
 
   test("rejects stale label predating session spawn (guard b)", async () => {
-    const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T09:55:00Z" };
+    const staleEvent: GhLabelEvent = {
+      actor: DEFAULT_AUTHOR,
+      label: "review:pass",
+      created_at: "2026-06-09T09:55:00Z",
+    };
     const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [staleEvent] }) });
     const result = await readReviewLabels(20, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
@@ -198,7 +210,9 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
 
   test("rejects label predating head commit (guard c)", async () => {
     const event: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T10:05:00Z" };
-    const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }) });
+    const deps = makeDeps({
+      gh: makeGh({ labels: ["review:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }),
+    });
     const result = await readReviewLabels(20, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
     expect(result.rejections[0]).toMatch(/verdict on stale code/);
@@ -209,7 +223,10 @@ describe("readReviewLabels — verdict validation (#2652)", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: "bug\nenhancement", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") { eventsFetched = true; return { stdout: "[]", stderr: "", exitCode: 0 }; }
+        if (op.op === "pr:label-events") {
+          eventsFetched = true;
+          return { stdout: "[]", stderr: "", exitCode: 0 };
+        }
         return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
@@ -364,7 +381,11 @@ describe("runReview — session exists", () => {
   });
 
   test("returns goto qa when round cap reached even with review:changes", async () => {
-    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP, review_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      review_session_id: "abc",
+      review_round: REVIEW_ROUND_CAP,
+      review_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:changes"] }) });
     const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
     expect(result.action).toBe("goto");
@@ -405,7 +426,11 @@ describe("runReview — session exists", () => {
 
   test("clears review:changes even when the round cap routes to qa", async () => {
     const removed: string[] = [];
-    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP, review_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      review_session_id: "abc",
+      review_round: REVIEW_ROUND_CAP,
+      review_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({
       gh: makeGh({ labels: ["review:changes"] }),
       async prEdit(_prNumber, flags) {
@@ -421,7 +446,11 @@ describe("runReview — session exists", () => {
   });
 
   test("rejects stale review:pass and returns wait with rejection reason", async () => {
-    const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "review:pass", created_at: "2026-06-09T09:55:00Z" };
+    const staleEvent: GhLabelEvent = {
+      actor: DEFAULT_AUTHOR,
+      label: "review:pass",
+      created_at: "2026-06-09T09:55:00Z",
+    };
     const state = makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"], labelEvents: [staleEvent] }) });
     const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");

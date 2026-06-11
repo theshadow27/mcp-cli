@@ -29,9 +29,12 @@ type Provider = "claude" | "copilot" | "gemini" | "grok" | `acp:${string}`;
 
 const ProviderSchema = z
   .string()
-  .refine((v): v is Provider => v === "claude" || v === "copilot" || v === "gemini" || v === "grok" || v.startsWith("acp:"), {
-    message: 'provider must be "claude", "copilot", "gemini", "grok", or "acp:<agent>"',
-  });
+  .refine(
+    (v): v is Provider => v === "claude" || v === "copilot" || v === "gemini" || v === "grok" || v.startsWith("acp:"),
+    {
+      message: 'provider must be "claude", "copilot", "gemini", "grok", or "acp:<agent>"',
+    },
+  );
 
 function commandForProvider(provider: Provider): string[] {
   if (provider.startsWith("acp:")) {
@@ -101,8 +104,7 @@ defineAlias({
       if (stateModel === "opus" || stateModel === "sonnet") {
         model = stateModel;
       } else {
-        const planModel =
-          ctx.repoRoot !== NO_REPO_ROOT ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot) : null;
+        const planModel = ctx.repoRoot !== NO_REPO_ROOT ? findModelInSprintPlan(work.issueNumber, ctx.repoRoot) : null;
         model = planModel ?? pickModel(input.labels);
       }
     }

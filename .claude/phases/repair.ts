@@ -19,10 +19,9 @@ import { runRepair } from "./repair-fn";
 
 const ProviderSchema = z
   .string()
-  .refine(
-    (v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"),
-    { message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"' },
-  );
+  .refine((v) => v === "claude" || v === "copilot" || v === "gemini" || v.startsWith("acp:"), {
+    message: 'provider must be "claude", "copilot", "gemini", or "acp:<agent>"',
+  });
 
 defineAlias({
   name: "phase-repair",
@@ -53,30 +52,25 @@ defineAlias({
       );
     }
 
-    return runRepair(
-      input,
-      { id: work.id, prNumber: work.prNumber },
-      ctx.state,
-      {
-        async prEdit(prNumber, flags) {
-          const opts: Record<string, string[]> = {};
-          for (let i = 0; i < flags.length; i += 2) {
-            const flag = flags[i];
-            const value = flags[i + 1];
-            if (flag === "--remove-label") {
-              if (!opts.removeLabels) opts.removeLabels = [];
-              (opts.removeLabels as string[]).push(value);
-            } else if (flag === "--add-label") {
-              if (!opts.addLabels) opts.addLabels = [];
-              (opts.addLabels as string[]).push(value);
-            }
+    return runRepair(input, { id: work.id, prNumber: work.prNumber }, ctx.state, {
+      async prEdit(prNumber, flags) {
+        const opts: Record<string, string[]> = {};
+        for (let i = 0; i < flags.length; i += 2) {
+          const flag = flags[i];
+          const value = flags[i + 1];
+          if (flag === "--remove-label") {
+            if (!opts.removeLabels) opts.removeLabels = [];
+            (opts.removeLabels as string[]).push(value);
+          } else if (flag === "--add-label") {
+            if (!opts.addLabels) opts.addLabels = [];
+            (opts.addLabels as string[]).push(value);
           }
-          await ctx.gh.pr(prNumber).edit({
-            removeLabels: opts.removeLabels,
-            addLabels: opts.addLabels,
-          });
-        },
+        }
+        await ctx.gh.pr(prNumber).edit({
+          removeLabels: opts.removeLabels,
+          addLabels: opts.addLabels,
+        });
       },
-    );
+    });
   },
 });

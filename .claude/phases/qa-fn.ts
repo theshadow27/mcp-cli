@@ -33,7 +33,14 @@ export type QaResult =
       allowTools: string[];
     }
   | { action: "wait"; reason: string; model: "sonnet"; prompt: string }
-  | { action: "goto"; target: "done" | "repair" | "needs-attention"; reason: string; model: "sonnet"; prompt: string; round?: number };
+  | {
+      action: "goto";
+      target: "done" | "repair" | "needs-attention";
+      reason: string;
+      model: "sonnet";
+      prompt: string;
+      round?: number;
+    };
 
 // ── verdict validation (#2652) ──
 // Same hardened validation as review-fn: labels are validated against the
@@ -58,7 +65,11 @@ export async function readQaLabels(
   ]);
 
   if (eventsResult.exitCode !== 0) {
-    return { hasPass: false, hasFail: false, rejections: [`label-events fetch failed (${eventsResult.stderr}) — fail closed`] };
+    return {
+      hasPass: false,
+      hasFail: false,
+      rejections: [`label-events fetch failed (${eventsResult.stderr}) — fail closed`],
+    };
   }
   if (authorResult.exitCode !== 0 || headDateResult.exitCode !== 0) {
     return { hasPass: false, hasFail: false, rejections: [`verdict context fetch failed — fail closed`] };
@@ -140,7 +151,12 @@ export async function runQa(
 
   const roundStartedAt = (await state.get<number>("qa_spawned_at")) ?? 0;
   if (typeof roundStartedAt !== "number" || roundStartedAt === 0 || Number.isNaN(roundStartedAt)) {
-    return { action: "wait", reason: "qa_spawned_at missing or invalid in state — fail closed; re-spawn to populate", model: qaModel, prompt: qaPrompt };
+    return {
+      action: "wait",
+      reason: "qa_spawned_at missing or invalid in state — fail closed; re-spawn to populate",
+      model: qaModel,
+      prompt: qaPrompt,
+    };
   }
   const { hasPass, hasFail, rejections } = await readQaLabels(work.prNumber, deps, roundStartedAt);
   if (!hasPass && !hasFail) {

@@ -48,18 +48,25 @@ function makeGh(opts: GhStubOpts = {}): QaDeps["gh"] {
   const events = opts.labelEvents ?? validEventsFor(labels);
   return async (op) => {
     if (op.op === "pr:labels") {
-      return { stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "", stderr: "", exitCode: opts.labelsExitCode ?? 0 };
+      return {
+        stdout: (opts.labelsExitCode ?? 0) === 0 ? labels.join("\n") : "",
+        stderr: "",
+        exitCode: opts.labelsExitCode ?? 0,
+      };
     }
     if (op.op === "pr:label-events") {
-      if ((opts.eventsExitCode ?? 0) !== 0) return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
+      if ((opts.eventsExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "events fetch error", exitCode: opts.eventsExitCode ?? 1 };
       return { stdout: JSON.stringify(events), stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:author") {
-      if ((opts.authorExitCode ?? 0) !== 0) return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
+      if ((opts.authorExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "author fetch error", exitCode: opts.authorExitCode ?? 1 };
       return { stdout: opts.author ?? DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
     }
     if (op.op === "pr:head-date") {
-      if ((opts.headDateExitCode ?? 0) !== 0) return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
+      if ((opts.headDateExitCode ?? 0) !== 0)
+        return { stdout: "", stderr: "head-date fetch error", exitCode: opts.headDateExitCode ?? 1 };
       return { stdout: opts.headDate ?? DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
     }
     return { stdout: "", stderr: `unsupported gh op: ${op.op}`, exitCode: 1 };
@@ -160,7 +167,9 @@ describe("readQaLabels — verdict validation (#2652)", () => {
 
   test("rejects label predating head commit (guard c)", async () => {
     const event: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T10:05:00Z" };
-    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }) });
+    const deps = makeDeps({
+      gh: makeGh({ labels: ["qa:pass"], labelEvents: [event], headDate: "2026-06-09T10:10:00Z" }),
+    });
     const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
     expect(result.hasPass).toBe(false);
     expect(result.rejections[0]).toMatch(/verdict on stale code/);
@@ -171,7 +180,10 @@ describe("readQaLabels — verdict validation (#2652)", () => {
     const deps = makeDeps({
       gh: async (op) => {
         if (op.op === "pr:labels") return { stdout: "bug\nenhancement", stderr: "", exitCode: 0 };
-        if (op.op === "pr:label-events") { eventsFetched = true; return { stdout: "[]", stderr: "", exitCode: 0 }; }
+        if (op.op === "pr:label-events") {
+          eventsFetched = true;
+          return { stdout: "[]", stderr: "", exitCode: 0 };
+        }
         return { stdout: "", stderr: "", exitCode: 1 };
       },
     });
@@ -322,7 +334,11 @@ describe("runQa — session exists, qa:fail", () => {
   });
 
   test("returns goto needs-attention when fail cap exceeded", async () => {
-    const state = makeState({ qa_session_id: "abc-123", qa_fail_round: QA_FAIL_CAP, qa_spawned_at: DEFAULT_SPAWNED_AT });
+    const state = makeState({
+      qa_session_id: "abc-123",
+      qa_fail_round: QA_FAIL_CAP,
+      qa_spawned_at: DEFAULT_SPAWNED_AT,
+    });
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:fail"] }) });
     const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
     expect(result.action).toBe("goto");

@@ -50,7 +50,11 @@ defineAlias({
       const prHandle = ctx.gh.pr(work.prNumber);
       const threads = await prHandle.reviewThreads();
       for (const t of threads.filter((t) => !t.isResolved)) {
-        try { await prHandle.resolveReviewThread(t.id); } catch { /* best-effort */ }
+        try {
+          await prHandle.resolveReviewThread(t.id);
+        } catch {
+          /* best-effort */
+        }
       }
     } catch {
       /* non-fatal — thread resolution is cosmetic; merge proceeds regardless */
@@ -77,9 +81,11 @@ defineAlias({
       },
       async prMerge(prNumber, flags) {
         try {
-          const method = flags.includes("--squash") ? "squash" as const
-            : flags.includes("--rebase") ? "rebase" as const
-            : "merge" as const;
+          const method = flags.includes("--squash")
+            ? ("squash" as const)
+            : flags.includes("--rebase")
+              ? ("rebase" as const)
+              : ("merge" as const);
           const deleteBranch = flags.includes("--delete-branch");
           await ctx.gh.pr(prNumber).merge({ method, deleteBranch });
           return { stdout: "", stderr: "", exitCode: 0 };
@@ -134,7 +140,11 @@ defineAlias({
     }
 
     const pullProc = Bun.spawn(["git", "pull"], { stdout: "pipe", stderr: "pipe" });
-    const pullTimer = setTimeout(() => { try { pullProc.kill(); } catch {} }, 60_000);
+    const pullTimer = setTimeout(() => {
+      try {
+        pullProc.kill();
+      } catch {}
+    }, 60_000);
     const [_pullOut, pullStderr, pullExitCode] = await Promise.all([
       new Response(pullProc.stdout).text(),
       new Response(pullProc.stderr).text(),

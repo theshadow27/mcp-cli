@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { REPAIR_ROUND_CAP, type RepairDeps, type RepairState, type RepairWork, buildRepairPrompt, runRepair } from "./repair-fn";
+import {
+  REPAIR_ROUND_CAP,
+  type RepairDeps,
+  type RepairState,
+  type RepairWork,
+  buildRepairPrompt,
+  runRepair,
+} from "./repair-fn";
 
 function makeWork(overrides: Partial<RepairWork> = {}): RepairWork {
   return { id: "wi-1", prNumber: 30, ...overrides };

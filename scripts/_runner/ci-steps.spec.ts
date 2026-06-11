@@ -1,6 +1,11 @@
 import { describe, expect, it, setDefaultTimeout } from "bun:test";
 
-import { bunTestWithCrashTolerance, changedTestsStep, coverageWithCrashTolerance } from "./ci-steps";
+import {
+  bunTestWithCrashTolerance,
+  changedTestsStep,
+  coverageWithCrashTolerance,
+  phasesTestWithCrashTolerance,
+} from "./ci-steps";
 import { createCaptureLogger } from "./logger";
 
 // Tests spawn real child processes (fake bun scripts) and some build the full
@@ -849,5 +854,55 @@ describe("changedTestsStep", () => {
     // Control pass gets only the packages/control/ skip pattern — not the root-level one.
     expect(controlLog).toContain(`--path-ignore-patterns=${relControl}`);
     expect(controlLog).not.toContain(`--path-ignore-patterns=${relOther}`);
+  });
+});
+
+describe("phasesTestWithCrashTolerance", () => {
+  it("exit 0 is success", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
+    const dir = makeFakeBun({ code: 1, stdout: passingSummary });
+    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("real test failure (non-zero exit, summary shows fail count) reports failure", async () => {
+    const dir = makeFakeBun({ code: 1, stdout: failingSummary });
+    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("passes phasesDir as the cwd to bun — args logged reflect the directory context", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
+    const phasesDir = mkdtempSync(join(tmpdir(), "fake-phases-"));
+    const step = phasesTestWithCrashTolerance({ phasesDir, logName: "test_phases_cwd" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+    const log = readFileSync("/tmp/test_phases_cwd.txt", "utf8");
+    expect(log).toContain("--no-orphans");
   });
 });
