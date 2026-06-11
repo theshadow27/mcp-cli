@@ -56,11 +56,93 @@ describe("ContainmentGuard — in-worktree operations", () => {
     expect(r.action).toBe("allow");
   });
 
-  test("allows unknown tools (no file_path)", () => {
+  test("allows known non-filesystem tools (Agent, TodoWrite, WebFetch)", () => {
     const g = guard();
-    const r = g.evaluate("Agent", { prompt: "do something" });
-    expect(r.action).toBe("allow");
+    expect(g.evaluate("Agent", { prompt: "do something" }).action).toBe("allow");
+    expect(g.evaluate("TodoWrite", { todos: [] }).action).toBe("allow");
+    expect(g.evaluate("WebFetch", { url: "https://example.com" }).action).toBe("allow");
+    expect(g.evaluate("ExitPlanMode", { plan: "x" }).action).toBe("allow");
   });
+
+  test("allows MCP tools by prefix", () => {
+    const g = guard();
+    const r = g.evaluate("mcp__atlassian__search", { query: "test" });
+    expect(r.action).toBe("allow");
+    expect(r.event).toBeUndefined();
+  });
+});
+
+// ── Fail-closed for unrecognized tools (#2520) ──
+
+describe("ContainmentGuard — fail closed for unrecognized tools", () => {
+  test("denies an unrecognized tool by default", () => {
+    const g = guard();
+    const r = g.evaluate("FutureWriteTool", { file_path: `${WORKTREE}/src/main.ts` });
+    expect(r.action).toBe("deny");
+    expect(r.event).toBe("session:containment_denied");
+  });
+
+  test("denies an unrecognized tool even with no path argument", () => {
+    const g = guard();
+    const r = g.evaluate("SomeBrandNewTool", { foo: "bar" });
+    expect(r.action).toBe("deny");
+    expect(r.event).toBe("session:containment_denied");
+  });
+
+  test("denying an unrecognized tool does not consume a strike (no full lockout)", () => {
+    const g = guard();
+    for (let i = 0; i < 5; i++) {
+      const r = g.evaluate("SomeBrandNewTool", { foo: "bar" });
+      expect(r.action).toBe("deny");
+    }
+    expect(g.strikes).toBe(0);
+    expect(g.escalated).toBe(false);
+    // A legitimate in-worktree write still works afterwards.
+    expect(g.evaluate("Write", { file_path: `${WORKTREE}/src/main.ts` }).action).toBe("allow");
+  });
+
+  test("denies a write tool whose path argument is missing (fail closed)", () => {
+    const g = guard();
+    const r = g.evaluate("Write", { content: "data" });
+    expect(r.action).toBe("deny");
+    expect(r.event).toBe("session:containment_denied");
+  });
+});
+
+// ── Absolute-path escape into the parent main checkout (#2693) ──
+// A worktree lives at <main>/.claude/worktrees/<id>; the orchestrator's main
+// checkout is its parent. Absolute paths quoted from issue investigation
+// comments resolve into main, not the worktree, and must be denied.
+describe("ContainmentGuard — absolute path into parent main checkout", () => {
+  // WORKTREE = /Users/test/repo/.claude/worktrees/my-worktree → main = /Users/test/repo
+  const MAIN = "/Users/test/repo";
+  const strayFiles = [
+    `${MAIN}/packages/command/src/commands/track.ts`,
+    `${MAIN}/packages/command/src/commands/track.spec.ts`,
+    `${MAIN}/packages/core/src/phase-transition.ts`,
+    `${MAIN}/packages/core/src/phase-transition.spec.ts`,
+  ];
+
+  for (const file of strayFiles) {
+    test(`denies Write to main-checkout path ${file}`, () => {
+      const g = guard();
+      const r = g.evaluate("Write", { file_path: file });
+      expect(r.action).toBe("deny");
+      expect(r.strikes).toBe(1);
+    });
+
+    test(`denies Edit to main-checkout path ${file}`, () => {
+      const g = guard();
+      const r = g.evaluate("Edit", { file_path: file, old_string: "a", new_string: "b" });
+      expect(r.action).toBe("deny");
+    });
+
+    test(`denies MultiEdit to main-checkout path ${file}`, () => {
+      const g = guard();
+      const r = g.evaluate("MultiEdit", { file_path: file, edits: [] });
+      expect(r.action).toBe("deny");
+    });
+  }
 });
 
 // ── Git write commands outside worktree ──
@@ -261,10 +343,11 @@ describe("ContainmentGuard — edge cases", () => {
     expect(r.action).toBe("allow");
   });
 
-  test("handles missing file_path in Write", () => {
+  test("denies Write with missing file_path (fail closed, #2520)", () => {
     const g = guard();
     const r = g.evaluate("Write", {});
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("deny");
+    expect(r.event).toBe("session:containment_denied");
   });
 
   test("git commands with flags before subcommand", () => {
