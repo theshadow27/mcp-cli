@@ -879,6 +879,7 @@ export class StateDb {
         description: row.description ?? "",
         filePath: row.file_path,
         updatedAt: row.updated_at,
+        // dotw-todo no-db-ipc-cast: unguarded alias_type restore cast — fix in #2742
         aliasType: row.alias_type as AliasType,
         ...(row.input_schema_json ? { inputSchemaJson: safeJsonParse(row.input_schema_json, {}) } : {}),
         ...(row.output_schema_json ? { outputSchemaJson: safeJsonParse(row.output_schema_json, {}) } : {}),
@@ -932,6 +933,7 @@ export class StateDb {
       name: row.name,
       description: row.description ?? "",
       filePath: row.file_path,
+      // dotw-todo no-db-ipc-cast: unguarded alias_type restore cast — fix in #2742
       aliasType: row.alias_type as AliasType,
       ...(row.bundled_js ? { bundledJs: row.bundled_js } : {}),
       ...(row.source_hash ? { sourceHash: row.source_hash } : {}),

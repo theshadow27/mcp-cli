@@ -79,13 +79,18 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     issueNumber: row.issue_number,
     branch: row.branch,
     prNumber: row.pr_number,
+    // dotw-todo no-db-ipc-cast: unguarded pr_state restore cast — fix in #2742
     prState: row.pr_state as PrState,
     prUrl: row.pr_url,
+    // dotw-todo no-db-ipc-cast: unguarded ci_status restore cast — fix in #2742
     ciStatus: row.ci_status as CiStatus,
     ciRunId: row.ci_run_id,
     ciSummary: row.ci_summary,
+    // dotw-todo no-db-ipc-cast: unguarded review_status restore cast — fix in #2742
     reviewStatus: row.review_status as ReviewStatus,
+    // dotw-todo no-db-ipc-cast: cast bypasses the ?? null fallback for non-null garbage — fix in #2742
     mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
+    // dotw-todo no-db-ipc-cast: unguarded phase restore cast (load-bearing for sprint pipeline) — fix in #2742
     phase: row.phase as WorkItemPhase,
     automationOverrides: row.automation_overrides ?? null,
     createdAt: row.created_at,
