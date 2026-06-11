@@ -1,0 +1,894 @@
+[
+  {
+    "version": "2.1.120",
+    "source": "download",
+    "size": 213981440,
+    "sha256": "fad8faf49c7b1b454c38d785b75e17edbdadc7ffaf450b31349aafc6560b8ef6",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 117,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [73053478, 144695544, 144695784, 194561790],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function I44(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function I44(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.121",
+    "source": "download",
+    "size": 215417984,
+    "sha256": "3810e55d47ed4d413de6dc037e34d58948f779a4c6bdeeacf1748d850c5daad6",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73061699, 145865128, 145865368, 195877835],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function J34(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function J34(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.122",
+    "source": "download",
+    "size": 215880320,
+    "sha256": "4b01075bd923084fe56124bfb647f5eca98c2b1fa34cb039d2e75ccc84af4b86",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73062295, 146223768, 146224008, 196302351],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function aO4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function aO4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.123",
+    "source": "download",
+    "size": 215880320,
+    "sha256": "44597dff0f1c11e37c1954d4ac3965909be376e5961b558345723357253bcc90",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73062295, 146224696, 146224936, 196303343],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function sO4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function sO4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.124",
+    "source": "download",
+    "size": 216260096,
+    "sha256": "464dfb7def910ae2c155ed9c2fafa217e883d703cf0fc537ae0b863197a84d9e",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73062020, 146501464, 146501704, 196646412],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function xA4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function xA4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.125",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.126",
+    "source": "download",
+    "size": 216260096,
+    "sha256": "87a1d05018ceadfc1fe616bfc10262b0503f51986f4af2dc42d1ed856ed3f7bb",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73062020, 146500520, 146500760, 196643628],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function xA4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function xA4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.127",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.128",
+    "source": "download",
+    "size": 216953600,
+    "sha256": "1a56ae4cd171ba7839fc2b03d558022ffaebb5693be532d8f3c344731063e979",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73047398, 146980824, 146981064, 197241406],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Yz4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Yz4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.129",
+    "source": "download",
+    "size": 217564544,
+    "sha256": "fad2ac75c38ced2c57d046e64927c9ee4846f5ac75ea3bf8f0525ec66438c109",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73080834, 147561832, 147562072, 197812218],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Dw4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Dw4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.130",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.131",
+    "source": "download",
+    "size": 217349888,
+    "sha256": "cc6066b0db7bb423c75316366542f771a41923999a76a5771afad87dd65dceae",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73047552, 147322392, 147322632, 197586232],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function kY4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function kY4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.132",
+    "source": "download",
+    "size": 217993856,
+    "sha256": "2ce6b9007f38f5caf0d116ae35d59f1a6d40e902ae7f9f19aca6ec483697b764",
+    "fedstartCount": 4,
+    "replacementCount": 0,
+    "hostProdCount": 120,
+    "hostStagingCount": 7,
+    "fedstartOffsets": [73049207, 147766392, 147766632, 198151295],
+    "contexts": [
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function _j4(){let H=new Map;for(let[_,q]of Obje",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function _j4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": true
+  },
+  {
+    "version": "2.1.133",
+    "source": "download",
+    "size": 204170768,
+    "sha256": "d38f34444911c86c73f32beb82821008b26be889fa0d0caf7085580cf5737e14",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 69,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [134000920, 134001160, 184422821],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function GD4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.134",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.135",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.136",
+    "source": "download",
+    "size": 205062416,
+    "sha256": "9ef618487dc9e0cb766e8d0d51cd5fd3d06c3d038f4f04f3e714791f32a3cda5",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 69,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [134690840, 134691080, 185252897],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function hP4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.137",
+    "source": "download",
+    "size": 205062416,
+    "sha256": "6d91ce741b8aa129fd43c2f844b39dcc1fec8cfd77e8e5a1ed0f0e7ba54cfea9",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 69,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [134690840, 134691080, 185252897],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function hP4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.138",
+    "source": "download",
+    "size": 205062416,
+    "sha256": "759d23ce626193c89bc8b35c5c6ca8a9e33b9c2e504ee143e4cd119988774097",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 69,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [134690840, 134691080, 185252929],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function hP4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.139",
+    "source": "download",
+    "size": 205689872,
+    "sha256": "aa8a0a39f2abbd9e09518eb7268cda105b8029620a38f5a5cbc362b65331c3db",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 71,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [135147560, 135147800, 185809685],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function N04(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.140",
+    "source": "download",
+    "size": 206069664,
+    "sha256": "087ce732fb79658cd3e828cc377291dc56835fc5318cd519123b0880a09149c0",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 69,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [135437000, 135437240, 186148933],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function GG4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.141",
+    "source": "download",
+    "size": 207076896,
+    "sha256": "31ac95bb19a33b1d0cddd3f3ff594bf8bfd2be5051cd2af7867109641cab705e",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [136138616, 136138856, 187032160],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function JV4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.142",
+    "source": "download",
+    "size": 207126432,
+    "sha256": "772021afa051160b97e04d379738df84d4cacd311e8c199a325fb013b3eaa448",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [136135608, 136135848, 187093864],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function zV4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.143",
+    "source": "download",
+    "size": 207605280,
+    "sha256": "2701c6cfd68483f8faf0316a1ba6481a1455a90645ada179f0c48d8c36d722ef",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [136445336, 136445576, 187520190],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function GN4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.144",
+    "source": "download",
+    "size": 207919008,
+    "sha256": "9886baa4ec4c455f86108464f121732193ee76e5dfceb031005f59f31276a5df",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [136683704, 136683944, 187791490],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function vv4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.145",
+    "source": "download",
+    "size": 208546464,
+    "sha256": "368dcd9709c85534f673071e7cc8eb5422bcff367fb9bdf5ce25d9619aab7ef5",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [137106280, 137106520, 188297651],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Eh4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.146",
+    "source": "download",
+    "size": 211056288,
+    "sha256": "b16f466a2213a04cecf1ad958201655148a49f42952134e6ae182257ccfc08f3",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [138273288, 138273528, 190384098],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Yx4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.147",
+    "source": "download",
+    "size": 211584672,
+    "sha256": "94a81554195edc33c2587f106bfc2e301f450f52a05cbfaed8b20f6f0882697c",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 61,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [138622712, 138622952, 190854285],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function bm4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.148",
+    "source": "download",
+    "size": 211584672,
+    "sha256": "f4a1860d3d9b01653dde4183e2f1216ca9e0c1a404dd63caa4edf07c904102aa",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 61,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [138622504, 138622744, 190854077],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function bm4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.149",
+    "source": "download",
+    "size": 213070752,
+    "sha256": "659d1a65cfd439bb43708fd1cfbe8346b59370a27f7f60f789e05f4604dee9a5",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 62,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [138907672, 138907912, 192200829],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function hn4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.150",
+    "source": "download",
+    "size": 213070752,
+    "sha256": "2f8413ea1083f108587940496a17057751344109d261fb4239ab2d45b2285c99",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 62,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [138907400, 138907640, 192200557],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function yn4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.151",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.152",
+    "source": "download",
+    "size": 214210080,
+    "sha256": "43cb9361f7bc48c39214d5f125003b8de0ebde5cd6a1173e6b74fcdd10966d46",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 62,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [139702200, 139702440, 193205319],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Cs4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.153",
+    "source": "download",
+    "size": 214457760,
+    "sha256": "449d9c89d7a63b1d427d912a7bd6e6f23f9a7b363866697c9fa9a0012546b254",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 62,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [139871144, 139871384, 193448180],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Je4(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.154",
+    "source": "download",
+    "size": 214986144,
+    "sha256": "bc9881b107d7be1743c64c8b72dd66798f5d0947dbc48ed0d77964c473661fd4",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [140219064, 140219304, 193880488],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function T_1(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.155",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.156",
+    "source": "local",
+    "size": 214986144,
+    "sha256": "9c1e8601031f5cbb3101e49dda22bf8ba31183692c705e267a6923585fa2ba09",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [140219512, 140219752, 193880920],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function T_1(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.157",
+    "source": "local",
+    "size": 215233824,
+    "sha256": "10f398510f0e6bd7c677ee25cfc698601bf8b1ec89658f823fa23a2f80a8a73f",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [140477224, 140477464, 194134033],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function A61(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.158",
+    "source": "download",
+    "size": 215233824,
+    "sha256": "536a0517fa64d48ddcbc8eb511a3d08027d47e06d148872332a8041d72c22768",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [140482664, 140482904, 194139713],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function J61(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.159",
+    "source": "download",
+    "size": 215250336,
+    "sha256": "5adf7b4d349f743d669cd5adf2ce76dbb5e146d8ab99b3a63c5aef2ef15595f9",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [140493864, 140494104, 194156385],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function Z61(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.160",
+    "source": "download",
+    "size": 217429920,
+    "sha256": "6c9069a9ee0e7b9b6ee43d006c3402e66815e19f87ac4313330cf03f83611968",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [141117960, 141118200, 195938795],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function J71(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.161",
+    "source": "download",
+    "size": 218040864,
+    "sha256": "5b4dc79eab05f9756c252c71deb339efa4429dffc1967dd8392cf87fcde4867f",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [141553544, 141553784, 196482313],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function c41(){let H=new Map;for(let[_,q]of Obje"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.162",
+    "source": "download",
+    "size": 218602272,
+    "sha256": "2d407dd2a63243ac900f64331589b9fcd29a2159a73289070af685f4085a17d2",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [141099192, 141099432, 196850875],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function yQ(){return!0}function OA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.163",
+    "source": "download",
+    "size": 219526944,
+    "sha256": "c7582e926e8fe459dbd9743f19ccb75500e3b455c722902d1aa587a74fb1fa7c",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [141608328, 141608568, 197627975],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function dQ(){return!0}function KA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.164",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.165",
+    "source": "download",
+    "size": 219526944,
+    "sha256": "19ed536dd0e94dade3f8c49c3c6ddeff22b06f5d5c86b30f1c88eeb9a04f45e5",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 65,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [141611848, 141612088, 197632471],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function dQ(){return!0}function KA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.166",
+    "source": "download",
+    "size": 220038816,
+    "sha256": "9009a6d88ef31334861f9b9683b9938d5c02aa2dd7adbb6a01a0a5f5924a35d7",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 67,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [142011720, 142011960, 198082926],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function jc(){return!0}function MA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.167",
+    "source": "download",
+    "size": 220038816,
+    "sha256": "fb3cbe9200b3eeba7ae06ee43fdb4b4b2b231d5fa8040d0e47954a7f374d1530",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 67,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [142013240, 142013480, 198084878],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function jc(){return!0}function MA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.168",
+    "source": "download",
+    "size": 220055328,
+    "sha256": "377f0ecedba8246bdabdf312ce8b7cc8ae1160997b26f5edca352a4a8d61dc78",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 67,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [142015656, 142015896, 198087822],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function jc(){return!0}function MA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.169",
+    "source": "local",
+    "size": 221921184,
+    "sha256": "86d8b820ad7eed50e50a130706d3dc5ef70696f91194de1b3897a842182afe3a",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 67,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [143114760, 143115000, 199642281],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function ic(){return!0}function RA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.170",
+    "source": "local",
+    "size": 222102816,
+    "sha256": "e903646d8b7a31882a80ecd27569a27d8ac57b3708745f349709632c84117fdf",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 67,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [143236552, 143236792, 199790411],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function ec(){return!0}function kA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.171",
+    "source": "missing",
+    "size": 0,
+    "fedstartCount": 0,
+    "replacementCount": 0,
+    "hostProdCount": 0,
+    "hostStagingCount": 0,
+    "fedstartOffsets": [],
+    "contexts": [],
+    "v1StrategyValidates": false,
+    "error": "download failed / version not published"
+  },
+  {
+    "version": "2.1.172",
+    "source": "local",
+    "size": 223390752,
+    "sha256": "3c31f345575bf6f261c7e19981f6491bb93eeb0ffb499e95033610a7184831ce",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 68,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [143954680, 143954920, 200835255],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function fd(){return!0}function xA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  },
+  {
+    "version": "2.1.173",
+    "source": "local",
+    "size": 223390752,
+    "sha256": "235c1bacdcc7f9d8d92368c95a0c66c26fcac98f878f21b10c73af340bc331ab",
+    "fedstartCount": 3,
+    "replacementCount": 0,
+    "hostProdCount": 68,
+    "hostStagingCount": 4,
+    "fedstartOffsets": [143957592, 143957832, 200838503],
+    "contexts": [
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+      "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+      "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function fd(){return!0}function xA(){return Arra"
+    ],
+    "v1StrategyValidates": false
+  }
+]

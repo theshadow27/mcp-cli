@@ -44,11 +44,19 @@ function makeFakeDeps(overrides: Partial<PatcherDeps> = {}): PatcherDeps {
   };
 }
 
+// The real binary's host-check reads the staging origin from a source-array
+// literal `["https://...","https://claude.fedstart.com","https://claude-staging.fedstart.com"]`;
+// validate keys on that array context (see strategies.ts). So the fixture seeds
+// ONE occurrence inside the array literal (the live, load-bearing site) plus the
+// remaining occurrences as bare string-table atoms — mirroring the real layout
+// (1–2 live array literals + 2 inert atoms).
+const LIVE_ARRAY_LITERAL = '...["https://claude.fedstart.com","https://claude-staging.fedstart.com"]...';
+
 function makeFakeClaudeBinary(dir: string, version: string, hostOccurrences = 4): string {
   const path = join(dir, "fake-claude");
-  // Synthetic binary with the target string at multiple sites, plus filler.
   const parts: string[] = [`#!fake-claude version=${version}\n`];
-  for (let i = 0; i < hostOccurrences; i++) {
+  if (hostOccurrences > 0) parts.push(LIVE_ARRAY_LITERAL);
+  for (let i = 1; i < hostOccurrences; i++) {
     parts.push(`...filler${i}...claude-staging.fedstart.com...filler${i}...`);
   }
   parts.push("end-of-file");
@@ -129,8 +137,9 @@ describe("updatePatchedClaude", () => {
     const deps = makeFakeDeps();
     await updatePatchedClaude({ sourcePath, storeDir }, deps);
 
-    // Simulate auto-update by rewriting the source binary.
-    const newContent = `#!new-version\n${"claude-staging.fedstart.com\n".repeat(4)}different-filler-bytes-different-filler-bytes\n`;
+    // Simulate auto-update by rewriting the source binary. Keep the live array
+    // literal so the reshaped source still patches cleanly under the new validate.
+    const newContent = `#!new-version\n${LIVE_ARRAY_LITERAL}\nclaude-staging.fedstart.com\ndifferent-filler-bytes-different-filler-bytes\n`;
     writeFileSync(sourcePath, newContent, { mode: 0o755 });
 
     let signCount = 0;

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.125",
+  "source": "missing",
+  "size": 0,
+  "fedstartCount": 0,
+  "replacementCount": 0,
+  "hostProdCount": 0,
+  "hostStagingCount": 0,
+  "fedstartOffsets": [],
+  "contexts": [],
+  "v1StrategyValidates": false,
+  "error": "download failed / version not published"
+}
