@@ -705,6 +705,38 @@ describe("replayThroughMock", () => {
     // Crash must surface as mock-worker-crash, not silently as count mismatch alone
     expect(report.violations.some((v) => v.rule === "mock-worker-crash")).toBe(true);
   });
+
+  test("short Phase-2 timeoutMs does not starve the Phase-1 init handshake (#2703)", async () => {
+    // Worker whose ready arrives 250ms after init — a stand-in for
+    // spawn/transpile latency under parallel suite load. The recording's only
+    // expected message (ready) is collected during Phase 1, so Phase 2 is
+    // never entered: timeoutMs: 50 exists solely to prove the Phase-1 init
+    // deadline no longer reads it. On pre-fix code this fails in ~50ms with
+    // "mock worker init timeout"; with initTimeoutMs (default 10s) it passes.
+    const slowInitWorkerPath = tmpFile("slow-init-worker.ts");
+    writeFileSync(
+      slowInitWorkerPath,
+      `self.onmessage = async (ev) => {
+  if (ev.data?.type === "init") {
+    await new Promise((r) => setTimeout(r, 250));
+    self.postMessage({ type: "ready", supported_protocol_version: 1 });
+  }
+};`,
+    );
+
+    const entries: RecordingEntry[] = [
+      entry({ dir: "daemon->worker", kind: "control", payload: { type: "init", protocol_version: 1 } }),
+      entry({ dir: "worker->daemon", kind: "control", payload: { type: "ready", supported_protocol_version: 1 } }),
+    ];
+
+    const report = await replayThroughMock(entries, "slow-init.ndjson", {
+      workerPath: slowInitWorkerPath,
+      timeoutMs: 50, // far below the worker's init latency — must not cap Phase 1
+    });
+
+    expect(report.pass).toBe(true);
+    expect(report.violations).toEqual([]);
+  });
 });
 
 // ── parseRecording ────────────────────────────────────────────────

@@ -460,7 +460,20 @@ function defaultMockWorkerPath(): string {
 
 export interface ReplayThroughMockOptions {
   workerPath?: string;
+  /**
+   * Budget for the Phase-2 message wait — how long to wait for the worker to
+   * emit the expected number of messages before concluding it went silent.
+   * Tests exercising crash/count-mismatch paths set this low to bound the
+   * worst-case wait; it must NOT cap worker startup (see initTimeoutMs).
+   */
   timeoutMs?: number;
+  /**
+   * Budget for the Phase-1 init/ready handshake, which includes spawning and
+   * transpiling the worker file — load-sensitive under a parallel test suite
+   * (#2703). Kept separate from timeoutMs so a short Phase-2 budget never
+   * starves worker startup.
+   */
+  initTimeoutMs?: number;
 }
 
 export async function replayThroughMock(
@@ -471,6 +484,7 @@ export async function replayThroughMock(
   const violations: ReplayViolation[] = [];
   const workerFile = opts?.workerPath ?? defaultMockWorkerPath();
   const timeoutMs = opts?.timeoutMs ?? 10_000;
+  const initTimeoutMs = opts?.initTimeoutMs ?? 10_000;
 
   const daemonEntries = entries.filter((e) => e.dir === "daemon->worker");
   const expectedWorkerEntries = entries.filter((e) => e.dir === "worker->daemon");
@@ -513,7 +527,7 @@ export async function replayThroughMock(
     const readyResult = await new Promise<"ready" | "error">((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error("mock worker init timeout"));
-      }, timeoutMs);
+      }, initTimeoutMs);
 
       w.onmessage = (event: MessageEvent) => {
         const data = event.data;
