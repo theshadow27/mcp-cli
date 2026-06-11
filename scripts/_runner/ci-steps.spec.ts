@@ -29,12 +29,15 @@ function deriveFailures(stdout: string | undefined): number {
   return (stdout ?? "").includes(" 0 fail") ? 0 : 1;
 }
 
-function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string }): string {
+function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string; errors?: number }): string {
   const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
   const path = join(dir, "bun");
   const stdout = (opts.stdout ?? "").replace(/'/g, "'\\''");
   const stderr = (opts.stderr ?? "").replace(/'/g, "'\\''");
   const f = deriveFailures(opts.stdout);
+  // `errors` models bun's "unhandled error between tests" — written to the junit
+  // `errors` attribute, NOT `failures`. The coverage JSON has no errors concept.
+  const e = opts.errors ?? 0;
   writeFileSync(
     path,
     // Write structured output files when requested so classifiers key off
@@ -48,7 +51,7 @@ for arg in "$@"; do
   case "$arg" in
     --reporter-outfile=*)
       jpath="\${arg#--reporter-outfile=}"
-      printf '<?xml version="1.0"?><testsuites failures="${f}"></testsuites>' > "$jpath"
+      printf '<?xml version="1.0"?><testsuites failures="${f}" errors="${e}"></testsuites>' > "$jpath"
       ;;
     --junit-outfile=*)
       cpath="\${arg#--junit-outfile=}"
@@ -172,6 +175,49 @@ describe("bunTestWithCrashTolerance", () => {
   it("real test failure (non-zero exit, summary shows fail count) reports failure", async () => {
     const dir = makeFakeBun({ code: 1, stdout: failingSummary });
     const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("unhandled error between tests (junit failures=0 errors=1) is a real failure, not a #1004 pass", async () => {
+    // The #2669 bug: bun's "unhandled error between tests" (e.g. a module-scope
+    // ReferenceError) increments junit errors="1", leaving failures="0". The
+    // " 0 fail" summary is still printed, so the crash-tolerance path used to
+    // promote this broken run to a pass. It must fail — errors count too.
+    const dir = makeFakeBun({ code: 1, stdout: passingSummary, errors: 1 });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("unhandled error between tests with no junit file (prose fallback) is a real failure", async () => {
+    // Defense for the case where bun also crashes before flushing the junit
+    // sidecar: only the stdout survives. " 0 fail" alone must NOT pass when the
+    // output carries the "Unhandled error between tests" banner / error count.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    const ps =
+      `${passingSummary}\n# Unhandled error between tests\nReferenceError: afterEach is not defined\n 1 error\n`.replace(
+        /'/g,
+        "'\\''",
+      );
+    writeFileSync(
+      join(dir, "bun"),
+      `#!/usr/bin/env bash
+printf '%s' '${ps}'
+# Deliberately write NO --reporter-outfile — simulates a crash before flush.
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_unhandled_no_junit" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
