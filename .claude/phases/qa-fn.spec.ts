@@ -135,6 +135,21 @@ describe("readQaLabels — verdict validation (#2652)", () => {
     expect(result.rejections[0]).toMatch(/unparseable/);
   });
 
+  test("fail closed: non-array label events rejects all verdicts (#2686)", async () => {
+    const deps = makeDeps({
+      gh: async (op) => {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events") return { stdout: '{"foo":1}', stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
+    expect(result.hasPass).toBe(false);
+    expect(result.rejections[0]).toMatch(/label-events not an array/);
+  });
+
   test("rejects stale label predating session spawn (guard b)", async () => {
     const staleEvent: GhLabelEvent = { actor: DEFAULT_AUTHOR, label: "qa:pass", created_at: "2026-06-09T09:55:00Z" };
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"], labelEvents: [staleEvent] }) });
@@ -230,6 +245,14 @@ describe("runQa — session exists, waiting for labels", () => {
 
   test("returns wait when qa_spawned_at is missing (fail closed)", async () => {
     const state = makeState({ qa_session_id: "abc-123" });
+    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
+    expect(result.action).toBe("wait");
+    if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
+  });
+
+  test("returns wait when qa_spawned_at is a string (typeof guard #2687)", async () => {
+    const state = makeState({ qa_session_id: "abc-123", qa_spawned_at: "1718000000000" as unknown as number });
     const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) });
     const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
     expect(result.action).toBe("wait");
