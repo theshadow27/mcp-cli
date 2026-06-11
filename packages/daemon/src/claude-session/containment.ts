@@ -267,6 +267,10 @@ const CONTAINMENT_SAFE_TOOLS: ReadonlySet<string> = new Set([
   "KillBash",
   "SlashCommand",
   "Skill",
+  // Read-only MCP discovery built-ins (no `mcp__` prefix — they're built-ins,
+  // not server-namespaced tool calls).
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
 ]);
 
 // MCP tools execute in the daemon / external servers, not the worktree's
@@ -276,13 +280,13 @@ const MCP_TOOL_PREFIX = "mcp__";
 // ── File path extraction ──
 
 function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
-  if (
-    toolName === "Write" ||
-    toolName === "Edit" ||
-    toolName === "MultiEdit" ||
-    toolName === "Read" ||
-    toolName === "NotebookEdit"
-  ) {
+  if (toolName === "NotebookEdit") {
+    // The live NotebookEdit tool's path parameter is `notebook_path`; fall back
+    // to `file_path` for older/aliased shapes.
+    const np = input.notebook_path ?? input.file_path;
+    return typeof np === "string" ? np : null;
+  }
+  if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "Read") {
     const fp = input.file_path;
     return typeof fp === "string" ? fp : null;
   }

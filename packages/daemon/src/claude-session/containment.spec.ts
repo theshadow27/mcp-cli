@@ -56,12 +56,24 @@ describe("ContainmentGuard — in-worktree operations", () => {
     expect(r.action).toBe("allow");
   });
 
+  test("allows NotebookEdit inside worktree (notebook_path param)", () => {
+    const g = guard();
+    const r = g.evaluate("NotebookEdit", { notebook_path: `${WORKTREE}/nb.ipynb`, new_source: "x" });
+    expect(r.action).toBe("allow");
+  });
+
   test("allows known non-filesystem tools (Agent, TodoWrite, WebFetch)", () => {
     const g = guard();
     expect(g.evaluate("Agent", { prompt: "do something" }).action).toBe("allow");
     expect(g.evaluate("TodoWrite", { todos: [] }).action).toBe("allow");
     expect(g.evaluate("WebFetch", { url: "https://example.com" }).action).toBe("allow");
     expect(g.evaluate("ExitPlanMode", { plan: "x" }).action).toBe("allow");
+  });
+
+  test("allows read-only MCP discovery built-ins (no mcp__ prefix)", () => {
+    const g = guard();
+    expect(g.evaluate("ListMcpResourcesTool", {}).action).toBe("allow");
+    expect(g.evaluate("ReadMcpResourceTool", { server: "s", uri: "u" }).action).toBe("allow");
   });
 
   test("allows MCP tools by prefix", () => {
@@ -106,6 +118,13 @@ describe("ContainmentGuard — fail closed for unrecognized tools", () => {
     const r = g.evaluate("Write", { content: "data" });
     expect(r.action).toBe("deny");
     expect(r.event).toBe("session:containment_denied");
+  });
+
+  test("denies NotebookEdit escaping the worktree (path-check is functional)", () => {
+    const g = guard();
+    const r = g.evaluate("NotebookEdit", { notebook_path: "/Users/test/repo/nb.ipynb", new_source: "x" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
   });
 });
 
