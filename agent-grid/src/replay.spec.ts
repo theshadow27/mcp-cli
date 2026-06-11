@@ -707,9 +707,12 @@ describe("replayThroughMock", () => {
   });
 
   test("short Phase-2 timeoutMs does not starve the Phase-1 init handshake (#2703)", async () => {
-    // Worker whose ready arrives well after the Phase-2 budget — stands in for
-    // spawn/transpile latency under parallel suite load. Init must be governed
-    // by initTimeoutMs (default 10s), not the short Phase-2 timeoutMs.
+    // Worker whose ready arrives 250ms after init — a stand-in for
+    // spawn/transpile latency under parallel suite load. The recording's only
+    // expected message (ready) is collected during Phase 1, so Phase 2 is
+    // never entered: timeoutMs: 50 exists solely to prove the Phase-1 init
+    // deadline no longer reads it. On pre-fix code this fails in ~50ms with
+    // "mock worker init timeout"; with initTimeoutMs (default 10s) it passes.
     const slowInitWorkerPath = tmpFile("slow-init-worker.ts");
     writeFileSync(
       slowInitWorkerPath,
@@ -728,7 +731,7 @@ describe("replayThroughMock", () => {
 
     const report = await replayThroughMock(entries, "slow-init.ndjson", {
       workerPath: slowInitWorkerPath,
-      timeoutMs: 50, // far below the worker's init latency — must only bound Phase 2
+      timeoutMs: 50, // far below the worker's init latency — must not cap Phase 1
     });
 
     expect(report.pass).toBe(true);
