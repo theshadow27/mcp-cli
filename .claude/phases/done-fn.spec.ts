@@ -3,7 +3,7 @@ import { type MergePrDeps, type MergeResult, mergePr } from "./done-fn";
 
 function makeDeps(overrides: Partial<MergePrDeps> = {}): MergePrDeps {
   return {
-    async gh(_args) {
+    async gh(_op) {
       return { stdout: "", stderr: "", exitCode: 0 };
     },
     async prMerge(_prNumber, _flags) {
@@ -22,9 +22,9 @@ function makeDeps(overrides: Partial<MergePrDeps> = {}): MergePrDeps {
 describe("mergePr", () => {
   test("succeeds when labels include qa:pass and CI is green", async () => {
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
     });
@@ -35,9 +35,9 @@ describe("mergePr", () => {
 
   test("returns missing_qa_pass when qa:pass label is absent", async () => {
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "bug", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "bug", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
     });
@@ -48,9 +48,9 @@ describe("mergePr", () => {
 
   test("returns ci_not_green when failing checks > 0", async () => {
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "2", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "2", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
     });
@@ -64,9 +64,9 @@ describe("mergePr", () => {
     // actually completed the merge. prView must return "MERGED" for the
     // done phase to treat it as ok:true (Finding 4 fix).
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
       async prMerge(_prNumber, _flags) {
@@ -88,9 +88,9 @@ describe("mergePr", () => {
     // Merge genuinely failed (not just client-side SIGTERM): prView says CLOSED
     // (not MERGED), so done phase must not treat it as success.
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
       async prMerge(_prNumber, _flags) {
@@ -107,9 +107,9 @@ describe("mergePr", () => {
 
   test("returns conflicts when merge stderr mentions conflicts", async () => {
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
       async prMerge(_prNumber, _flags) {
@@ -129,9 +129,9 @@ describe("mergePr", () => {
     // server-side. The second call gets "Pull Request is not mergeable" from GitHub,
     // which must NOT be classified as conflicts — prView confirms MERGED, so ok:true.
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
       async prMerge(_prNumber, _flags) {
@@ -150,9 +150,9 @@ describe("mergePr", () => {
     // prView is unreachable (network error), so we fall back to deterministic
     // stderr pattern matching — "not mergeable" is classified as conflicts.
     const deps = makeDeps({
-      async gh(args) {
-        if (args[4] === "labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
-        if (args[4] === "statusCheckRollup") return { stdout: "0", stderr: "", exitCode: 0 };
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
         return { stdout: "", stderr: "", exitCode: 0 };
       },
       async prMerge(_prNumber, _flags) {
