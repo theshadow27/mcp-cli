@@ -264,9 +264,16 @@ const STALE_TODOS_CI: Step = {
 // Default (no flag): the developer-friendly path — parallel tests for
 //   speed, `biome --write` for auto-fix, and the simpler coverage step.
 
-const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, PHASE_LOCK];
-const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, PHASE_LOCK, TEST_CHANGED];
-const COMPREHENSIVE: Step[] = [
+// phase-lock is deliberately omitted from PRE_COMMIT / PRE_PUSH: `mcx phase
+// check` resolves its root to the *main* checkout from a linked worktree
+// (phase.ts → findGitRoot, #2673), so wiring it into the local hooks both
+// false-positive-blocks every clean worktree commit/push and false-negatives
+// the worktree's own lock drift (#2737). It stays in CI / COMPREHENSIVE, which
+// run against a real checkout where the root is the repo root and the check is
+// sound. Re-add to the local hooks once #2737 makes the resolver worktree-aware.
+export const PRE_COMMIT: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID];
+export const PRE_PUSH: Step[] = [INSTALL, TYPECHECK, LINT_CHECK, RULES, AGENT_GRID, TEST_CHANGED];
+export const COMPREHENSIVE: Step[] = [
   INSTALL,
   TYPECHECK,
   LINT,
@@ -278,7 +285,7 @@ const COMPREHENSIVE: Step[] = [
   TEST_PHASES_CI,
   COVERAGE,
 ];
-const CI: Step[] = [
+export const CI: Step[] = [
   INSTALL,
   TYPECHECK,
   LINT_CHECK,
