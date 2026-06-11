@@ -45,7 +45,7 @@ defineAlias({
   }),
   output: z.object({
     action: z.enum(["spawn", "wait", "goto"]),
-    target: z.enum(["repair", "qa"]).optional(),
+    target: z.enum(["repair", "qa", "needs-attention"]).optional(),
     reason: z.string(),
     round: z.number(),
     command: z.array(z.string()).optional(),

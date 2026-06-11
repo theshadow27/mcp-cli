@@ -73,6 +73,9 @@ function makeState(initial: Record<string, unknown> = {}): ReviewState {
     set: async (key, value) => {
       store.set(key, value);
     },
+    delete: async (key) => {
+      store.delete(key);
+    },
   };
 }
 
@@ -298,6 +301,7 @@ describe("runReview — spawn path", () => {
         writes[key] = value;
         await state.set(key, value);
       },
+      delete: state.delete,
     };
     await runReview({ provider: "claude" }, makeWork(), trackingState, makeDeps(), "__none__");
     expect(writes.review_round).toBe(1);
@@ -422,6 +426,7 @@ describe("runReview — goto repair (review:changes)", () => {
         writes[key] = value;
         await state.set(key, value);
       },
+      delete: state.delete,
     };
     await runReview(
       { provider: "claude" },

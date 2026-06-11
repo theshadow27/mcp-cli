@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { GhLabelEvent } from "./phase-types";
-import { QA_FAIL_CAP, type QaDeps, type QaState, type QaWork, readQaLabels, runQa } from "./qa-fn";
+import {
+  QA_FAIL_CAP,
+  QA_RESPAWN_CAP,
+  QA_STUCK_TICK_CAP,
+  type QaDeps,
+  type QaState,
+  type QaWork,
+  readQaLabels,
+  runQa,
+} from "./qa-fn";
 
 const DEFAULT_SPAWNED_AT = new Date("2026-06-09T10:00:00Z").getTime();
 const DEFAULT_HEAD_DATE = "2026-06-09T09:50:00Z";
@@ -269,6 +278,54 @@ describe("runQa — session exists, waiting for labels", () => {
     const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
     expect(result.action).toBe("wait");
     if (result.action === "wait") expect(result.reason).toMatch(/fail closed/);
+  });
+});
+
+// Regression for #2654: a QA session that dies before setting its verdict label
+// must not idle the gate forever — bounded respawn, then needs-attention.
+describe("runQa — dead-session backstop (#2654)", () => {
+  const stuckState = (overrides: Record<string, unknown> = {}) =>
+    makeState({ qa_session_id: "abc-123", qa_spawned_at: DEFAULT_SPAWNED_AT, ...overrides });
+  const noLabelDeps = () => makeDeps({ gh: makeGh({ labels: ["enhancement"] }) });
+
+  test("waits and increments the stuck tick while under the cap", async () => {
+    const state = stuckState();
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("wait");
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(1);
+  });
+
+  test("respawns the QA session when the stuck tick cap is reached", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1 });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("spawn");
+    expect(await state.get<number>("qa_respawns")).toBe(1);
+    expect(await state.get<string>("qa_session_id")).toMatch(/^pending:/);
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(0);
+  });
+
+  test("escalates to needs-attention once the respawn budget is exhausted", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1, qa_respawns: QA_RESPAWN_CAP });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, noLabelDeps());
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.target).toBe("needs-attention");
+      expect(result.reason).toMatch(/presumed dead/i);
+    }
+  });
+
+  test("a valid verdict still routes normally despite accumulated stuck ticks", async () => {
+    const state = stuckState({ qa_stuck_ticks: QA_STUCK_TICK_CAP - 1 });
+    const deps = makeDeps({ gh: makeGh({ labels: ["qa:pass"] }) });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, deps);
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("done");
+  });
+
+  test("a fresh spawn resets the stuck tick counter", async () => {
+    const state = makeState({ qa_stuck_ticks: 3 });
+    await runQa({ provider: "claude" }, makeWork(), state, makeDeps());
+    expect(await state.get<number>("qa_stuck_ticks")).toBe(0);
   });
 });
 

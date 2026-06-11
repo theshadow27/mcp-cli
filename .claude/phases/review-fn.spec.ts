@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { GhLabelEvent } from "./phase-types";
 import {
+  REVIEW_RESPAWN_CAP,
   REVIEW_ROUND_CAP,
+  REVIEW_STUCK_TICK_CAP,
   type ReviewDeps,
   type ReviewState,
   type ReviewWork,
@@ -26,6 +28,9 @@ function makeState(initial: Record<string, unknown> = {}): ReviewState {
     },
     async set(key, value) {
       store.set(key, value);
+    },
+    async delete(key) {
+      store.delete(key);
     },
   };
 }
@@ -456,6 +461,58 @@ describe("runReview — session exists", () => {
     const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
     expect(result.action).toBe("wait");
     if (result.action === "wait") expect(result.reason).toMatch(/rejected.*stale/i);
+  });
+});
+
+// Regression for #2654: a reviewer session that dies before setting its verdict
+// label must not idle the gate forever. The no-verdict-yet branch counts ticks
+// and routes to a deterministic outcome (bounded respawn, then needs-attention).
+describe("runReview — dead-session backstop (#2654)", () => {
+  const stuckState = (overrides: Record<string, unknown> = {}) =>
+    makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT, ...overrides });
+  const noLabelDeps = () => makeDeps({ gh: makeGh({ labels: ["bug"] }) });
+
+  test("waits and increments the stuck tick while under the cap", async () => {
+    const state = stuckState();
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("wait");
+    expect(await state.get<number>("review_stuck_ticks")).toBe(1);
+  });
+
+  test("respawns the reviewer when the stuck tick cap is reached", async () => {
+    const state = stuckState({ review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1 });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    expect(await state.get<number>("review_respawns")).toBe(1);
+    expect(await state.get<string>("review_session_id")).toMatch(/^pending:/);
+    expect(await state.get<number>("review_stuck_ticks")).toBe(0);
+  });
+
+  test("escalates to needs-attention once the respawn budget is exhausted", async () => {
+    const state = stuckState({
+      review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1,
+      review_respawns: REVIEW_RESPAWN_CAP,
+    });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, noLabelDeps(), "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.target).toBe("needs-attention");
+      expect(result.reason).toMatch(/presumed dead/i);
+    }
+  });
+
+  test("a valid verdict still routes normally despite accumulated stuck ticks", async () => {
+    const state = stuckState({ review_stuck_ticks: REVIEW_STUCK_TICK_CAP - 1 });
+    const deps = makeDeps({ gh: makeGh({ labels: ["review:pass"] }) });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("qa");
+  });
+
+  test("a fresh spawn resets the stuck tick counter", async () => {
+    const state = makeState({ review_stuck_ticks: 3 });
+    await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(await state.get<number>("review_stuck_ticks")).toBe(0);
   });
 });
 
