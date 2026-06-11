@@ -300,3 +300,98 @@ describe("handlePrompt: per-request traceparent propagation (#1244)", () => {
     expect(recording.lastEnv()).toBeUndefined();
   });
 });
+
+// ── handlePrompt: per-spawn binary/transport override (#2681) ──
+
+describe("handlePrompt: per-spawn binary/transport override (#2681)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+  const origEnvBinary = process.env.MCX_CLAUDE_BINARY;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+    if (origEnvBinary === undefined) Reflect.deleteProperty(process.env, "MCX_CLAUDE_BINARY");
+    else process.env.MCX_CLAUDE_BINARY = origEnvBinary;
+  });
+
+  test("caller-supplied binary/transport win over global config and survive a config change after spawn returns", async () => {
+    const recording = makeRecordingSpawn();
+    // Daemon's startup-resolved binary (the "pinned grid" default).
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger, binaryPath: "/startup/claude" });
+    await server.start();
+
+    // Global config state says "use the archive binary" at the moment of spawn.
+    process.env.MCX_CLAUDE_BINARY = "/global/archive/claude";
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    await handlePrompt(server, {
+      prompt: "canary run",
+      claudeBinary: "/canary/2.1.170",
+      transport: "stdio",
+    });
+
+    // The caller-supplied binary is spawned — not the startup default, not the global env.
+    const cmd = recording.lastCmd();
+    expect(cmd[0]).toBe("/canary/2.1.170");
+    // stdio transport: no --sdk-url WS bootstrap.
+    expect(cmd).not.toContain("--sdk-url");
+
+    // The session is recorded with the stdio transport (carried on the db:upsert).
+    type UpsertMsg = { type: string; session?: { transport?: string } };
+    const transportUpsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.transport !== undefined,
+    ) as UpsertMsg | undefined;
+    expect(transportUpsert?.session?.transport).toBe("stdio");
+
+    // Global config changes immediately after spawn returns — the already-dispatched
+    // session must not be affected (the override was frozen at dispatch time).
+    process.env.MCX_CLAUDE_BINARY = "/global/different/claude";
+    expect(recording.lastCmd()[0]).toBe("/canary/2.1.170");
+  });
+
+  test("omitting overrides preserves the pinned default (startup binary + sdk-url WS)", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger, binaryPath: "/startup/claude" });
+    await server.start();
+
+    const messages: unknown[] = [];
+    (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
+
+    await handlePrompt(server, { prompt: "normal run" });
+
+    const cmd = recording.lastCmd();
+    expect(cmd[0]).toBe("/startup/claude");
+    expect(cmd).toContain("--sdk-url");
+
+    type UpsertMsg = { type: string; session?: { transport?: string } };
+    const transportUpsert = messages.find(
+      (m) => (m as UpsertMsg).type === "db:upsert" && (m as UpsertMsg).session?.transport !== undefined,
+    ) as UpsertMsg | undefined;
+    expect(transportUpsert?.session?.transport).toBe("ws");
+  });
+
+  test("binary override spawns even when the daemon's default binary is unresolved (spawn disabled)", async () => {
+    const recording = makeRecordingSpawn();
+    server = new ClaudeWsServer({
+      spawn: recording.spawn,
+      logger: silentLogger,
+      spawnDisabledReason: "claude 2.1.123 requires a patched copy",
+    });
+    await server.start();
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+
+    const result = await handlePrompt(server, {
+      prompt: "canary run",
+      claudeBinary: "/canary/2.1.170",
+      transport: "stdio",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(recording.lastCmd()[0]).toBe("/canary/2.1.170");
+  });
+});

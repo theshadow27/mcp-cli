@@ -284,6 +284,10 @@ export interface SpawnArgs extends SharedSpawnArgs {
   name: string | undefined;
   /** Work item ID for transition log bookkeeping. When set, spawn writes a null→initial entry. */
   workItemId: string | undefined;
+  /** Per-spawn claude binary override. Bypasses the daemon's global claudeBinary config for this session only. */
+  claudeBinary: string | undefined;
+  /** Per-spawn transport override. Bypasses the daemon's global transport config for this session only. */
+  transport: "stdio" | "sdk-url" | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
@@ -292,6 +296,8 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let headed = false;
   let name: string | undefined;
   let workItemId: string | undefined;
+  let claudeBinary: string | undefined;
+  let transport: "stdio" | "sdk-url" | undefined;
   let extraError: string | undefined;
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
@@ -334,11 +340,39 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       if (!workItemId) extraError = "--work-item requires an id";
       return 0;
     }
+    if (arg === "--claude-binary") {
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      if (next && !next.startsWith("-")) {
+        claudeBinary = next;
+        return 1;
+      }
+      extraError = "--claude-binary requires a path";
+      return 0;
+    }
+    if (arg === "--transport") {
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      if (next === "stdio" || next === "sdk-url") {
+        transport = next;
+        return 1;
+      }
+      extraError = '--transport must be "stdio" or "sdk-url"';
+      return next && !next.startsWith("-") ? 1 : 0;
+    }
     return undefined;
   });
 
   // shared.error wins: it reflects a bad shared flag; extraError covers provider-specific failures
-  return { ...shared, error: shared.error ?? extraError, worktree, resume, headed, name, workItemId };
+  return {
+    ...shared,
+    error: shared.error ?? extraError,
+    worktree,
+    resume,
+    headed,
+    name,
+    workItemId,
+    claudeBinary,
+    transport,
+  };
 }
 
 /**
@@ -496,6 +530,10 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;
   if (parsed.wait) toolArgs.wait = true;
+  // Per-spawn overrides: captured here, at dispatch time, and frozen into the RPC
+  // so a later `mcx config set` cannot change what this session uses (#2681).
+  if (parsed.claudeBinary) toolArgs.claudeBinary = parsed.claudeBinary;
+  if (parsed.transport) toolArgs.transport = parsed.transport;
 
   // Handle worktree: always pre-create via shim so cwd points to the worktree.
   // Without cwd, Claude inherits the daemon's cwd (main repo) and file

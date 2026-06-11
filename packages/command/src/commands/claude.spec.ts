@@ -191,6 +191,34 @@ describe("parseSpawnArgs", () => {
     }
   });
 
+  test("parses --claude-binary override (#2681)", () => {
+    const result = parseSpawnArgs(["--claude-binary", "/path/to/claude", "-t", "x"]);
+    expect(result.claudeBinary).toBe("/path/to/claude");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("--claude-binary without a path is an error (#2681)", () => {
+    const result = parseSpawnArgs(["--claude-binary", "-t", "x"]);
+    expect(result.error).toBe("--claude-binary requires a path");
+  });
+
+  test("parses --transport stdio and sdk-url (#2681)", () => {
+    expect(parseSpawnArgs(["--transport", "stdio", "-t", "x"]).transport).toBe("stdio");
+    expect(parseSpawnArgs(["--transport", "sdk-url", "-t", "x"]).transport).toBe("sdk-url");
+  });
+
+  test("--transport rejects unknown values (#2681)", () => {
+    const result = parseSpawnArgs(["--transport", "ws", "-t", "x"]);
+    expect(result.error).toBe('--transport must be "stdio" or "sdk-url"');
+    expect(result.transport).toBeUndefined();
+  });
+
+  test("overrides default to undefined when omitted (#2681)", () => {
+    const result = parseSpawnArgs(["-t", "x"]);
+    expect(result.claudeBinary).toBeUndefined();
+    expect(result.transport).toBeUndefined();
+  });
+
   test("parses -w shorthand", () => {
     const result = parseSpawnArgs(["-w", "feat", "-t", "x"]);
     expect(result.worktree).toBe("feat");
