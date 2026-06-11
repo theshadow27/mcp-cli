@@ -132,6 +132,23 @@ If a test file is too slow:
 3. **Split the file** — separate fast unit tests from slow integration tests (e.g., `foo.spec.ts` for units, `foo.integration.spec.ts` for integration)
 4. **Use `pollUntil`** instead of fixed sleeps — exits as soon as the condition is met
 
+## DB/IPC Restore Paths: test the absent-field case (required)
+
+Whenever a column is added to a session/DB restore path (or a field to an IPC
+payload parser), tests must cover **both** scenarios:
+
+- **Field present:** row contains the new column with a valid value → restore uses it
+- **Field absent/null/garbage:** row is missing the column (older DB schema),
+  stores NULL, or holds an unrecognised value → restore uses the safe default —
+  no crash, no silent wrong value
+
+Motivating incident (#2602): a `transport` TEXT column was added with no CHECK
+constraint and restored via `row.transport as "ws" | "stdio"` — the cast let
+garbage bypass the `?? "ws"` fallback and silently drop messages. Only the
+happy path was tested; the absent-field path (the one that hit production) had
+no coverage. The `no-db-ipc-cast` rule (#2622) bans the bare-cast half of this
+bug class; this test pattern is the other half.
+
 ## Summary
 
 Every `Bun.sleep` or `setTimeout` in a test is a potential flake. If you must sleep, it should be inside a retry/poll loop with a deadline — never as "wait and hope". The two acceptable standalone sleeps are: short backoff between retry attempts, and negative assertions (verifying something does NOT happen).

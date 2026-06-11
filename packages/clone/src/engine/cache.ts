@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS scope_meta (
 /** Normalize SQLite INTEGER to boolean for isStub. */
 function normalizeEntry(row: Record<string, unknown> | null): CachedEntry | null {
   if (!row) return null;
+  // dotw-todo no-db-ipc-cast: unguarded isStub restore cast — fix in #2742
   return { ...row, isStub: !!(row.isStub as number) } as CachedEntry;
 }
 
