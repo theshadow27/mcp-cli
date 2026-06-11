@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import type { FileMeta } from "./_engine/file-loader";
 import { buildImportGraph } from "./_engine/import-graph";
@@ -218,5 +220,64 @@ describe("rule integration", () => {
         expect(sccMembers.has(file)).toBe(true);
       }
     }
+  });
+});
+
+// ── Violation reporting (on-disk fixtures) ──────────────────────────────
+//
+// computeCycles() resolves import specifiers via the default Bun.resolveSync,
+// which hits the real filesystem — so exercising the rule's `check()` reporting
+// path (the cross-package/intra-package/self-import messages) requires fixtures
+// that actually exist on disk. These cover the violation branches that the
+// synthetic in-memory graph tests above cannot reach.
+
+describe("rule violation reporting", () => {
+  // realpath so paths match Bun.resolveSync's output (macOS /var → /private/var).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "noic-fixtures-")));
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function write(rel: string, content: string): FileMeta {
+    const abs = join(root, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+    return { path: abs, relPath: rel, content, pkg: "", isTest: false };
+  }
+
+  test("reports a cross-package cycle with the package-spanning label", () => {
+    const a = write("packages/core/src/a.ts", `import "../../daemon/src/b";\nexport const a = 1;\n`);
+    const b = write("packages/daemon/src/b.ts", `import "../../core/src/a";\nexport const b = 1;\n`);
+    const files = new Map([
+      [a.path, a],
+      [b.path, b],
+    ]);
+    const violations = evaluateRule(rule, a, files);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("cross-package cycle");
+    expect(violations[0].snippet).toContain("packages/core/src/a.ts");
+    expect(violations[0].snippet).toContain("packages/daemon/src/b.ts");
+  });
+
+  test("reports an intra-package cycle with the same-package label", () => {
+    const a = write("packages/core/src/x.ts", `import "./y";\nexport const x = 1;\n`);
+    const b = write("packages/core/src/y.ts", `import "./x";\nexport const y = 1;\n`);
+    const files = new Map([
+      [a.path, a],
+      [b.path, b],
+    ]);
+    const violations = evaluateRule(rule, a, files);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("intra-package cycle");
+  });
+
+  test("reports a self-import distinctly", () => {
+    const s = write("packages/core/src/loop.ts", `import "./loop";\nexport const s = 1;\n`);
+    const files = new Map([[s.path, s]]);
+    const violations = evaluateRule(rule, s, files);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("self-import");
+    expect(violations[0].snippet).toContain("packages/core/src/loop.ts");
   });
 });

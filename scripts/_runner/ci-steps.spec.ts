@@ -354,6 +354,30 @@ describe("coverageWithCrashTolerance", () => {
     expect(result).toMatchObject({ success: false });
   });
 
+  it("an inner test-NAME echo of `PASS: …` does not mask a real `FAIL:` ratchet failure (#2744)", async () => {
+    // Regression for #2744: check-coverage's run-1 includes the scripts/_runner
+    // path, so bun echoes THIS spec's own test names to stdout — including the
+    // literal phrase `PASS: All coverage thresholds met` from the test above.
+    // The old unanchored COVERAGE_PASS_RE matched that mid-line echo and
+    // classified a genuine exit-1 ratchet failure as a #1419 crash-after-pass,
+    // silently disabling the per-file coverage gate on every full-enforcement
+    // CI run. The phrase must only count when check-coverage prints it at column 0.
+    const stdout = [
+      "(pass) coverageWithCrashTolerance > post-test crash with `PASS: All coverage thresholds met` is a pass (#1419) [3.16ms]",
+      "",
+      "FAIL: 4 file(s) below 80% line coverage:",
+      "  0.0%  scripts/rules/_engine/reporter.ts",
+    ].join("\n");
+    const dir = makeFakeBun({ code: 1, stdout: `${stdout}\n` });
+    const step = coverageWithCrashTolerance({ logName: "coverage_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
   it("exit 132 with neither passthrough → retries; deterministic stub still 132 → fails on second", async () => {
     // Both runs return exit 132 with no PASS/0-fail evidence. Per the policy
     // (unlike bunTestWithCrashTolerance which treats 132-on-retry as pass),
