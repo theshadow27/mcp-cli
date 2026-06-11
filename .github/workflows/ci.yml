@@ -114,6 +114,12 @@ jobs:
       # per check run for zero behaviour change (#2389 review).
       - name: am-i-done --ci (typecheck, lint, rules, non-daemon + daemon tests)
         if: needs.detect.outputs.docs_only != 'true'
+        env:
+          # stale-todos shells out to `gh issue view`; without a token gh
+          # exits instantly and the step fails closed on the first branch
+          # that carries a real dotw-todo (see #2752 — masked until then
+          # because main had zero production dotw-todos).
+          GH_TOKEN: ${{ github.token }}
         run: bun run am-i-done --ci --skip install --skip coverage --verbose
       # ci-steps.ts persists captured stdout+stderr to /tmp/test_*.txt for
       # this artefact upload (test_non_daemon.txt, test_daemon.txt,
