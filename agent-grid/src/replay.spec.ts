@@ -705,6 +705,35 @@ describe("replayThroughMock", () => {
     // Crash must surface as mock-worker-crash, not silently as count mismatch alone
     expect(report.violations.some((v) => v.rule === "mock-worker-crash")).toBe(true);
   });
+
+  test("short Phase-2 timeoutMs does not starve the Phase-1 init handshake (#2703)", async () => {
+    // Worker whose ready arrives well after the Phase-2 budget — stands in for
+    // spawn/transpile latency under parallel suite load. Init must be governed
+    // by initTimeoutMs (default 10s), not the short Phase-2 timeoutMs.
+    const slowInitWorkerPath = tmpFile("slow-init-worker.ts");
+    writeFileSync(
+      slowInitWorkerPath,
+      `self.onmessage = async (ev) => {
+  if (ev.data?.type === "init") {
+    await new Promise((r) => setTimeout(r, 250));
+    self.postMessage({ type: "ready", supported_protocol_version: 1 });
+  }
+};`,
+    );
+
+    const entries: RecordingEntry[] = [
+      entry({ dir: "daemon->worker", kind: "control", payload: { type: "init", protocol_version: 1 } }),
+      entry({ dir: "worker->daemon", kind: "control", payload: { type: "ready", supported_protocol_version: 1 } }),
+    ];
+
+    const report = await replayThroughMock(entries, "slow-init.ndjson", {
+      workerPath: slowInitWorkerPath,
+      timeoutMs: 50, // far below the worker's init latency — must only bound Phase 2
+    });
+
+    expect(report.pass).toBe(true);
+    expect(report.violations).toEqual([]);
+  });
 });
 
 // ── parseRecording ────────────────────────────────────────────────
