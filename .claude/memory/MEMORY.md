@@ -14,7 +14,6 @@
 - [Wait on the monitor stream, not ScheduleWakeup](feedback_schedulewakeup_orchestration.md) — ScheduleWakeup is blind fixed-delay polling; wait on the `mcx monitor` event stream (default) and use its `heartbeat` event to observe wall-time + catch a silent worker; ScheduleWakeup only for idle quota-pause-to-`resetsAt`
 - [Background-task notifications work](feedback_background_task_notify.md) — workers "waiting for notification" is correct; ask duration, don't prescribe polling
 - [Don't bye spikes](feedback_dont_bye_spikes.md) — keep exploratory sessions alive for follow-up questions
-- [Flaky test handling](feedback_flaky_tests.md) — stub pointer; canonical rule lives in repo at `.claude/skills/sprint/references/investigations.md` (load-bearing — `mcx claude spawn`, NOT Agent tool, see #2009)
 - [Orchestrator context rot](feedback_context_rot.md) — long-running orchestrators degrade at ~300k tokens; verify "done" claims with a probe
 - [Bulk reads + serialized cascades](feedback_sprint_bulk_and_cascade.md) — no `for` loops for status (use bulk jq), single-pointer update-branch cascades (avoid N² CI)
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
@@ -26,6 +25,7 @@
 - [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
 - [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
+- [Never bypass gates (--no-verify banned)](feedback_never_bypass_gate.md) — push blocked by a flake → retry (never --no-verify); same tracked signature → wait + retry once more; NEW signature → stop and report. CI on clean runners is the arbiter
 
 ## Infra / Known Issues
 - [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
