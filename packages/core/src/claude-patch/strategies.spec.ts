@@ -100,8 +100,22 @@ describe("STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1", () => {
     const out = STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.apply(synthetic);
     expect(out.length).toBe(synthetic.length);
   });
-  test("validate accepts correct count of replacements", () => {
-    const synthetic = enc.encode(`${"[000:000:000:000:000:0:0:1].".repeat(4)}filler`);
+  // The live allowlist origin reads `...claude.fedstart.com","https://<staging>"`
+  // in the source array; post-patch the staging origin is the IPv6 literal. The
+  // validate keys on that array context, so the fixtures below include it.
+  const liveArrayCtx = '"https://claude.fedstart.com","https://[000:000:000:000:000:0:0:1]"';
+  test("validate accepts the 4-occurrence era (2.1.120–2.1.132: 2 live array + 2 atoms)", () => {
+    // 2 live array literals (with the prod-origin context) + 2 inert atoms.
+    const synthetic = enc.encode(
+      `${liveArrayCtx} atom[000:000:000:000:000:0:0:1] atom[000:000:000:000:000:0:0:1] ${liveArrayCtx}`,
+    );
+    expect(countOccurrences(synthetic, enc.encode("[000:000:000:000:000:0:0:1]"))).toBe(4);
+    expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.validate(synthetic)).toEqual({ ok: true });
+  });
+  test("validate accepts the 3-occurrence era (2.1.133+: 1 live array + 2 atoms)", () => {
+    // The de-duped era: a single live array literal + 2 inert atoms = 3.
+    const synthetic = enc.encode(`atom[000:000:000:000:000:0:0:1] ${liveArrayCtx} atom[000:000:000:000:000:0:0:1]`);
+    expect(countOccurrences(synthetic, enc.encode("[000:000:000:000:000:0:0:1]"))).toBe(3);
     expect(STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.validate(synthetic)).toEqual({ ok: true });
   });
   test("validate rejects unreplaced source occurrences", () => {
@@ -110,11 +124,19 @@ describe("STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/unreplaced/);
   });
-  test("validate rejects wrong replacement count", () => {
-    const synthetic = enc.encode("[000:000:000:000:000:0:0:1].".repeat(3));
+  test("validate rejects when no replacement landed at all", () => {
+    const synthetic = enc.encode("nothing was replaced here");
     const result = STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.validate(synthetic);
     expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/expected 4/);
+    expect(result.reason).toMatch(/no replacement occurrences/);
+  });
+  test("validate rejects when replacements miss the live allowlist array (only dead atoms rewritten)", () => {
+    // Source string fully gone and replacements present, but none in the live
+    // array context — this is the genuine-reshape failure mode the check guards.
+    const synthetic = enc.encode("atom[000:000:000:000:000:0:0:1] atom[000:000:000:000:000:0:0:1]");
+    const result = STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1.validate(synthetic);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/live allowlist array literal/);
   });
 });
 

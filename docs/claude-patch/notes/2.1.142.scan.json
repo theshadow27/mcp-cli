@@ -1,0 +1,17 @@
+{
+  "version": "2.1.142",
+  "source": "download",
+  "size": 207126432,
+  "sha256": "772021afa051160b97e04d379738df84d4cacd311e8c199a325fb013b3eaa448",
+  "fedstartCount": 3,
+  "replacementCount": 0,
+  "hostProdCount": 65,
+  "hostStagingCount": 4,
+  "fedstartOffsets": [136135608, 136135848, 187093864],
+  "contexts": [
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+    "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function zV4(){let H=new Map;for(let[_,q]of Obje"
+  ],
+  "v1StrategyValidates": false
+}

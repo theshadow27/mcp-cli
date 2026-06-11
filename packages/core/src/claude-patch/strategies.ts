@@ -106,25 +106,41 @@ export const STRATEGY_NOOP_PRE_2_1_120: PatchStrategy = {
 /**
  * Strategy: rewrite the FedStart staging hostname to an IPv6-loopback literal.
  *
- * The 5-host allowlist is built at runtime from two sources: two hardcoded
- * strings (`api.anthropic.com`, `api-staging.anthropic.com`) and three
- * fedstart origins spread from `sL_` via `new URL(H).hostname`. We replace
- * `claude-staging.fedstart.com` everywhere it appears (4 sites in 2.1.121:
- * the source-code `sL_` array literal in two bundled copies, and two
- * length-prefixed atoms in the binary string table). The replacement
- * `[000:000:000:000:000:0:0:1]` is the same length (27 bytes) and
- * canonicalizes to `[::1]` via WHATWG URL parsing.
+ * The 5-host allowlist is built at runtime by the `--sdk-url` gate as
+ * `new Set(["api.anthropic.com","api-staging.anthropic.com",
+ *           ...ORIGINS.map(H => new URL(H).hostname)])`, where ORIGINS is a
+ * three-element source-array literal ending in `claude-staging.fedstart.com`.
+ * We replace `claude-staging.fedstart.com` everywhere it appears. The
+ * replacement `[000:000:000:000:000:0:0:1]` is the same length (27 bytes) and
+ * canonicalizes to `[::1]` via WHATWG URL parsing — so once the staging origin
+ * in the live ORIGINS array reads `https://[000:...:1]`, `[::1]` joins the
+ * allowlist and mcx's localhost daemon URL passes the check. (The gate also
+ * enforces a wss:/https: scheme on allowed hosts, which is why mcx connects
+ * over `wss://[::1]:PORT` rather than plain `ws://`.)
  *
- * Version match policy: lower bound only (≥ 2.1.120, when the host check
- * was introduced). No upper bound — Anthropic ships claude-code patch
- * releases multiple times per day, and bumping a version tuple every
- * release is unsustainable. `validate` is the safety net: it asserts
- * exactly 4 replacements, so a release that reshapes the binary fails
- * loudly at patch time rather than producing a silently-broken copy.
+ * Occurrence count is NOT fixed — it varies by build:
+ *   - 2.1.120 .. 2.1.132: 4 occurrences (the ORIGINS-defining JS module is
+ *     bundled twice → 2 live array literals, plus 2 inert string-table atoms).
+ *   - 2.1.133 .. (current): 3 occurrences (a bundler de-dup collapsed the
+ *     module to one copy → 1 live array literal + the same 2 atoms).
+ * Only the live array literal(s) feed the gate; the atoms are an inert
+ * constant-pool copy. So `validate` keys on SHAPE, not a magic count: it
+ * asserts the source string is fully gone AND at least one replacement landed
+ * inside the live ORIGINS array literal (matched via the array context
+ * `claude.fedstart.com","https://[000:...:1]"`). That fails loudly only on a
+ * genuine reshape — a build that moves the staging origin out of the `.map`ed
+ * array — while tolerating the harmless dup-count swing.
  *
- * Validated end-to-end against 2.1.121 on 2026-04-27 and 2.1.123 on
- * 2026-04-30: full SDK protocol round-trip (init → assistant inference →
- * clean close). See issue #1808.
+ * Version match policy: lower bound only (≥ 2.1.120, when the host check was
+ * introduced). No upper bound — Anthropic ships claude-code patch releases
+ * multiple times per day, and bumping a version tuple every release is
+ * unsustainable. The shape-based `validate` is the safety net.
+ *
+ * Validated end-to-end: 2.1.121 (2026-04-27) and 2.1.123 (2026-04-30) full SDK
+ * round-trip; 2.1.133 and 2.1.173 (2026-06-11) patched + re-signed binaries
+ * accept a `wss://[::1]` --sdk-url where the unpatched binary rejects it
+ * (`host "[::1]" is not an approved Anthropic endpoint`). See issue #1808 and
+ * docs/claude-patch/ for the per-version reverse-engineering notes.
  */
 export const STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1: PatchStrategy = {
   id: "host-check-ipv6-loopback-v1",
@@ -138,13 +154,30 @@ export const STRATEGY_HOST_CHECK_IPV6_LOOPBACK_V1: PatchStrategy = {
   validate: (patched) => {
     const find = enc.encode("claude-staging.fedstart.com");
     const replace = enc.encode("[000:000:000:000:000:0:0:1]");
+    // The live allowlist is built from the fedstart-origins ARRAY LITERAL via
+    // `...ORIGINS.map(H => new URL(H).hostname)`. Post-patch, the staging origin
+    // in that array reads `"https://[000:...:1]"` right after the prod origin.
+    // Matching that context proves we rewrote the *live* origin feeding the
+    // gate, not just a dead string-table atom. This is the load-bearing check;
+    // a bare `after >= 1` would pass even if only the inert atoms were rewritten
+    // (a future build could drop the live array yet keep the atoms).
+    const liveArrayCtx = enc.encode('claude.fedstart.com","https://[000:000:000:000:000:0:0:1]"');
+
     const before = countOccurrences(patched, find);
-    const after = countOccurrences(patched, replace);
     if (before !== 0) {
       return { ok: false, reason: `${before} unreplaced occurrences of source string remain` };
     }
-    if (after !== 4) {
-      return { ok: false, reason: `expected 4 replacement occurrences, found ${after}` };
+    const after = countOccurrences(patched, replace);
+    if (after < 1) {
+      return { ok: false, reason: "no replacement occurrences found (source string not present?)" };
+    }
+    if (countOccurrences(patched, liveArrayCtx) < 1) {
+      return {
+        ok: false,
+        reason:
+          "staging fedstart origin not found in the live allowlist array literal after patch — " +
+          "binary may have reshaped the host check (file an issue at https://github.com/theshadow27/mcp-cli/issues)",
+      };
     }
     return { ok: true };
   },

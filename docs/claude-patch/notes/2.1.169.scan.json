@@ -1,0 +1,17 @@
+{
+  "version": "2.1.169",
+  "source": "local",
+  "size": 221921184,
+  "sha256": "86d8b820ad7eed50e50a130706d3dc5ef70696f91194de1b3897a842182afe3a",
+  "fedstartCount": 3,
+  "replacementCount": 0,
+  "hostProdCount": 67,
+  "hostStagingCount": 4,
+  "fedstartOffsets": [143114760, 143115000, 199642281],
+  "contexts": [
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+    "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function ic(){return!0}function RA(){return Arra"
+  ],
+  "v1StrategyValidates": false
+}

@@ -1,0 +1,17 @@
+{
+  "version": "2.1.167",
+  "source": "download",
+  "size": 220038816,
+  "sha256": "fb3cbe9200b3eeba7ae06ee43fdb4b4b2b231d5fa8040d0e47954a7f374d1530",
+  "fedstartCount": 3,
+  "replacementCount": 0,
+  "hostProdCount": 67,
+  "hostStagingCount": 4,
+  "fedstartOffsets": [142013240, 142013480, 198084878],
+  "contexts": [
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····························0···············`·······",
+    "claude.fedstart.com·················#···https://claude-staging.fedstart.com·····················································",
+    "ant.dev\",\"https://claude.fedstart.com\",\"https://claude-staging.fedstart.com\"]});function jc(){return!0}function MA(){return Arra"
+  ],
+  "v1StrategyValidates": false
+}
