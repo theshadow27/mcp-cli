@@ -88,7 +88,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     ciSummary: row.ci_summary,
     // dotw-todo no-db-ipc-cast: unguarded review_status restore cast — fix in #2742
     reviewStatus: row.review_status as ReviewStatus,
-    // dotw-todo no-db-ipc-cast: cast bypasses the ?? null fallback (#2602 shape) — fix in #2742
+    // dotw-todo no-db-ipc-cast: cast bypasses the ?? null fallback for non-null garbage — fix in #2742
     mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
     // dotw-todo no-db-ipc-cast: unguarded phase restore cast (load-bearing for sprint pipeline) — fix in #2742
     phase: row.phase as WorkItemPhase,
