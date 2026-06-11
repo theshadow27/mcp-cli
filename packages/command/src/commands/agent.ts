@@ -9,9 +9,9 @@
  * Provider-specific flags (--headed, --agent, --provider) are gated by feature flags.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { constants, accessSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   type AgentFeatures,
   type AgentProvider,
@@ -312,6 +312,10 @@ interface AgentSpawnArgs {
   agent: string | undefined;
   provider: string | undefined;
   resume: string | undefined;
+  /** Per-spawn Claude binary override (claude provider only). Frozen into the RPC at dispatch. */
+  claudeBinary: string | undefined;
+  /** Per-spawn transport override (claude provider only). */
+  transport: "stdio" | "sdk-url" | undefined;
   error: string | undefined;
   warnings: string[];
 }
@@ -327,7 +331,10 @@ export function parseAgentSpawnArgs(
   let resume: string | undefined;
   let agent: string | undefined = agentOverride;
   let llmProvider: string | undefined;
+  let claudeBinary: string | undefined;
+  let transport: "stdio" | "sdk-url" | undefined;
   let extraError: string | undefined;
+  const isClaude = providerConfig.name === "claude";
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
     if (arg === "--json") {
@@ -389,6 +396,34 @@ export function parseAgentSpawnArgs(
       }
       return 1;
     }
+    if (arg === "--claude-binary") {
+      if (!isClaude) {
+        extraError = `--claude-binary is not supported by ${providerDisplayName(providerConfig)}`;
+        return 0;
+      }
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      if (next && !next.startsWith("-")) {
+        claudeBinary = next;
+        return 1;
+      }
+      extraError = "--claude-binary requires a path";
+      return 0;
+    }
+    if (arg === "--transport") {
+      if (!isClaude) {
+        extraError = `--transport is not supported by ${providerDisplayName(providerConfig)}`;
+        return 0;
+      }
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      if (next === "stdio" || next === "sdk-url") {
+        transport = next;
+        return 1;
+      }
+      extraError = '--transport must be "stdio" or "sdk-url"';
+      // Don't consume the bad value: matches --claude-binary's error path and avoids
+      // desyncing the shared parser's index when extraError is masked by a shared error.
+      return 0;
+    }
     return undefined;
   });
 
@@ -401,6 +436,8 @@ export function parseAgentSpawnArgs(
     agent,
     provider: llmProvider,
     resume,
+    claudeBinary,
+    transport,
   };
 }
 
@@ -451,6 +488,22 @@ async function agentSpawn(
     d.exit(1);
   }
 
+  // Resolve --claude-binary to an absolute path against the caller's shell cwd (a bare
+  // relative path would otherwise resolve against the daemon/worktree cwd at exec time),
+  // then verify it's executable here — a named error beats a silent connect-timeout after
+  // the daemon spawns a bad path (and bypasses the spawn-disabled guard) (#2681, #2706).
+  if (parsed.claudeBinary) {
+    const binPath = isAbsolute(parsed.claudeBinary) ? parsed.claudeBinary : resolve(process.cwd(), parsed.claudeBinary);
+    try {
+      accessSync(binPath, constants.X_OK);
+    } catch {
+      d.printError(`--claude-binary: ${binPath} is not an executable file`);
+      d.exit(1);
+      return;
+    }
+    parsed.claudeBinary = binPath;
+  }
+
   const P = provider.toolPrefix;
   const rawTask = parsed.task ?? "Continue from where you left off.";
   let task = rawTask;
@@ -471,6 +524,10 @@ async function agentSpawn(
   if (parsed.wait) toolArgs.wait = true;
   if (parsed.agent) toolArgs.agent = parsed.agent;
   if (parsed.provider) toolArgs.provider = parsed.provider;
+  // Per-spawn overrides: captured here, at dispatch time, and frozen into the RPC
+  // so a later `mcx config set` cannot change what this session uses (#2681).
+  if (parsed.claudeBinary) toolArgs.claudeBinary = parsed.claudeBinary;
+  if (parsed.transport) toolArgs.transport = parsed.transport;
 
   // Handle worktree creation (shared across all providers)
   if (parsed.worktree) {
@@ -1902,6 +1959,10 @@ function printSpawnUsage(
   }
   if (provider.name === "opencode") {
     lines.push("  --provider, -p <name>      LLM provider (e.g. anthropic, openai, google)");
+  }
+  if (provider.name === "claude") {
+    lines.push("  --claude-binary <path>     Override the Claude binary for this session only");
+    lines.push("  --transport <stdio|sdk-url>  Override the session transport (stdio or sdk-url)");
   }
 
   log(lines.join("\n"));
