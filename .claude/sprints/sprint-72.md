@@ -1,6 +1,6 @@
 # Sprint 72
 
-> Planned 2026-06-10 09:05 local. Target: 15 PRs.
+> Planned 2026-06-10 09:05 local. Started 2026-06-11 01:04 local. Target: 15 PRs.
 
 ## Goal
 
