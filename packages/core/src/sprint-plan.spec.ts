@@ -48,9 +48,24 @@ describe("parseModelFromSprintTable", () => {
     expect(parseModelFromSprintTable(upper, 1437)).toBe("sonnet");
   });
 
-  test("returns null for unknown model values", () => {
+  test("returns null for unknown / non-Claude model values", () => {
     const bad = "| # | Title | Model |\n|---|-------|-------|\n| 1437 | foo | gpt4 |\n";
     expect(parseModelFromSprintTable(bad, 1437)).toBeNull();
+  });
+
+  test("returns a fable shortname assignment", () => {
+    const fable = "| # | Title | Model |\n|---|-------|-------|\n| 2645 | canary | fable |\n";
+    expect(parseModelFromSprintTable(fable, 2645)).toBe("fable");
+  });
+
+  test("returns a full Claude model ID verbatim", () => {
+    const fullId = "| # | Title | Model |\n|---|-------|-------|\n| 2645 | canary | claude-fable-5 |\n";
+    expect(parseModelFromSprintTable(fullId, 2645)).toBe("claude-fable-5");
+  });
+
+  test("returns a haiku shortname assignment", () => {
+    const haiku = "| # | Title | Model |\n|---|-------|-------|\n| 2645 | filler | haiku |\n";
+    expect(parseModelFromSprintTable(haiku, 2645)).toBe("haiku");
   });
 
   test("handles multiple tables — picks correct one", () => {
