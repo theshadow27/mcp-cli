@@ -12,6 +12,7 @@ import {
   listMcxWorktrees,
   parseWorktreeList,
   pruneWorktrees,
+  resolveWorktreeStartPoint,
 } from "./worktree-shim";
 
 // ── Helpers ──
@@ -83,7 +84,7 @@ describe("createWorktree", () => {
     expect(deps.exec).not.toHaveBeenCalled();
   });
 
-  test("shimmed worktree: creates with branch prefix", () => {
+  test("shimmed worktree: creates with branch prefix from origin default branch", () => {
     const deps = makeDeps();
     const result = createWorktree({ name: "my-feat", repoRoot: "/repo", branchPrefix: "codex/" }, deps);
     expect(result.shimmed).toBe(true);
@@ -93,15 +94,16 @@ describe("createWorktree", () => {
       worktree: "my-feat",
       repoRoot: "/repo",
     });
-    // Should call git worktree add with prefixed branch
+    // Should fork from origin/main (mock exec reports an origin remote + successful fetch)
     expect(deps.exec).toHaveBeenCalledWith([
       "git",
       "worktree",
       "add",
+      "--no-track",
       "/repo/.claude/worktrees/my-feat",
       "-b",
       "codex/my-feat",
-      "HEAD",
+      "origin/main",
     ]);
   });
 
@@ -114,10 +116,11 @@ describe("createWorktree", () => {
       "git",
       "worktree",
       "add",
+      "--no-track",
       "/repo/.claude/worktrees/my-feat",
       "-b",
       "my-feat",
-      "HEAD",
+      "origin/main",
     ]);
   });
 
@@ -226,11 +229,77 @@ describe("createWorktree", () => {
       "git",
       "worktree",
       "add",
+      "--no-track",
       join(tmpDir, ".claude", "worktrees", "my-feat"),
       "-b",
       "my-feat",
-      "HEAD",
+      "origin/main",
     ]);
+  });
+});
+
+// ── resolveWorktreeStartPoint (#2679) ──
+
+describe("resolveWorktreeStartPoint", () => {
+  /** exec mock that routes by git subcommand; everything else succeeds with empty output. */
+  function routingExec(routes: {
+    remoteExit?: number;
+    symbolicRefStdout?: string;
+    fetchExit?: number;
+    fetchStderr?: string;
+    verifyExit?: number;
+  }) {
+    return mock((cmd: string[]) => {
+      if (cmd.includes("remote")) return { stdout: "", stderr: "", exitCode: routes.remoteExit ?? 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: routes.symbolicRefStdout ?? "", stderr: "", exitCode: 0 };
+      if (cmd.includes("fetch"))
+        return { stdout: "", stderr: routes.fetchStderr ?? "", exitCode: routes.fetchExit ?? 0 };
+      if (cmd.includes("rev-parse")) return { stdout: "", stderr: "", exitCode: routes.verifyExit ?? 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+  }
+
+  test("fetches origin default branch and returns origin/<branch>", () => {
+    const exec = routingExec({ symbolicRefStdout: "refs/remotes/origin/main" });
+    const deps = makeDeps({ exec });
+    expect(resolveWorktreeStartPoint("/repo", deps)).toBe("origin/main");
+    // Fetch must be bounded by a timeout so an unreachable remote can't hang spawn
+    expect(exec).toHaveBeenCalledWith(
+      ["git", "-C", "/repo", "fetch", "origin", "main"],
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    expect(deps.printError).not.toHaveBeenCalled();
+  });
+
+  test("respects non-main default branch from origin/HEAD", () => {
+    const exec = routingExec({ symbolicRefStdout: "refs/remotes/origin/master" });
+    const deps = makeDeps({ exec });
+    expect(resolveWorktreeStartPoint("/repo", deps)).toBe("origin/master");
+    expect(exec).toHaveBeenCalledWith(["git", "-C", "/repo", "fetch", "origin", "master"], expect.anything());
+  });
+
+  test("no origin remote: falls back to HEAD silently without fetching", () => {
+    const exec = routingExec({ remoteExit: 2 });
+    const deps = makeDeps({ exec });
+    expect(resolveWorktreeStartPoint("/repo", deps)).toBe("HEAD");
+    const fetchCalls = exec.mock.calls.filter((c) => (c[0] as string[]).includes("fetch"));
+    expect(fetchCalls).toHaveLength(0);
+    expect(deps.printError).not.toHaveBeenCalled();
+  });
+
+  test("fetch failure (offline): falls back to HEAD with a stale-base warning", () => {
+    const exec = routingExec({ fetchExit: 128, fetchStderr: "fatal: unable to access remote" });
+    const deps = makeDeps({ exec });
+    expect(resolveWorktreeStartPoint("/repo", deps)).toBe("HEAD");
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("may be stale"));
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("fatal: unable to access remote"));
+  });
+
+  test("origin ref missing after fetch: falls back to HEAD with a warning", () => {
+    const exec = routingExec({ verifyExit: 1 });
+    const deps = makeDeps({ exec });
+    expect(resolveWorktreeStartPoint("/repo", deps)).toBe("HEAD");
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("may be stale"));
   });
 });
 

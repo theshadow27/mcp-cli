@@ -72,7 +72,7 @@ export interface SharedSessionDeps {
   /** Run a command and return stdout + stderr + exit code. Used for git operations in `bye`. */
   exec: (
     cmd: string[],
-    opts?: { env?: Record<string, string> },
+    opts?: { env?: Record<string, string>; timeoutMs?: number },
   ) => { stdout: string; stderr: string; exitCode: number };
 }
 
@@ -123,7 +123,7 @@ export const defaultDeps: ClaudeDeps = {
     // spawnCaptureSync replaces the env when provided; merge with process.env
     // here so callers that pass a few extra vars still inherit PATH etc.
     const env = opts?.env ? { ...process.env, ...opts.env } : undefined;
-    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env });
+    const result = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { env, timeoutMs: opts?.timeoutMs });
     return {
       stdout: result.stdout.trim(),
       stderr: result.stderr.trim(),
