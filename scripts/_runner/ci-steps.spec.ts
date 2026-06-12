@@ -34,7 +34,13 @@ function deriveFailures(stdout: string | undefined): number {
   return (stdout ?? "").includes(" 0 fail") ? 0 : 1;
 }
 
-function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string; errors?: number }): string {
+function makeFakeBun(opts: {
+  code: number;
+  stdout?: string;
+  stderr?: string;
+  errors?: number;
+  junitTests?: number;
+}): string {
   const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
   const path = join(dir, "bun");
   const stdout = (opts.stdout ?? "").replace(/'/g, "'\\''");
@@ -43,6 +49,10 @@ function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string; err
   // `errors` models bun's "unhandled error between tests" — written to the junit
   // `errors` attribute, NOT `failures`. The coverage JSON has no errors concept.
   const e = opts.errors ?? 0;
+  // `junitTests` models the root `tests="N"` attribute — the discovered-test
+  // floor signal for phasesTestWithCrashTolerance (#2719). 12 matches the
+  // pass+fail totals in passingSummary/failingSummary.
+  const t = opts.junitTests ?? 12;
   writeFileSync(
     path,
     // Write structured output files when requested so classifiers key off
@@ -56,7 +66,7 @@ for arg in "$@"; do
   case "$arg" in
     --reporter-outfile=*)
       jpath="\${arg#--reporter-outfile=}"
-      printf '<?xml version="1.0"?><testsuites failures="${f}" errors="${e}"></testsuites>' > "$jpath"
+      printf '<?xml version="1.0"?><testsuites tests="${t}" failures="${f}" errors="${e}"></testsuites>' > "$jpath"
       ;;
     --junit-outfile=*)
       cpath="\${arg#--junit-outfile=}"
@@ -983,10 +993,19 @@ describe("changedTestsStep", () => {
   });
 });
 
+// Temp dir with n dummy `*-fn.spec.ts` files — models `.claude/phases/` for
+// the discovered-spec floor (#2719). The files are never executed (the fake
+// bun ignores its cwd); only their on-disk count matters.
+function makePhasesDir(n: number): string {
+  const dir = mkdtempSync(join(tmpdir(), "fake-phases-"));
+  for (let i = 0; i < n; i++) writeFileSync(join(dir, `x${i}-fn.spec.ts`), "");
+  return dir;
+}
+
 describe("phasesTestWithCrashTolerance", () => {
   it("exit 0 is success", async () => {
     const dir = makeFakeBun({ code: 0, stdout: passingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -995,9 +1014,9 @@ describe("phasesTestWithCrashTolerance", () => {
     expect(result).toEqual({ success: true });
   });
 
-  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
+  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy (floor satisfied via junit tests attr)", async () => {
     const dir = makeFakeBun({ code: 1, stdout: passingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -1008,7 +1027,7 @@ describe("phasesTestWithCrashTolerance", () => {
 
   it("real test failure (non-zero exit, summary shows fail count) reports failure", async () => {
     const dir = makeFakeBun({ code: 1, stdout: failingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -1019,8 +1038,12 @@ describe("phasesTestWithCrashTolerance", () => {
 
   it("passes phasesDir as the cwd to bun — args logged reflect the directory context", async () => {
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
-    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const phasesDir = mkdtempSync(join(tmpdir(), "fake-phases-"));
+    writeFileSync(
+      join(dir, "bun"),
+      '#!/usr/bin/env bash\necho "ARGV=$*"\necho "Ran 1 tests across 1 files."\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const phasesDir = makePhasesDir(1);
     const step = phasesTestWithCrashTolerance({ phasesDir, logName: "test_phases_cwd" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
@@ -1030,5 +1053,69 @@ describe("phasesTestWithCrashTolerance", () => {
     expect(result).toEqual({ success: true });
     const log = readFileSync("/tmp/test_phases_cwd.txt", "utf8");
     expect(log).toContain("--no-orphans");
+  });
+
+  // --- discovered-spec floor (#2719): bun exits 0 on 0 discovered files, so
+  // exit code alone must never be sufficient for a pass.
+
+  it("fails when phasesDir contains 0 spec files, even on exit 0", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(0), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("0 phase spec files") });
+  });
+
+  it('fails when the run reports 0 discovered tests (junit tests="0") despite exit 0', async () => {
+    // The literal fail-open scenario from #2719: bun exits 0 having run nothing.
+    const dir = makeFakeBun({ code: 0, stdout: " 0 pass\n 0 fail\n", junitTests: 0 });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("pathIgnorePatterns") });
+  });
+
+  it("fails when fewer files ran than spec files exist on disk (partial discovery)", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: " 5 pass\n 0 fail\nRan 5 tests across 1 files.\n" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(3), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("discovered 1 files") });
+  });
+
+  it("fails closed when neither junit tests attribute nor summary line is available", async () => {
+    // Fake bun that emits no output and writes no junit file: exit 0 carries
+    // no evidence anything ran — must not pass.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(1), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("failing closed") });
+  });
+
+  it("prefers the stdout file count over the junit tests attribute", async () => {
+    // junit says 12 tests, but the summary line says only 1 file ran — with 3
+    // spec files on disk the file count (exact signal) must win and fail.
+    const dir = makeFakeBun({ code: 0, stdout: `${passingSummary}Ran 12 tests across 1 files.\n` });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(3), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("discovered 1 files") });
   });
 });

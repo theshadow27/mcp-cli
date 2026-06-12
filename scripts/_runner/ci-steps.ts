@@ -104,6 +104,23 @@ function parseJunitFailures(xmlPath: string): number | null {
 }
 
 /**
+ * Parse the total test count from a bun junit XML report: the `tests` attribute
+ * on the root `<testsuites>` element (first match in document order — nested
+ * `<testsuite>` elements carry per-file counts). Returns null when the file is
+ * absent or has no `tests` attribute. Used by the phases step to fail closed
+ * when `bun test` exits 0 having discovered nothing (#2719).
+ */
+function parseJunitTests(xmlPath: string): number | null {
+  try {
+    const xml = readFileSync(xmlPath, "utf8");
+    const m = xml.match(/tests="(\d+)"/);
+    return m ? Number.parseInt(m[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse the `{ failures: N }` JSON summary written by check-coverage.ts via --junit-outfile.
  * Returns null when the file is absent or unparseable.
  */
@@ -210,6 +227,11 @@ const ZERO_FAIL_RE = /^ 0 fail$/m;
 // FAILURE as a #1419 crash-after-pass and let CI swallow it (#2744).
 const COVERAGE_PASS_RE = /^PASS: All coverage thresholds met/m;
 const FAIL_LINE_RE = /^FAIL:/m;
+// Bun's end-of-run summary: "Ran 129 tests across 6 files. [20.00ms]". Like
+// ZERO_FAIL_RE it is written to stdout incrementally, so it survives a #1004
+// teardown crash that drops the junit sidecar. The file count is the durable
+// fallback for the phases discovered-spec floor (#2719).
+const RAN_FILES_RE = /^Ran \d+ tests? across (\d+) files?/m;
 
 interface TestOpts {
   /** `bun test` positional arguments — directories and/or spec files. */
@@ -256,22 +278,67 @@ interface PhasesTestOpts {
   phasesDir: string;
 }
 
+/** Count `*.spec.ts` files under a directory (recursive). */
+function countSpecFiles(dir: string): number {
+  let count = 0;
+  for (const _ of new Glob("**/*.spec.ts").scanSync({ cwd: dir })) count++;
+  return count;
+}
+
+/**
+ * Verify the run actually discovered at least as many spec files as exist on
+ * disk. `bun test` exits 0 when it discovers ZERO spec files, so without this
+ * floor the step is fail-open: a rename, a bad phasesDir, or a bun upgrade
+ * that changes `pathIgnorePatterns` anchoring would silently revert phase
+ * specs to the pre-#2648 dark state (#2719). Primary signal: the stdout
+ * "Ran N tests across M files" line (files vs files — exact, and survives a
+ * #1004 teardown crash). Fallback: the junit `tests` attribute (each spec
+ * file contributes ≥1 test, so tests ≥ files). Neither parseable → fail closed.
+ */
+function checkDiscoveryFloor(outcome: RunOutcome, junitPath: string, specCount: number): StepResult {
+  const filesMatch = outcome.output.match(RAN_FILES_RE);
+  const discovered = filesMatch ? Number.parseInt(filesMatch[1], 10) : parseJunitTests(junitPath);
+  if (discovered === null) {
+    return {
+      success: false,
+      error:
+        "could not determine discovered phase spec count (no junit tests attribute, no summary line) — failing closed (#2719)",
+    };
+  }
+  if (discovered < specCount) {
+    return {
+      success: false,
+      error: `phase test run discovered ${discovered} ${filesMatch ? "files" : "tests"}, expected >= ${specCount} spec files — check pathIgnorePatterns anchoring and phasesDir (#2719)`,
+    };
+  }
+  return { success: true };
+}
+
 /**
  * Run `bun test --no-orphans` from within `.claude/phases/` so the files
  * are discovered relative to that CWD — bypassing the root bunfig.toml
  * `pathIgnorePatterns = [".claude/**"]` exclusion that silences them when
  * run from the repo root (#2648). Carries the same #1004 crash-after-pass
- * tolerance as `bunTestWithCrashTolerance`.
+ * tolerance as `bunTestWithCrashTolerance`, but fails closed when the run
+ * discovers fewer spec files than exist on disk (#2719).
  */
 export function phasesTestWithCrashTolerance(opts: PhasesTestOpts): ScriptFunction {
   return async ({ logger, env }) => {
+    const specCount = countSpecFiles(opts.phasesDir);
+    if (specCount === 0) {
+      return {
+        success: false,
+        error: `0 phase spec files found in ${opts.phasesDir} — specs renamed/moved, or bad phasesDir? (#2719)`,
+      };
+    }
     const args = ["test", "--no-orphans"];
-    const first = await runBun(args, logger, env, junitTmpPath(opts.logName), opts.phasesDir);
+    const junitPath = junitTmpPath(opts.logName);
+    const first = await runBun(args, logger, env, junitPath, opts.phasesDir);
     persistLog(opts.logName, first.output);
-    if (first.code === 0) return { success: true };
+    if (first.code === 0) return checkDiscoveryFloor(first, junitPath, specCount);
     if (hasZeroJunitFailures(first)) {
       logger.warn(`bun crash (exit ${first.code}) after phase tests passed — treating as pass (#1004)`);
-      return { success: true };
+      return checkDiscoveryFloor(first, junitPath, specCount);
     }
     return { success: false, error: `exit ${first.code}` };
   };
