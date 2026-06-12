@@ -64,7 +64,14 @@ import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./pe
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
 import { IGNORED_TYPES, SessionState } from "./session-state";
-import { DEFAULT_STUCK_CONFIG, StuckDetector, type StuckDetectorConfig, type StuckEvent } from "./stuck-detector";
+import {
+  DEFAULT_STUCK_CONFIG,
+  REAL_CLOCK,
+  StuckDetector,
+  type StuckDetectorClock,
+  type StuckDetectorConfig,
+  type StuckEvent,
+} from "./stuck-detector";
 
 // ── Constants ──
 
@@ -431,6 +438,7 @@ export class ClaudeWsServer {
   private readonly reclaimIntervalMs: number;
   private readonly connectTimeoutMs: number;
   private readonly stuckConfig: StuckDetectorConfig;
+  private readonly stuckClock: StuckDetectorClock;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -476,6 +484,8 @@ export class ClaudeWsServer {
     reclaimIntervalMs?: number;
     connectTimeoutMs?: number;
     stuckConfig?: StuckDetectorConfig;
+    /** Override the StuckDetector clock (tests inject a FakeClock). */
+    stuckClock?: StuckDetectorClock;
     /** Self-signed cert + key. When provided, server runs as wss://. */
     tlsConfig?: { cert: string; key: string } | null;
     /** Override the bind hostname. Defaults to `::1` when TLS is set, otherwise unset (Bun default). */
@@ -499,6 +509,7 @@ export class ClaudeWsServer {
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
     this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
+    this.stuckClock = deps?.stuckClock ?? REAL_CLOCK;
     this.tlsConfig = deps?.tlsConfig ?? null;
     this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
     this.binaryPath = deps?.binaryPath ?? "claude";
@@ -831,6 +842,14 @@ export class ClaudeWsServer {
 
     const useStdio = session.transport === "stdio";
 
+    // Fail-closed: the stdio transport has no can_use_tool round-trip, so
+    // ContainmentGuard / input-rewriting / delegate-mode never fire (#2688).
+    // Refuse a contained/worktree spawn over stdio rather than silently
+    // running it outside the containment trust boundary.
+    if (useStdio && session.worktree) {
+      throw new Error("stdio transport does not support ContainmentGuard — use ws");
+    }
+
     const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
 
     const envOverrides: Record<string, string | undefined> = {};
@@ -1005,6 +1024,15 @@ export class ClaudeWsServer {
       "--input-format",
       "stream-json",
     );
+
+    if (useStdio) {
+      // claude rejects `--print --output-format=stream-json` without --verbose
+      // and exits immediately (#2688). --include-partial-messages restores the
+      // stream_event liveness signal the StuckDetector consumes (absent by
+      // default on the pipe transport). The WS path uses --sdk-url and needs
+      // neither, so this is gated on useStdio.
+      cmd.push("--verbose", "--include-partial-messages");
+    }
 
     if (session.config.model) {
       cmd.push("--model", session.config.model);
@@ -2242,6 +2270,7 @@ export class ClaudeWsServer {
           hasActiveToolCall: session.state.hasActiveToolCall,
         }),
         (event) => this.handleStuckEvent(sessionId, session, event),
+        this.stuckClock,
       );
     }
     return session.stuckDetector;
