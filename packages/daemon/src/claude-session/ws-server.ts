@@ -47,6 +47,7 @@ import {
   SESSION_PERMISSION_BLOCKED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RESULT,
+  SESSION_SPAWN_OVERRIDE,
   SESSION_STUCK,
   SESSION_TOOL_USE,
   WORKER_RATELIMITED,
@@ -843,6 +844,24 @@ export class ClaudeWsServer {
     // a default binary, but the caller is canarying a known-good one) (#2681).
     if (this.spawnDisabledReason !== null && !session.config.binaryPath) {
       throw new Error(this.spawnDisabledReason);
+    }
+
+    if (session.config.binaryPath) {
+      if (this.spawnDisabledReason !== null) {
+        this.logger.warn(
+          `[_claude] session ${sessionId} spawned with custom binary "${session.config.binaryPath}"; bypassed spawnDisabledReason: "${this.spawnDisabledReason}"`,
+        );
+      } else {
+        this.logger.warn(`[_claude] session ${sessionId} spawned with custom binary "${session.config.binaryPath}"`);
+      }
+      this.onMonitorEvent?.({
+        src: "daemon.claude-server",
+        event: SESSION_SPAWN_OVERRIDE,
+        category: "session",
+        sessionId,
+        binaryPath: session.config.binaryPath,
+        ...(this.spawnDisabledReason !== null ? { bypassedReason: this.spawnDisabledReason } : {}),
+      });
     }
 
     const useStdio = session.transport === "stdio";

@@ -3,7 +3,13 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MonitorEventInput, WorkItemEvent } from "@mcp-cli/core";
-import { SESSION_PERMISSION_BLOCKED, SESSION_PERMISSION_REQUEST, silentLogger } from "@mcp-cli/core";
+import {
+  SESSION_PERMISSION_BLOCKED,
+  SESSION_PERMISSION_REQUEST,
+  SESSION_SPAWN_OVERRIDE,
+  capturingLogger,
+  silentLogger,
+} from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { SessionEvent } from "./session-state";
 import type { SpawnFn, WaitResult } from "./ws-server";
@@ -423,6 +429,51 @@ describe("ClaudeWsServer", () => {
     server.spawnClaude("no-model-session");
 
     expect(ms.lastCmd).not.toContain("--model");
+  });
+
+  test("spawnClaude emits warn log and SESSION_SPAWN_OVERRIDE event when binaryPath is set", async () => {
+    const ms = mockSpawn();
+    const { logger, messages } = capturingLogger();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    await server.start();
+
+    const monitorEvents: MonitorEventInput[] = [];
+    server.onMonitorEvent = (e) => monitorEvents.push(e);
+
+    server.prepareSession("bin-session", { prompt: "Hello", binaryPath: "/custom/claude" });
+    server.spawnClaude("bin-session");
+
+    const warn = messages.find((m) => m.level === "warn" && String(m.args[0]).includes("/custom/claude"));
+    expect(warn).toBeDefined();
+    expect(String(warn?.args[0])).not.toContain("bypassed");
+
+    const spawnEvent = monitorEvents.find((e) => e.event === SESSION_SPAWN_OVERRIDE);
+    expect(spawnEvent).toBeDefined();
+    expect(spawnEvent?.binaryPath).toBe("/custom/claude");
+    expect(spawnEvent?.bypassedReason).toBeUndefined();
+  });
+
+  test("spawnClaude emits warn log with bypassed reason when spawnDisabledReason is set and binaryPath overrides it", async () => {
+    const ms = mockSpawn();
+    const { logger, messages } = capturingLogger();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger, spawnDisabledReason: "version gate: upgrade required" });
+    await server.start();
+
+    const monitorEvents: MonitorEventInput[] = [];
+    server.onMonitorEvent = (e) => monitorEvents.push(e);
+
+    server.prepareSession("bypass-session", { prompt: "Hello", binaryPath: "/canary/claude" });
+    server.spawnClaude("bypass-session");
+
+    const warn = messages.find((m) => m.level === "warn" && String(m.args[0]).includes("bypassed"));
+    expect(warn).toBeDefined();
+    expect(String(warn?.args[0])).toContain("version gate: upgrade required");
+    expect(String(warn?.args[0])).toContain("/canary/claude");
+
+    const spawnEvent = monitorEvents.find((e) => e.event === SESSION_SPAWN_OVERRIDE);
+    expect(spawnEvent).toBeDefined();
+    expect(spawnEvent?.binaryPath).toBe("/canary/claude");
+    expect(spawnEvent?.bypassedReason).toBe("version gate: upgrade required");
   });
 
   test("WS connect sends user message immediately on open", async () => {

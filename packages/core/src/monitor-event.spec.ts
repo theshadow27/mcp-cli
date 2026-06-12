@@ -8,6 +8,7 @@ import {
   METRIC_SESSION_COMMAND_HIST,
   METRIC_SESSION_FOOTPRINT,
   METRIC_SESSION_QUERIES,
+  SESSION_SPAWN_OVERRIDE,
   SESSION_TOOL_USE,
   WORKER_RATELIMITED,
   formatMonitorEvent,
@@ -220,5 +221,32 @@ describe("formatMonitorEvent — lifecycle events", () => {
     );
     expect(line).toContain("0wt");
     expect(line).toContain("0br");
+  });
+
+  test("session.spawn_override shows binary path without bypassed reason when none", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: SESSION_SPAWN_OVERRIDE,
+        sessionId: "abcdef1234567890",
+        binaryPath: "/custom/claude",
+      }),
+    );
+    expect(line).toContain("session.spawn_override");
+    expect(line).toContain("/custom/claude");
+    expect(line).not.toContain("bypassed");
+  });
+
+  test("session.spawn_override shows binary path and bypassed reason", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: SESSION_SPAWN_OVERRIDE,
+        sessionId: "abcdef1234567890",
+        binaryPath: "/canary/claude",
+        bypassedReason: "version gate: upgrade required",
+      }),
+    );
+    expect(line).toContain("session.spawn_override");
+    expect(line).toContain("/canary/claude");
+    expect(line).toContain("bypassed: version gate: upgrade required");
   });
 });
