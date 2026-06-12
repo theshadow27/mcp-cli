@@ -3,6 +3,9 @@
 > Planned 2026-06-11 11:20. Target: 18 PRs. Amended 13:45 after the am-i-done
 > investigation (pre-sprint gate added; #2690/#2740 promoted to batch 1).
 > Started 2026-06-12 13:20 (RUN ONLY)
+> Ended 2026-06-12 16:06. 19/19 planned issues merged (PRs #2757–#2794) + P1
+> wind-down regression #2796 fixed (PR #2799). #2688 canary retry: PASS.
+> Containment on stdio: documented NO-GO, fail-closed refusal merged.
 
 ## Goal
 
