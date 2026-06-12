@@ -38,4 +38,19 @@ describe("daemonWorkers bundle list", () => {
   it("has no duplicate entries", () => {
     expect(daemonWorkers.length).toBe(new Set(daemonWorkers).size);
   });
+
+  // Bun's default outbase shifts with the entrypoint count (1.3.14: ≤8 embeds
+  // workers flat at /$bunfs/root/, ≥9 nests them under packages/daemon/src/),
+  // which breaks compiled-mode `./<name>.ts` worker resolution for ALL workers
+  // at once while the build still exits 0. Every daemon compile command must
+  // pin the outbase with --root so the layout is deterministic; build.ts also
+  // smoke-boots the compiled binary to verify it (smokeDaemonWorkers).
+  it("build.ts pins --root on every compile command that embeds the workers", () => {
+    const buildSrc = readFileSync(resolve("scripts/build.ts"), "utf-8");
+    const compileLines = buildSrc.split("\n").filter((l) => l.includes("${daemonWorkers}"));
+    expect(compileLines.length).toBeGreaterThan(0);
+    for (const line of compileLines) {
+      expect(line).toContain("--root=${workerRoot}");
+    }
+  });
 });

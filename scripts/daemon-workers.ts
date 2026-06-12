@@ -8,6 +8,13 @@
  * `ModuleNotFound resolving "./<name>" (entry point)` the moment its server is
  * started. `daemon-workers.spec.ts` guards against that by asserting every
  * referenced worker appears here.
+ *
+ * The compile command must also pass `--root=packages/daemon/src`: Bun's
+ * default output root is computed from the entrypoint set and silently shifts
+ * with the entrypoint COUNT (Bun 1.3.14: ≤8 flat, ≥9 nested under the cwd-
+ * relative source path), which breaks compiled-mode `./<name>.ts` resolution
+ * for every worker at once. `scripts/build.ts` pins --root and smoke-boots
+ * the compiled binary after every build to verify the embedded layout.
  */
 export const daemonWorkers = [
   "packages/daemon/src/alias-executor.ts",
