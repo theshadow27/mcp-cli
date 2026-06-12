@@ -21,7 +21,6 @@ async function runExecutor(
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    // dotw-ignore spec-git-env-spread: spawning the alias executor (bun), not a git subprocess
     ...(env ? { env: { ...process.env, ...env } } : {}),
   });
 

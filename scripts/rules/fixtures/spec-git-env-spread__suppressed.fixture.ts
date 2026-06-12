@@ -1,18 +1,23 @@
 /**
  * @rule spec-git-env-spread
  * @expect 0
- * @path packages/daemon/src/claude-session/ws-server-tls.spec.ts
+ * @path packages/command/src/commands/session-deps.spec.ts
  *
- * A non-git subprocess (TLS WebSocket client) with dotw-ignore suppression.
- * The spread is safe here because bun never calls git internally — documented.
+ * A git spawn with an unstripped process.env spread that is suppressed via
+ * dotw-ignore. This is the escape hatch for genuinely exceptional cases where
+ * the spawn cannot inherit GIT_DIR (e.g. the git process runs in a container
+ * that doesn't forward env, or the test explicitly verifies hook-env behaviour).
  */
 
 import { describe, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-describe("tls (suppressed)", () => {
-  test("spawn bun TLS client — not a git subprocess", () => {
-    // dotw-ignore spec-git-env-spread: spawning a bun TLS client, not a git subprocess
-    const proc = Bun.spawn({ cmd: ["bun", "client.ts"], env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" } });
-    proc.kill();
+describe("suppressed", () => {
+  test("git spawn with dotw-ignore on the preceding line", () => {
+    const repo = mkdtempSync(join(tmpdir(), "test-"));
+    // dotw-ignore spec-git-env-spread: test intentionally inherits hook env to verify isolation behaviour
+    Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: { ...process.env } });
   });
 });

@@ -132,7 +132,6 @@ process.stdout.write('OK');
     );
     const proc = Bun.spawn({
       cmd: ["bun", scriptPath],
-      // dotw-ignore spec-git-env-spread: spawning a bun TLS client script, not a git subprocess
       env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
       stdout: "pipe",
       stderr: "pipe",
@@ -174,7 +173,6 @@ process.stdout.write('readyState=' + ws.readyState);
     );
     const proc = Bun.spawn({
       cmd: ["bun", scriptPath],
-      // dotw-ignore spec-git-env-spread: spawning a bun TLS client script, not a git subprocess
       env: { ...process.env },
       stdout: "pipe",
       stderr: "pipe",

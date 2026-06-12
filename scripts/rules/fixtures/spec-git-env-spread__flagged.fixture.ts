@@ -1,29 +1,42 @@
 /**
  * @rule spec-git-env-spread
- * @expect 2
+ * @expect 3
  * @path packages/command/src/commands/session-deps.spec.ts
  *
- * Two subprocess spawns that spread process.env directly into the env option
- * without stripping GIT_DIR — both should be flagged.
+ * Three git subprocess calls with a raw `...process.env` spread and no
+ * GIT_DIR strip — the inline form, the multi-line object form (which the old
+ * PatternRule missed), and the hoisted-variable form (which the old PatternRule
+ * also missed). All three must be flagged.
  */
 
 import { describe, test } from "bun:test";
+import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-describe("session-deps (bad)", () => {
-  test("git init in temp dir — inherits GIT_DIR from hook", () => {
+describe("git env violations", () => {
+  test("inline — single-line spread without GIT_DIR strip", () => {
     const repo = mkdtempSync(join(tmpdir(), "test-"));
     Bun.spawnSync(["git", "-C", repo, "init", "-q"], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
     });
   });
 
-  test("git commit — also bad", () => {
+  test("multi-line — formatter-wrapped object (old PatternRule miss)", () => {
     const repo = mkdtempSync(join(tmpdir(), "test-"));
     Bun.spawnSync(["git", "-C", repo, "commit", "--allow-empty", "-m", "init"], {
-      env: { ...process.env, GIT_AUTHOR_NAME: "test" },
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "test",
+        GIT_AUTHOR_EMAIL: "test@test.com",
+      },
     });
+  });
+
+  test("hoisted variable without strip — one-level indirection (old PatternRule miss)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "test-"));
+    const unsafeEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+    execSync("git init -q", { cwd: repo, env: unsafeEnv });
   });
 });
