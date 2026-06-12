@@ -167,11 +167,10 @@ export const DAEMON_TEST_PATHS = ["packages/daemon", "test/"];
 
 const TEST_NON_DAEMON_CI: Step = {
   name: "test-non-daemon",
-  description: "non-daemon tests (sequential; #1004 crash-after-pass tolerance)",
+  description: "non-daemon tests (sequential; #1004 crash-after-pass + panic-retry tolerance)",
   command: bunTestWithCrashTolerance({
     paths: NON_DAEMON_TEST_PATHS,
     logName: "test_non_daemon",
-    retryOn132: false,
   }),
   source: "scripts/_runner/ci-steps.ts",
   onFailure: [
@@ -187,7 +186,6 @@ const TEST_DAEMON_CI: Step = {
   command: bunTestWithCrashTolerance({
     paths: DAEMON_TEST_PATHS,
     logName: "test_daemon",
-    retryOn132: true,
   }),
   source: "scripts/_runner/ci-steps.ts",
   onFailure: [
