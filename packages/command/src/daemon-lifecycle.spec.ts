@@ -528,7 +528,8 @@ describe("_formatReloadRefusal", () => {
   it("omits the id list when none are reported", () => {
     const msg = _formatReloadRefusal(1, []);
     expect(msg).toContain("1 active session(s)");
-    expect(msg).not.toContain(": ");
+    // No id-list segment: the count flows straight into the next sentence.
+    expect(msg).toContain("orphaned by a reload. Wait");
     expect(msg).toContain("mcx daemon reload --force");
   });
 });

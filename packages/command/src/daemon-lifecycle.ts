@@ -631,7 +631,7 @@ export function getSourceStalenessWarning(workspaceRoot?: string): string | null
   const newestAge = Math.max(...stale.map((s) => s.mtimeSec)) - buildEpoch;
   const ageStr = formatAge(newestAge);
 
-  return `dist/ binaries were built before latest source changes (${pkgList} modified ${ageStr} after build).\n  Run: bun run build && mcx daemon restart`;
+  return `dist/ binaries were built before latest source changes (${pkgList} modified ${ageStr} after build).\n  Run: bun run build && mcx daemon reload`;
 }
 
 function formatAge(seconds: number): string {

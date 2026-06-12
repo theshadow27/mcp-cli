@@ -47,14 +47,14 @@ export class IpcCallError extends Error {
 
 /**
  * Thrown when the CLI and daemon have incompatible protocol versions.
- * The user must explicitly restart the daemon to resolve this.
+ * The user must explicitly reload the daemon to resolve this.
  */
 export class ProtocolMismatchError extends Error {
   readonly daemonVersion: string;
   readonly cliVersion: string;
 
   constructor(daemonVersion: string, cliVersion: string) {
-    super(`Protocol mismatch: daemon ${daemonVersion}, CLI expects ${cliVersion}.\nRun: mcx daemon restart`);
+    super(`Protocol mismatch: daemon ${daemonVersion}, CLI expects ${cliVersion}.\nRun: mcx daemon reload`);
     this.name = "ProtocolMismatchError";
     this.daemonVersion = daemonVersion;
     this.cliVersion = cliVersion;
