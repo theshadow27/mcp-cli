@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
@@ -381,6 +381,30 @@ describe("AcpSession worktree containment (#2519)", () => {
     } finally {
       session.terminate();
       rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("fs/read of an in-cwd symlink escaping the worktree emits a containment_warning (#2722)", async () => {
+    const { session, events, worktree } = makeWorktreeSession("fs-read-symlink");
+    // An out-of-worktree target the symlink points at (warn-only read).
+    const target = mkdtempSync(join(tmpdir(), "acp-symlink-target-"));
+    const secret = join(target, "secret.txt");
+    try {
+      await Bun.write(secret, "out-of-scope secret");
+      symlinkSync(secret, join(worktree, "secret_link"));
+
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      // Read is warn-only by policy: allowed, but the symlink target escaping the
+      // worktree must surface a warning rather than slip past unmonitored.
+      expect(events.some((e) => e.type === "session:containment_warning")).toBe(true);
+      expect(events.some((e) => e.type === "session:containment_denied")).toBe(false);
+    } finally {
+      session.terminate();
+      rmSync(worktree, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
     }
   });
 

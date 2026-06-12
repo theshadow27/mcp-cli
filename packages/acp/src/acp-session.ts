@@ -533,9 +533,18 @@ export class AcpSession {
   private async handleFsRead(id: number | string, params: Record<string, unknown>): Promise<void> {
     const path = params.path as string;
 
-    // Validate path is under session cwd
+    // Resolve to an absolute path so containment/cwd checks compare like for like.
     const resolved = resolve(this.config.cwd, path);
-    if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
+
+    // Worktree containment (#2519, #2722): route reads through the guard so an
+    // in-cwd symlink whose target escapes the worktree is realpath-resolved and
+    // emits a session:containment_warning. Reads are warn-only by policy, so the
+    // guard never denies here — it restores the monitoring contract that the raw
+    // startsWith check silently bypassed. Falls back to the cwd traversal check
+    // for non-worktree sessions.
+    if (this.containment) {
+      gateContainment(this.containment, "Read", { file_path: resolved }, (e) => this.emit(e));
+    } else if (!resolved.startsWith(`${this.config.cwd}/`) && resolved !== this.config.cwd) {
       this.rpc?.respondWithError(id, -1, `Path traversal denied: ${path} is outside session cwd`);
       return;
     }

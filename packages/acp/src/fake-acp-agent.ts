@@ -10,6 +10,7 @@
  *   silent          — handshake + session/new + prompt accepted, then no events (for watchdog testing)
  *   fs-write        — handshake + session/new + sends fs/write_text_file request, then completes
  *   fs-read         — handshake + session/new + sends fs/read_text_file request, then completes
+ *   fs-read-symlink — sends fs/read for an in-cwd symlink whose target escapes the worktree
  *   fs-write-traversal — sends fs/write with path traversal (../outside.txt), then completes
  *   fs-write-escape — sends fs/write to an absolute non-/tmp path the containment guard denies
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
@@ -152,6 +153,15 @@ function schedulePromptEvents(): void {
     setTimeout(() => {
       sendServerRequest("fs-2", "fs/read_text_file", {
         path: `${process.cwd()}/package.json`,
+      });
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "fs-read-symlink") {
+    // The symlink itself is in-cwd, so the legacy startsWith check passes; only
+    // realpath resolution catches the out-of-worktree target (#2722).
+    setTimeout(() => {
+      sendServerRequest("fs-5", "fs/read_text_file", {
+        path: `${process.cwd()}/secret_link`,
       });
       setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
