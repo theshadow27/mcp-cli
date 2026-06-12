@@ -67,10 +67,20 @@ interface RunOutcome {
  * the shell synthesizes from a signal, AND the raw `signal` field when the OS
  * delivers a signal kill with code=null (the Linux `child.on("close")` path —
  * a SIGSEGV child resolves code=-1, never 139, so the numeric check alone
- * never fires for it, #2754).
+ * never fires for it, #2754). The signal set covers the crash signatures Bun
+ * v1.3.x emits during/after a run: SIGSEGV/SIGILL/SIGBUS plus SIGTRAP and
+ * SIGABRT (the issue #2754 owner comment requests the latter two).
  */
 function isBunPanic(code: number, signal: string | null): boolean {
-  return code === 132 || code === 139 || signal === "SIGSEGV" || signal === "SIGILL" || signal === "SIGBUS";
+  return (
+    code === 132 ||
+    code === 139 ||
+    signal === "SIGSEGV" ||
+    signal === "SIGILL" ||
+    signal === "SIGBUS" ||
+    signal === "SIGTRAP" ||
+    signal === "SIGABRT"
+  );
 }
 
 /**
@@ -206,12 +216,6 @@ interface TestOpts {
   paths: string[];
   /** Stem used for `<TMP>/<logName>.txt` artefact preservation. */
   logName: string;
-  /**
-   * Whether to retry once on a Bun panic — exit 132/139 OR a SIGILL/SIGSEGV/SIGBUS
-   * signal kill (see `isBunPanic`). Daemon tests historically need this. The name
-   * predates the signal case; it now gates retry on the full panic class (#2754).
-   */
-  retryOn132?: boolean;
 }
 
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
@@ -225,7 +229,7 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       logger.warn(`bun crash (exit ${first.code}) after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
-    if (!opts.retryOn132 || !isBunPanic(first.code, first.signal)) {
+    if (!isBunPanic(first.code, first.signal)) {
       return { success: false, error: `exit ${first.code}` };
     }
 
