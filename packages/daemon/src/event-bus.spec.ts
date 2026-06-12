@@ -301,19 +301,16 @@ describe("EventBus", () => {
     expect(bus.getLastActivityAt(999)).toBeNull();
   });
 
-  test("touch updates lastActivityAt for a live subscriber", async () => {
-    const bus = new EventBus();
+  test("touch updates lastActivityAt for a live subscriber", () => {
+    let nowMs = 1_000_000;
+    const bus = new EventBus(undefined, () => nowMs);
     const id = bus.subscribe(() => {});
     const before = bus.getLastActivityAt(id) ?? 0;
 
-    const deadline = Date.now() + 1_000;
-    while (Date.now() <= before) {
-      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
-      await Bun.sleep(TICK_MS);
-    }
+    nowMs += 5_000;
 
     expect(bus.touch(id)).toBe(true);
-    expect(bus.getLastActivityAt(id)).toBeGreaterThan(before);
+    expect(bus.getLastActivityAt(id)).toBe(before + 5_000);
   });
 
   test("touch returns false for unknown subscriber", () => {
@@ -321,19 +318,22 @@ describe("EventBus", () => {
     expect(bus.touch(999)).toBe(false);
   });
 
-  test("touch prevents pruneStale from removing a quiet-but-live subscriber", async () => {
-    const bus = new EventBus();
+  test("touch prevents pruneStale from removing a quiet-but-live subscriber", () => {
+    let nowMs = 1_000_000;
+    const bus = new EventBus(undefined, () => nowMs);
+
+    // A quiet subscriber goes stale: after time passes, its lastActivityAt is
+    // strictly older than `now`, so a TTL=0 pruner evicts it. (Control case.)
+    bus.subscribe(() => {});
+    nowMs += 10_000;
+    expect(bus.pruneStale(0)).toBe(1);
+    expect(bus.subscriberCount).toBe(0);
+
+    // touch refreshes lastActivityAt to `now`, so a TTL=0 prune (cutoff === now)
+    // no longer evicts it — guarding against the wall-clock race that made this
+    // test flaky under the parallel suite (#2740).
     const id = bus.subscribe(() => {});
-
-    // Wait until the subscriber would normally appear stale to a TTL=0 pruner.
-    const created = bus.getLastActivityAt(id) ?? 0;
-    const deadline = Date.now() + 1_000;
-    while (Date.now() <= created) {
-      if (Date.now() > deadline) throw new Error("clock did not advance within 1s");
-      await Bun.sleep(TICK_MS);
-    }
-
-    // Touch refreshes lastActivityAt — subscriber should survive pruneStale.
+    nowMs += 10_000;
     bus.touch(id);
     expect(bus.pruneStale(0)).toBe(0);
     expect(bus.subscriberCount).toBe(1);

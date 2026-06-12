@@ -35,9 +35,11 @@ export class EventBus {
   private nextSubId = 0;
   private readonly subscribers = new Map<number, Subscription>();
   private readonly log: EventLog | null;
+  private readonly now: () => number;
 
-  constructor(eventLog?: EventLog) {
+  constructor(eventLog?: EventLog, now: () => number = Date.now) {
     this.log = eventLog ?? null;
+    this.now = now;
     if (this.log) {
       this.seq = this.log.currentSeq();
     }
@@ -72,7 +74,7 @@ export class EventBus {
       if (sub.filter === null || sub.filter(event)) {
         try {
           sub.callback(event, serialized);
-          sub.lastActivityAt = Date.now();
+          sub.lastActivityAt = this.now();
         } catch (err) {
           console.error(`[EventBus] subscriber ${sub.id} threw:`, err);
         }
@@ -83,7 +85,7 @@ export class EventBus {
 
   subscribe(callback: EventCallback, filter?: EventFilter): number {
     const id = ++this.nextSubId;
-    this.subscribers.set(id, { id, filter: filter ?? null, callback, lastActivityAt: Date.now() });
+    this.subscribers.set(id, { id, filter: filter ?? null, callback, lastActivityAt: this.now() });
     return id;
   }
 
@@ -99,7 +101,7 @@ export class EventBus {
   touch(id: number): boolean {
     const sub = this.subscribers.get(id);
     if (!sub) return false;
-    sub.lastActivityAt = Date.now();
+    sub.lastActivityAt = this.now();
     return true;
   }
 
@@ -111,7 +113,7 @@ export class EventBus {
    * ReadableStream.cancel() and no write has happened to trigger the try/catch. (#1557)
    */
   pruneStale(maxIdleMs: number): number {
-    const cutoff = Date.now() - maxIdleMs;
+    const cutoff = this.now() - maxIdleMs;
     let pruned = 0;
     for (const [id, sub] of this.subscribers) {
       if (sub.lastActivityAt < cutoff) {
