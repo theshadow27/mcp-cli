@@ -57,6 +57,13 @@ interface DbDisconnected {
   reason: string;
 }
 
+interface DbStderr {
+  type: "db:stderr";
+  sessionId: string;
+  line: string;
+  timestamp: number;
+}
+
 interface DbEnd {
   type: "db:end";
   sessionId: string;
@@ -86,6 +93,7 @@ export type BaseWorkerEvent =
   | DbState
   | DbCost
   | DbDisconnected
+  | DbStderr
   | DbEnd
   | DbMetric
   | DbHistogram
@@ -97,6 +105,7 @@ export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<BaseWorkerEv
   "db:state",
   "db:cost",
   "db:disconnected",
+  "db:stderr",
   "db:end",
   "metrics:inc",
   "metrics:observe",
@@ -562,10 +571,26 @@ export abstract class AbstractWorkerServer {
         this.onSessionCost(event);
         this.onActivity?.();
         break;
-      case "db:disconnected":
-        this.logger.warn(`[${d.providerName}-server] Session ${event.sessionId} disconnected: ${event.reason}`);
+      case "db:stderr":
+        // Persist child-process stderr keyed by session ID so spawn-failure
+        // postmortems survive the session's death (#2738). `mcx logs <session-id>`
+        // reads these back via the getLogs DB fallback.
+        this.db.insertServerLog(event.sessionId, event.line, event.timestamp);
+        break;
+      case "db:disconnected": {
+        // Surface the captured stderr tail inline so the disconnect line is a
+        // self-contained postmortem rather than a bare "spawn exited" (#2738).
+        const tail = this.db
+          .getRecentServerLogs(event.sessionId, 5)
+          .map((l) => l.line)
+          .join(" | ");
+        const suffix = tail ? ` — stderr: ${tail}` : "";
+        this.logger.warn(
+          `[${d.providerName}-server] Session ${event.sessionId} disconnected: ${event.reason}${suffix}`,
+        );
         this.db.updateSessionState(event.sessionId, "disconnected");
         break;
+      }
       case "db:end":
         this.activeSessions.delete(event.sessionId);
         this.sessionAddedAt.delete(event.sessionId);

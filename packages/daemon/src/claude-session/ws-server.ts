@@ -75,6 +75,11 @@ const KILL_SIGKILL_GRACE_MS = 2_000;
 /** Time (ms) to wait for a WebSocket connection after spawning a Claude CLI process. */
 const CONNECT_TIMEOUT_MS = 30_000;
 
+/** Max chars retained in the unterminated child-stderr line buffer before it is
+ * force-flushed in slices, bounding memory for a child that never emits a
+ * newline (#2769). 64 KiB matches the spawnManaged stderr ring default. */
+const MAX_STDERR_LINE_CHARS = 64 * 1024;
+
 /** Message types handled by the state machine's dispatch. */
 const HANDLED_MSG_TYPES: ReadonlyArray<string> = [
   "system",
@@ -252,6 +257,10 @@ export type SpawnFn = (
     stderr?: "ignore" | "pipe";
     stdin?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
+    /** Real-time tap on decoded child stderr chunks (only when stderr === "pipe"). */
+    onStderr?: (chunk: string) => void;
+    /** Called once after the child stderr stream drains — flush trailing partial line. */
+    onStderrEnd?: () => void;
   },
 ) => {
   pid: number;
@@ -441,6 +450,13 @@ export class ClaudeWsServer {
 
   /** Called to forward monitor events to the main thread's EventBus (#1567). */
   onMonitorEvent: ((input: MonitorEventInput) => void) | null = null;
+
+  /**
+   * Called for each complete stderr line from a spawned child process, keyed by
+   * session ID. Forwarded to the main thread for persistence so spawn-failure
+   * postmortems are recoverable via `mcx logs <session-id>` (#2738).
+   */
+  onStderrLine: ((sessionId: string, line: string, timestamp: number) => void) | null = null;
 
   /**
    * Optional TLS material. When set, `Bun.serve` runs in HTTPS mode and binds
@@ -843,12 +859,42 @@ export class ClaudeWsServer {
     if (!useStdio && this.tlsConfig) {
       envOverrides.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     }
+    // Line-buffer child stderr and forward each complete line keyed by session
+    // ID (#2738). Short-lived spawn failures may emit only a partial first line,
+    // so the tail is flushed on exit below — never dropped.
+    const stderrState = { partial: "" };
+    const emitStderr = (line: string) => {
+      if (line === "") return;
+      this.onStderrLine?.(sessionId, line, Date.now());
+    };
+
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: useStdio ? "pipe" : "ignore",
       stderr: "pipe",
       stdin: useStdio ? "pipe" : "ignore",
       env: Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+      onStderr: (chunk) => {
+        const text = stderrState.partial + chunk;
+        const lines = text.split("\n");
+        stderrState.partial = lines.pop() ?? "";
+        for (const line of lines) emitStderr(line);
+        // Cap the unterminated partial: a child spewing bytes with no newline
+        // (a JSON/base64 blob, a \r-only progress bar) would otherwise grow this
+        // buffer — and the single line eventually forwarded across the worker
+        // boundary — without bound (#2769). Force-emit in capped slices instead.
+        while (stderrState.partial.length > MAX_STDERR_LINE_CHARS) {
+          emitStderr(stderrState.partial.slice(0, MAX_STDERR_LINE_CHARS));
+          stderrState.partial = stderrState.partial.slice(MAX_STDERR_LINE_CHARS);
+        }
+      },
+      onStderrEnd: () => {
+        // Flush the trailing partial line (stderr without a final newline) so a
+        // short-lived spawn's only output is never dropped (#2738).
+        const last = stderrState.partial;
+        stderrState.partial = "";
+        emitStderr(last);
+      },
     });
 
     session.pid = proc.pid;
@@ -2782,6 +2828,8 @@ function defaultSpawn(
     stderr?: "ignore" | "pipe";
     stdin?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
+    onStderr?: (chunk: string) => void;
+    onStderrEnd?: () => void;
   },
 ): ReturnType<SpawnFn> {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
@@ -2802,6 +2850,8 @@ function defaultSpawn(
     stdout: opts.stdout ?? "pipe",
     stderr: opts.stderr ?? "pipe",
     stdin: opts.stdin ?? "pipe",
+    onStderr: opts.onStderr,
+    onStderrEnd: opts.onStderrEnd,
   });
   if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
   return {

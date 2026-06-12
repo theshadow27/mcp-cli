@@ -768,6 +768,8 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   wsServer = new ClaudeWsServer(wsServerOpts);
   wsServer.onSessionEvent = forwardSessionEvent;
   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
+  wsServer.onStderrLine = (sessionId, line, timestamp) =>
+    self.postMessage({ type: "db:stderr", sessionId, line, timestamp });
   const port = await wsServer.start(wsPort);
 
   // Start MCP Server

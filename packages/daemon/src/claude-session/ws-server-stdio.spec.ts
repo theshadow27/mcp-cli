@@ -440,6 +440,128 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("stream-json");
   });
 
+  test("forwards line-buffered child stderr keyed by session, flushing trailing partial on exit (#2738)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6001,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: Array<{ sessionId: string; line: string }> = [];
+    server.onStderrLine = (sessionId, line) => captured.push({ sessionId, line });
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    expect(onStderr).toBeDefined();
+    // Chunk boundaries split mid-line — the buffer must reassemble across chunks.
+    onStderr?.("auth error: token ");
+    onStderr?.("expired\nversion mis");
+    onStderr?.("match\n");
+    // A final line with NO trailing newline — must NOT be emitted until EOF.
+    onStderr?.("fatal: no trailing newline");
+    expect(captured.map((c) => c.line)).toEqual(["auth error: token expired", "version mismatch"]);
+
+    // Stream EOF flushes the trailing partial — the canary's first/only bytes.
+    onStderrEnd?.();
+    expect(captured.map((c) => c.line)).toEqual([
+      "auth error: token expired",
+      "version mismatch",
+      "fatal: no trailing newline",
+    ]);
+    expect(captured.every((c) => c.sessionId === sessionId)).toBe(true);
+  });
+
+  test("a single partial stderr line with no newline is flushed on exit, not dropped (#2738)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6002,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: string[] = [];
+    server.onStderrLine = (_sid, line) => captured.push(line);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    onStderr?.("spawn failed: ENOENT claude");
+    expect(captured).toEqual([]);
+    onStderrEnd?.();
+    expect(captured).toEqual(["spawn failed: ENOENT claude"]);
+  });
+
+  test("a child spewing bytes with no newline is force-flushed in capped slices, bounding the buffer (#2769)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6003,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: string[] = [];
+    server.onStderrLine = (_sid, line) => captured.push(line);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    const CAP = 64 * 1024;
+    // 200 KiB with no newline — must NOT accumulate unbounded; it is force-split.
+    onStderr?.("X".repeat(CAP * 3 + 100));
+    // Slices emitted while over the cap; a sub-cap remainder waits for EOF.
+    expect(captured.length).toBe(3);
+    expect(captured.every((l) => l.length === CAP)).toBe(true);
+    onStderrEnd?.();
+    // The trailing remainder is flushed on exit; no bytes are dropped.
+    expect(captured.length).toBe(4);
+    expect(captured[3]?.length).toBe(100);
+    expect(captured.reduce((n, l) => n + l.length, 0)).toBe(CAP * 3 + 100);
+  });
+
   test("restored session without transport defaults to ws (fallback path)", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({

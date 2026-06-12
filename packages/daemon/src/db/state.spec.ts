@@ -311,6 +311,45 @@ describe("StateDb", () => {
       db.close();
     });
 
+    test("getRecentServerLogs returns the newest N (tail), in chronological order (#2769)", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("srv", "a", now);
+      db.insertServerLog("srv", "b", now + 1);
+      db.insertServerLog("srv", "c", now + 2);
+      db.insertServerLog("srv", "d", now + 3);
+
+      // getServerLogs (head) takes the OLDEST 2; getRecentServerLogs takes the
+      // newest 2 — the opposite end — and returns them oldest→newest.
+      expect(db.getServerLogs("srv", 2).map((l) => l.line)).toEqual(["a", "b"]);
+      expect(db.getRecentServerLogs("srv", 2).map((l) => l.line)).toEqual(["c", "d"]);
+      db.close();
+    });
+
+    test("getRecentServerLogs without a limit returns all, oldest→newest", () => {
+      const db = createDb();
+      const now = Date.now();
+      db.insertServerLog("srv", "a", now);
+      db.insertServerLog("srv", "b", now + 1);
+      expect(db.getRecentServerLogs("srv").map((l) => l.line)).toEqual(["a", "b"]);
+      expect(db.getRecentServerLogs("nope")).toEqual([]);
+      db.close();
+    });
+
+    test("getRecentServerLogs breaks timestamp ties by insertion order (id tiebreaker, #2769)", () => {
+      const db = createDb();
+      const ts = Date.now();
+      // Three lines sharing one Date.now() ms — as happens when one stderr chunk
+      // splits into multiple lines. Insertion order must be preserved.
+      db.insertServerLog("srv", "first", ts);
+      db.insertServerLog("srv", "second", ts);
+      db.insertServerLog("srv", "third", ts);
+
+      expect(db.getRecentServerLogs("srv", 2).map((l) => l.line)).toEqual(["second", "third"]);
+      expect(db.getServerLogs("srv").map((l) => l.line)).toEqual(["first", "second", "third"]);
+      db.close();
+    });
+
     test("clearServerLogs by server", () => {
       const db = createDb();
       const now = Date.now();
