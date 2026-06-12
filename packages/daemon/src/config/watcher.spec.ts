@@ -12,7 +12,6 @@ const POLL_MS = 50;
 const SETTLE_MS = 200;
 const DEBOUNCE_POLL_MS = 20;
 const DEBOUNCE_SETTLE_MS = 100;
-const DEBOUNCE_WAIT_MS = 300;
 
 /** Build an McpConfigFile from server entries */
 function mcpConfig(servers: Record<string, ServerConfig>): McpConfigFile {
@@ -414,7 +413,9 @@ describe("ConfigWatcher error paths", () => {
       },
       logger: silentLogger,
     });
-    watcher.start();
+    // Do NOT call watcher.start() — the poll timer would independently detect the
+    // file write and call scheduleReload() again, racing with the debounce under load.
+    // This test is about debounce deduplication, not polling/watching behavior.
 
     // Write a change then call scheduleReload twice in quick succession
     writeJson(opts.USER_SERVERS_PATH, mcpConfig({ beta: { command: "cat" } }));
@@ -422,10 +423,10 @@ describe("ConfigWatcher error paths", () => {
     scheduleReload();
     scheduleReload();
 
-    // Wait for debounce to settle
-    await Bun.sleep(DEBOUNCE_WAIT_MS);
+    // Wait for the debounce to fire (condition-based, not time-based — test/CLAUDE.md)
+    await waitForCalls(cb, 1);
 
-    // Should have loaded at most once despite double schedule
+    // Should have loaded exactly once despite double schedule
     expect(loadCount).toBe(1);
   });
 });
