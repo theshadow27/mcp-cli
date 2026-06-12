@@ -1099,12 +1099,35 @@ export class StateDb {
     const limitClause = limit ? " LIMIT ?" : "";
     if (limit) params.push(limit);
 
+    // `id` tiebreaker: lines from one stderr chunk share a Date.now() ms, so
+    // ordering on timestamp_ms alone is nondeterministic within a chunk (#2769).
     return this.db
       .query<{ line: string; timestamp_ms: number }, (string | number)[]>(
-        `SELECT line, timestamp_ms FROM server_logs WHERE ${where} ORDER BY timestamp_ms ASC${limitClause}`,
+        `SELECT line, timestamp_ms FROM server_logs WHERE ${where} ORDER BY timestamp_ms ASC, id ASC${limitClause}`,
       )
       .all(...params)
       .map((row) => ({ line: row.line, timestampMs: row.timestamp_ms }));
+  }
+
+  /**
+   * Most recent `limit` log lines for a server, returned in chronological
+   * (oldest→newest) order. Unlike {@link getServerLogs} — which takes the
+   * OLDEST N — this returns the TAIL, i.e. the lines a spawn-failure postmortem
+   * actually wants (#2769). Mirrors the in-memory ring's newest-N semantics so
+   * `mcx logs <id>` reads the same end whether the session is live or dead.
+   */
+  getRecentServerLogs(serverName: string, limit?: number): Array<{ line: string; timestampMs: number }> {
+    const limitClause = limit ? " LIMIT ?" : "";
+    const params: (string | number)[] = [serverName];
+    if (limit) params.push(limit);
+
+    const rows = this.db
+      .query<{ line: string; timestamp_ms: number }, (string | number)[]>(
+        `SELECT line, timestamp_ms FROM server_logs WHERE server_name = ? ORDER BY timestamp_ms DESC, id DESC${limitClause}`,
+      )
+      .all(...params)
+      .map((row) => ({ line: row.line, timestampMs: row.timestamp_ms }));
+    return rows.reverse();
   }
 
   clearServerLogs(serverName?: string): void {

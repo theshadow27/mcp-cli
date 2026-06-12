@@ -414,6 +414,32 @@ describe("AbstractWorkerServer", () => {
       expect(line).toContain("spawn exited");
       expect(line).toContain("spawn failed: ENOENT");
     });
+
+    test("db:disconnected surfaces the newest 5 stderr lines (tail, not head), in order (#2769)", () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      const { logger, texts } = capturingLogger();
+      const s = new StubWorkerServer(db, undefined, instantClient, logger, undefined, new MetricsCollector());
+      server = s;
+
+      // 8 lines — a session that ran a while then died. The disconnect summary
+      // must show the death cause (newest), not the startup banner (oldest).
+      for (let i = 0; i < 8; i++) {
+        internals(s).handleWorkerEvent({
+          type: "db:stderr",
+          sessionId: "sess-tail",
+          line: `line-${i}`,
+          timestamp: 3000 + i,
+        });
+      }
+      internals(s).handleWorkerEvent({ type: "db:disconnected", sessionId: "sess-tail", reason: "spawn exited" });
+
+      const line = texts.find((t) => t.includes("disconnected"));
+      expect(line).toBeDefined();
+      // Newest 5 (line-3..line-7), oldest→newest; banners line-0..line-2 dropped.
+      expect(line).toContain("line-3 | line-4 | line-5 | line-6 | line-7");
+      expect(line).not.toContain("line-0");
+    });
   });
 
   // ── Protocol version negotiation ──

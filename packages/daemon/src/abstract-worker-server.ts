@@ -581,7 +581,7 @@ export abstract class AbstractWorkerServer {
         // Surface the captured stderr tail inline so the disconnect line is a
         // self-contained postmortem rather than a bare "spawn exited" (#2738).
         const tail = this.db
-          .getServerLogs(event.sessionId, 5)
+          .getRecentServerLogs(event.sessionId, 5)
           .map((l) => l.line)
           .join(" | ");
         const suffix = tail ? ` — stderr: ${tail}` : "";
