@@ -121,11 +121,13 @@ function mockStdioSpawn(): {
   pushStdout: (data: string) => void;
   closeStdout: () => void;
   stdinWrites: string[];
+  failWrites: (err: Error) => void;
 } {
   let exitResolve: (code: number) => void = () => {};
   let stdoutController: ReadableStreamDefaultController<Uint8Array> | null = null;
   const encoder = new TextEncoder();
   const stdinWrites: string[] = [];
+  let writeError: Error | null = null;
 
   const stdoutStream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -135,6 +137,7 @@ function mockStdioSpawn(): {
 
   const mockStdin = {
     write(data: string | Uint8Array): number {
+      if (writeError) throw writeError;
       const str = typeof data === "string" ? data : new TextDecoder().decode(data);
       stdinWrites.push(str);
       return typeof data === "string" ? data.length : data.byteLength;
@@ -183,6 +186,9 @@ function mockStdioSpawn(): {
       }
     },
     stdinWrites,
+    failWrites: (err: Error) => {
+      writeError = err;
+    },
   };
   return state;
 }
@@ -730,5 +736,69 @@ describe("ClaudeWsServer — stdio transport", () => {
     clock.advance(60);
     expect(stuckCount()).toBe(1);
     expect(monitorEvents.find((e) => e.event === "session.stuck")?.tier).toBe(1);
+  });
+
+  // ── Transport write-failure handling (#2562) ──
+  // A failed stdio write (SIGPIPE / broken pipe on child crash) must not leave
+  // the state machine believing a prompt is being processed. The session is
+  // transitioned to disconnected and the error is surfaced to the caller.
+
+  async function driveToIdle(
+    mock: ReturnType<typeof mockStdioSpawn>,
+    server: ClaudeWsServer,
+    sessionId: string,
+    events: Array<{ type: string }>,
+  ): Promise<void> {
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:init"), 1000);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+  }
+
+  test("sendPrompt throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio" });
+    server.spawnClaude(sessionId);
+    await driveToIdle(mock, server, sessionId, events);
+
+    // Pipe breaks before the follow-up prompt is written.
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.sendPrompt(sessionId, "second")).toThrow(/transport write failed/);
+
+    // State machine must not be left in active/processing — it is disconnected.
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+  });
+
+  test("interrupt throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio" });
+    server.spawnClaude(sessionId);
+    await driveToIdle(mock, server, sessionId, events);
+
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.interrupt(sessionId, "stop")).toThrow(/transport write failed/);
+
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
+    // A failed interrupt must not stash a pending reason on a dead session.
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
   });
 });
