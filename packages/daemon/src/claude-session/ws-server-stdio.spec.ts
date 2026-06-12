@@ -1,10 +1,45 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { type MonitorEventInput, silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
+import type { StuckDetectorClock } from "./stuck-detector";
 import type { SpawnFn } from "./ws-server";
 import { ClaudeWsServer } from "./ws-server";
 
 import { pollUntil } from "../../../../test/harness";
+
+/** Deterministic clock for StuckDetector — virtual time advances only on advance(). */
+class FakeClock implements StuckDetectorClock {
+  private _now = 0;
+  private nextId = 1;
+  private timers: { id: number; at: number; callback: () => void }[] = [];
+
+  now(): number {
+    return this._now;
+  }
+
+  setTimeout(callback: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.timers.push({ id, at: this._now + ms, callback });
+    return id;
+  }
+
+  clearTimeout(timer: unknown): void {
+    this.timers = this.timers.filter((t) => t.id !== timer);
+  }
+
+  /** Advance virtual time by `ms`, firing expired timers in order. */
+  advance(ms: number): void {
+    const target = this._now + ms;
+    while (true) {
+      const next = this.timers.filter((t) => t.at <= target).sort((a, b) => a.at - b.at)[0];
+      if (!next) break;
+      this._now = next.at;
+      this.timers = this.timers.filter((t) => t.id !== next.id);
+      next.callback();
+    }
+    this._now = target;
+  }
+}
 
 const SETTLE_MS = 10;
 const PAST_CONNECT_TIMEOUT_MS = 300;
@@ -58,6 +93,16 @@ function resultMessage(sessionId: string): string {
     total_cost_usd: 0.01,
     usage: { input_tokens: 200, output_tokens: 100 },
     uuid: "test-uuid",
+    session_id: sessionId,
+  });
+}
+
+function streamEventMessage(sessionId: string): string {
+  return serialize({
+    type: "stream_event",
+    event: {},
+    parent_tool_use_id: null,
+    uuid: "stream-uuid",
     session_id: sessionId,
   });
 }
@@ -172,6 +217,10 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("--output-format");
     expect(mock.lastCmd).toContain("--input-format");
+    // stream-json print mode requires --verbose or claude exits immediately (#2688);
+    // --include-partial-messages restores the stream_event StuckDetector signal.
+    expect(mock.lastCmd).toContain("--verbose");
+    expect(mock.lastCmd).toContain("--include-partial-messages");
 
     // Spawn opts should have stdin/stdout piped
     expect(mock.lastOpts).toMatchObject({ stdin: "pipe", stdout: "pipe" });
@@ -369,6 +418,8 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).not.toContain("--sdk-url");
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");
+    expect(mock.lastCmd).toContain("--verbose");
+    expect(mock.lastCmd).toContain("--include-partial-messages");
   });
 
   test("restoreSessions with explicit transport:'stdio' revives with stdio args", async () => {
@@ -589,5 +640,95 @@ describe("ClaudeWsServer — stdio transport", () => {
 
     expect(mock.lastCmd).toContain("--sdk-url");
     expect(mock.lastCmd.some((a: string) => a.startsWith(`ws://localhost:${port}/`))).toBe(true);
+    // WS uses --sdk-url and must not carry the stdio-only flags.
+    expect(mock.lastCmd).not.toContain("--verbose");
+    expect(mock.lastCmd).not.toContain("--include-partial-messages");
+  });
+
+  test("contained/worktree spawn over stdio is refused fail-closed (#2688)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      transport: "stdio",
+      worktree: "/tmp/wt",
+      cwd: "/tmp/wt",
+    });
+
+    expect(() => server.spawnClaude(sessionId)).toThrow("stdio transport does not support ContainmentGuard — use ws");
+    // Refusal must happen before spawn — no child process started.
+    expect(mock.lastCmd).toEqual([]);
+  });
+
+  test("non-worktree stdio spawn is allowed", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "test", transport: "stdio" });
+
+    expect(() => server.spawnClaude(sessionId)).not.toThrow();
+    expect(mock.lastCmd).toContain("--print");
+  });
+
+  test("stdio stream_event advances the StuckDetector liveness window (#2688)", async () => {
+    const mock = mockStdioSpawn();
+    const clock = new FakeClock();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+      stuckConfig: { thresholdsMs: [100, 200, 300], repeatMs: 300 },
+      stuckClock: clock,
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "test", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Drive the session to "active" — records initial progress at virtual t=0,
+    // scheduling the tier-1 stuck timer for t=100.
+    mock.pushStdout(systemInitMessage(sessionId));
+    mock.pushStdout(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active") ?? false, 1000);
+
+    const stuckCount = () => monitorEvents.filter((e) => e.event === "session.stuck").length;
+
+    // Just shy of the threshold: no stuck event yet.
+    clock.advance(99);
+    expect(stuckCount()).toBe(0);
+
+    // A stream_event arrives — its handler records progress at t=99, which must
+    // reschedule the tier-1 timer to t=199 (cancelling the original t=100 timer).
+    mock.pushStdout(streamEventMessage(sessionId));
+    await pollUntil(
+      () =>
+        server?.getTranscript(sessionId).some((e) => e.direction === "inbound" && e.message.type === "stream_event") ??
+        false,
+      1000,
+    );
+
+    // Past the ORIGINAL threshold (t=149) but before the advanced one: still no
+    // stuck — proves the window moved forward because of the stream_event.
+    clock.advance(50);
+    expect(stuckCount()).toBe(0);
+
+    // Past the advanced threshold (t=209 ≥ 199): the tier-1 stuck now fires.
+    clock.advance(60);
+    expect(stuckCount()).toBe(1);
+    expect(monitorEvents.find((e) => e.event === "session.stuck")?.tier).toBe(1);
   });
 });
