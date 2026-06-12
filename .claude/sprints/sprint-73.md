@@ -134,3 +134,24 @@ Excluded but considered: #2508 (monitor liveness — orthogonal, defer), #2727/#
 (worktree GC hygiene), #2650 (site binary corruption), #2690 (am-i-done host flock —
 deliberately NOT this sprint to avoid multiplying variables during the canary),
 #2716 (needs caller-identity infra).
+
+## Results
+
+- **Released**: v1.14.3
+- **PRs merged**: 20 — all 19 planned (#2757–#2794) + emergency P1 #2799
+- **Issues closed**: 20 — all 19 planned + #2796 (P1: compiled daemon lost all
+  worker entrypoints; Bun count-dependent `--compile` outbase, crossed by #2762's
+  list growth; fixed with `--root` pin + post-compile boot smoke)
+- **Issues dropped**: 0
+- **New issues filed**: 20 (#2759–#2761, #2768, #2770, #2773–#2774, #2780–#2782,
+  #2784, #2786, #2788, #2793, #2795–#2798, #2800–#2801)
+- **Goal outcomes**: stdio spawn-exit root-caused by reproduction (missing
+  `--verbose` on stream-json print invocations) and fixed; canary retry PASS
+  (2 stdio + 2 ws concurrent); containment on stdio: documented NO-GO with
+  fail-closed worktree refusal merged; StuckDetector signal parity restored via
+  `--include-partial-messages`; pipe-drain load test mechanized in CI.
+- **Notable**: #2740's prescribed teardown-race fix was empirically DISPROVEN by
+  the implementer (budget-watcher never closes the db) — fixed the real clock
+  race instead; #2696's rule redesigned line-regex→AST after review measured
+  precision 0/9; `mcx daemon reload` (#2509) was used in production 3× within
+  two hours of merging, once prompted by its own split-brain detector.
