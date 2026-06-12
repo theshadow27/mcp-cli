@@ -39,10 +39,21 @@ export class ShutdownRefusedError extends Error {
   constructor(
     message: string,
     public readonly activeSessions: number,
+    public readonly sessionIds: string[] = [],
   ) {
     super(message);
     this.name = "ShutdownRefusedError";
   }
+}
+
+/**
+ * Build the refusal message shown when `mcx daemon reload` would orphan live
+ * sessions. Names the blocking session ids when the daemon reported them so the
+ * operator can `bye` them directly instead of guessing. Exported for testing.
+ */
+export function _formatReloadRefusal(activeSessions: number, sessionIds: string[]): string {
+  const idList = sessionIds.length > 0 ? `: ${sessionIds.join(", ")}` : "";
+  return `${activeSessions} active session(s) would be orphaned by a reload${idList}. Wait for them to finish, end them (\`mcx claude bye <id>\`), then retry — or force with \`mcx daemon reload --force\`.`;
 }
 
 /** Timestamp of the last failed daemon start attempt (0 = no recent failure) */
@@ -303,9 +314,15 @@ export async function stopDaemon(opts?: { force?: boolean }): Promise<void> {
   verifiedMcpdPid = null;
   try {
     const res = await rawFetch({ id: nextId(), method: "shutdown", params: { force: opts?.force } }, PING_TIMEOUT_MS);
-    const body = (await res.json()) as { result?: { ok: boolean; activeSessions?: number; message?: string } };
+    const body = (await res.json()) as {
+      result?: { ok: boolean; activeSessions?: number; sessionIds?: string[]; message?: string };
+    };
     if (body.result && !body.result.ok) {
-      throw new ShutdownRefusedError(body.result.message ?? "Shutdown refused", body.result.activeSessions ?? 0);
+      throw new ShutdownRefusedError(
+        body.result.message ?? "Shutdown refused",
+        body.result.activeSessions ?? 0,
+        body.result.sessionIds ?? [],
+      );
     }
   } catch (err) {
     if (err instanceof ShutdownRefusedError) throw err;
@@ -492,7 +509,7 @@ export function _buildStaleDaemonWarning(
   cliBuildVersion = BUILD_VERSION,
 ): string | null {
   if (!daemonBuildVersion) {
-    return `Daemon predates build version tracking (CLI is ${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
+    return `Daemon predates build version tracking (CLI is ${cliBuildVersion}). Run \`mcx daemon reload\` to pick up the new binary.`;
   }
   if (daemonBuildVersion === cliBuildVersion) {
     return null;
@@ -509,7 +526,7 @@ export function _buildStaleDaemonWarning(
 
   // CLI is compiled, daemon is dev — daemon is stale.
   if (cliEpoch !== null && daemonEpoch === null) {
-    return `Daemon is running a dev build (${daemonBuildVersion}) but CLI is a compiled build (${cliBuildVersion}). Run \`mcx shutdown\` to restart with the compiled daemon.`;
+    return `Daemon is running a dev build (${daemonBuildVersion}) but CLI is a compiled build (${cliBuildVersion}). Run \`mcx daemon reload\` to restart with the compiled daemon.`;
   }
 
   // Both compiled — compare epochs to determine which is stale.
@@ -517,11 +534,11 @@ export function _buildStaleDaemonWarning(
     if (daemonEpoch > cliEpoch) {
       return `Daemon is running a newer build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Use the build-matched client: \`dist/mcx\` or the installed \`mcx\` on PATH.`;
     }
-    return `Daemon is running an older build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
+    return `Daemon is running an older build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx daemon reload\` to pick up the new binary.`;
   }
 
   // Fallback: both dev or neither has epoch — can't determine direction.
-  return `Daemon is running a different build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx shutdown\` to pick up the new binary.`;
+  return `Daemon is running a different build (${daemonBuildVersion}) than CLI (${cliBuildVersion}). Run \`mcx daemon reload\` to pick up the new binary.`;
 }
 
 /**

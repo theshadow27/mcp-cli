@@ -69,6 +69,7 @@ import { cmdVersion } from "./commands/version";
 import { cmdVfs } from "./commands/vfs";
 import {
   ShutdownRefusedError,
+  _formatReloadRefusal,
   getSourceStalenessWarning,
   getStaleDaemonWarning,
   ipcCall,
@@ -886,6 +887,24 @@ async function cmdDaemon(args: string[]): Promise<void> {
     // Next ipcCall auto-starts a fresh daemon with current code
     await ipcCall("ping");
     console.error("Daemon restarted.");
+  } else if (sub === "reload") {
+    // Safe one-shot reload: stop + auto-restart, refusing to orphan live sessions (#2509).
+    // Unlike `restart` (force:true), reload defaults force:false so the daemon's
+    // active-session guard holds — the fix for a build-mismatched (split-brain) daemon.
+    const force = args.includes("--force");
+    console.error("Reloading daemon...");
+    try {
+      await stopDaemon({ force });
+    } catch (err) {
+      if (err instanceof ShutdownRefusedError) {
+        printError(_formatReloadRefusal(err.activeSessions, err.sessionIds));
+        process.exit(1);
+      }
+      throw err;
+    }
+    // Next ipcCall auto-starts a fresh build-matched daemon.
+    await ipcCall("ping");
+    console.error("Daemon reloaded.");
   } else if (sub === "shutdown" || sub === "stop") {
     const force = args.includes("--force");
     try {
@@ -899,7 +918,7 @@ async function cmdDaemon(args: string[]): Promise<void> {
     }
     console.error("Daemon shut down.");
   } else {
-    printError("Usage: mcx daemon restart|shutdown [--force]");
+    printError("Usage: mcx daemon restart|reload|shutdown [--force]");
     process.exit(1);
   }
 }
