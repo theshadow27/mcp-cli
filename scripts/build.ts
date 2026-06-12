@@ -3,6 +3,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
+import { daemonWorkers } from "./daemon-workers";
 
 // Ensure deps are installed (fast no-op when already present)
 await $`bun install`.quiet();
@@ -130,14 +131,8 @@ async function codesignIfDarwin(...paths: string[]): Promise<void> {
   }
 }
 
-// mcpd worker entrypoints — must be listed explicitly for bun build --compile
-const daemonWorkers = [
-  "packages/daemon/src/alias-executor.ts",
-  "packages/daemon/src/claude-session-worker.ts",
-  "packages/daemon/src/codex-session-worker.ts",
-  "packages/daemon/src/mock-session-worker.ts",
-  "packages/daemon/src/site-worker.ts",
-];
+// mcpd worker entrypoints (see scripts/daemon-workers.ts) — must be listed
+// explicitly for bun build --compile.
 
 // Packages excluded from bundling — resolved at runtime from node_modules.
 // playwright ships with a large optional-dep tree (electron, chromium-bidi, etc.)
