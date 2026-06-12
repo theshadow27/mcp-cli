@@ -430,16 +430,40 @@ export class ContainmentGuard {
       }
     }
 
-    // Check shell file writes (redirects, cp, mv, tee, ln, etc.)
+    // Check shell file writes (redirects, cp, mv, tee, ln, etc.). A shared-temp
+    // write is allowed-but-monitored; a hard deny (out-of-worktree, non-temp)
+    // takes precedence, so record the temp warn and keep scanning.
     const writeTargets = extractBashWriteTargets(command);
+    let tmpWarn: ContainmentResult | null = null;
     for (const target of writeTargets) {
-      if (isAllowedExternalPath(target, this.worktreeRoot, this._unresolvedRoot)) continue;
+      if (isAllowedExternalPath(target, this.worktreeRoot, this._unresolvedRoot)) {
+        tmpWarn ??= this.makeTmpWarn("Bash", target);
+        continue;
+      }
       if (isPathOutside(target, this.worktreeRoot)) {
         return this.evaluateFileAccess("Bash", target);
       }
     }
+    if (tmpWarn) return tmpWarn;
 
     return { action: "allow", reason: "", strikes: this._strikes };
+  }
+
+  /**
+   * Shared temp (/tmp, /var/tmp, /private/tmp) writes are allowed by policy but
+   * surfaced as a warning (#2723): all host worktrees share /tmp, so a silent
+   * write there is an unobservable cross-session channel. `warn` does not strike
+   * and does not deny — the write proceeds — but it now shows on the monitor
+   * stream so the activity is no longer invisible.
+   */
+  private makeTmpWarn(toolName: string, filePath: string): ContainmentResult {
+    const resolved = resolveRealpath(resolve(this.worktreeRoot, filePath));
+    return {
+      action: "warn",
+      reason: `${toolName} writes ${resolved} in shared temp outside worktree ${this.worktreeRoot}. Allowed but monitored — shared /tmp is a cross-session channel.`,
+      event: "session:containment_warning",
+      strikes: this._strikes,
+    };
   }
 
   private evaluateFileAccess(toolName: string, filePath: string): ContainmentResult {
@@ -456,9 +480,10 @@ export class ContainmentGuard {
     }
 
     // Write/Edit: strike-counted gray zone
-    // Allow /tmp writes without penalty (symlink escapes excluded via worktreeRoot guard)
+    // /tmp writes are allowed without penalty but surfaced as a warning (#2723);
+    // symlink escapes are excluded via the worktreeRoot guard in isAllowedExternalPath.
     if (isAllowedExternalPath(filePath, this.worktreeRoot, this._unresolvedRoot)) {
-      return { action: "allow", reason: "", strikes: this._strikes };
+      return this.makeTmpWarn(toolName, filePath);
     }
 
     this._strikes++;
