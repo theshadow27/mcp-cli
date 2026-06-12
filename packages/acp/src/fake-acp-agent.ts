@@ -12,6 +12,7 @@
  *   fs-read         — handshake + session/new + sends fs/read_text_file request, then completes
  *   fs-write-traversal — sends fs/write with path traversal (../outside.txt), then completes
  *   fs-write-escape — sends fs/write to an absolute non-/tmp path the containment guard denies
+ *   fs-write-oversize — sends fs/write with content over the 50MB size cap, then completes
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
  *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
@@ -170,6 +171,16 @@ function schedulePromptEvents(): void {
       sendServerRequest("fs-4", "fs/write_text_file", {
         path: "/etc/acp-containment-escape-probe.txt",
         content: "should be blocked",
+      });
+      setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "fs-write-oversize") {
+    // Content exceeds the 50MB write cap — the daemon must reject before any
+    // disk write so a looping agent can't fill the shared filesystem (#2732).
+    setTimeout(() => {
+      sendServerRequest("fs-5", "fs/write_text_file", {
+        path: `${process.cwd()}/acp-oversize-probe.txt`,
+        content: "x".repeat(50 * 1_024 * 1_024 + 1),
       });
       setTimeout(() => completePrompt(), MED_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
