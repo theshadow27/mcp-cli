@@ -335,6 +335,27 @@ describe("AcpSession server requests", () => {
     expect(existsSync("/tmp/acp-traversal-probe.txt")).toBe(false);
   });
 
+  test("fs/write_text_file rejects content over the size cap and never writes (#2732)", async () => {
+    const probePath = join(TEST_CWD, "acp-oversize-probe.txt");
+    const { existsSync, unlinkSync } = await import("node:fs");
+    try {
+      const { session } = makeSession({ agent: "fs-write-oversize" });
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      // The oversized payload must be rejected before touching disk.
+      expect(existsSync(probePath)).toBe(false);
+    } finally {
+      try {
+        unlinkSync(probePath);
+        // dotw-ignore test-empty-catch: best-effort cleanup — probe should never exist
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  });
+
   test("terminal/create runs async command and completes", async () => {
     const { session } = makeSession({ agent: "terminal" });
     const resultPromise = session.waitForResult(10000);

@@ -501,9 +501,26 @@ export class AcpSession {
     this.emit({ type: "session:permission_request", request: permWithId });
   }
 
+  /** Upper bound on agent-supplied fs/write_text_file content (#2732). */
+  private static readonly MAX_FS_WRITE_BYTES = 50 * 1_024 * 1_024;
+
   private async handleFsWrite(id: number | string, params: Record<string, unknown>): Promise<void> {
     const path = params.path as string;
     const content = params.content as string;
+
+    // Bound the untrusted payload before touching disk (#2732): a looping or
+    // adversarial agent could otherwise fill the shared worktree filesystem and
+    // wedge co-tenant sessions — a worktree-local DoS that needs no containment
+    // escape. The read path is already capped in command/src/file-read.ts.
+    const byteLength = Buffer.byteLength(content, "utf8");
+    if (byteLength > AcpSession.MAX_FS_WRITE_BYTES) {
+      this.rpc?.respondWithError(
+        id,
+        -1,
+        `fs/write_text_file content (${byteLength} bytes) exceeds ${AcpSession.MAX_FS_WRITE_BYTES} byte limit`,
+      );
+      return;
+    }
 
     // Resolve to an absolute path so containment/cwd checks compare like for like.
     const resolved = resolve(this.config.cwd, path);
