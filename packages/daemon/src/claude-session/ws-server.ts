@@ -1053,7 +1053,11 @@ export class ClaudeWsServer {
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
     session.pendingInterruptReason = null;
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Transport write failed — sendToSession already transitioned the session
+      // to disconnected. Surface the error so the prompt isn't silently lost.
+      throw new Error(`Failed to deliver prompt to session ${sessionId}: transport write failed`);
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
   }
@@ -1248,7 +1252,9 @@ export class ClaudeWsServer {
   respondToPermission(sessionId: string, requestId: string, allow: boolean, message?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.respondToPermission(requestId, allow, message);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      throw new Error(`Failed to deliver permission response to session ${sessionId}: transport write failed`);
+    }
     this.recordSessionProgress(sessionId, session);
   }
 
@@ -1256,7 +1262,9 @@ export class ClaudeWsServer {
   interrupt(sessionId: string, reason?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      throw new Error(`Failed to deliver interrupt to session ${sessionId}: transport write failed`);
+    }
     session.pendingInterruptReason = reason ?? null;
   }
 
@@ -1387,7 +1395,13 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const requestId = `mcpd-model-${this.nextRequestId++}`;
     const outbound = setModelRequest(requestId, model);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Transport write failed — sendToSession already transitioned the session
+      // to disconnected. Surface the error before mutating tracked-model state so
+      // we don't emit a phantom session:model_changed for a change the child never
+      // received nor report success on a dead session (#2562).
+      throw new Error(`Failed to deliver set_model to session ${sessionId}: transport write failed`);
+    }
 
     // Update tracked model in state
     const events = session.state.setModel(model);
@@ -1783,7 +1797,7 @@ export class ClaudeWsServer {
    * Full WebSocket disconnection cleanup. Must be called from every error path
    * that detects a broken WS — not just handleClose.
    */
-  private disconnectSessionWs(sessionId: string, session: WsSession, reason: string): void {
+  private disconnectSession(sessionId: string, session: WsSession, reason: string): void {
     const prevState = session.state.state;
     session.ws = null;
 
@@ -1814,9 +1828,10 @@ export class ClaudeWsServer {
       }
     }
 
-    // Reject pending result waiters — they can't get results without WS
+    // Reject pending result waiters — they can't get results without a transport
+    const waiterReason = session.transport === "stdio" ? "stdio transport disconnected" : "WebSocket disconnected";
     for (const waiter of session.resultWaiters) {
-      waiter.reject(new Error("WebSocket disconnected"));
+      waiter.reject(new Error(waiterReason));
     }
     session.resultWaiters.length = 0;
   }
@@ -1857,7 +1872,7 @@ export class ClaudeWsServer {
         ws.send(outbound);
       } catch (err) {
         this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
-        this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+        this.disconnectSession(sessionId, session, "WebSocket send failed on open");
         // Kill the spawned process — it can't communicate without WS
         if (session.proc) {
           try {
@@ -1878,7 +1893,7 @@ export class ClaudeWsServer {
           session.ws.send(keepAlive());
         } catch (err) {
           this.logger.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
-          this.disconnectSessionWs(sessionId, session, "WebSocket keep-alive send failed");
+          this.disconnectSession(sessionId, session, "WebSocket keep-alive send failed");
         }
       }
     }, KEEP_ALIVE_MS);
@@ -1963,7 +1978,7 @@ export class ClaudeWsServer {
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
     );
 
-    this.disconnectSessionWs(sessionId, session, "WebSocket closed");
+    this.disconnectSession(sessionId, session, "WebSocket closed");
   }
 
   // ── Event handling ──
@@ -2291,10 +2306,16 @@ export class ClaudeWsServer {
       }
       if (result.action === "deny") {
         session.state.respondToPermission(requestId, false, result.reason);
-        this.sendToSession(
-          session,
-          permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
-        );
+        if (
+          !this.sendToSession(
+            session,
+            permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
+          )
+        ) {
+          // Write failed — sendToSession disconnected the session. Surface it via
+          // the caller's .catch logger rather than swallowing the false (#2562).
+          throw new Error(`Failed to deliver permission denial to session ${sessionId}: transport write failed`);
+        }
         return;
       }
     }
@@ -2317,7 +2338,11 @@ export class ClaudeWsServer {
       : permissionDeny(requestId, decision.message ?? "Denied");
 
     session.state.respondToPermission(requestId, decision.allow, decision.message);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Write failed — sendToSession disconnected the session. Surface it via the
+      // caller's .catch logger rather than swallowing the false (#2562).
+      throw new Error(`Failed to deliver permission response to session ${sessionId}: transport write failed`);
+    }
   }
 
   // ── Stuck detection (#1585) ──
@@ -2550,30 +2575,53 @@ export class ClaudeWsServer {
     return generateSessionName(usedNames);
   }
 
-  private sendToSession(session: WsSession, message: string): void {
+  /**
+   * Write an outbound message to the session's transport.
+   *
+   * Returns true if the write was issued, false if it could not be delivered.
+   * On failure the session is transitioned to `disconnected` (#2562) so that a
+   * dead transport cannot leave the state machine believing a prompt is being
+   * processed when the child never received it. Callers that mutated session
+   * state before calling (queuePrompt / respondToPermission / interrupt) MUST
+   * propagate a false return rather than continue silently.
+   */
+  private sendToSession(session: WsSession, message: string): boolean {
     if (session.transport === "stdio") {
-      if (session.stdioWriter) {
-        try {
-          session.stdioWriter.write(`${message}\n`);
-          session.stdioWriter.flush();
-        } catch (err) {
-          this.logger.error(`[_claude] stdio write failed: ${err}`);
-        }
+      if (!session.stdioWriter) {
+        this.failSend(session, "stdio writer unavailable");
+        return false;
       }
-      return;
+      try {
+        session.stdioWriter.write(`${message}\n`);
+        session.stdioWriter.flush();
+        return true;
+      } catch (err) {
+        this.logger.error(`[_claude] stdio write failed: ${err}`);
+        this.failSend(session, `stdio write failed: ${err}`);
+        return false;
+      }
     }
     // WS transport
     if (session.ws?.readyState === WS_OPEN) {
       try {
         session.ws.send(message);
+        return true;
       } catch (err) {
         this.logger.error(`[_claude] WebSocket send failed: ${err}`);
-        for (const [sid, s] of this.sessions) {
-          if (s === session) {
-            this.disconnectSessionWs(sid, session, "WebSocket send failed");
-            break;
-          }
-        }
+        this.failSend(session, "WebSocket send failed");
+        return false;
+      }
+    }
+    this.failSend(session, "WebSocket not open");
+    return false;
+  }
+
+  /** Transition a session to disconnected after a transport write failed. */
+  private failSend(session: WsSession, reason: string): void {
+    for (const [sid, s] of this.sessions) {
+      if (s === session) {
+        this.disconnectSession(sid, session, reason);
+        return;
       }
     }
   }
