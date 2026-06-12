@@ -470,6 +470,15 @@ SIGTERM-immortality (#2586) was written into a self-approved repair commit
 by the session that flagged the original issue, 60s apart — writing eyes
 and approving eyes were one context, and the introduced defect shipped.
 
+**Label closure after self-repair — no PR merges carrying `review:changes`.**
+The self-repairing reviewer leaves `review:changes` unflipped (correct — it
+can't approve itself), and the verifying session swaps it to `review:pass`
+when its verification covers the findings (see qa.md Step 6). The
+orchestrator enforces the invariant at the merge gate: if a PR still carries
+`review:changes` alongside `qa:pass`, do not arm or execute the merge — send
+the verifier to complete the swap (or to state which finding it could not
+verify). Post-merge label cleanup is an audit-trail repair, not a substitute.
+
 **Precondition — the reviewer must be ON the PR branch, or self-repair
 silently breaks.** It can only push if it was spawned `--cwd` the worktree
 that holds the branch. The phase scripts emit `--worktree` (they don't know
