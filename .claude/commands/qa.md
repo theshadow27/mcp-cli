@@ -100,7 +100,29 @@ Where possible, verify the functionality works:
 - For daemon features: check that IPC handlers are registered and route correctly
 - Run `bun typecheck` to confirm the code compiles cleanly
 
-Do NOT start the daemon or run live integration tests — focus on static verification and unit tests.
+Do NOT start the daemon or run live integration tests — focus on static verification and unit tests. **Exception — artifact-level verification (next paragraph) — which still never touches the host daemon.**
+
+**Artifact-level verification for build/infra PRs.** If the diff touches the
+build mechanism (`scripts/build.ts`, compile entrypoints, bundler flags),
+compiled output layout, or worker plumbing (`worker-path.ts`,
+`*-worker.ts` registration, `worker-plugin.ts`), unit tests + green CI are
+**not sufficient evidence** — a binary can compile green and be dead at
+runtime. Your verification must exercise the artifact:
+
+```bash
+bun run build                       # must pass, including any built-in smoke
+STATE_DIR=$(mktemp -d)              # NEVER the real ~/.mcp-cli
+MCP_CLI_DIR="$STATE_DIR" ./dist/mcpd &   # boot the compiled binary, foreground/bg
+# read its startup log: every worker-backed server must log "started",
+# zero "Failed to start" / "ModuleNotFound"; then kill the process you
+# started (only that one — it's your child, not a host process) and rm -rf
+# the temp state dir.
+```
+
+Cite the observed startup lines in your QA comment as the evidence. If the
+artifact can't be exercised in your environment, say so explicitly and mark
+the verdict's confidence accordingly — do not silently fall back to
+unit-test evidence for an artifact-shaped change.
 
 ### Step 4: Check for Tests — and Write Missing Ones
 
@@ -351,6 +373,25 @@ gh pr edit <pr-number> --add-label qa:pass --remove-label qa:fail
 # or
 gh pr edit <pr-number> --add-label qa:fail --remove-label qa:pass
 ```
+
+**Self-repaired reviews: your verification closes the review label too.**
+When the PR carries `review:changes` and the findings were fixed by the
+reviewer itself (self-repair — the reviewer leaves its label unflipped on
+purpose because it may not approve its own fix), **your fresh-eyes
+verification is the independent approval that label was waiting for**. If
+your verdict is `qa:pass` and you verified each review finding is addressed,
+swap the review label in the same breath:
+
+```bash
+gh pr edit <pr-number> --add-label qa:pass --remove-label qa:fail
+gh pr edit <pr-number> --add-label review:pass --remove-label review:changes
+```
+
+State in your QA comment that the review-label swap is backed by your
+verification of the named findings. If your verdict is `qa:fail`, or you did
+NOT verify every review finding, leave `review:changes` in place — a PR must
+never merge carrying `review:changes` (the orchestrator holds the merge until
+the label state is consistent).
 
 The `--remove-label` is a no-op if the opposite label isn't present, so the
 swap form is always safe to run regardless of prior state.

@@ -80,6 +80,33 @@ in your "what I understood" report. Examples of what to call out:
 - "Plan says: hot-shared file with #NNNN — rebase before push"
 - "Plan does not list this issue — proceeding from issue body alone"
 
+### Step 1b: Verify any prescribed root cause — before implementing it
+
+If the issue body, an investigation comment, or the sprint plan prescribes a
+specific root cause or fix mechanism ("the bug is X in file Y; fix it by Z"),
+treat the prescription as a **hypothesis, not a spec**. This applies to any
+issue with a named mechanism — not just `flaky`-labeled ones.
+
+1. **Reproduce first.** Confirm the claimed mechanism empirically before
+   writing the fix: run the failing case, loop the flaky spec, trace the
+   implicated code path, or replay the documented repro. Quote the evidence
+   in your plan ("reproduced on run 6/20", "error matches at file:line").
+2. **If it reproduces** — implement the prescribed fix and state what you
+   verified.
+3. **If the evidence contradicts the prescription** — do not cargo-cult the
+   named file or fix. Find and fix the real cause, and post the discrepancy
+   as an issue comment with your evidence (commands, output, line refs) so
+   the record is corrected for the next reader. A verified disproof is a
+   valid outcome; a no-op fix shipped to match a stale diagnosis is not.
+4. **If you can neither confirm nor refute cheaply** — say so at your plan
+   checkpoint and ask before proceeding. Implementing on an unverified
+   hypothesis is how wrong fixes ship.
+
+Why: a prescribed fix encodes the investigator's context, which can be stale,
+partial, or wrong — and the implementer is the last cheap point to catch it.
+The cost of a reproduction is minutes; the cost of a plausible-but-wrong fix
+is a review/repair cycle at best and a masked bug at worst.
+
 ### Step 2: Plan the Work
 
 Explore the codebase to understand the relevant areas. Use Glob, Grep, and Read to find:
