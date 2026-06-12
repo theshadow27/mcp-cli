@@ -325,7 +325,9 @@ export async function installFromArchive(
 
   const archivePath = resolve(deps.gridDir, entry.archive);
   if (!existsSync(archivePath)) {
-    throw new Error(`Archive not found: ${archivePath} — run 'git lfs pull' if this is a fresh clone`);
+    throw new Error(
+      `Archive not found: ${archivePath} — fetch it on demand with 'GITHUB_TOKEN=$(gh auth token) scripts/fetch-lfs-blob.sh' (blobs are no longer pulled on checkout; see #2741)`,
+    );
   }
 
   // Sidecar guards against accidental corruption (truncated LFS pull, bad disk).

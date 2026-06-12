@@ -82,12 +82,12 @@ export async function cmdVersion(args: string[], deps?: Partial<VersionDeps>): P
     if (daemon.protocolVersion === d.protocolVersion) {
       console.log("Status:  protocol match");
     } else {
-      console.log("Status:  protocol MISMATCH — run 'mcx daemon restart'");
+      console.log("Status:  protocol MISMATCH — run 'mcx daemon reload'");
       process.exitCode = 2;
     }
   } else if (mismatch) {
     console.log(`Daemon:  protocol ${mismatch.daemonVersion} (version unknown)`);
-    console.log("Status:  protocol MISMATCH — run 'mcx daemon restart'");
+    console.log("Status:  protocol MISMATCH — run 'mcx daemon reload'");
     process.exitCode = 2;
   } else {
     console.log("Daemon:  (not running)");

@@ -25,6 +25,7 @@ describe("WORKER_EVENT_TYPES", () => {
       "db:state",
       "db:cost",
       "db:disconnected",
+      "db:stderr",
       "db:end",
       "metrics:inc",
       "metrics:observe",
@@ -45,6 +46,7 @@ describe("isWorkerEvent", () => {
     expect(isWorkerEvent({ type: "db:state", sessionId: "s1", state: "active" })).toBe(true);
     expect(isWorkerEvent({ type: "db:cost", sessionId: "s1", cost: 0, tokens: 0 })).toBe(true);
     expect(isWorkerEvent({ type: "db:disconnected", sessionId: "s1", reason: "x" })).toBe(true);
+    expect(isWorkerEvent({ type: "db:stderr", sessionId: "s1", line: "boom", timestamp: 1 })).toBe(true);
     expect(isWorkerEvent({ type: "db:end", sessionId: "s1" })).toBe(true);
   });
 

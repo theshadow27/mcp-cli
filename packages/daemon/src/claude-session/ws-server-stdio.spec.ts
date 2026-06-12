@@ -1,10 +1,45 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { type MonitorEventInput, silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
+import type { StuckDetectorClock } from "./stuck-detector";
 import type { SpawnFn } from "./ws-server";
 import { ClaudeWsServer } from "./ws-server";
 
 import { pollUntil } from "../../../../test/harness";
+
+/** Deterministic clock for StuckDetector — virtual time advances only on advance(). */
+class FakeClock implements StuckDetectorClock {
+  private _now = 0;
+  private nextId = 1;
+  private timers: { id: number; at: number; callback: () => void }[] = [];
+
+  now(): number {
+    return this._now;
+  }
+
+  setTimeout(callback: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.timers.push({ id, at: this._now + ms, callback });
+    return id;
+  }
+
+  clearTimeout(timer: unknown): void {
+    this.timers = this.timers.filter((t) => t.id !== timer);
+  }
+
+  /** Advance virtual time by `ms`, firing expired timers in order. */
+  advance(ms: number): void {
+    const target = this._now + ms;
+    while (true) {
+      const next = this.timers.filter((t) => t.at <= target).sort((a, b) => a.at - b.at)[0];
+      if (!next) break;
+      this._now = next.at;
+      this.timers = this.timers.filter((t) => t.id !== next.id);
+      next.callback();
+    }
+    this._now = target;
+  }
+}
 
 const SETTLE_MS = 10;
 const PAST_CONNECT_TIMEOUT_MS = 300;
@@ -62,6 +97,29 @@ function resultMessage(sessionId: string): string {
   });
 }
 
+function streamEventMessage(sessionId: string): string {
+  return serialize({
+    type: "stream_event",
+    event: {},
+    parent_tool_use_id: null,
+    uuid: "stream-uuid",
+    session_id: sessionId,
+  });
+}
+
+function canUseToolMessage(requestId: string): string {
+  return serialize({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: { command: "echo hello" },
+      tool_use_id: "tool-1",
+    },
+  });
+}
+
 /**
  * Mock spawn that exposes stdin/stdout streams for stdio transport testing.
  * The mock stdout is a ReadableStream that the test can push NDJSON lines into.
@@ -76,11 +134,13 @@ function mockStdioSpawn(): {
   pushStdout: (data: string) => void;
   closeStdout: () => void;
   stdinWrites: string[];
+  failWrites: (err: Error) => void;
 } {
   let exitResolve: (code: number) => void = () => {};
   let stdoutController: ReadableStreamDefaultController<Uint8Array> | null = null;
   const encoder = new TextEncoder();
   const stdinWrites: string[] = [];
+  let writeError: Error | null = null;
 
   const stdoutStream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -90,6 +150,7 @@ function mockStdioSpawn(): {
 
   const mockStdin = {
     write(data: string | Uint8Array): number {
+      if (writeError) throw writeError;
       const str = typeof data === "string" ? data : new TextDecoder().decode(data);
       stdinWrites.push(str);
       return typeof data === "string" ? data.length : data.byteLength;
@@ -138,6 +199,9 @@ function mockStdioSpawn(): {
       }
     },
     stdinWrites,
+    failWrites: (err: Error) => {
+      writeError = err;
+    },
   };
   return state;
 }
@@ -172,6 +236,10 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("--output-format");
     expect(mock.lastCmd).toContain("--input-format");
+    // stream-json print mode requires --verbose or claude exits immediately (#2688);
+    // --include-partial-messages restores the stream_event StuckDetector signal.
+    expect(mock.lastCmd).toContain("--verbose");
+    expect(mock.lastCmd).toContain("--include-partial-messages");
 
     // Spawn opts should have stdin/stdout piped
     expect(mock.lastOpts).toMatchObject({ stdin: "pipe", stdout: "pipe" });
@@ -369,6 +437,8 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).not.toContain("--sdk-url");
     expect(mock.lastCmd).toContain("--print");
     expect(mock.lastCmd).toContain("stream-json");
+    expect(mock.lastCmd).toContain("--verbose");
+    expect(mock.lastCmd).toContain("--include-partial-messages");
   });
 
   test("restoreSessions with explicit transport:'stdio' revives with stdio args", async () => {
@@ -440,6 +510,128 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).toContain("stream-json");
   });
 
+  test("forwards line-buffered child stderr keyed by session, flushing trailing partial on exit (#2738)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6001,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: Array<{ sessionId: string; line: string }> = [];
+    server.onStderrLine = (sessionId, line) => captured.push({ sessionId, line });
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    expect(onStderr).toBeDefined();
+    // Chunk boundaries split mid-line — the buffer must reassemble across chunks.
+    onStderr?.("auth error: token ");
+    onStderr?.("expired\nversion mis");
+    onStderr?.("match\n");
+    // A final line with NO trailing newline — must NOT be emitted until EOF.
+    onStderr?.("fatal: no trailing newline");
+    expect(captured.map((c) => c.line)).toEqual(["auth error: token expired", "version mismatch"]);
+
+    // Stream EOF flushes the trailing partial — the canary's first/only bytes.
+    onStderrEnd?.();
+    expect(captured.map((c) => c.line)).toEqual([
+      "auth error: token expired",
+      "version mismatch",
+      "fatal: no trailing newline",
+    ]);
+    expect(captured.every((c) => c.sessionId === sessionId)).toBe(true);
+  });
+
+  test("a single partial stderr line with no newline is flushed on exit, not dropped (#2738)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6002,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: string[] = [];
+    server.onStderrLine = (_sid, line) => captured.push(line);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    onStderr?.("spawn failed: ENOENT claude");
+    expect(captured).toEqual([]);
+    onStderrEnd?.();
+    expect(captured).toEqual(["spawn failed: ENOENT claude"]);
+  });
+
+  test("a child spewing bytes with no newline is force-flushed in capped slices, bounding the buffer (#2769)", async () => {
+    let onStderr: ((chunk: string) => void) | undefined;
+    let onStderrEnd: (() => void) | undefined;
+    let exitResolve: (code: number) => void = () => {};
+    const spawn: SpawnFn = (_cmd, opts) => {
+      onStderr = opts.onStderr;
+      onStderrEnd = opts.onStderrEnd;
+      return {
+        pid: 6003,
+        exited: new Promise<number>((r) => {
+          exitResolve = r;
+        }),
+        kill: () => exitResolve(143),
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stdin: { write: () => 0, flush: () => 0 },
+        stderrTail: () => "",
+      };
+    };
+    server = new ClaudeWsServer({ spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const captured: string[] = [];
+    server.onStderrLine = (_sid, line) => captured.push(line);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    const CAP = 64 * 1024;
+    // 200 KiB with no newline — must NOT accumulate unbounded; it is force-split.
+    onStderr?.("X".repeat(CAP * 3 + 100));
+    // Slices emitted while over the cap; a sub-cap remainder waits for EOF.
+    expect(captured.length).toBe(3);
+    expect(captured.every((l) => l.length === CAP)).toBe(true);
+    onStderrEnd?.();
+    // The trailing remainder is flushed on exit; no bytes are dropped.
+    expect(captured.length).toBe(4);
+    expect(captured[3]?.length).toBe(100);
+    expect(captured.reduce((n, l) => n + l.length, 0)).toBe(CAP * 3 + 100);
+  });
+
   test("restored session without transport defaults to ws (fallback path)", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
@@ -467,5 +659,189 @@ describe("ClaudeWsServer — stdio transport", () => {
 
     expect(mock.lastCmd).toContain("--sdk-url");
     expect(mock.lastCmd.some((a: string) => a.startsWith(`ws://localhost:${port}/`))).toBe(true);
+    // WS uses --sdk-url and must not carry the stdio-only flags.
+    expect(mock.lastCmd).not.toContain("--verbose");
+    expect(mock.lastCmd).not.toContain("--include-partial-messages");
+  });
+
+  test("contained/worktree spawn over stdio is refused fail-closed (#2688)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      transport: "stdio",
+      worktree: "/tmp/wt",
+      cwd: "/tmp/wt",
+    });
+
+    expect(() => server.spawnClaude(sessionId)).toThrow("stdio transport does not support ContainmentGuard — use ws");
+    // Refusal must happen before spawn — no child process started.
+    expect(mock.lastCmd).toEqual([]);
+  });
+
+  test("non-worktree stdio spawn is allowed", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "test", transport: "stdio" });
+
+    expect(() => server.spawnClaude(sessionId)).not.toThrow();
+    expect(mock.lastCmd).toContain("--print");
+  });
+
+  test("stdio stream_event advances the StuckDetector liveness window (#2688)", async () => {
+    const mock = mockStdioSpawn();
+    const clock = new FakeClock();
+    const monitorEvents: MonitorEventInput[] = [];
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+      stuckConfig: { thresholdsMs: [100, 200, 300], repeatMs: 300 },
+      stuckClock: clock,
+    });
+    server.onMonitorEvent = (input) => monitorEvents.push(input);
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "test", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Drive the session to "active" — records initial progress at virtual t=0,
+    // scheduling the tier-1 stuck timer for t=100.
+    mock.pushStdout(systemInitMessage(sessionId));
+    mock.pushStdout(assistantMessage(sessionId));
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "active") ?? false, 1000);
+
+    const stuckCount = () => monitorEvents.filter((e) => e.event === "session.stuck").length;
+
+    // Just shy of the threshold: no stuck event yet.
+    clock.advance(99);
+    expect(stuckCount()).toBe(0);
+
+    // A stream_event arrives — its handler records progress at t=99, which must
+    // reschedule the tier-1 timer to t=199 (cancelling the original t=100 timer).
+    mock.pushStdout(streamEventMessage(sessionId));
+    await pollUntil(
+      () =>
+        server?.getTranscript(sessionId).some((e) => e.direction === "inbound" && e.message.type === "stream_event") ??
+        false,
+      1000,
+    );
+
+    // Past the ORIGINAL threshold (t=149) but before the advanced one: still no
+    // stuck — proves the window moved forward because of the stream_event.
+    clock.advance(50);
+    expect(stuckCount()).toBe(0);
+
+    // Past the advanced threshold (t=209 ≥ 199): the tier-1 stuck now fires.
+    clock.advance(60);
+    expect(stuckCount()).toBe(1);
+    expect(monitorEvents.find((e) => e.event === "session.stuck")?.tier).toBe(1);
+  });
+
+  // ── Transport write-failure handling (#2562) ──
+  // A failed stdio write (SIGPIPE / broken pipe on child crash) must not leave
+  // the state machine believing a prompt is being processed. The session is
+  // transitioned to disconnected and the error is surfaced to the caller.
+
+  async function driveToIdle(
+    mock: ReturnType<typeof mockStdioSpawn>,
+    server: ClaudeWsServer,
+    sessionId: string,
+    events: Array<{ type: string }>,
+  ): Promise<void> {
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:init"), 1000);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+  }
+
+  test("sendPrompt throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio" });
+    server.spawnClaude(sessionId);
+    await driveToIdle(mock, server, sessionId, events);
+
+    // Pipe breaks before the follow-up prompt is written.
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.sendPrompt(sessionId, "second")).toThrow(/transport write failed/);
+
+    // State machine must not be left in active/processing — it is disconnected.
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+  });
+
+  test("interrupt throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio" });
+    server.spawnClaude(sessionId);
+    await driveToIdle(mock, server, sessionId, events);
+
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.interrupt(sessionId, "stop")).toThrow(/transport write failed/);
+
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
+    // A failed interrupt must not stash a pending reason on a dead session.
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+  });
+
+  test("respondToPermission throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    // `delegate` strategy leaves the can_use_tool request pending for an external
+    // responder instead of auto-answering it, so the public respondToPermission
+    // path is the one exercised below.
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio", permissionStrategy: "delegate" });
+    server.spawnClaude(sessionId);
+
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:init"), 1000);
+    mock.pushStdout(`${canUseToolMessage("req-1")}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:permission_request"), 1000);
+
+    // Pipe breaks before the permission response is written.
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.respondToPermission(sessionId, "req-1", true)).toThrow(/transport write failed/);
+
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
   });
 });

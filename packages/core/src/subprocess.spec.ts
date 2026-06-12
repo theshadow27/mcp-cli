@@ -179,6 +179,26 @@ describe("spawnManaged", () => {
     expect(chunks.join("")).toContain("callback-test");
   });
 
+  it("calls onStderrEnd once after the stderr stream drains, following the final chunk", async () => {
+    const order: string[] = [];
+    const r = spawnManaged("sh", ["-c", "printf 'no-newline-tail' >&2"], {
+      onStderr: () => order.push("chunk"),
+      onStderrEnd: () => order.push("end"),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    await r.handle.exited;
+    const deadline = Date.now() + 2000;
+    while (!order.includes("end") && Date.now() < deadline) {
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    // The trailing chunk (which had no newline) is delivered before EOF is signalled.
+    expect(order).toContain("chunk");
+    expect(order[order.length - 1]).toBe("end");
+    expect(order.filter((o) => o === "end")).toHaveLength(1);
+  });
+
   it("truncates stderr ring buffer to stderrMaxBytes", async () => {
     const r = spawnManaged("sh", ["-c", "dd if=/dev/zero bs=1024 count=128 2>/dev/null | tr '\\0' 'A' >&2"], {
       stderrMaxBytes: 1024,

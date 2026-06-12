@@ -57,6 +57,7 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     touchAliasExpiry: () => {},
     pruneExpiredAliases: () => 0,
     getServerLogs: () => [],
+    getRecentServerLogs: () => [],
     getCachedTools: () => [],
     listSessions: () => [],
     getDatabase: () => new Database(":memory:"),
@@ -681,6 +682,7 @@ describe("IpcServer HTTP transport", () => {
     expect(json.result).toEqual({
       ok: false,
       activeSessions: 2,
+      sessionIds: ["s1", "s2"],
       message: "2 active session(s). Use --force to shut down anyway.",
     });
   });
@@ -2098,6 +2100,39 @@ describe("IpcServer HTTP transport", () => {
     reader.releaseLock();
 
     expect(buffer).toContain("pool-line");
+  });
+
+  test("getLogs falls back to the newest-N persistent tail when the pool ring is empty (#2738, #2769)", async () => {
+    socketPath = tmpSocket();
+    // The fallback must read the TAIL (getRecentServerLogs), not the head — a
+    // postmortem wants the death cause, not the startup banner (#2769).
+    const recentCalls: Array<{ server: string; limit?: number }> = [];
+    const db = mockDb({
+      // Head reader — if the fallback wrongly calls this, the test sees banners.
+      getServerLogs: () => [{ line: "startup banner", timestampMs: 1 }],
+      getRecentServerLogs: (serverName: string, limit?: number) => {
+        recentCalls.push({ server: serverName, limit });
+        return serverName === "sess-dead" ? [{ line: "spawn failed: ENOENT", timestampMs: 4242 }] : [];
+      },
+    });
+    // Pool ring is empty (default mockPool getStderrLines) → a dead session is
+    // no longer in the pool, so getLogs must read its persisted stderr from DB.
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "logs-fallback",
+      method: "getLogs",
+      params: { server: "sess-dead", limit: 10 },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({
+      server: "sess-dead",
+      lines: [{ timestamp: 4242, line: "spawn failed: ENOENT" }],
+    });
+    // Proves the tail reader was used (with the caller's limit), not the head.
+    expect(recentCalls).toEqual([{ server: "sess-dead", limit: 10 }]);
   });
 
   // Bug #1 regression: callTool → _aliases must forward the caller's cwd so

@@ -43,8 +43,43 @@ describe("pre-commit classify_files", () => {
     expect(result.has_config).toBe(false);
   });
 
-  test("docs-only: .claude/ non-markdown files", async () => {
-    const result = await classify([".claude/diary/20260318.md", ".claude/arcs.md"]);
+  test("docs-only: enumerated .claude/ docs subdirs", async () => {
+    const result = await classify([
+      ".claude/diary/20260318.md",
+      ".claude/sprints/sprint-72.md",
+      ".claude/memory/notes.md",
+      ".claude/arcs.md",
+    ]);
+    expect(result.has_source).toBe(false);
+    expect(result.has_config).toBe(false);
+  });
+
+  // .claude/phases/*.ts are executable phase scripts with specs run by
+  // am-i-done (test:phases, #2648) — never docs-only (#2717).
+  test("source: .claude/phases/ phase scripts and specs", async () => {
+    const result = await classify([".claude/phases/done-fn.ts", ".claude/phases/done-fn.spec.ts"]);
+    expect(result.has_source).toBe(true);
+    expect(result.has_config).toBe(false);
+  });
+
+  test("source: other runnable .claude/ code (automation, workflows, skills)", async () => {
+    const result = await classify([
+      ".claude/automation/bind.ts",
+      ".claude/workflows/sprint-lessons.js",
+      ".claude/skills/release/release.ts",
+    ]);
+    expect(result.has_source).toBe(true);
+    expect(result.has_config).toBe(false);
+  });
+
+  test("config: .claude/ JSON files", async () => {
+    const result = await classify([".claude/settings.local.json"]);
+    expect(result.has_source).toBe(false);
+    expect(result.has_config).toBe(true);
+  });
+
+  test("docs-only: .claude/ markdown outside enumerated subdirs", async () => {
+    const result = await classify([".claude/agents/issue-author.md", ".claude/commands/qa.md"]);
     expect(result.has_source).toBe(false);
     expect(result.has_config).toBe(false);
   });

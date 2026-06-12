@@ -7,6 +7,7 @@ import { DaemonStartCooldownError } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
   _buildStaleDaemonWarning,
+  _formatReloadRefusal,
   _isTransientConnectionError,
   _parseBuildEpoch,
   _resetStartCooldown,
@@ -452,33 +453,33 @@ describe("_buildStaleDaemonWarning", () => {
     const warning = _buildStaleDaemonWarning(undefined);
     expect(warning).toContain("predates build version tracking");
     expect(warning).toContain(BUILD_VERSION);
-    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("mcx daemon reload");
   });
 
   it("recommends dist/mcx when daemon is compiled and CLI is dev", () => {
     // Compiled daemon (has epoch), dev CLI (no epoch) — daemon is the newer/authoritative side
     const warning = _buildStaleDaemonWarning("1.11.2+1779669196", "1.11.2-dev");
     expect(warning).not.toBeNull();
-    expect(warning).not.toContain("mcx shutdown");
+    expect(warning).not.toContain("mcx daemon reload");
     expect(warning).toContain("1.11.2+1779669196");
     expect(warning).toContain("1.11.2-dev");
     expect(warning).toContain("dist/mcx");
   });
 
-  it("recommends mcx shutdown when CLI is compiled and daemon is dev", () => {
+  it("recommends mcx daemon reload when CLI is compiled and daemon is dev", () => {
     // CLI compiled, daemon dev — daemon is stale
     const warning = _buildStaleDaemonWarning("1.11.2-dev", "1.11.2+1779669196");
     expect(warning).not.toBeNull();
-    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("mcx daemon reload");
     expect(warning).toContain("1.11.2-dev");
     expect(warning).toContain("1.11.2+1779669196");
     expect(warning).not.toContain("dist/mcx");
   });
 
-  it("recommends mcx shutdown when daemon epoch is older than CLI epoch", () => {
+  it("recommends mcx daemon reload when daemon epoch is older than CLI epoch", () => {
     const warning = _buildStaleDaemonWarning("1.0.0+1000000000", "1.0.0+2000000000");
     expect(warning).not.toBeNull();
-    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("mcx daemon reload");
     expect(warning).toContain("1.0.0+1000000000");
     expect(warning).toContain("1.0.0+2000000000");
     expect(warning).not.toContain("dist/mcx");
@@ -487,28 +488,49 @@ describe("_buildStaleDaemonWarning", () => {
   it("recommends dist/mcx when daemon epoch is newer than CLI epoch", () => {
     const warning = _buildStaleDaemonWarning("1.0.0+2000000000", "1.0.0+1000000000");
     expect(warning).not.toBeNull();
-    expect(warning).not.toContain("mcx shutdown");
+    expect(warning).not.toContain("mcx daemon reload");
     expect(warning).toContain("1.0.0+2000000000");
     expect(warning).toContain("1.0.0+1000000000");
     expect(warning).toContain("dist/mcx");
   });
 
-  it("falls back to shutdown advice when both builds are dev with different versions", () => {
-    // Both dev (no epoch): can't determine direction → fallback recommends shutdown
+  it("falls back to reload advice when both builds are dev with different versions", () => {
+    // Both dev (no epoch): can't determine direction → fallback recommends reload
     const warning = _buildStaleDaemonWarning("0.1.0-dev", "0.2.0-dev");
     expect(warning).not.toBeNull();
     expect(warning).toContain("0.1.0-dev");
     expect(warning).toContain("0.2.0-dev");
-    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("mcx daemon reload");
   });
 
-  it("falls back to shutdown advice when neither version has an epoch", () => {
+  it("falls back to reload advice when neither version has an epoch", () => {
     // Plain semver (no +epoch, no -dev): fallback
     const warning = _buildStaleDaemonWarning("1.0.0", "1.1.0");
     expect(warning).not.toBeNull();
     expect(warning).toContain("1.0.0");
     expect(warning).toContain("1.1.0");
-    expect(warning).toContain("mcx shutdown");
+    expect(warning).toContain("mcx daemon reload");
+  });
+});
+
+// -- _formatReloadRefusal --
+
+describe("_formatReloadRefusal", () => {
+  it("names the blocking session ids when reported", () => {
+    const msg = _formatReloadRefusal(2, ["abc123", "def456"]);
+    expect(msg).toContain("2 active session(s)");
+    expect(msg).toContain("abc123");
+    expect(msg).toContain("def456");
+    expect(msg).toContain("mcx claude bye");
+    expect(msg).toContain("mcx daemon reload --force");
+  });
+
+  it("omits the id list when none are reported", () => {
+    const msg = _formatReloadRefusal(1, []);
+    expect(msg).toContain("1 active session(s)");
+    // No id-list segment: the count flows straight into the next sentence.
+    expect(msg).toContain("orphaned by a reload. Wait");
+    expect(msg).toContain("mcx daemon reload --force");
   });
 });
 

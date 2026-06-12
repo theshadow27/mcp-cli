@@ -43,6 +43,13 @@ const LOG_DIR = "/tmp";
 
 interface RunOutcome {
   code: number;
+  /**
+   * The signal that killed the child, or null for a normal exit. On Linux a
+   * signal kill (SIGSEGV/SIGILL/SIGBUS) delivers code=null + the signal name —
+   * `code` is then synthesized as -1 and never equals 132/139, so the panic
+   * classifier must inspect this field to retry such crashes (#2754).
+   */
+  signal: string | null;
   output: string;
   /**
    * Fault count from the junit XML written by --reporter junit (`failures` +
@@ -52,6 +59,28 @@ interface RunOutcome {
    * (#2669).
    */
   junitFailures: number | null;
+}
+
+/**
+ * True when the run was killed by a Bun panic signature. Two delivery forms
+ * must both be recognised: the numeric exit codes 132 (SIGILL) / 139 (SIGSEGV)
+ * the shell synthesizes from a signal, AND the raw `signal` field when the OS
+ * delivers a signal kill with code=null (the Linux `child.on("close")` path —
+ * a SIGSEGV child resolves code=-1, never 139, so the numeric check alone
+ * never fires for it, #2754). The signal set covers the crash signatures Bun
+ * v1.3.x emits during/after a run: SIGSEGV/SIGILL/SIGBUS plus SIGTRAP and
+ * SIGABRT (the issue #2754 owner comment requests the latter two).
+ */
+function isBunPanic(code: number, signal: string | null): boolean {
+  return (
+    code === 132 ||
+    code === 139 ||
+    signal === "SIGSEGV" ||
+    signal === "SIGILL" ||
+    signal === "SIGBUS" ||
+    signal === "SIGTRAP" ||
+    signal === "SIGABRT"
+  );
 }
 
 /**
@@ -69,6 +98,23 @@ function parseJunitFailures(xmlPath: string): number | null {
     const failures = fm ? Number.parseInt(fm[1], 10) : 0;
     const errors = em ? Number.parseInt(em[1], 10) : 0;
     return failures + errors;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse the total test count from a bun junit XML report: the `tests` attribute
+ * on the root `<testsuites>` element (first match in document order — nested
+ * `<testsuite>` elements carry per-file counts). Returns null when the file is
+ * absent or has no `tests` attribute. Used by the phases step to fail closed
+ * when `bun test` exits 0 having discovered nothing (#2719).
+ */
+function parseJunitTests(xmlPath: string): number | null {
+  try {
+    const xml = readFileSync(xmlPath, "utf8");
+    const m = xml.match(/tests="(\d+)"/);
+    return m ? Number.parseInt(m[1], 10) : null;
   } catch {
     return null;
   }
@@ -147,18 +193,18 @@ async function runBun(
     buf.push(d);
     logger.error(d.trimEnd());
   });
-  const code = await new Promise<number>((resolve) => {
-    child.on("close", (c: number | null, signal: string | null) => {
-      if (signal) logger.warn(`child killed by ${signal} (code=${c})`);
-      resolve(c ?? -1);
+  const { code, signal } = await new Promise<{ code: number; signal: string | null }>((resolve) => {
+    child.on("close", (c: number | null, sig: string | null) => {
+      if (sig) logger.warn(`child killed by ${sig} (code=${c})`);
+      resolve({ code: c ?? -1, signal: sig });
     });
     child.on("error", (err: Error) => {
       logger.error(`spawn error: ${err.message} (code=${(err as NodeJS.ErrnoException).code})`);
-      resolve(-1);
+      resolve({ code: -1, signal: null });
     });
   });
   const junitFailures = junitPath ? parseJunitFailures(junitPath) : null;
-  return { code, output: buf.join(""), junitFailures };
+  return { code, signal, output: buf.join(""), junitFailures };
 }
 
 function persistLog(logName: string, output: string): void {
@@ -181,14 +227,17 @@ const ZERO_FAIL_RE = /^ 0 fail$/m;
 // FAILURE as a #1419 crash-after-pass and let CI swallow it (#2744).
 const COVERAGE_PASS_RE = /^PASS: All coverage thresholds met/m;
 const FAIL_LINE_RE = /^FAIL:/m;
+// Bun's end-of-run summary: "Ran 129 tests across 6 files. [20.00ms]". Like
+// ZERO_FAIL_RE it is written to stdout incrementally, so it survives a #1004
+// teardown crash that drops the junit sidecar. The file count is the durable
+// fallback for the phases discovered-spec floor (#2719).
+const RAN_FILES_RE = /^Ran \d+ tests? across (\d+) files?/m;
 
 interface TestOpts {
   /** `bun test` positional arguments — directories and/or spec files. */
   paths: string[];
   /** Stem used for `<TMP>/<logName>.txt` artefact preservation. */
   logName: string;
-  /** Whether to retry once on exit 132 (SIGILL). Daemon tests historically need this. */
-  retryOn132?: boolean;
 }
 
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
@@ -202,11 +251,11 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       logger.warn(`bun crash (exit ${first.code}) after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
-    if (!opts.retryOn132 || first.code !== 132) {
+    if (!isBunPanic(first.code, first.signal)) {
       return { success: false, error: `exit ${first.code}` };
     }
 
-    logger.warn("bun segfault (exit 132) — retrying once (#1004)");
+    logger.warn(`bun panic (exit ${first.code}, signal ${first.signal ?? "none"}) — retrying once (#1004)`);
     const second = await runBun(args, logger, env, junitTmpPath(`${opts.logName}_retry`));
     persistLog(`${opts.logName}_retry`, second.output);
     if (second.code === 0) return { success: true };
@@ -214,8 +263,8 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
-    if (second.code === 132) {
-      logger.warn("bun segfault on retry too — treating as pass (known upstream bug, #1004)");
+    if (isBunPanic(second.code, second.signal)) {
+      logger.warn("bun panic on retry too — treating as pass (known upstream bug, #1004)");
       return { success: true };
     }
     return { success: false, error: `exit ${second.code}` };
@@ -229,22 +278,67 @@ interface PhasesTestOpts {
   phasesDir: string;
 }
 
+/** Count `*.spec.ts` files under a directory (recursive). */
+function countSpecFiles(dir: string): number {
+  let count = 0;
+  for (const _ of new Glob("**/*.spec.ts").scanSync({ cwd: dir })) count++;
+  return count;
+}
+
+/**
+ * Verify the run actually discovered at least as many spec files as exist on
+ * disk. `bun test` exits 0 when it discovers ZERO spec files, so without this
+ * floor the step is fail-open: a rename, a bad phasesDir, or a bun upgrade
+ * that changes `pathIgnorePatterns` anchoring would silently revert phase
+ * specs to the pre-#2648 dark state (#2719). Primary signal: the stdout
+ * "Ran N tests across M files" line (files vs files — exact, and survives a
+ * #1004 teardown crash). Fallback: the junit `tests` attribute (each spec
+ * file contributes ≥1 test, so tests ≥ files). Neither parseable → fail closed.
+ */
+function checkDiscoveryFloor(outcome: RunOutcome, junitPath: string, specCount: number): StepResult {
+  const filesMatch = outcome.output.match(RAN_FILES_RE);
+  const discovered = filesMatch ? Number.parseInt(filesMatch[1], 10) : parseJunitTests(junitPath);
+  if (discovered === null) {
+    return {
+      success: false,
+      error:
+        "could not determine discovered phase spec count (no junit tests attribute, no summary line) — failing closed (#2719)",
+    };
+  }
+  if (discovered < specCount) {
+    return {
+      success: false,
+      error: `phase test run discovered ${discovered} ${filesMatch ? "files" : "tests"}, expected >= ${specCount} spec files — check pathIgnorePatterns anchoring and phasesDir (#2719)`,
+    };
+  }
+  return { success: true };
+}
+
 /**
  * Run `bun test --no-orphans` from within `.claude/phases/` so the files
  * are discovered relative to that CWD — bypassing the root bunfig.toml
  * `pathIgnorePatterns = [".claude/**"]` exclusion that silences them when
  * run from the repo root (#2648). Carries the same #1004 crash-after-pass
- * tolerance as `bunTestWithCrashTolerance`.
+ * tolerance as `bunTestWithCrashTolerance`, but fails closed when the run
+ * discovers fewer spec files than exist on disk (#2719).
  */
 export function phasesTestWithCrashTolerance(opts: PhasesTestOpts): ScriptFunction {
   return async ({ logger, env }) => {
+    const specCount = countSpecFiles(opts.phasesDir);
+    if (specCount === 0) {
+      return {
+        success: false,
+        error: `0 phase spec files found in ${opts.phasesDir} — specs renamed/moved, or bad phasesDir? (#2719)`,
+      };
+    }
     const args = ["test", "--no-orphans"];
-    const first = await runBun(args, logger, env, junitTmpPath(opts.logName), opts.phasesDir);
+    const junitPath = junitTmpPath(opts.logName);
+    const first = await runBun(args, logger, env, junitPath, opts.phasesDir);
     persistLog(opts.logName, first.output);
-    if (first.code === 0) return { success: true };
+    if (first.code === 0) return checkDiscoveryFloor(first, junitPath, specCount);
     if (hasZeroJunitFailures(first)) {
       logger.warn(`bun crash (exit ${first.code}) after phase tests passed — treating as pass (#1004)`);
-      return { success: true };
+      return checkDiscoveryFloor(first, junitPath, specCount);
     }
     return { success: false, error: `exit ${first.code}` };
   };
@@ -264,11 +358,11 @@ export function coverageWithCrashTolerance(opts: CoverageOpts): ScriptFunction {
     persistLog(opts.logName, first.output);
     const firstVerdict = classifyCoverage({ ...first, junitFailures: parseCoverageFailures(summaryPath) }, logger);
     if (firstVerdict.success) return firstVerdict;
-    if (first.code !== 132 && first.code !== 139) {
+    if (!isBunPanic(first.code, first.signal)) {
       return { success: false, error: `exit ${first.code}` };
     }
 
-    logger.warn(`bun panic (exit ${first.code}) — retrying once`);
+    logger.warn(`bun panic (exit ${first.code}, signal ${first.signal ?? "none"}) — retrying once`);
     const retrySummaryPath = join(LOG_DIR, `coverage_summary_${opts.logName}_retry_${Date.now()}.json`);
     const second = await runBun(
       ["scripts/check-coverage.ts", "--ci", `--junit-outfile=${retrySummaryPath}`],

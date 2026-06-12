@@ -34,7 +34,13 @@ function deriveFailures(stdout: string | undefined): number {
   return (stdout ?? "").includes(" 0 fail") ? 0 : 1;
 }
 
-function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string; errors?: number }): string {
+function makeFakeBun(opts: {
+  code: number;
+  stdout?: string;
+  stderr?: string;
+  errors?: number;
+  junitTests?: number;
+}): string {
   const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
   const path = join(dir, "bun");
   const stdout = (opts.stdout ?? "").replace(/'/g, "'\\''");
@@ -43,6 +49,10 @@ function makeFakeBun(opts: { code: number; stdout?: string; stderr?: string; err
   // `errors` models bun's "unhandled error between tests" — written to the junit
   // `errors` attribute, NOT `failures`. The coverage JSON has no errors concept.
   const e = opts.errors ?? 0;
+  // `junitTests` models the root `tests="N"` attribute — the discovered-test
+  // floor signal for phasesTestWithCrashTolerance (#2719). 12 matches the
+  // pass+fail totals in passingSummary/failingSummary.
+  const t = opts.junitTests ?? 12;
   writeFileSync(
     path,
     // Write structured output files when requested so classifiers key off
@@ -56,7 +66,7 @@ for arg in "$@"; do
   case "$arg" in
     --reporter-outfile=*)
       jpath="\${arg#--reporter-outfile=}"
-      printf '<?xml version="1.0"?><testsuites failures="${f}" errors="${e}"></testsuites>' > "$jpath"
+      printf '<?xml version="1.0"?><testsuites tests="${t}" failures="${f}" errors="${e}"></testsuites>' > "$jpath"
       ;;
     --junit-outfile=*)
       cpath="\${arg#--junit-outfile=}"
@@ -118,6 +128,50 @@ else
   write_files ${f2} "$@"
   exit ${pass2.code}
 fi
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
+// Fake bun that kills ITSELF with a signal on every invocation — emulates the
+// Bun panic the OS delivers as code=null + signal name (the Linux child.on
+// "close" path, #2754). `kill -s` terminates the script before any exit line;
+// the trailing sleep is an unreachable guard.
+function makeAlwaysSignalFakeBun(signal: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  writeFileSync(join(dir, "bun"), `#!/usr/bin/env bash\nkill -s ${signal} $$\nsleep 5\n`, { mode: 0o755 });
+  return dir;
+}
+
+// Fake bun that dies by `signal` on the first invocation and then exits with
+// `rest.code` (writing structured failure files) on every subsequent call —
+// proves the panic classifier retries a signal kill rather than failing
+// immediately (#2754).
+function makeSignalThenExitFakeBun(signal: string, rest: { code: number; stdout?: string }): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  const counterFile = join(dir, ".invocation_count");
+  const s = (rest.stdout ?? "").replace(/'/g, "'\\''");
+  const f = deriveFailures(rest.stdout);
+  writeFileSync(
+    join(dir, "bun"),
+    `#!/usr/bin/env bash
+count=0
+if [ -f '${counterFile}' ]; then count=$(cat '${counterFile}'); fi
+count=$((count + 1))
+echo "$count" > '${counterFile}'
+if [ "$count" -eq 1 ]; then
+  kill -s ${signal} $$
+  sleep 5
+fi
+printf '%s' '${s}'
+for arg in "$@"; do
+  case "$arg" in
+    --reporter-outfile=*) printf '<?xml version="1.0"?><testsuites failures="${f}" errors="0"></testsuites>' > "\${arg#--reporter-outfile=}" ;;
+    --junit-outfile=*) printf '{"failures":${f}}' > "\${arg#--junit-outfile=}" ;;
+  esac
+done
+exit ${rest.code}
 `,
     { mode: 0o755 },
   );
@@ -231,18 +285,17 @@ exit 1
     expect(result).toMatchObject({ success: false });
   });
 
-  it("retryOn132: exit 132 first run, exit 0 retry → success", async () => {
-    // The fake bun deterministically returns the same exit code each time, so
-    // we exercise the no-retry path here and the retry-then-segfault path below.
-    // A two-step scenario would need a counter-aware stub.
+  it("exit 132 panic on both runs → pass-by-policy (#1004)", async () => {
+    // The fake bun deterministically returns the same exit code each time: a
+    // 132 panic on the first run triggers the retry, the retry panics again,
+    // and a panic-on-retry is treated as pass per #1004 (known upstream bug).
     const dir = makeFakeBun({ code: 132 });
-    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_x", retryOn132: true });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
       }),
     );
-    // Both runs returned 132 — treated as pass per #1004 (known upstream bug).
     expect(result).toEqual({ success: true });
   });
 
@@ -271,15 +324,60 @@ exit 139
     expect(result).toEqual({ success: true });
   });
 
-  it("no retryOn132: exit 132 with no `0 fail` summary fails", async () => {
-    const dir = makeFakeBun({ code: 132 });
-    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_x", retryOn132: false });
+  it("SIGSEGV signal kill (code=null) first run, exit 0 retry → success (#2754)", async () => {
+    // The #2754 bug: a Linux signal kill delivers code=null → runBun resolves
+    // code=-1, which never equals 132/139. Before the fix the classifier fell
+    // straight through to failure with no retry. The signal field must drive the
+    // panic decision so a SIGSEGV-killed child is retried.
+    const dir = makeSignalThenExitFakeBun("SIGSEGV", { code: 0, stdout: passingSummary });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_sig" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
       }),
     );
-    expect(result).toMatchObject({ success: false });
+    expect(result).toEqual({ success: true });
+  });
+
+  it("SIGSEGV signal kill on both runs → pass-by-policy (#2754)", async () => {
+    const dir = makeAlwaysSignalFakeBun("SIGSEGV");
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_sig2" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("non-daemon partition (no daemon-only flag) retries a SIGSEGV panic — regression for #2754 qa:fail", async () => {
+    // Before this fix the non-daemon CI partition was wired retryOn132:false and
+    // the retry gate short-circuited on that flag BEFORE the panic classifier ran,
+    // so a SIGSEGV in the non-daemon suite (e.g. acp-cost-tracking-evidence.spec.ts)
+    // hard-failed CI with no retry — the exact crash this PR set out to absorb.
+    // Panic-retry is now unconditional: a signal kill on both runs is pass-by-policy
+    // regardless of partition.
+    const dir = makeAlwaysSignalFakeBun("SIGSEGV");
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_sig3" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("SIGTRAP and SIGABRT signal kills are retried as panics (#2754 owner comment)", async () => {
+    for (const signal of ["SIGTRAP", "SIGABRT"]) {
+      const dir = makeSignalThenExitFakeBun(signal, { code: 0, stdout: passingSummary });
+      const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: `test_${signal}` });
+      const result = await runWith(dir, () =>
+        (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+          logger: createCaptureLogger(),
+        }),
+      );
+      expect(result).toEqual({ success: true });
+    }
   });
 
   it("forwards StepOptions.env to the spawned subprocess (#2389 review)", async () => {
@@ -391,6 +489,20 @@ describe("coverageWithCrashTolerance", () => {
       }),
     );
     expect(result).toMatchObject({ success: false });
+  });
+
+  it("SIGSEGV signal kill (code=null) first run retries; clean exit 0 on retry → pass (#2754)", async () => {
+    // Coverage shares the #2754 gap: a signal kill yields code=-1, which the old
+    // `code !== 132 && code !== 139` guard treated as a hard fail. The signal must
+    // qualify as a panic so the retry fires.
+    const dir = makeSignalThenExitFakeBun("SIGSEGV", { code: 0, stdout: "PASS: All coverage thresholds met\n" });
+    const step = coverageWithCrashTolerance({ logName: "coverage_sig" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
   });
 
   it("exit other than 132/139 with no passthrough is a hard fail (no retry)", async () => {
@@ -881,10 +993,19 @@ describe("changedTestsStep", () => {
   });
 });
 
+// Temp dir with n dummy `*-fn.spec.ts` files — models `.claude/phases/` for
+// the discovered-spec floor (#2719). The files are never executed (the fake
+// bun ignores its cwd); only their on-disk count matters.
+function makePhasesDir(n: number): string {
+  const dir = mkdtempSync(join(tmpdir(), "fake-phases-"));
+  for (let i = 0; i < n; i++) writeFileSync(join(dir, `x${i}-fn.spec.ts`), "");
+  return dir;
+}
+
 describe("phasesTestWithCrashTolerance", () => {
   it("exit 0 is success", async () => {
     const dir = makeFakeBun({ code: 0, stdout: passingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -893,9 +1014,9 @@ describe("phasesTestWithCrashTolerance", () => {
     expect(result).toEqual({ success: true });
   });
 
-  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy", async () => {
+  it("non-zero exit with `0 fail` summary is a #1004 pass-by-policy (floor satisfied via junit tests attr)", async () => {
     const dir = makeFakeBun({ code: 1, stdout: passingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -906,7 +1027,7 @@ describe("phasesTestWithCrashTolerance", () => {
 
   it("real test failure (non-zero exit, summary shows fail count) reports failure", async () => {
     const dir = makeFakeBun({ code: 1, stdout: failingSummary });
-    const step = phasesTestWithCrashTolerance({ phasesDir: dir, logName: "test_phases_x" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -917,8 +1038,12 @@ describe("phasesTestWithCrashTolerance", () => {
 
   it("passes phasesDir as the cwd to bun — args logged reflect the directory context", async () => {
     const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
-    writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\necho "ARGV=$*"\nexit 0\n', { mode: 0o755 });
-    const phasesDir = mkdtempSync(join(tmpdir(), "fake-phases-"));
+    writeFileSync(
+      join(dir, "bun"),
+      '#!/usr/bin/env bash\necho "ARGV=$*"\necho "Ran 1 tests across 1 files."\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const phasesDir = makePhasesDir(1);
     const step = phasesTestWithCrashTolerance({ phasesDir, logName: "test_phases_cwd" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
@@ -928,5 +1053,69 @@ describe("phasesTestWithCrashTolerance", () => {
     expect(result).toEqual({ success: true });
     const log = readFileSync("/tmp/test_phases_cwd.txt", "utf8");
     expect(log).toContain("--no-orphans");
+  });
+
+  // --- discovered-spec floor (#2719): bun exits 0 on 0 discovered files, so
+  // exit code alone must never be sufficient for a pass.
+
+  it("fails when phasesDir contains 0 spec files, even on exit 0", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: passingSummary });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(0), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("0 phase spec files") });
+  });
+
+  it('fails when the run reports 0 discovered tests (junit tests="0") despite exit 0', async () => {
+    // The literal fail-open scenario from #2719: bun exits 0 having run nothing.
+    const dir = makeFakeBun({ code: 0, stdout: " 0 pass\n 0 fail\n", junitTests: 0 });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(2), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("pathIgnorePatterns") });
+  });
+
+  it("fails when fewer files ran than spec files exist on disk (partial discovery)", async () => {
+    const dir = makeFakeBun({ code: 0, stdout: " 5 pass\n 0 fail\nRan 5 tests across 1 files.\n" });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(3), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("discovered 1 files") });
+  });
+
+  it("fails closed when neither junit tests attribute nor summary line is available", async () => {
+    // Fake bun that emits no output and writes no junit file: exit 0 carries
+    // no evidence anything ran — must not pass.
+    const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+    writeFileSync(join(dir, "bun"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(1), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("failing closed") });
+  });
+
+  it("prefers the stdout file count over the junit tests attribute", async () => {
+    // junit says 12 tests, but the summary line says only 1 file ran — with 3
+    // spec files on disk the file count (exact signal) must win and fail.
+    const dir = makeFakeBun({ code: 0, stdout: `${passingSummary}Ran 12 tests across 1 files.\n` });
+    const step = phasesTestWithCrashTolerance({ phasesDir: makePhasesDir(3), logName: "test_phases_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("discovered 1 files") });
   });
 });

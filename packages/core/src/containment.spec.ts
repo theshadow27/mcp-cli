@@ -264,31 +264,63 @@ describe("ContainmentGuard — file writes outside worktree", () => {
     expect(r.event).toBe("session:containment_escalated");
   });
 
-  test("allows Write to /tmp (no strike)", () => {
+  // /tmp writes stay allowed (the write proceeds) but are surfaced as a
+  // warning — never a strike — so the shared-temp cross-session channel is
+  // observable on the monitor stream (#2723).
+  test("warns (no strike) on Write to /tmp", () => {
     const g = guard();
     const r = g.evaluate("Write", { file_path: "/tmp/scratch.txt" });
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
+    expect(r.reason).toContain("shared /tmp");
     expect(r.strikes).toBe(0);
   });
 
-  test("allows Write to /private/tmp (macOS)", () => {
+  test("warns (no strike) on Write to /private/tmp (macOS)", () => {
     const g = guard();
     const r = g.evaluate("Write", { file_path: "/private/tmp/test.json" });
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
     expect(r.strikes).toBe(0);
   });
 
-  test("allows Write to //private/tmp (double-slash normalized by resolve)", () => {
+  test("warns (no strike) on Write to //private/tmp (double-slash normalized by resolve)", () => {
     const g = guard();
     const r = g.evaluate("Write", { file_path: "//private/tmp/test.json" });
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
     expect(r.strikes).toBe(0);
   });
 
-  test("allows shell redirect to //tmp (double-slash normalized)", () => {
+  test("warns on shell redirect to //tmp (double-slash normalized)", () => {
     const g = guard();
     const r = g.evaluate("Bash", { command: 'echo "x" > //tmp/scratch.txt' });
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
+  });
+
+  test("warns on cp to /tmp via Bash (no strike)", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: `cp ${WORKTREE}/src/a.ts /tmp/staged.ts` });
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
+    expect(r.strikes).toBe(0);
+  });
+
+  test("repeated /tmp writes never escalate", () => {
+    const g = guard();
+    for (let i = 0; i < 10; i++) {
+      g.evaluate("Write", { file_path: `/tmp/scratch-${i}.txt` });
+    }
+    expect(g.strikes).toBe(0);
+    expect(g.escalated).toBe(false);
+  });
+
+  test("a hard-deny target wins over a /tmp warn in the same Bash command", () => {
+    const g = guard();
+    const r = g.evaluate("Bash", { command: "cp /tmp/staged.ts /Users/test/repo/evil.ts" });
+    expect(r.action).toBe("deny");
+    expect(r.strikes).toBe(1);
   });
 });
 
@@ -411,10 +443,11 @@ describe("ContainmentGuard — bash file write detection", () => {
     expect(r.action).toBe("allow");
   });
 
-  test("allows shell redirect to /tmp", () => {
+  test("warns on shell redirect to /tmp (#2723)", () => {
     const g = guard();
     const r = g.evaluate("Bash", { command: 'echo "scratch" > /tmp/scratch.txt' });
-    expect(r.action).toBe("allow");
+    expect(r.action).toBe("warn");
+    expect(r.event).toBe("session:containment_warning");
   });
 
   test("denies cp to outside path", () => {

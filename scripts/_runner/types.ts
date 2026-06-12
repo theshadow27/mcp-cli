@@ -52,6 +52,13 @@ export interface Step {
   env?: Record<string, string>;
   /** If false, a failure logs a warning but does not stop the run. */
   critical?: boolean;
+  /**
+   * If true, the step runs under a host-global gate lease (counting semaphore,
+   * #2690) so at most K such steps run at once across all worktrees. Used to
+   * bound the combined `bun test --parallel` fan-out that otherwise SIGTERM-
+   * storms the host under N concurrent gate runs.
+   */
+  lease?: boolean;
   /** Free-form hints printed after a failure. */
   onFailure?: string | string[];
 }

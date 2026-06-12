@@ -113,22 +113,29 @@ const RULES: Step = {
   ],
 };
 
+// lease: true on the heavy test phases caps the host-wide concurrent test-
+// worker fan-out under N simultaneous gate runs across worktrees (#2690). CI
+// steps stay unleased — each CI runner is its own host, so the per-container
+// semaphore would never block and we don't want to perturb CI timing.
 const TEST_PARALLEL: Step = {
   name: "test-parallel",
   description: "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362)",
   command: "bun test --parallel --no-orphans --path-ignore-patterns=packages/control/**",
+  lease: true,
 };
 
 const TEST_CONTROL: Step = {
   name: "test-control",
   description: "bun test packages/control (sequential — yoga-layout TDZ workaround #2362)",
   command: "bun test --no-orphans packages/control",
+  lease: true,
 };
 
 const COVERAGE: Step = {
   name: "coverage",
   description: "ratchet — never lower thresholds (see scripts/check-coverage.ts)",
   command: "bun scripts/check-coverage.ts",
+  lease: true,
 };
 
 // ===== CI step list =====
@@ -160,11 +167,10 @@ export const DAEMON_TEST_PATHS = ["packages/daemon", "test/"];
 
 const TEST_NON_DAEMON_CI: Step = {
   name: "test-non-daemon",
-  description: "non-daemon tests (sequential; #1004 crash-after-pass tolerance)",
+  description: "non-daemon tests (sequential; #1004 crash-after-pass + panic-retry tolerance)",
   command: bunTestWithCrashTolerance({
     paths: NON_DAEMON_TEST_PATHS,
     logName: "test_non_daemon",
-    retryOn132: false,
   }),
   source: "scripts/_runner/ci-steps.ts",
   onFailure: [
@@ -180,7 +186,6 @@ const TEST_DAEMON_CI: Step = {
   command: bunTestWithCrashTolerance({
     paths: DAEMON_TEST_PATHS,
     logName: "test_daemon",
-    retryOn132: true,
   }),
   source: "scripts/_runner/ci-steps.ts",
   onFailure: [

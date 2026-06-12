@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-import { readFileSync, unlinkSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
+import { daemonWorkers } from "./daemon-workers";
 
 // Ensure deps are installed (fast no-op when already present)
 await $`bun install`.quiet();
@@ -130,14 +132,26 @@ async function codesignIfDarwin(...paths: string[]): Promise<void> {
   }
 }
 
-// mcpd worker entrypoints — must be listed explicitly for bun build --compile
-const daemonWorkers = [
-  "packages/daemon/src/alias-executor.ts",
-  "packages/daemon/src/claude-session-worker.ts",
-  "packages/daemon/src/codex-session-worker.ts",
-  "packages/daemon/src/mock-session-worker.ts",
-  "packages/daemon/src/site-worker.ts",
-];
+// mcpd worker entrypoints (see scripts/daemon-workers.ts) — must be listed
+// explicitly for bun build --compile.
+//
+// `--root` pins the bundler outbase to the workers' directory. Without it,
+// Bun computes the output root from the entrypoint set and the result is
+// unstable: with ≤8 entrypoints (Bun 1.3.14) the extra entrypoints embed flat
+// at /$bunfs/root/<name>.js — next to the main module, where
+// worker-path.ts's compiled-mode `./<name>.ts` resolution finds them — but
+// with ≥9 they embed at /$bunfs/root/packages/daemon/src/<name>.js and every
+// `new Worker()` fails at runtime with `ModuleNotFound resolving "./<name>"`.
+// Growing the list from 6 to 9 entries silently broke all session workers
+// (the #2721→#2762 regression). Pinning --root makes the layout
+// deterministic; smokeDaemonWorkers() below verifies it on every build.
+const workerRoot = "packages/daemon/src";
+for (const w of [...daemonWorkers, "packages/daemon/src/main.ts"]) {
+  if (dirname(w) !== workerRoot) {
+    console.error(`daemon worker ${w} is outside ${workerRoot} — compiled-mode workerPath() requires a flat layout`);
+    process.exit(1);
+  }
+}
 
 // Packages excluded from bundling — resolved at runtime from node_modules.
 // playwright ships with a large optional-dep tree (electron, chromium-bidi, etc.)
@@ -168,6 +182,77 @@ const mcpctlConfig: BinaryBuildConfig = {
 };
 
 const bundleCleanup: string[] = [];
+
+/**
+ * Post-compile smoke: boot the freshly compiled mcpd with an isolated state
+ * dir and assert every worker-backed virtual server actually starts.
+ *
+ * This is the guard that the daemon-workers list alone cannot provide — it
+ * verifies the *embedded layout* of the binary, not just the entrypoint list.
+ * A binary where worker resolution is broken builds green but fails here with
+ * the captured daemon log.
+ *
+ * Only runs when the binary can execute on the build host (dev builds, and
+ * the native target of release builds).
+ */
+async function smokeDaemonWorkers(mcpdPath: string): Promise<void> {
+  const stateDir = mkdtempSync(join(tmpdir(), "mcpd-smoke-"));
+  // Ephemeral WS port so the smoke never collides with a real running daemon.
+  writeFileSync(join(stateDir, "config.json"), JSON.stringify({ wsPort: 0 }));
+
+  // Unconditional worker-backed servers, plus the ones gated on host binaries
+  // (mirrors the gating in packages/daemon/src/index.ts).
+  const expected = ["Claude session server started", "Mock session server started", "Site server started"];
+  if (Bun.which("codex")) expected.push("Codex session server started");
+  if (Bun.which("gh") || Bun.which("gemini") || Bun.which("grok")) expected.push("ACP session server started");
+  if (Bun.which("opencode")) expected.push("OpenCode session server started");
+
+  const proc = Bun.spawn([mcpdPath], {
+    env: { ...process.env, MCP_CLI_DIR: stateDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  let output = "";
+  const decoder = new TextDecoder();
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    for await (const chunk of stream) output += decoder.decode(chunk);
+  };
+  const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+
+  const failurePattern = /ModuleNotFound|Failed to start/;
+  let failure: string | null = null;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (failurePattern.test(output)) {
+      failure = "daemon reported a startup failure";
+      break;
+    }
+    if (expected.every((line) => output.includes(line))) break;
+    if (proc.exitCode !== null) {
+      failure = `daemon exited early (code ${proc.exitCode})`;
+      break;
+    }
+    await Bun.sleep(100);
+  }
+
+  proc.kill();
+  await proc.exited;
+  await pumps;
+  rmSync(stateDir, { recursive: true, force: true });
+
+  const missing = expected.filter((line) => !output.includes(line));
+  if (!failure && missing.length > 0) {
+    failure = `timed out waiting for: ${missing.join(", ")}`;
+  }
+  if (failure) {
+    console.error(`mcpd worker smoke FAILED (${mcpdPath}): ${failure}`);
+    console.error("--- daemon output ---");
+    console.error(output);
+    process.exit(1);
+  }
+  console.log(`mcpd worker smoke passed: ${expected.length} worker-backed servers started`);
+}
 
 async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: string): Promise<void> {
   // Always bundle for generic "bun" target — the JS bundle is platform-agnostic.
@@ -224,12 +309,19 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --root=${workerRoot} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
     if (target.includes("darwin")) {
       await codesignIfDarwin(`dist/mcpd-${suffix}`, `dist/mcx-${suffix}`, `dist/mcpctl-${suffix}`);
+    }
+    // Verify the embedded worker layout when the binary runs on this host.
+    const nativeTarget = `bun-${process.platform}-${process.arch}`;
+    if (target === nativeTarget) {
+      await smokeDaemonWorkers(resolve(`dist/mcpd-${suffix}`));
+    } else {
+      console.log(`Skipping mcpd worker smoke for ${target} (host is ${nativeTarget})`);
     }
   }
 
@@ -243,7 +335,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --root=${workerRoot} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
@@ -251,6 +343,9 @@ if (releaseMode) {
   if (process.platform === "darwin") {
     await codesignIfDarwin("dist/mcpd", "dist/mcx", "dist/mcpctl");
   }
+  // Verify the embedded worker layout — boots the compiled daemon with an
+  // isolated state dir and asserts every worker-backed server starts.
+  await smokeDaemonWorkers(resolve("dist/mcpd"));
   // Clean up intermediate bundles after all compiles finish
   for (const p of bundleCleanup) {
     try {

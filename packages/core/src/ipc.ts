@@ -704,6 +704,8 @@ export interface ShutdownResult {
   ok: boolean;
   /** Present when ok=false — number of active sessions blocking shutdown */
   activeSessions?: number;
+  /** Present when ok=false — ids of the active sessions blocking shutdown */
+  sessionIds?: string[];
   /** Present when ok=false — human-readable refusal message */
   message?: string;
 }

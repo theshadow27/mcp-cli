@@ -20,6 +20,9 @@ export interface ManagedSpawnOptions {
   stderr?: "pipe" | "inherit" | "ignore";
   /** Real-time tap on decoded stderr chunks (only when stderr is "pipe"). */
   onStderr?: (chunk: string) => void;
+  /** Called once after the stderr stream fully drains (EOF). Lets line-buffered
+   * consumers flush a trailing partial line that had no final newline. */
+  onStderrEnd?: () => void;
   /** Maximum bytes retained in the stderr ring buffer (default 64 KB). */
   stderrMaxBytes?: number;
   /** SIGTERM → SIGKILL grace window in ms (default 5 000). */
@@ -85,6 +88,7 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
     const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const onChunk = opts?.onStderr;
+    const onEnd = opts?.onStderrEnd;
     const append = (chunk: Uint8Array) => {
       if (chunk.byteLength === 0) return;
       stderrChunks.push(chunk);
@@ -117,6 +121,8 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
         if (tail) onChunk?.(tail);
       } catch {
         // stream closed — expected on kill
+      } finally {
+        onEnd?.();
       }
     })();
   }

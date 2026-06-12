@@ -47,6 +47,7 @@ import {
   SESSION_PERMISSION_BLOCKED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RESULT,
+  SESSION_SPAWN_OVERRIDE,
   SESSION_STUCK,
   SESSION_TOOL_USE,
   WORKER_RATELIMITED,
@@ -64,7 +65,14 @@ import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./pe
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
 import { IGNORED_TYPES, SessionState } from "./session-state";
-import { DEFAULT_STUCK_CONFIG, StuckDetector, type StuckDetectorConfig, type StuckEvent } from "./stuck-detector";
+import {
+  DEFAULT_STUCK_CONFIG,
+  REAL_CLOCK,
+  StuckDetector,
+  type StuckDetectorClock,
+  type StuckDetectorConfig,
+  type StuckEvent,
+} from "./stuck-detector";
 
 // ── Constants ──
 
@@ -74,6 +82,11 @@ const KILL_TIMEOUT_MS = 5_000;
 const KILL_SIGKILL_GRACE_MS = 2_000;
 /** Time (ms) to wait for a WebSocket connection after spawning a Claude CLI process. */
 const CONNECT_TIMEOUT_MS = 30_000;
+
+/** Max chars retained in the unterminated child-stderr line buffer before it is
+ * force-flushed in slices, bounding memory for a child that never emits a
+ * newline (#2769). 64 KiB matches the spawnManaged stderr ring default. */
+const MAX_STDERR_LINE_CHARS = 64 * 1024;
 
 /** Message types handled by the state machine's dispatch. */
 const HANDLED_MSG_TYPES: ReadonlyArray<string> = [
@@ -252,6 +265,10 @@ export type SpawnFn = (
     stderr?: "ignore" | "pipe";
     stdin?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
+    /** Real-time tap on decoded child stderr chunks (only when stderr === "pipe"). */
+    onStderr?: (chunk: string) => void;
+    /** Called once after the child stderr stream drains — flush trailing partial line. */
+    onStderrEnd?: () => void;
   },
 ) => {
   pid: number;
@@ -431,6 +448,7 @@ export class ClaudeWsServer {
   private readonly reclaimIntervalMs: number;
   private readonly connectTimeoutMs: number;
   private readonly stuckConfig: StuckDetectorConfig;
+  private readonly stuckClock: StuckDetectorClock;
   private eventSeq = 0;
   private readonly eventBuffer: BufferedEvent[] = [];
   private nextRequestId = 1;
@@ -441,6 +459,13 @@ export class ClaudeWsServer {
 
   /** Called to forward monitor events to the main thread's EventBus (#1567). */
   onMonitorEvent: ((input: MonitorEventInput) => void) | null = null;
+
+  /**
+   * Called for each complete stderr line from a spawned child process, keyed by
+   * session ID. Forwarded to the main thread for persistence so spawn-failure
+   * postmortems are recoverable via `mcx logs <session-id>` (#2738).
+   */
+  onStderrLine: ((sessionId: string, line: string, timestamp: number) => void) | null = null;
 
   /**
    * Optional TLS material. When set, `Bun.serve` runs in HTTPS mode and binds
@@ -476,6 +501,8 @@ export class ClaudeWsServer {
     reclaimIntervalMs?: number;
     connectTimeoutMs?: number;
     stuckConfig?: StuckDetectorConfig;
+    /** Override the StuckDetector clock (tests inject a FakeClock). */
+    stuckClock?: StuckDetectorClock;
     /** Self-signed cert + key. When provided, server runs as wss://. */
     tlsConfig?: { cert: string; key: string } | null;
     /** Override the bind hostname. Defaults to `::1` when TLS is set, otherwise unset (Bun default). */
@@ -499,6 +526,7 @@ export class ClaudeWsServer {
     this.reclaimIntervalMs = deps?.reclaimIntervalMs ?? PORT_RECLAIM_INTERVAL_MS;
     this.connectTimeoutMs = deps?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.stuckConfig = deps?.stuckConfig ?? DEFAULT_STUCK_CONFIG;
+    this.stuckClock = deps?.stuckClock ?? REAL_CLOCK;
     this.tlsConfig = deps?.tlsConfig ?? null;
     this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
     this.binaryPath = deps?.binaryPath ?? "claude";
@@ -829,7 +857,33 @@ export class ClaudeWsServer {
       throw new Error(this.spawnDisabledReason);
     }
 
+    if (session.config.binaryPath) {
+      if (this.spawnDisabledReason !== null) {
+        this.logger.warn(
+          `[_claude] session ${sessionId} spawned with custom binary "${session.config.binaryPath}"; bypassed spawnDisabledReason: "${this.spawnDisabledReason}"`,
+        );
+      } else {
+        this.logger.warn(`[_claude] session ${sessionId} spawned with custom binary "${session.config.binaryPath}"`);
+      }
+      this.onMonitorEvent?.({
+        src: "daemon.claude-server",
+        event: SESSION_SPAWN_OVERRIDE,
+        category: "session",
+        sessionId,
+        binaryPath: session.config.binaryPath,
+        ...(this.spawnDisabledReason !== null ? { bypassedReason: this.spawnDisabledReason } : {}),
+      });
+    }
+
     const useStdio = session.transport === "stdio";
+
+    // Fail-closed: the stdio transport has no can_use_tool round-trip, so
+    // ContainmentGuard / input-rewriting / delegate-mode never fire (#2688).
+    // Refuse a contained/worktree spawn over stdio rather than silently
+    // running it outside the containment trust boundary.
+    if (useStdio && session.worktree) {
+      throw new Error("stdio transport does not support ContainmentGuard — use ws");
+    }
 
     const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
 
@@ -843,12 +897,42 @@ export class ClaudeWsServer {
     if (!useStdio && this.tlsConfig) {
       envOverrides.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     }
+    // Line-buffer child stderr and forward each complete line keyed by session
+    // ID (#2738). Short-lived spawn failures may emit only a partial first line,
+    // so the tail is flushed on exit below — never dropped.
+    const stderrState = { partial: "" };
+    const emitStderr = (line: string) => {
+      if (line === "") return;
+      this.onStderrLine?.(sessionId, line, Date.now());
+    };
+
     const proc = this.spawn(cmd, {
       cwd: session.config.cwd,
       stdout: useStdio ? "pipe" : "ignore",
       stderr: "pipe",
       stdin: useStdio ? "pipe" : "ignore",
       env: Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+      onStderr: (chunk) => {
+        const text = stderrState.partial + chunk;
+        const lines = text.split("\n");
+        stderrState.partial = lines.pop() ?? "";
+        for (const line of lines) emitStderr(line);
+        // Cap the unterminated partial: a child spewing bytes with no newline
+        // (a JSON/base64 blob, a \r-only progress bar) would otherwise grow this
+        // buffer — and the single line eventually forwarded across the worker
+        // boundary — without bound (#2769). Force-emit in capped slices instead.
+        while (stderrState.partial.length > MAX_STDERR_LINE_CHARS) {
+          emitStderr(stderrState.partial.slice(0, MAX_STDERR_LINE_CHARS));
+          stderrState.partial = stderrState.partial.slice(MAX_STDERR_LINE_CHARS);
+        }
+      },
+      onStderrEnd: () => {
+        // Flush the trailing partial line (stderr without a final newline) so a
+        // short-lived spawn's only output is never dropped (#2738).
+        const last = stderrState.partial;
+        stderrState.partial = "";
+        emitStderr(last);
+      },
     });
 
     session.pid = proc.pid;
@@ -969,7 +1053,11 @@ export class ClaudeWsServer {
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
     session.pendingInterruptReason = null;
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Transport write failed — sendToSession already transitioned the session
+      // to disconnected. Surface the error so the prompt isn't silently lost.
+      throw new Error(`Failed to deliver prompt to session ${sessionId}: transport write failed`);
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
   }
@@ -1005,6 +1093,15 @@ export class ClaudeWsServer {
       "--input-format",
       "stream-json",
     );
+
+    if (useStdio) {
+      // claude rejects `--print --output-format=stream-json` without --verbose
+      // and exits immediately (#2688). --include-partial-messages restores the
+      // stream_event liveness signal the StuckDetector consumes (absent by
+      // default on the pipe transport). The WS path uses --sdk-url and needs
+      // neither, so this is gated on useStdio.
+      cmd.push("--verbose", "--include-partial-messages");
+    }
 
     if (session.config.model) {
       cmd.push("--model", session.config.model);
@@ -1155,7 +1252,9 @@ export class ClaudeWsServer {
   respondToPermission(sessionId: string, requestId: string, allow: boolean, message?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.respondToPermission(requestId, allow, message);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      throw new Error(`Failed to deliver permission response to session ${sessionId}: transport write failed`);
+    }
     this.recordSessionProgress(sessionId, session);
   }
 
@@ -1163,7 +1262,9 @@ export class ClaudeWsServer {
   interrupt(sessionId: string, reason?: string): void {
     const session = this.getSession(sessionId);
     const outbound = session.state.interrupt();
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      throw new Error(`Failed to deliver interrupt to session ${sessionId}: transport write failed`);
+    }
     session.pendingInterruptReason = reason ?? null;
   }
 
@@ -1294,7 +1395,13 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const requestId = `mcpd-model-${this.nextRequestId++}`;
     const outbound = setModelRequest(requestId, model);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Transport write failed — sendToSession already transitioned the session
+      // to disconnected. Surface the error before mutating tracked-model state so
+      // we don't emit a phantom session:model_changed for a change the child never
+      // received nor report success on a dead session (#2562).
+      throw new Error(`Failed to deliver set_model to session ${sessionId}: transport write failed`);
+    }
 
     // Update tracked model in state
     const events = session.state.setModel(model);
@@ -1690,7 +1797,7 @@ export class ClaudeWsServer {
    * Full WebSocket disconnection cleanup. Must be called from every error path
    * that detects a broken WS — not just handleClose.
    */
-  private disconnectSessionWs(sessionId: string, session: WsSession, reason: string): void {
+  private disconnectSession(sessionId: string, session: WsSession, reason: string): void {
     const prevState = session.state.state;
     session.ws = null;
 
@@ -1721,9 +1828,10 @@ export class ClaudeWsServer {
       }
     }
 
-    // Reject pending result waiters — they can't get results without WS
+    // Reject pending result waiters — they can't get results without a transport
+    const waiterReason = session.transport === "stdio" ? "stdio transport disconnected" : "WebSocket disconnected";
     for (const waiter of session.resultWaiters) {
-      waiter.reject(new Error("WebSocket disconnected"));
+      waiter.reject(new Error(waiterReason));
     }
     session.resultWaiters.length = 0;
   }
@@ -1764,7 +1872,7 @@ export class ClaudeWsServer {
         ws.send(outbound);
       } catch (err) {
         this.logger.error(`[_claude] WebSocket send failed on open for session ${sessionId}: ${err}`);
-        this.disconnectSessionWs(sessionId, session, "WebSocket send failed on open");
+        this.disconnectSession(sessionId, session, "WebSocket send failed on open");
         // Kill the spawned process — it can't communicate without WS
         if (session.proc) {
           try {
@@ -1785,7 +1893,7 @@ export class ClaudeWsServer {
           session.ws.send(keepAlive());
         } catch (err) {
           this.logger.error(`[_claude] WebSocket keep-alive send failed for session ${sessionId}: ${err}`);
-          this.disconnectSessionWs(sessionId, session, "WebSocket keep-alive send failed");
+          this.disconnectSession(sessionId, session, "WebSocket keep-alive send failed");
         }
       }
     }, KEEP_ALIVE_MS);
@@ -1870,7 +1978,7 @@ export class ClaudeWsServer {
       `[_claude] WebSocket disconnected for session ${sessionId} (spawn ${session.spawnAlive ? "alive" : "dead"})`,
     );
 
-    this.disconnectSessionWs(sessionId, session, "WebSocket closed");
+    this.disconnectSession(sessionId, session, "WebSocket closed");
   }
 
   // ── Event handling ──
@@ -2198,10 +2306,16 @@ export class ClaudeWsServer {
       }
       if (result.action === "deny") {
         session.state.respondToPermission(requestId, false, result.reason);
-        this.sendToSession(
-          session,
-          permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
-        );
+        if (
+          !this.sendToSession(
+            session,
+            permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
+          )
+        ) {
+          // Write failed — sendToSession disconnected the session. Surface it via
+          // the caller's .catch logger rather than swallowing the false (#2562).
+          throw new Error(`Failed to deliver permission denial to session ${sessionId}: transport write failed`);
+        }
         return;
       }
     }
@@ -2224,7 +2338,11 @@ export class ClaudeWsServer {
       : permissionDeny(requestId, decision.message ?? "Denied");
 
     session.state.respondToPermission(requestId, decision.allow, decision.message);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Write failed — sendToSession disconnected the session. Surface it via the
+      // caller's .catch logger rather than swallowing the false (#2562).
+      throw new Error(`Failed to deliver permission response to session ${sessionId}: transport write failed`);
+    }
   }
 
   // ── Stuck detection (#1585) ──
@@ -2242,6 +2360,7 @@ export class ClaudeWsServer {
           hasActiveToolCall: session.state.hasActiveToolCall,
         }),
         (event) => this.handleStuckEvent(sessionId, session, event),
+        this.stuckClock,
       );
     }
     return session.stuckDetector;
@@ -2456,30 +2575,53 @@ export class ClaudeWsServer {
     return generateSessionName(usedNames);
   }
 
-  private sendToSession(session: WsSession, message: string): void {
+  /**
+   * Write an outbound message to the session's transport.
+   *
+   * Returns true if the write was issued, false if it could not be delivered.
+   * On failure the session is transitioned to `disconnected` (#2562) so that a
+   * dead transport cannot leave the state machine believing a prompt is being
+   * processed when the child never received it. Callers that mutated session
+   * state before calling (queuePrompt / respondToPermission / interrupt) MUST
+   * propagate a false return rather than continue silently.
+   */
+  private sendToSession(session: WsSession, message: string): boolean {
     if (session.transport === "stdio") {
-      if (session.stdioWriter) {
-        try {
-          session.stdioWriter.write(`${message}\n`);
-          session.stdioWriter.flush();
-        } catch (err) {
-          this.logger.error(`[_claude] stdio write failed: ${err}`);
-        }
+      if (!session.stdioWriter) {
+        this.failSend(session, "stdio writer unavailable");
+        return false;
       }
-      return;
+      try {
+        session.stdioWriter.write(`${message}\n`);
+        session.stdioWriter.flush();
+        return true;
+      } catch (err) {
+        this.logger.error(`[_claude] stdio write failed: ${err}`);
+        this.failSend(session, `stdio write failed: ${err}`);
+        return false;
+      }
     }
     // WS transport
     if (session.ws?.readyState === WS_OPEN) {
       try {
         session.ws.send(message);
+        return true;
       } catch (err) {
         this.logger.error(`[_claude] WebSocket send failed: ${err}`);
-        for (const [sid, s] of this.sessions) {
-          if (s === session) {
-            this.disconnectSessionWs(sid, session, "WebSocket send failed");
-            break;
-          }
-        }
+        this.failSend(session, "WebSocket send failed");
+        return false;
+      }
+    }
+    this.failSend(session, "WebSocket not open");
+    return false;
+  }
+
+  /** Transition a session to disconnected after a transport write failed. */
+  private failSend(session: WsSession, reason: string): void {
+    for (const [sid, s] of this.sessions) {
+      if (s === session) {
+        this.disconnectSession(sid, session, reason);
+        return;
       }
     }
   }
@@ -2782,6 +2924,8 @@ function defaultSpawn(
     stderr?: "ignore" | "pipe";
     stdin?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
+    onStderr?: (chunk: string) => void;
+    onStderrEnd?: () => void;
   },
 ): ReturnType<SpawnFn> {
   // Strip CLAUDECODE env var so the spawned claude process doesn't think
@@ -2802,6 +2946,8 @@ function defaultSpawn(
     stdout: opts.stdout ?? "pipe",
     stderr: opts.stderr ?? "pipe",
     stdin: opts.stdin ?? "pipe",
+    onStderr: opts.onStderr,
+    onStderrEnd: opts.onStderrEnd,
   });
   if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
   return {
