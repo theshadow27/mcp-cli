@@ -6,7 +6,7 @@
  * No dedicated IPC methods — the same tools work from any MCP client.
  */
 
-import { constants, accessSync } from "node:fs";
+import { constants, accessSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import "../help-claude";
@@ -501,6 +501,11 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     try {
       accessSync(binPath, constants.X_OK);
     } catch {
+      d.printError(`--claude-binary: ${binPath} is not an executable file`);
+      d.exit(1);
+      return;
+    }
+    if (!statSync(binPath).isFile()) {
       d.printError(`--claude-binary: ${binPath} is not an executable file`);
       d.exit(1);
       return;

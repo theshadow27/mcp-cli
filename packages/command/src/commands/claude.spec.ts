@@ -1,7 +1,7 @@
 import { type Mock, afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, isCommitted, readTransitionHistory } from "@mcp-cli/core";
 import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
 import { _resetJqStateForTesting } from "../jq/index";
@@ -634,6 +634,33 @@ describe("cmdClaude spawn --claude-binary validation", () => {
     const call = (deps.callTool as Mock<(...a: unknown[]) => unknown>).mock.calls.find((c) => c[0] === "claude_prompt");
     expect(call).toBeDefined();
     expect((call?.[1] as { claudeBinary?: string }).claudeBinary).toBe(process.execPath);
+  });
+
+  test("resolves a relative binary path to an absolute path and plumbs it into the RPC", async () => {
+    const deps = makeDeps();
+    const origLog = console.log;
+    console.log = mock(() => {});
+    const relPath = relative(process.cwd(), process.execPath);
+    try {
+      await cmdClaude(["spawn", "--task", "x", "--claude-binary", relPath], deps);
+    } finally {
+      console.log = origLog;
+    }
+    const call = (deps.callTool as Mock<(...a: unknown[]) => unknown>).mock.calls.find((c) => c[0] === "claude_prompt");
+    expect(call).toBeDefined();
+    expect((call?.[1] as { claudeBinary?: string }).claudeBinary).toBe(process.execPath);
+  });
+
+  test("rejects a directory path with a named error before dispatch (#2714)", async () => {
+    const deps = makeDeps();
+    const tmpDir = mkdtempSync(join(tmpdir(), "mcx-test-"));
+    try {
+      await expect(cmdClaude(["spawn", "--task", "x", "--claude-binary", tmpDir], deps)).rejects.toThrow(ExitError);
+      expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("is not an executable file"));
+      expect(deps.callTool).not.toHaveBeenCalled();
+    } finally {
+      rmSync(tmpDir, { recursive: true });
+    }
   });
 });
 
