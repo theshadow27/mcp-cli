@@ -682,6 +682,7 @@ describe("IpcServer HTTP transport", () => {
     expect(json.result).toEqual({
       ok: false,
       activeSessions: 2,
+      sessionIds: ["s1", "s2"],
       message: "2 active session(s). Use --force to shut down anyway.",
     });
   });

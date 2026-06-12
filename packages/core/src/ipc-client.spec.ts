@@ -22,7 +22,7 @@ describe("ProtocolMismatchError", () => {
     expect(err.cliVersion).toBe("def456");
     expect(err.message).toContain("abc123");
     expect(err.message).toContain("def456");
-    expect(err.message).toContain("mcx daemon restart");
+    expect(err.message).toContain("mcx daemon reload");
   });
 });
 

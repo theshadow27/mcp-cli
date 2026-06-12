@@ -69,7 +69,7 @@ describe("cmdVersion", () => {
       }),
     );
     expect(stdout[2]).toContain("MISMATCH");
-    expect(stdout[2]).toContain("mcx daemon restart");
+    expect(stdout[2]).toContain("mcx daemon reload");
     expect(exitCode).toBe(2);
   });
 
@@ -193,7 +193,7 @@ describe("cmdVersion", () => {
     expect(stdout[0]).toContain("mcx 0.1.0-20260308");
     expect(stdout[1]).toContain("protocol old-proto");
     expect(stdout[2]).toContain("MISMATCH");
-    expect(stdout[2]).toContain("mcx daemon restart");
+    expect(stdout[2]).toContain("mcx daemon reload");
     expect(exitCode).toBe(2);
   });
 

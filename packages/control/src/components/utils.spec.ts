@@ -468,6 +468,6 @@ describe("checkProtocolVersion", () => {
     expect(msg).toContain("Protocol mismatch");
     expect(msg).toContain("old-hash-abc123");
     expect(msg).toContain(PROTOCOL_VERSION);
-    expect(msg).toContain("mcx daemon restart");
+    expect(msg).toContain("mcx daemon reload");
   });
 });

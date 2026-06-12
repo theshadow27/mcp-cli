@@ -532,6 +532,7 @@ export class IpcServer {
           return {
             ok: false,
             activeSessions: activeSessions.length,
+            sessionIds: activeSessions.map((s) => s.sessionId),
             message: `${activeSessions.length} active session(s). Use --force to shut down anyway.`,
           };
         }
