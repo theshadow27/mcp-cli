@@ -107,6 +107,19 @@ function streamEventMessage(sessionId: string): string {
   });
 }
 
+function canUseToolMessage(requestId: string): string {
+  return serialize({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Bash",
+      input: { command: "echo hello" },
+      tool_use_id: "tool-1",
+    },
+  });
+}
+
 /**
  * Mock spawn that exposes stdin/stdout streams for stdio transport testing.
  * The mock stdout is a ReadableStream that the test can push NDJSON lines into.
@@ -799,6 +812,36 @@ describe("ClaudeWsServer — stdio transport", () => {
     const session = server.listSessions().find((s) => s.sessionId === sessionId);
     expect(session?.state).toBe("disconnected");
     // A failed interrupt must not stash a pending reason on a dead session.
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+  });
+
+  test("respondToPermission throws and disconnects when stdio write fails", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger, connectTimeoutMs: 5000 });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => events.push(event);
+
+    // `delegate` strategy leaves the can_use_tool request pending for an external
+    // responder instead of auto-answering it, so the public respondToPermission
+    // path is the one exercised below.
+    server.prepareSession(sessionId, { prompt: "first", transport: "stdio", permissionStrategy: "delegate" });
+    server.spawnClaude(sessionId);
+
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:init"), 1000);
+    mock.pushStdout(`${canUseToolMessage("req-1")}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:permission_request"), 1000);
+
+    // Pipe breaks before the permission response is written.
+    mock.failWrites(new Error("EPIPE: broken pipe"));
+
+    expect(() => server.respondToPermission(sessionId, "req-1", true)).toThrow(/transport write failed/);
+
+    const session = server.listSessions().find((s) => s.sessionId === sessionId);
+    expect(session?.state).toBe("disconnected");
     expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
   });
 });

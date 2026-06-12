@@ -1395,7 +1395,13 @@ export class ClaudeWsServer {
     const session = this.getSession(sessionId);
     const requestId = `mcpd-model-${this.nextRequestId++}`;
     const outbound = setModelRequest(requestId, model);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Transport write failed — sendToSession already transitioned the session
+      // to disconnected. Surface the error before mutating tracked-model state so
+      // we don't emit a phantom session:model_changed for a change the child never
+      // received nor report success on a dead session (#2562).
+      throw new Error(`Failed to deliver set_model to session ${sessionId}: transport write failed`);
+    }
 
     // Update tracked model in state
     const events = session.state.setModel(model);
@@ -2300,10 +2306,16 @@ export class ClaudeWsServer {
       }
       if (result.action === "deny") {
         session.state.respondToPermission(requestId, false, result.reason);
-        this.sendToSession(
-          session,
-          permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
-        );
+        if (
+          !this.sendToSession(
+            session,
+            permissionDeny(requestId, result.reason, result.event === "session:containment_escalated"),
+          )
+        ) {
+          // Write failed — sendToSession disconnected the session. Surface it via
+          // the caller's .catch logger rather than swallowing the false (#2562).
+          throw new Error(`Failed to deliver permission denial to session ${sessionId}: transport write failed`);
+        }
         return;
       }
     }
@@ -2326,7 +2338,11 @@ export class ClaudeWsServer {
       : permissionDeny(requestId, decision.message ?? "Denied");
 
     session.state.respondToPermission(requestId, decision.allow, decision.message);
-    this.sendToSession(session, outbound);
+    if (!this.sendToSession(session, outbound)) {
+      // Write failed — sendToSession disconnected the session. Surface it via the
+      // caller's .catch logger rather than swallowing the false (#2562).
+      throw new Error(`Failed to deliver permission response to session ${sessionId}: transport write failed`);
+    }
   }
 
   // ── Stuck detection (#1585) ──
