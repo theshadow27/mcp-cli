@@ -24,6 +24,8 @@
 
 import { spawn } from "node:child_process";
 
+import { withGateLease } from "@mcp-cli/core";
+
 import { createCaptureLogger } from "./logger";
 import type { Logger, ScriptFunction, Step, StepResult } from "./types";
 
@@ -74,7 +76,11 @@ export class StepRunner {
       const stepStart = Date.now();
       logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — ${step.description}`);
 
-      const result = await this.runStep(step);
+      // Heavy test phases run under a host-global gate lease so N concurrent
+      // gate runs across worktrees don't oversubscribe the host (#2690). The
+      // lease logs waits / fail-open to the real logger so contention is
+      // visible even when the step's own output is suppressed.
+      const result = step.lease ? await withGateLease(() => this.runStep(step), { logger }) : await this.runStep(step);
       const ms = Date.now() - stepStart;
 
       if (result.success) {
