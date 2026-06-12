@@ -124,6 +124,50 @@ fi
   return dir;
 }
 
+// Fake bun that kills ITSELF with a signal on every invocation — emulates the
+// Bun panic the OS delivers as code=null + signal name (the Linux child.on
+// "close" path, #2754). `kill -s` terminates the script before any exit line;
+// the trailing sleep is an unreachable guard.
+function makeAlwaysSignalFakeBun(signal: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  writeFileSync(join(dir, "bun"), `#!/usr/bin/env bash\nkill -s ${signal} $$\nsleep 5\n`, { mode: 0o755 });
+  return dir;
+}
+
+// Fake bun that dies by `signal` on the first invocation and then exits with
+// `rest.code` (writing structured failure files) on every subsequent call —
+// proves the panic classifier retries a signal kill rather than failing
+// immediately (#2754).
+function makeSignalThenExitFakeBun(signal: string, rest: { code: number; stdout?: string }): string {
+  const dir = mkdtempSync(join(tmpdir(), "am-i-done-test-"));
+  const counterFile = join(dir, ".invocation_count");
+  const s = (rest.stdout ?? "").replace(/'/g, "'\\''");
+  const f = deriveFailures(rest.stdout);
+  writeFileSync(
+    join(dir, "bun"),
+    `#!/usr/bin/env bash
+count=0
+if [ -f '${counterFile}' ]; then count=$(cat '${counterFile}'); fi
+count=$((count + 1))
+echo "$count" > '${counterFile}'
+if [ "$count" -eq 1 ]; then
+  kill -s ${signal} $$
+  sleep 5
+fi
+printf '%s' '${s}'
+for arg in "$@"; do
+  case "$arg" in
+    --reporter-outfile=*) printf '<?xml version="1.0"?><testsuites failures="${f}" errors="0"></testsuites>' > "\${arg#--reporter-outfile=}" ;;
+    --junit-outfile=*) printf '{"failures":${f}}' > "\${arg#--junit-outfile=}" ;;
+  esac
+done
+exit ${rest.code}
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
 // Echoes the value of a named env var into stdout — used to prove that
 // StepOptions.env is reaching the spawned subprocess, not silently dropped.
 function makeFakeBunEchoEnv(varName: string): string {
@@ -271,6 +315,43 @@ exit 139
     expect(result).toEqual({ success: true });
   });
 
+  it("retryOn132: SIGSEGV signal kill (code=null) first run, exit 0 retry → success (#2754)", async () => {
+    // The #2754 bug: a Linux signal kill delivers code=null → runBun resolves
+    // code=-1, which never equals 132/139. Before the fix the classifier fell
+    // straight through to failure with no retry. The signal field must drive the
+    // panic decision so a SIGSEGV-killed child is retried.
+    const dir = makeSignalThenExitFakeBun("SIGSEGV", { code: 0, stdout: passingSummary });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_sig", retryOn132: true });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("retryOn132: SIGSEGV signal kill on both runs → pass-by-policy (#2754)", async () => {
+    const dir = makeAlwaysSignalFakeBun("SIGSEGV");
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_sig2", retryOn132: true });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
+  });
+
+  it("no retryOn132: SIGSEGV signal kill is a hard fail (no retry)", async () => {
+    const dir = makeAlwaysSignalFakeBun("SIGSEGV");
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_sig3", retryOn132: false });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
   it("no retryOn132: exit 132 with no `0 fail` summary fails", async () => {
     const dir = makeFakeBun({ code: 132 });
     const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_x", retryOn132: false });
@@ -391,6 +472,20 @@ describe("coverageWithCrashTolerance", () => {
       }),
     );
     expect(result).toMatchObject({ success: false });
+  });
+
+  it("SIGSEGV signal kill (code=null) first run retries; clean exit 0 on retry → pass (#2754)", async () => {
+    // Coverage shares the #2754 gap: a signal kill yields code=-1, which the old
+    // `code !== 132 && code !== 139` guard treated as a hard fail. The signal must
+    // qualify as a panic so the retry fires.
+    const dir = makeSignalThenExitFakeBun("SIGSEGV", { code: 0, stdout: "PASS: All coverage thresholds met\n" });
+    const step = coverageWithCrashTolerance({ logName: "coverage_sig" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toEqual({ success: true });
   });
 
   it("exit other than 132/139 with no passthrough is a hard fail (no retry)", async () => {
