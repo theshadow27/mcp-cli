@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, silentLogger } from "@mcp-cli/core";
+import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, capturingLogger, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import {
@@ -344,6 +344,7 @@ describe("AbstractWorkerServer", () => {
         "db:state",
         "db:cost",
         "db:disconnected",
+        "db:stderr",
         "db:end",
         "metrics:inc",
         "metrics:observe",
@@ -365,6 +366,53 @@ describe("AbstractWorkerServer", () => {
       expect(() => {
         internals(s).handleWorkerEvent({ type: "unknown:future:type" } as never);
       }).not.toThrow();
+    });
+  });
+
+  // ── db:stderr capture (#2738) ──
+
+  describe("db:stderr capture", () => {
+    test("persists child stderr lines keyed by session id", () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      server = makeServer(StubWorkerServer, db);
+
+      internals(server).handleWorkerEvent({
+        type: "db:stderr",
+        sessionId: "sess-1",
+        line: "auth error: token expired",
+        timestamp: 1000,
+      });
+      internals(server).handleWorkerEvent({
+        type: "db:stderr",
+        sessionId: "sess-1",
+        line: "fatal: exiting 1",
+        timestamp: 1001,
+      });
+
+      const logs = db.getServerLogs("sess-1");
+      expect(logs.map((l) => l.line)).toEqual(["auth error: token expired", "fatal: exiting 1"]);
+    });
+
+    test("db:disconnected log line surfaces the captured stderr tail", () => {
+      using opts = testOptions();
+      db = new StateDb(opts.DB_PATH);
+      const { logger, texts } = capturingLogger();
+      const s = new StubWorkerServer(db, undefined, instantClient, logger, undefined, new MetricsCollector());
+      server = s;
+
+      internals(s).handleWorkerEvent({
+        type: "db:stderr",
+        sessionId: "sess-2",
+        line: "spawn failed: ENOENT",
+        timestamp: 2000,
+      });
+      internals(s).handleWorkerEvent({ type: "db:disconnected", sessionId: "sess-2", reason: "spawn exited" });
+
+      const line = texts.find((t) => t.includes("disconnected"));
+      expect(line).toBeDefined();
+      expect(line).toContain("spawn exited");
+      expect(line).toContain("spawn failed: ENOENT");
     });
   });
 

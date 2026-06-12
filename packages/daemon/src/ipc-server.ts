@@ -448,6 +448,16 @@ export class IpcServer {
 
       if (since === undefined) {
         const lines = this.pool.getStderrLines(server, limit);
+        // Fall back to the persistent log when the in-memory ring is empty — a
+        // dead claude/agent session (or stopped MCP server) is no longer in the
+        // pool, but its stderr was persisted keyed by session ID (#2738).
+        if (lines.length === 0) {
+          const dbLogs = this.db.getServerLogs(server, limit);
+          return {
+            server,
+            lines: dbLogs.map((l) => ({ timestamp: l.timestampMs, line: l.line })),
+          };
+        }
         return {
           server,
           lines: lines.map((l) => ({ timestamp: l.timestamp, line: l.line })),

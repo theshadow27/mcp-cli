@@ -2100,6 +2100,30 @@ describe("IpcServer HTTP transport", () => {
     expect(buffer).toContain("pool-line");
   });
 
+  test("getLogs falls back to persistent DB when the pool ring is empty (#2738)", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({
+      getServerLogs: (serverName: string) =>
+        serverName === "sess-dead" ? [{ line: "spawn failed: ENOENT", timestampMs: 4242 }] : [],
+    });
+    // Pool ring is empty (default mockPool getStderrLines) → a dead session is
+    // no longer in the pool, so getLogs must read its persisted stderr from DB.
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", {
+      id: "logs-fallback",
+      method: "getLogs",
+      params: { server: "sess-dead", limit: 10 },
+    });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error).toBeUndefined();
+    expect(json.result).toEqual({
+      server: "sess-dead",
+      lines: [{ timestamp: 4242, line: "spawn failed: ENOENT" }],
+    });
+  });
+
   // Bug #1 regression: callTool → _aliases must forward the caller's cwd so
   // the executor subprocess can resolve repo root from the caller, not from
   // the daemon's cwd. See PR #1307 adversarial review.
