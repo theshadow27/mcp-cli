@@ -27,6 +27,7 @@ async function mcx(
   const proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    // dotw-ignore spec-git-env-spread: mcx ls/call never invoke git; MCP_CLI_DIR isolation is the goal
     env: { ...process.env, MCP_CLI_DIR: dir, ...opts?.env },
   });
 

@@ -511,6 +511,7 @@ describe("mcx import", () => {
       `,
         ],
         {
+          // dotw-ignore spec-git-env-spread: spawning a bun import script, not a git subprocess
           env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
@@ -612,6 +613,7 @@ describe("mcx import", () => {
           "-e",
           `import { cmdImport } from "./packages/command/src/commands/import"; await cmdImport(["${opts.dir}"]);`,
         ],
+        // dotw-ignore spec-git-env-spread: spawning a bun import script, not a git subprocess
         { env: { ...process.env, MCP_CLI_DIR: opts.dir }, stdout: "pipe", stderr: "pipe" },
       );
       await proc.exited;
@@ -650,6 +652,7 @@ describe("mcx import", () => {
       `,
         ],
         {
+          // dotw-ignore spec-git-env-spread: spawning a bun import script, not a git subprocess
           env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
@@ -685,6 +688,7 @@ describe("mcx import", () => {
       `,
         ],
         {
+          // dotw-ignore spec-git-env-spread: spawning a bun import script, not a git subprocess
           env: { ...process.env, MCP_CLI_DIR: opts.dir },
           stdout: "pipe",
           stderr: "pipe",
