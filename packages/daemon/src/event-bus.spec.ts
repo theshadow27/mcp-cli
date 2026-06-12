@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { MAIL_SENT } from "@mcp-cli/core";
 import { EventBus } from "./event-bus";
@@ -540,13 +540,23 @@ describe("EventBus with EventLog", () => {
     const log = new EventLog(db);
     const bus = new EventBus(log);
 
-    // Close the DB to force append failures
+    // Close the DB to force append failures. The resulting "Cannot use a closed
+    // database" is the expected error this test exercises — capture it so the
+    // intended fallback log does not leak to stderr and get misread as a
+    // cross-test teardown race in the parallel suite (#2740 / #2690).
     db.close();
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
-    // publish must not throw; seq must still advance
-    const e1 = bus.publish(sessionEvent());
-    const e2 = bus.publish(sessionEvent());
-    expect(e1.seq).toBeGreaterThan(0);
-    expect(e2.seq).toBeGreaterThan(e1.seq);
+    try {
+      // publish must not throw; seq must still advance
+      const e1 = bus.publish(sessionEvent());
+      const e2 = bus.publish(sessionEvent());
+      expect(e1.seq).toBeGreaterThan(0);
+      expect(e2.seq).toBeGreaterThan(e1.seq);
+      expect(errorSpy).toHaveBeenCalledTimes(2);
+      expect(errorSpy.mock.calls[0]?.[0]).toContain("EventLog append failed");
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
