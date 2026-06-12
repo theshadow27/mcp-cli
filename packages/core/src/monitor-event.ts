@@ -49,6 +49,7 @@ export const SESSION_CONTAINMENT_RESET = "session.containment_reset" as const;
 export const SESSION_IDLE = "session.idle" as const;
 export const SESSION_STUCK = "session.stuck" as const;
 export const SESSION_TOOL_USE = "session.tool_use" as const;
+export const SESSION_SPAWN_OVERRIDE = "session.spawn_override" as const;
 
 // ── Session metric event names (#1610) ──
 
@@ -257,6 +258,12 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   },
 
   [SESSION_CONTAINMENT_ESCALATED]: (e) => join(wi(e), sid(e)),
+
+  [SESSION_SPAWN_OVERRIDE]: (e) => {
+    const binary = typeof e.binaryPath === "string" ? cap(e.binaryPath, 60) : "";
+    const bypassed = typeof e.bypassedReason === "string" ? `bypassed: ${cap(e.bypassedReason, 60)}` : "";
+    return join(wi(e), sid(e), binary, bypassed);
+  },
 
   [PR_OPENED]: (e) => {
     const branch = typeof e.branch === "string" ? e.branch : "";
