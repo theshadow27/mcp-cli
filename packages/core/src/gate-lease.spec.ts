@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,8 +20,17 @@ afterEach(() => {
 });
 
 const noWait = { sleep: () => Promise.resolve(), random: () => 0 };
+const originalSlotsEnv = process.env.MCX_GATE_LEASE_SLOTS;
 
 describe("acquireGateLease", () => {
+  afterEach(() => {
+    if (originalSlotsEnv === undefined) {
+      process.env.MCX_GATE_LEASE_SLOTS = "";
+    } else {
+      process.env.MCX_GATE_LEASE_SLOTS = originalSlotsEnv;
+    }
+  });
+
   it("acquires a slot when one is free", async () => {
     const lockDir = freshDir();
     const lease = await acquireGateLease({ slots: 2, lockDir, ...noWait });
@@ -99,6 +108,64 @@ describe("acquireGateLease", () => {
     expect(lease.held).toBe(false);
     expect(lease.slot).toBeNull();
     lease.release(); // must not throw
+  });
+
+  it("fails open when the lock directory cannot be created", async () => {
+    const parent = freshDir();
+    const file = join(parent, "not-a-directory");
+    writeFileSync(file, "");
+    const warnings: string[] = [];
+
+    const lease = await acquireGateLease({
+      slots: 1,
+      lockDir: join(file, "locks"),
+      logger: { warn: (m) => warnings.push(m) },
+      ...noWait,
+    });
+
+    expect(lease.held).toBe(false);
+    expect(warnings.some((w) => w.includes("could not create lock dir") && w.includes("fail-open"))).toBe(true);
+  });
+
+  it("caps an excessive MCX_GATE_LEASE_SLOTS value and warns", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "999999";
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir: freshDir(),
+      logger: { warn: (m) => warnings.push(m) },
+      ...noWait,
+    });
+
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("exceeds max 64") && w.includes("capping"))).toBe(true);
+    lease.release();
+  });
+
+  it("rejects partial numeric MCX_GATE_LEASE_SLOTS values instead of truncating them", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "2abc";
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir: freshDir(),
+      logger: { warn: (m) => warnings.push(m) },
+      ...noWait,
+    });
+
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("invalid MCX_GATE_LEASE_SLOTS=2abc"))).toBe(true);
+    lease.release();
+  });
+
+  it("warns when MCX_GATE_LEASE_SLOTS disables the lease", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "-1";
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir: freshDir(),
+      logger: { warn: (m) => warnings.push(m) },
+      ...noWait,
+    });
+
+    expect(lease.held).toBe(false);
+    expect(warnings.some((w) => w.includes("disables gate lease"))).toBe(true);
   });
 
   it("release is idempotent and frees the slot for re-acquisition", async () => {

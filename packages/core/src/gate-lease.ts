@@ -32,6 +32,8 @@ import { flockUnlock, tryFlockExclusive } from "./flock";
 
 /** Default number of concurrent heavy test phases allowed across the host. */
 const DEFAULT_SLOTS = 2;
+/** Defensive cap for env/API tuning; high values can exhaust file descriptors. */
+const MAX_SLOTS = 64;
 /** Generous fail-open deadline — proceed unleased rather than hang the gate. */
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 /** Base poll interval; jitter is added on top to avoid lockstep retries. */
@@ -72,11 +74,26 @@ export interface GateLease {
 
 const UNHELD_LEASE: GateLease = { held: false, slot: null, release: () => {} };
 
-function readSlotsFromEnv(): number {
+function readSlotsFromEnv(logger?: LeaseLogger): number {
   const raw = process.env.MCX_GATE_LEASE_SLOTS;
   if (raw === undefined || raw === "") return DEFAULT_SLOTS;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) ? n : DEFAULT_SLOTS;
+  return normalizeSlotCount(Number(raw), logger, `MCX_GATE_LEASE_SLOTS=${raw}`);
+}
+
+function normalizeSlotCount(slots: number, logger?: LeaseLogger, source = "slots"): number {
+  if (!Number.isInteger(slots)) {
+    logger?.warn?.(`gate-lease: invalid ${source}; using default ${DEFAULT_SLOTS} slots (#2760)`);
+    return DEFAULT_SLOTS;
+  }
+  if (slots <= 0) {
+    logger?.warn?.(`gate-lease: ${source} disables gate lease (slots <= 0, #2760)`);
+    return 0;
+  }
+  if (slots > MAX_SLOTS) {
+    logger?.warn?.(`gate-lease: ${source} exceeds max ${MAX_SLOTS}; capping to ${MAX_SLOTS} slots (#2760)`);
+    return MAX_SLOTS;
+  }
+  return slots;
 }
 
 function readTimeoutFromEnv(): number {
@@ -144,7 +161,8 @@ function makeHeldLease(slot: HeldSlot): GateLease {
  * or when the fail-open deadline elapses. Never throws on contention.
  */
 export async function acquireGateLease(opts: GateLeaseOptions = {}): Promise<GateLease> {
-  const slots = opts.slots ?? readSlotsFromEnv();
+  const logger = opts.logger;
+  const slots = opts.slots === undefined ? readSlotsFromEnv(logger) : normalizeSlotCount(opts.slots, logger);
   if (slots <= 0) return UNHELD_LEASE;
 
   const lockDir = opts.lockDir ?? join(options.MCP_CLI_DIR, "gate-locks");
@@ -153,9 +171,13 @@ export async function acquireGateLease(opts: GateLeaseOptions = {}): Promise<Gat
   const sleep = opts.sleep ?? defaultSleep;
   const now = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;
-  const logger = opts.logger;
 
-  mkdirSync(lockDir, { recursive: true });
+  try {
+    mkdirSync(lockDir, { recursive: true });
+  } catch {
+    logger?.warn?.(`gate-lease: could not create lock dir ${lockDir} — proceeding unleased (fail-open, #2760)`);
+    return UNHELD_LEASE;
+  }
 
   const deadline = now() + timeoutMs;
   let announcedWait = false;
