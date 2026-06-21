@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
 import { readCliConfig, writeCliConfig } from "./cli-config";
@@ -26,6 +26,17 @@ describe("readCliConfig", () => {
     using _opts = testOptions({ files: { "config.json": config } });
     expect(readCliConfig()).toEqual(config);
     expect(readCliConfig().wsPort).toBe(19275);
+  });
+
+  test("drops promptedDirs entries for paths that no longer exist", () => {
+    using opts = testOptions();
+    const liveDir = join(opts.dir, "live-worktree");
+    const staleDir = join(opts.dir, "deleted-worktree");
+    mkdirSync(liveDir);
+    writeCliConfig({ promptedDirs: [liveDir, staleDir] });
+
+    expect(readCliConfig()).toEqual({ promptedDirs: [liveDir] });
+    expect(JSON.parse(readFileSync(opts.MCP_CLI_CONFIG_PATH, "utf-8"))).toEqual({ promptedDirs: [liveDir] });
   });
 });
 

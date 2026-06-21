@@ -11,10 +11,31 @@ import { options } from "./constants";
 export function readCliConfig(): CliConfig {
   try {
     const text = readFileSync(options.MCP_CLI_CONFIG_PATH, "utf-8");
-    return JSON.parse(text) as CliConfig;
+    const config = JSON.parse(text) as CliConfig;
+    const pruned = pruneStalePromptedDirs(config);
+    if (pruned !== config) {
+      try {
+        writeCliConfig(pruned);
+      } catch {
+        // Reading config should remain best-effort even if GC persistence fails.
+      }
+    }
+    return pruned;
   } catch {
     return {};
   }
+}
+
+function pruneStalePromptedDirs(config: CliConfig): CliConfig {
+  if (!config.promptedDirs) return config;
+
+  const promptedDirs = config.promptedDirs.filter((dir) => typeof dir === "string" && existsSync(dir));
+  if (promptedDirs.length === config.promptedDirs.length) return config;
+
+  return {
+    ...config,
+    promptedDirs,
+  };
 }
 
 /** Write the CLI config file, creating the parent directory if needed. */
