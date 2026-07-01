@@ -2,7 +2,15 @@ import { describe, expect, mock, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { lookupFailure } from "@mcp-cli/core";
 import type { AuditResult, CmdMemoryDeps, MemoryDeps } from "./memory";
-import { buildPrompt, cmdMemory, defaultDeps, findMemoryDir, parseHaikuResponse, runMemoryAudit } from "./memory";
+import {
+  buildPrompt,
+  cmdMemory,
+  defaultDeps,
+  findMemoryDir,
+  parseHaikuResponse,
+  runMemoryAudit,
+  validateAuditResult,
+} from "./memory";
 
 // ─── findMemoryDir ────────────────────────────────────────────────────────────
 
@@ -121,6 +129,58 @@ describe("parseHaikuResponse", () => {
 
   test("returns null for empty string", () => {
     expect(parseHaikuResponse("")).toBeNull();
+  });
+});
+
+// ─── validateAuditResult ──────────────────────────────────────────────────────
+
+describe("validateAuditResult", () => {
+  const complete: AuditResult = {
+    findings: [
+      { file: "a.md", status: "load-bearing", reason: "ok", related: null },
+      { file: "b.md", status: "stale", reason: "gone", related: null },
+    ],
+    top_prune_candidates: ["b.md"],
+  };
+
+  test("ok when every expected file has a verdict", () => {
+    expect(validateAuditResult(complete, ["a.md", "b.md"])).toEqual({ ok: true, problems: [] });
+  });
+
+  test("flags incomplete audit with count and missing filenames", () => {
+    const v = validateAuditResult(complete, ["a.md", "b.md", "c.md"]);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(" ")).toContain("2/3 files evaluated");
+    expect(v.problems.join(" ")).toContain("c.md");
+  });
+
+  test("truncates the missing-file list at 5 with an ellipsis", () => {
+    const expected = ["a.md", "b.md", "c.md", "d.md", "e.md", "f.md", "g.md", "h.md"];
+    const v = validateAuditResult(complete, expected);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(" ")).toContain("…");
+  });
+
+  test("flags missing findings array", () => {
+    const v = validateAuditResult({ top_prune_candidates: [] } as unknown as AuditResult, ["a.md"]);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(" ")).toContain("no 'findings' array");
+  });
+
+  test("flags missing top_prune_candidates array", () => {
+    const v = validateAuditResult({ findings: complete.findings } as unknown as AuditResult, ["a.md", "b.md"]);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(" ")).toContain("top_prune_candidates");
+  });
+
+  test("flags a finding missing required fields", () => {
+    const bad = {
+      findings: [{ status: "load-bearing", reason: "no file field" }],
+      top_prune_candidates: [],
+    } as unknown as AuditResult;
+    const v = validateAuditResult(bad, []);
+    expect(v.ok).toBe(false);
+    expect(v.problems.join(" ")).toContain("missing required fields");
   });
 });
 
@@ -308,7 +368,10 @@ describe("runMemoryAudit", () => {
 
   test("handles malformed gh JSON gracefully", async () => {
     const result: AuditResult = {
-      findings: [{ file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null }],
+      findings: [
+        { file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null },
+        { file: "feedback_old.md", status: "stale", reason: "gone", related: null },
+      ],
       top_prune_candidates: [],
     };
     const deps = makeDeps({
@@ -325,7 +388,10 @@ describe("runMemoryAudit", () => {
 
   test("gh unavailable (non-zero exit) is handled gracefully", async () => {
     const result: AuditResult = {
-      findings: [{ file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null }],
+      findings: [
+        { file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null },
+        { file: "feedback_old.md", status: "stale", reason: "gone", related: null },
+      ],
       top_prune_candidates: [],
     };
     const deps = makeDeps({
@@ -339,9 +405,72 @@ describe("runMemoryAudit", () => {
     expect(deps.logs.join("\n")).toContain("feedback_test.md");
   });
 
+  test("exits non-zero when Haiku audits fewer files than provided (truncation)", async () => {
+    // Two files provided but Haiku returns a verdict for only one — silent truncation.
+    const partial: AuditResult = {
+      findings: [{ file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null }],
+      top_prune_candidates: [],
+    };
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        if (cmd.some((s) => s.includes("claude"))) return { stdout: JSON.stringify(partial), stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    await expect(runMemoryAudit({ json: true }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("failed validation");
+    expect(errLog).toContain("1/2 files evaluated");
+    expect(errLog).toContain("feedback_old.md");
+    // Must not have emitted the partial result to stdout.
+    expect(deps.logs.length).toBe(0);
+  });
+
+  test("exits non-zero when top_prune_candidates is missing", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        if (cmd.some((s) => s.includes("claude"))) {
+          // Valid JSON, both files, but no top_prune_candidates key.
+          return {
+            stdout: JSON.stringify({
+              findings: [
+                { file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null },
+                { file: "feedback_old.md", status: "stale", reason: "gone", related: null },
+              ],
+            }),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    await expect(runMemoryAudit({ json: true }, deps)).rejects.toThrow("exit(1)");
+    expect(deps.errors.join("\n")).toContain("top_prune_candidates");
+  });
+
+  test("exits non-zero when findings array is missing", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        if (cmd.some((s) => s.includes("claude"))) {
+          return { stdout: JSON.stringify({ top_prune_candidates: [] }), stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    await expect(runMemoryAudit({ json: true }, deps)).rejects.toThrow("exit(1)");
+    expect(deps.errors.join("\n")).toContain("no 'findings' array");
+  });
+
   test("text mode reports 'No prune candidates' when list is empty", async () => {
     const result: AuditResult = {
-      findings: [{ file: "feedback_test.md", status: "load-bearing", reason: "Still good.", related: null }],
+      findings: [
+        { file: "feedback_test.md", status: "load-bearing", reason: "Still good.", related: null },
+        { file: "feedback_old.md", status: "load-bearing", reason: "Still good.", related: null },
+      ],
       top_prune_candidates: [],
     };
     const deps = makeDeps({
