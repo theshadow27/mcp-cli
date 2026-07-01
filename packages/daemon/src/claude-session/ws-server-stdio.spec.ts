@@ -790,6 +790,10 @@ describe("ClaudeWsServer — stdio transport", () => {
     const session = server.listSessions().find((s) => s.sessionId === sessionId);
     expect(session?.state).toBe("disconnected");
     expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+
+    // stdio has no reconnect path — the child must be killed, not orphaned. (#2793)
+    await pollUntil(() => mock.killed, 1000);
+    expect(mock.killed).toBe(true);
   });
 
   test("interrupt throws and disconnects when stdio write fails", async () => {

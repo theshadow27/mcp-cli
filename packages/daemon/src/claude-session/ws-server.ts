@@ -1191,6 +1191,11 @@ export class ClaudeWsServer {
 
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
   private handleStdioLine(sessionId: string, session: WsSession, line: string): void {
+    // Drop late emissions from a torn-down session. After disconnectSession kills
+    // the stdio proc, buffered stdout lines can still drain in; feeding them to the
+    // state machine would corrupt a disconnected/ended session. (#2793)
+    if (session.state.state === "disconnected" || session.state.state === "ended") return;
+
     let messages: NdjsonMessage[];
     try {
       messages = parseFrame(line);
@@ -1834,6 +1839,18 @@ export class ClaudeWsServer {
       waiter.reject(new Error(waiterReason));
     }
     session.resultWaiters.length = 0;
+
+    // stdio has no reconnect path (unlike WS), so a disconnected stdio session
+    // can never regain a channel to its child. Leaving the proc alive orphans it
+    // with a dead stdin until the next daemon-start reaper. Kill it now, mirroring
+    // the handleOpen WS fallback ("can't communicate without WS"). (#2793)
+    if (session.transport === "stdio" && session.proc) {
+      try {
+        session.proc.kill();
+      } catch {
+        /* already dead */
+      }
+    }
   }
 
   private handleOpen(ws: ServerWebSocket<WsData>): void {
