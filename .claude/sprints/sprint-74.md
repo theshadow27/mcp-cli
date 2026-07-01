@@ -1,80 +1,73 @@
 # Sprint 74
 
-> Planned 2026-06-12. Target: 15 PRs.
+> Planned 2026-07-01 (time set at run start). Target: 15 PRs.
 
 ## Goal
 
-Land #2805 — ContainmentGuard parity over the stdio transport — so stdio becomes usable as the sprint-session default, plus the stdio-lifecycle/stderr/containment hardening around it.
+Drain the sprint-73 fallout: restore trust in the gate (build-smoke accuracy, durable compiled-worker resolution, coverage integrity), clean up stdio/session hygiene, and fix the phase-machinery bugs that bit the pipeline itself.
 
 ## Issues
 
-| # | Title | Scrutiny | Batch | Model | Category |
-|---|-------|----------|-------|-------|----------|
-| 2805 | stdio spawns hard-refuse under containment (#2789 fail-closed); ContainmentGuard unreachable over stdio. Issue carries a hook-bridge design sketch — treat as **hypothesis**, spike-verify the 5 listed checks against the real binary first. **Artifact-flag.** | high | 1 | opus | goal |
-| 2793 | stdio transport write failure leaves live child process after disconnectSession (zombie leak) | low-med | 1 | sonnet | goal |
-| 2784 | inline disconnect postmortem can miss final stderr line (db:disconnected/db:stderr ordering) | low | 1 | sonnet | goal |
-| 2707 | mcp__ prefix blanket-allow bypasses path containment for MCP tools with path args | medium | 1 | opus | goal |
-| 2774 | child stderr persisted/re-emitted unsanitized — log-injection + ANSI poisoning surface | medium | 2 | opus | goal |
-| 2708 | CONTAINMENT_SAFE_TOOLS allowlist drift wedges sessions on claude upgrade; containment_denied events flood monitor | low-med | 2 | sonnet | goal |
-| 2800 | build smoke failurePattern over-matches non-worker servers → false-fail on required `build` gate. **Artifact-flag.** | low | 1 | sonnet | filler |
-| 2781 | repair→qa transition blocked by hardcoded VALID_TRANSITIONS when repoRoot missing; manifest silently ignored | low | 2 | sonnet | filler |
-| 2749 | mcx claude ls prints spurious "Error: git diff failed (exit null):" on stderr | low | 2 | sonnet | filler |
-| 2786 | mock-only ws-server-stdio.spec lets invalid spawn-arg combos ship uncaught (sprint-72 canary repeat risk). Test the spawn surface #2805 lands. **Artifact-flag.** | medium | 3 | opus | goal |
-| 2773 | stderr capture does unbatched synchronous SQLite writes per line — can wedge daemon event loop | low-med | 3 | sonnet | goal |
-| 2795 | mechanize sendToSession return-discard guard as doing-it-wrong rule (#2790 follow-up) | low | 3 | sonnet | filler |
-| 2761 | gate lease missing on pre-push TEST_CHANGED step — re-opens #2690 oversubscription | low | 3 | fable | filler |
-| 2735 | parseModelFromSprintTable misses secondary issue in paired-# rows ("2693 (+2520)") | low | 3 | fable | filler |
-| 2747 | tighten replay.spec.ts Phase-2 crash-test timeoutMs 3000→~200ms (dead headroom post-#2746) | low | 3 | fable | filler |
-
-Scrutiny note (sprint-73 lesson): metric-based triage will likely route #2805/#2786/#2774/#2707 to QA-direct; the orchestrator should expect to **manually override to the plan's scrutiny** until #2804 mechanizes a scrutiny field.
+| # | Title | Scrutiny | Batch | Model | Provider | Category |
+|---|-------|----------|-------|-------|----------|----------|
+| 2800 | build smoke failurePattern over-matches non-worker servers | low | 1 | opus | claude | goal |
+| 2761 | extend gate lease to pre-push TEST_CHANGED step | low | 1 | sonnet | claude | goal |
+| 2793 | stdio write failure leaves live child after disconnectSession | low | 1 | opus | claude | goal |
+| 2781 | repair→qa blocked by hardcoded VALID_TRANSITIONS when repoRoot missing | low-medium | 1 | opus | claude | goal |
+| 2735 | parseModelFromSprintTable misses secondary issue in paired-# rows | low | 1 | sonnet | claude | filler |
+| 2801 | resolve compiled workers via embedded manifest (ends #2721→#2762→#2796 class; should also close #2798) | medium | 2 | opus | claude | goal |
+| 2760 | harden gate-lease: fail-open on fs errors + validate env tuning | low | 2 | opus | claude | goal |
+| 2771 | test:hooks runner for .git-hooks/*.spec.ts, wired into am-i-done + CI | low | 2 | opus | claude | goal |
+| 2797 | smoke-test.ts: isolate under tmp MCP_CLI_DIR + wire into CI | low-medium | 2 | opus | claude | goal |
+| 2802 | mcx memory audit: truncation/exit-0 guard (re-verify --json half first — likely already fixed) | low-medium | 2 | opus | claude | filler |
+| 2724 | delete superseded test/review-phase.spec.ts + test/qa-phase.spec.ts | low | 3 | sonnet | claude | filler |
+| 2785 | spec-git-env-spread: extend AST to node-form spawnSync + template-literal git | low | 3 | opus | claude | filler |
+| 2660 | promptedDirs in config.json grows unbounded — GC dead worktree paths | low | 3 | opus | claude | filler |
+| 2804 | mechanize sprint-73 meta rules into phase scripts | high | 3 | opus | claude | goal |
+| 2744 | coverage integrity: local-fail/CI-green spec-count divergence (nerd-snipe gate BEFORE impl) | high | 3 | opus | claude | goal |
 
 ## Batch Plan
 
 ### Batch 1 (immediate)
-#2805, #2793, #2784, #2707, #2800
-(#2800 promoted to batch 1: it de-flakes the required `build` gate that every PR in this sprint hits)
+#2800, #2761, #2793, #2781, #2735
 
 ### Batch 2 (backfill)
-#2774, #2708, #2781, #2749
+#2801, #2760, #2771, #2797, #2802
 
 ### Batch 3 (backfill)
-#2786, #2773, #2795, #2761, #2735, #2747
+#2724, #2785, #2660, #2804, #2744
 
-### Dependency edges (run phase: translate to addBlockedBy)
+### blockedBy edges
+- #2801 blockedBy #2800 (both edit scripts/build.ts — narrow the smoke pattern first, then the manifest rework rebases on it)
+- #2760 blockedBy #2761 (both edit scripts/_runner/gate-lease.ts)
+- #2771 blockedBy #2761 (both touch am-i-done.ts step wiring)
+- #2804 blockedBy #2724 (delete the superseded phase specs before mechanization edits the co-located .claude/phases/*-fn.spec.ts surface)
 
-- #2774 blockedBy #2784 (abstract-worker-server.ts stderr/disconnect path — ordering fix lands before sanitization)
-- #2773 blockedBy #2774 (same stderr persistence path — sanitize before batching)
-- #2708 blockedBy #2707 (both edit packages/core/src/containment.ts)
-- #2786 blockedBy #2805 (tests the final spawn-arg surface #2805 lands; shared ws-server-stdio.spec.ts)
-- #2795 blockedBy #2786 (regression test also lands in ws-server-stdio.spec.ts)
+### Hot-shared file watch
+- `scripts/build.ts`: #2800 → #2801 (serialized above)
+- `scripts/_runner/gate-lease.ts` + `am-i-done.ts`: #2761 → #2760, #2771 (serialized above)
+- `.claude/phases/**`: #2724 → #2804 (serialized above)
+- `.github/workflows/*`: #2797 and #2771 both add CI wiring — soft overlap; whichever merges second must rebase and check for duplicate job/step entries
+- `scripts/_runner/ci-steps.ts` + `scripts/check-coverage.ts`: #2744 is the ONLY in-sprint issue on these files by design. Deferred siblings #2788/#2759 must NOT be amended in without re-running the overlap check (see plan.md amendment gate, #2768).
 
-### Hot-file rebase directive (not an edge)
+## Special handling
 
-#2805 and #2793 both start in batch 1 and share `ws-server.ts` (#2793 edits
-disconnectSession; #2805 edits buildSpawnCmd + replaces the #2789 refusal).
-#2805 is deliberately NOT blocked on #2793: its session starts with the spike
-verifications + the `hook-eval` command (`packages/command/src/commands/agent.ts`
-+ daemon IPC handler — no overlap), and only touches `ws-server.ts` last. When
-#2793 merges, the orchestrator broadcasts to the #2805 session: "rebase onto
-main and check ws-server.ts for conflicting/duplicate edits before opening
-your PR."
+- **#2744 — mandatory nerd-snipe investigation gate before impl** (references/investigations.md). The issue comment inverts the filed story: the local coverage failure is *correct*; CI green is a false-pass from a ci-steps.ts regex false-positive (ties to #2788). The gate must establish the real mechanism first; hard-fail outcome `needs-attention` is acceptable.
+- **#2804 — high scrutiny**: mechanizes #2803's prose rules (artifact-check, dual-label closure gate, verify-hypothesis injection) into `.claude/phases/*.ts` + `.mcx.yaml`. Phase-script changes require `mcx phase install` after merge; orchestrator should reload phases before dispatching post-merge work.
+- **#2801 — should also close #2798** (upstream bun count-dependent outbase) if the embedded manifest removes entrypoint-count dependence; note in PR body. Listed as a single row (not paired-#) because #2735 — the paired-row parser fix — hasn't merged yet.
+- **#2802 — scoped**: recon found `--json` appears already honored (memory.ts:248); worker must re-verify on current main first and scope to the silent-truncation/exit-0 completeness guard if so.
+
+## Excluded
+
+- #2805 (stdio containment parity): #2688 investigation returned NO-GO; fail-closed refuse merged in #2789. Needs a product decision, not a worker slot.
+- #2788, #2759 (coverage siblings): follow #2744's gate outcome; same hot files.
+- #2783, #2770 (flakies): likely relieved by gate-lease work (#2761/#2760); re-check after those merge before paying nerd-snipe slots.
+- #2736 (phases→tsc): fallout-prone; schedule after #2804 lands.
+- #2727: recon indicates the named specs are already clean — needs close-as-done re-verify.
+- #2752: root cause corrected in comments to missing GH_TOKEN in workflow yml; rescope before scheduling.
+- #2733/#2734 (closure-hash): Windows-priority question outstanding.
+- Alternates on deck: #2795, #2742, #2786, #2662.
 
 ## Context
 
-Sprint 73 closed the stdio investigation (#2688) with a NO-GO verdict for contained stdio and merged the fail-closed refusal (#2789); #2805 is the gating item to lift it. The build/worker-resolution regression class got an interim fix (#2799 --root pin + smoke); the structural fix (#2801) and bun upstream (#2798) are deliberately deferred. Codex remains broken (#2482) — no codex routing. Fable is 4-for-4 over three sprints → 3 trivial low-scrutiny fable slots (#2761, #2735, #2747).
-
-Risks: #2805 is a one-heavy-session critical path (~1.5–2h incl. spike); if the spike disproves the hook-bridge sketch, the acceptance shifts to "documented alternative + keep fail-closed" — that is an acceptable `needs-attention` outcome, not a failure. #2786/#2795 sit behind it and are droppable at wind-down.
-
-## Closed at plan time (OBE by #2805 — user-directed)
-
-- #2791 (resolveTransport grid-outage) — outage only existed because of the #2789 fail-closed refusal, which #2805 removes; wiring stdio becomes the cutover, not a trap. Closed wontdo.
-- #2792 (stream_event canary / StuckDetector blindness) — the hook bridge's per-tool-call daemon ping is the stdio liveness signal; stream_event stops being load-bearing. Closed wontdo.
-- Both reopen if the #2805 spike disproves the hook approach.
-
-## Excluded (deliberately NOT this sprint)
-
-- #2801 (embedded worker manifest), #2798 (bun upstream), #2797 (smoke-test isolation) — build arc deferred; #2799 interim fix holds
-- #2780, #2760 (gate-lease hardening) — robustness, not blocking
-- #2788 (coverage passthrough edge), #2727 (test tree-mutation), #2742 (DB cast guards), #2737 (phase findGitRoot), #2662 (worktree gc) — defer; #2742/#2662 are good batch-1 candidates for sprint 75
-- Flakies #2783, #2770, #2383 — need nerd-snipe gates; no slots for investigation sessions this sprint given the heavy goal item
-- #2482 codex — still broken, out
+First sprint after a ~19-day pause (sprint 73 ended 2026-06-12). Sprint 73 shipped the stdio transport arc and exposed the build/coverage gate weaknesses this sprint targets. Meta-fix #2768 (amendment hot-file re-check) applied pre-sprint in PR #2809. Codex provider remains broken (#2482) — all sessions route to claude. Sprint 74 does not end in 7 — no introspection round.
