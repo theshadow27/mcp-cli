@@ -125,6 +125,21 @@ describe("readQaLabels", () => {
     expect(result.hasPass).toBe(false);
     expect(result.hasFail).toBe(false);
   });
+
+  test("trims whitespace around label names", async () => {
+    const deps = makeDeps({
+      gh: async (op) => {
+        if (op.op === "pr:labels") return { stdout: "  qa:pass  \n  qa:fail  ", stderr: "", exitCode: 0 };
+        if (op.op === "pr:label-events")
+          return { stdout: JSON.stringify(validEventsFor(["qa:pass", "qa:fail"])), stderr: "", exitCode: 0 };
+        if (op.op === "pr:author") return { stdout: DEFAULT_AUTHOR, stderr: "", exitCode: 0 };
+        if (op.op === "pr:head-date") return { stdout: DEFAULT_HEAD_DATE, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 1 };
+      },
+    });
+    const result = await readQaLabels(10, deps, DEFAULT_SPAWNED_AT);
+    expect(result).toMatchObject({ hasPass: true, hasFail: true });
+  });
 });
 
 describe("readQaLabels — verdict validation (#2652)", () => {
@@ -252,6 +267,15 @@ describe("runQa — no session yet", () => {
       expect(result.command).toContain("acp");
       expect(result.command).toContain("--agent");
       expect(result.command).toContain("my-agent");
+    }
+  });
+
+  test("prompt includes issue and PR number", async () => {
+    const state = makeState();
+    const result = await runQa({ provider: "claude" }, makeWork({ issueNumber: 99, prNumber: 200 }), state, makeDeps());
+    if (result.action === "spawn") {
+      expect(result.prompt).toContain("99");
+      expect(result.prompt).toContain("PR 200");
     }
   });
 });
