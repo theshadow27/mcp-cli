@@ -73,6 +73,21 @@ describe("parseModelFromSprintTable", () => {
       "## Batch 1\n\n| # | Title | Model |\n|---|-------|-------|\n| 1000 | other | opus |\n\n## Batch 2\n\n| # | Title | Model |\n|---|-------|-------|\n| 1437 | impl | sonnet |\n";
     expect(parseModelFromSprintTable(twoTables, 1437)).toBe("sonnet");
   });
+
+  test("paired-# row: primary issue returns planned model", () => {
+    const paired = "| # | Title | Model |\n|---|-------|-------|\n| 2693 (+2520) | paired | opus |\n";
+    expect(parseModelFromSprintTable(paired, 2693)).toBe("opus");
+  });
+
+  test("paired-# row: secondary issue returns planned model", () => {
+    const paired = "| # | Title | Model |\n|---|-------|-------|\n| 2693 (+2520) | paired | opus |\n";
+    expect(parseModelFromSprintTable(paired, 2520)).toBe("opus");
+  });
+
+  test("paired-# row: out-of-table issue still returns null", () => {
+    const paired = "| # | Title | Model |\n|---|-------|-------|\n| 2693 (+2520) | paired | opus |\n";
+    expect(parseModelFromSprintTable(paired, 9999)).toBeNull();
+  });
 });
 
 describe("findModelInSprintPlan", () => {

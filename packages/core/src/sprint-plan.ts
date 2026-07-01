@@ -69,8 +69,8 @@ export function parseModelFromSprintTable(text: string, issueNumber: number): st
 
     // Data row — match the target issue number
     const issueCell = cols[issueColIdx] ?? "";
-    const numMatch = issueCell.match(/\d+/);
-    if (!numMatch || Number.parseInt(numMatch[0], 10) !== issueNumber) continue;
+    const nums = issueCell.match(/\d+/g)?.map((n) => Number.parseInt(n, 10)) ?? [];
+    if (!nums.includes(issueNumber)) continue;
 
     const modelCell = (cols[modelColIdx] ?? "").toLowerCase().trim();
     if (modelCell && isRecognizedModel(modelCell)) return modelCell;
