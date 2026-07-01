@@ -476,7 +476,9 @@ describe("WorkItemsServer", () => {
   test("work_items_update rejects invalid phase transition", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
-    server = new WorkItemsServer(db);
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
 
     const { client } = await server.start();
 
@@ -490,6 +492,50 @@ describe("WorkItemsServer", () => {
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0].text).toContain("Invalid phase transition");
+  });
+
+  test("work_items_update allows repair → qa (matches .mcx.yaml, no repoRoot)", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 51, phase: "repair" } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:51", phase: "qa" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(JSON.parse(content[0].text).phase).toBe("qa");
+  });
+
+  test("work_items_update warns and reports repoRoot cause when falling back to hardcoded graph", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const warnings: string[] = [];
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: (m: string) => warnings.push(m), error: () => {}, debug: () => {} },
+    });
+
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 52, phase: "done" } });
+
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "pr:52", phase: "impl" },
+    });
+
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("no repoRoot was supplied");
+    expect(content[0].text).toContain("hardcoded graph");
+    expect(warnings.some((w) => w.includes("no repoRoot was supplied"))).toBe(true);
+    expect(warnings.some((w) => w.includes(".mcx.yaml phase edges were NOT consulted"))).toBe(true);
   });
 
   test("work_items_update allows valid phase transition", async () => {
@@ -690,7 +736,9 @@ describe("WorkItemsServer", () => {
   test("work_items_update force=true bypasses legacy transition check and logs forced", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
-    server = new WorkItemsServer(db);
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
     const { client } = await server.start();
     await client.callTool({ name: "work_items_track", arguments: { prNumber: 70 } });
     await client.callTool({ name: "work_items_update", arguments: { id: "pr:70", phase: "done" } });
