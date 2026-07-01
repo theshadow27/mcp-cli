@@ -476,7 +476,9 @@ describe("WorkItemsServer", () => {
   test("work_items_update rejects invalid phase transition", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
-    server = new WorkItemsServer(db);
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
 
     const { client } = await server.start();
 
@@ -734,7 +736,9 @@ describe("WorkItemsServer", () => {
   test("work_items_update force=true bypasses legacy transition check and logs forced", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
-    server = new WorkItemsServer(db);
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
     const { client } = await server.start();
     await client.callTool({ name: "work_items_track", arguments: { prNumber: 70 } });
     await client.callTool({ name: "work_items_update", arguments: { id: "pr:70", phase: "done" } });
