@@ -455,11 +455,22 @@ export class WorkItemsServer {
                   existing.phase !== newPhase &&
                   !canTransition(existing.phase, newPhase as WorkItemPhase)
                 ) {
+                  // Fallback path: no manifest was loaded (repoRoot omitted or load
+                  // failed), so the hardcoded VALID_TRANSITIONS graph is enforced.
+                  // This graph cannot represent manifest-only phases (e.g.
+                  // "needs-attention"), so a transition legal per .mcx.yaml can be
+                  // rejected here. Warn so the divergence is not silent (#2781).
+                  const reason = repoRoot
+                    ? `manifest could not be loaded from ${repoRoot}`
+                    : "no repoRoot was supplied";
+                  this.logger.warn(
+                    `[mcpd] work_items_update ${id}: validating ${existing.phase} → ${newPhase} against the hardcoded transition graph because ${reason}; .mcx.yaml phase edges were NOT consulted.`,
+                  );
                   return {
                     content: [
                       {
                         type: "text" as const,
-                        text: `Invalid phase transition: ${existing.phase} → ${newPhase}. pass force=true with forceReason to bypass.`,
+                        text: `Invalid phase transition: ${existing.phase} → ${newPhase} (hardcoded graph; ${reason}, so .mcx.yaml edges were not consulted). Supply repoRoot to validate against the manifest, or pass force=true with forceReason to bypass.`,
                       },
                     ],
                     isError: true,
