@@ -43,6 +43,10 @@ Drain the sprint-73 fallout: restore trust in the gate (build-smoke accuracy, du
 - #2771 blockedBy #2761 (both touch am-i-done.ts step wiring)
 - #2804 blockedBy #2724 (delete the superseded phase specs before mechanization edits the co-located .claude/phases/*-fn.spec.ts surface)
 
+### Amendments (mid-sprint)
+
+- **#2821** (added 2026-07-01 19:50 EDT): compiled `mcpd` cannot import `./alias-executor.ts` via argv-redispatch (`WORKER_ENTRIES` in `packages/daemon/src/main.ts` predicts a literal embed path) + masking bug (`mcx call _aliases` prints the error to stdout and exits 0). Found by #2797's isolated smoke test; reproduces on clean main. P1. **blockedBy #2801/PR #2822 merge** — the fix must route the argv dispatch through the new layout-tolerant resolver in `worker-path.ts` rather than re-predicting a path. Predicted files: `packages/daemon/src/main.ts`, alias-call error path; no overlap with other in-flight issues. #2797 lands without its CI-wiring step; that step becomes a follow-up after #2821.
+
 ### Hot-shared file watch
 - `scripts/build.ts`: #2800 → #2801 (serialized above)
 - `scripts/_runner/gate-lease.ts` + `am-i-done.ts`: #2761 → #2760, #2771 (serialized above)
