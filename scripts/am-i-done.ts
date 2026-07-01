@@ -229,6 +229,7 @@ const TEST_CHANGED: Step = {
     "diff-aware tests — only files affected by the diff (bun test --changed; parallel, control sequential #2362)",
   command: changedTestsStep({ logName: "test_changed" }),
   source: "scripts/_runner/ci-steps.ts",
+  lease: true,
   onFailure: [
     "real failure: see the captured output above",
     "this runs only tests in your diff's blast radius — CI (`--ci`) runs the full suite + coverage",
