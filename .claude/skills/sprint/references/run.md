@@ -92,6 +92,17 @@ cp .claude/worktrees/sprint-{N}/.claude/sprints/sprint-{N}.md \
 The `sprint-{N}` PR (opened as draft in `plan.md` Step 6a) updates in place
 on every push.
 
+**Amendment gate — re-run the hot-file overlap check (#2768).** Before
+launching any issue added by a mid-sprint amendment, predict its touched
+files (issue-body paths, stack traces, "modifies X" mentions) and diff them
+against the predicted files of every already-batched AND in-flight issue.
+On overlap: add a `blockedBy` edge on the in-flight issue's Task (the
+amendment launches only after the earlier PR merges) and update the plan's
+hot-shared-files section in the same amendment commit. Never launch an
+amendment straight into the current batch without this check — sprint 73's
+#2754 amendment collided with in-flight #2719 on
+`scripts/_runner/ci-steps.ts` exactly this way.
+
 ### Task list setup — one Task per issue, NOT per batch
 
 **One `TaskCreate` per tracked issue, with `addBlockedBy` edges for every
