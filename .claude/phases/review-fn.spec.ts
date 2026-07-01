@@ -256,6 +256,24 @@ describe("runReview — spawn prompt", () => {
       expect(result.prompt).toContain("mcx pr comments 99 resolve --all-addressed");
     }
   });
+
+  test("omits the artifact-boot mandate by default (#2804)", async () => {
+    const state = makeState();
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    if (result.action === "spawn") {
+      expect(result.prompt).not.toContain("ARTIFACT-BOOT MANDATE");
+    }
+  });
+
+  test("appends the artifact-boot mandate when artifact_check=required (#2804)", async () => {
+    const state = makeState({ artifact_check: "required" });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    if (result.action === "spawn") {
+      expect(result.prompt).toContain("ARTIFACT-BOOT MANDATE");
+      expect(result.command).toContain(result.prompt);
+    }
+  });
 });
 
 describe("runReview — no session yet", () => {

@@ -29,6 +29,8 @@ state:
   provider: string?
   labels: string?
   model: string?
+  artifact_check: string?
+  merge_block_labels: string?
   scrutiny:     { type: "enum[low,medium,high]", track: true, default: medium }
   bundled_with: { type: string, track: true, repeatable: true }
 

@@ -6,6 +6,79 @@ export interface GhResult {
   exitCode: number;
 }
 
+// ── artifact-check gate (#2804) ──
+// A binary can compile green, pass unit tests, and be dead at runtime because
+// no phase booted the compiled artifact (#2796/#2799: #2762 shipped runtime-dead).
+// When a PR touches the build mechanism, compiled-output layout, or worker
+// plumbing, triage sets `artifact_check=required` and qa/review append the
+// mandate below to their spawn prompts so the verifier exercises the artifact.
+export const ARTIFACT_CHECK_REQUIRED = "required" as const;
+
+/**
+ * True when any changed file touches build/worker plumbing — the class of change
+ * that unit tests + green CI cannot vouch for. Matches:
+ *   - scripts/build.ts, scripts/daemon-workers.ts (build mechanism)
+ *   - packages/daemon/src/worker-path.ts (compiled-output path resolution)
+ *   - any file whose basename ends with "-worker.ts" (worker entrypoints)
+ *   - worker-plugin.ts (worker boilerplate)
+ */
+export function requiresArtifactCheck(changedFiles: string[]): boolean {
+  return changedFiles.some((raw) => {
+    const f = raw.trim();
+    if (f.length === 0) return false;
+    const base = f.split("/").pop() ?? f;
+    if (f === "scripts/build.ts" || f === "scripts/daemon-workers.ts") return true;
+    if (f === "packages/daemon/src/worker-path.ts") return true;
+    if (base === "worker-plugin.ts") return true;
+    if (base.endsWith("-worker.ts")) return true;
+    return false;
+  });
+}
+
+/**
+ * Spawn-prompt mandate appended for artifact-shaped PRs. Boots the compiled
+ * binary with isolated state and asserts every worker-backed server starts —
+ * never touching the host daemon or ~/.mcp-cli.
+ */
+export const ARTIFACT_CHECK_MANDATE = `
+
+ARTIFACT-BOOT MANDATE (this PR changed build/worker plumbing — unit tests + CI are NOT sufficient):
+Boot \`dist/mcpd\` with an isolated state dir and assert all 5 worker-backed servers
+start (daemon, alias, mail, metrics, tracing). Never touch host state (~/.mcp-cli).
+
+  bun run build
+  STATE_DIR=$(mktemp -d)
+  MCP_CLI_DIR="$STATE_DIR" ./dist/mcpd &   # boot compiled binary, isolated state
+  # assert every worker-backed server logs "started"; zero "Failed to start" /
+  # "ModuleNotFound"; then kill ONLY the process you started and rm -rf "$STATE_DIR".
+
+Cite the observed startup lines as evidence. If the artifact cannot be exercised
+in your environment, say so explicitly and lower the verdict confidence — do NOT
+fall back to unit-test evidence for an artifact-shaped change.`;
+
+// ── label-closure merge gate (#2804) ──
+// #2769, #2779, #2790 merged carrying stale `review:changes` after self-repair.
+// The done phase must refuse the merge transition when labels are inconsistent.
+export interface LabelConsistency {
+  ok: boolean;
+  /** Labels blocking the merge (empty when ok). */
+  blocking: string[];
+}
+
+/**
+ * Merge-readiness label check. A PR is NOT mergeable when it carries:
+ *   - `review:changes` (regardless of whether `review:pass` is also present —
+ *     a self-repaired review must be closed by the verifier before merge), or
+ *   - both `qa:pass` and `qa:fail` simultaneously (contradictory verdict).
+ */
+export function labelsConsistent(labels: string[]): LabelConsistency {
+  const set = new Set(labels.map((l) => l.trim()).filter((l) => l.length > 0));
+  const blocking: string[] = [];
+  if (set.has("review:changes")) blocking.push("review:changes");
+  if (set.has("qa:pass") && set.has("qa:fail")) blocking.push("qa:pass", "qa:fail");
+  return { ok: blocking.length === 0, blocking };
+}
+
 export interface ParsedPrEditFlags {
   addLabels: string[];
   removeLabels: string[];

@@ -1,6 +1,14 @@
 /** Core review-phase logic, extracted for testability via dependency injection. */
 
-import { type GhLabelEvent, type GhOp, type GhResult, type VerdictContext, validateVerdictLabel } from "./phase-types";
+import {
+  ARTIFACT_CHECK_MANDATE,
+  ARTIFACT_CHECK_REQUIRED,
+  type GhLabelEvent,
+  type GhOp,
+  type GhResult,
+  type VerdictContext,
+  validateVerdictLabel,
+} from "./phase-types";
 export type { GhOp, GhResult };
 
 export const REVIEW_ROUND_CAP = 2;
@@ -161,7 +169,10 @@ export async function runReview(
 
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
     const resolveStep = `After replying to each addressed thread, resolve it: mcx pr comments ${work.prNumber} resolve --all-addressed`;
-    const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})\n${resolveStep}`;
+    const artifactCheck = (await state.get<string>("artifact_check")) === ARTIFACT_CHECK_REQUIRED;
+    const prompt = `/adversarial-review (PR ${work.prNumber}, branch ${work.branch}, round ${round})\n${resolveStep}${
+      artifactCheck ? ARTIFACT_CHECK_MANDATE : ""
+    }`;
     const cmdBase = input.provider.startsWith("acp:")
       ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
       : ["mcx", input.provider, "spawn"];
