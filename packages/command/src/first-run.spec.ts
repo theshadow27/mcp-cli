@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
@@ -131,6 +131,27 @@ describe("maybeShowFirstRunPrompt", () => {
 
     expect(errors[0]).toContain("8 server(s)");
     expect(errors[0]).toContain("...");
+  });
+
+  test("prunes stale promptedDirs when recording a new prompt (#2660)", () => {
+    const deadWorktree = join(tmpDir, "worktrees", "claude-gone");
+    writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({ promptedDirs: [deadWorktree, tmpDir] }));
+
+    // A fresh dir with .mcp.json triggers a new prompt (and a config write)
+    const freshDir = join(tmpDir, "fresh");
+    mkdirSync(freshDir, { recursive: true });
+    writeFileSync(join(freshDir, ".mcp.json"), JSON.stringify({ mcpServers: { gh: { command: "gh" } } }));
+
+    const origError = console.error;
+    console.error = () => {};
+    try {
+      maybeShowFirstRunPrompt(freshDir);
+    } finally {
+      console.error = origError;
+    }
+
+    const config = JSON.parse(readFileSync(options.MCP_CLI_CONFIG_PATH, "utf-8"));
+    expect(config.promptedDirs).toEqual([tmpDir, freshDir]);
   });
 
   test("handles malformed .mcp.json gracefully", () => {
