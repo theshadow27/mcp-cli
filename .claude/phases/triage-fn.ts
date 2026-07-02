@@ -1,5 +1,7 @@
 /** Core triage logic, extracted for testability via dependency injection. */
 
+import { ARTIFACT_CHECK_REQUIRED, requiresArtifactCheck } from "./phase-types";
+
 export interface TriageEventFilter {
   type?: string | string[];
   workItem?: string;
@@ -29,6 +31,8 @@ export interface TriageDeps {
   stateGet<T>(key: string): Promise<T | undefined>;
   stateSet(key: string, value: unknown): Promise<void>;
   updateWorkItem(id: string, prNumber: number): Promise<void>;
+  /** Changed file paths on the PR — drives the artifact-check gate (#2804). */
+  listChangedFiles(prNumber: number): Promise<string[]>;
 }
 
 export type TriageResult =
@@ -109,6 +113,19 @@ export async function runTriage(
 
   await deps.stateSet("triage_scrutiny", scrutiny);
   await deps.stateSet("triage_reasons", reasons.join("; "));
+
+  // Artifact-check gate (#2804): build/worker-plumbing changes can compile
+  // green and be dead at runtime, so flag them for the qa/review verifier to
+  // exercise the compiled binary. Best-effort: a file-list fetch failure must
+  // not derail triage's primary scrutiny decision.
+  try {
+    const changedFiles = await deps.listChangedFiles(prNumber);
+    if (requiresArtifactCheck(changedFiles)) {
+      await deps.stateSet("artifact_check", ARTIFACT_CHECK_REQUIRED);
+    }
+  } catch {
+    /* best-effort — artifact-check is advisory, never blocks triage */
+  }
 
   try {
     await deps.updateWorkItem(work.id, prNumber);

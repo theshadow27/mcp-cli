@@ -26,7 +26,13 @@
  */
 import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
-import { type Provider, buildImplCommand, buildImplPrompt, resolveImplModel } from "./impl-fn";
+import {
+  type Provider,
+  buildImplCommand,
+  buildImplPrompt,
+  detectPrescribedRootCause,
+  resolveImplModel,
+} from "./impl-fn";
 
 const ProviderSchema = z
   .string()
@@ -93,7 +99,25 @@ defineAlias({
     const provider = input.provider;
     const supportsWorktree = provider === "claude";
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "ExitPlanMode", "EnterPlanMode"];
-    const prompt = buildImplPrompt(work.issueNumber, work.prNumber ?? null);
+
+    // Verify-hypothesis injection (#2804): if the issue prescribes a root cause
+    // (flaky/needs-attention label or an investigation comment), require repro
+    // evidence at the plan checkpoint. Best-effort — a fetch failure must not
+    // block the spawn.
+    let verifyHypothesis = input.labels.includes("flaky") || input.labels.includes("needs-attention");
+    if (!verifyHypothesis) {
+      try {
+        const comments = await ctx.gh.issue(work.issueNumber).comments();
+        verifyHypothesis = detectPrescribedRootCause({
+          labels: input.labels,
+          commentBodies: comments.map((c) => c.body),
+        });
+      } catch {
+        /* best-effort — verify-hypothesis prompt is advisory */
+      }
+    }
+
+    const prompt = buildImplPrompt(work.issueNumber, work.prNumber ?? null, { verifyHypothesis });
     const command = buildImplCommand({ provider, model, supportsWorktree, prompt, allowTools });
 
     await ctx.state.set("provider", provider);

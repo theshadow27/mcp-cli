@@ -1,6 +1,6 @@
 /** Core done-phase logic, extracted for testability via dependency injection. */
 
-import type { GhOp, GhResult } from "./phase-types";
+import { type GhOp, type GhResult, labelsConsistent } from "./phase-types";
 export type { GhOp, GhResult };
 
 export interface ProcessHandle {
@@ -52,9 +52,17 @@ export type MergeResult =
   | { ok: true; prNumber: number; localCleanup?: string }
   | {
       ok: false;
-      reason: "ci_not_green" | "missing_qa_pass" | "conflicts" | "missing_required_check" | "merge_failed";
+      reason:
+        | "ci_not_green"
+        | "missing_qa_pass"
+        | "inconsistent_labels"
+        | "conflicts"
+        | "missing_required_check"
+        | "merge_failed";
       nextAction: string;
       detail?: string;
+      /** Labels blocking the merge, set only for reason === "inconsistent_labels" (#2804). */
+      blockingLabels?: string[];
     };
 
 export interface MergePrDeps {
@@ -89,18 +97,26 @@ export async function mergePr(prNumber: number, deps: MergePrDeps): Promise<Merg
   }
 
   const labels = labelOut.stdout.split(/\r?\n/).map((l) => l.trim());
+
+  // Label-closure gate (#2804): refuse merge on inconsistent verdict labels —
+  // a lingering `review:changes` after self-repair, or contradictory qa:pass +
+  // qa:fail. Surfaces the blocking labels so the orchestrator sees them without
+  // re-reading the PR.
+  const consistency = labelsConsistent(labels);
+  if (!consistency.ok) {
+    return {
+      ok: false,
+      reason: "inconsistent_labels",
+      nextAction: `PR #${prNumber} carries inconsistent verdict labels (${consistency.blocking.join(", ")}); send the verifier to close them before merge`,
+      blockingLabels: consistency.blocking,
+    };
+  }
+
   if (!labels.includes("qa:pass")) {
     return {
       ok: false,
       reason: "missing_qa_pass",
       nextAction: `spawn qa for PR #${prNumber}; do not transition to done until qa:pass is set`,
-    };
-  }
-  if (labels.includes("qa:fail")) {
-    return {
-      ok: false,
-      reason: "missing_qa_pass",
-      nextAction: `PR #${prNumber} has both qa:pass and qa:fail; remove the stale label before merge`,
     };
   }
 

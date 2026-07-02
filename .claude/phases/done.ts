@@ -28,6 +28,7 @@ defineAlias({
         reason: z.string(),
         nextAction: z.string(),
         detail: z.string().optional(),
+        blockingLabels: z.array(z.string()).optional(),
       })
       .optional(),
   }),
@@ -103,11 +104,27 @@ defineAlias({
       },
     });
     if (!result.ok) {
+      // Surface blocking verdict labels to work-item state so the orchestrator
+      // sees them without re-reading the PR (#2804).
+      if (result.reason === "inconsistent_labels" && result.blockingLabels) {
+        try {
+          await ctx.state.set("merge_block_labels", result.blockingLabels.join(","));
+        } catch {
+          /* non-fatal — the error payload also carries the labels */
+        }
+      }
       return {
         merged: false,
         prNumber: work.prNumber,
         issueNumber: work.issueNumber,
-        error: { reason: result.reason, nextAction: result.nextAction, detail: result.detail },
+        error: {
+          reason: result.reason,
+          nextAction: result.nextAction,
+          detail: result.detail,
+          ...(result.reason === "inconsistent_labels" && result.blockingLabels
+            ? { blockingLabels: result.blockingLabels }
+            : {}),
+        },
       };
     }
 
@@ -135,6 +152,8 @@ defineAlias({
       "labels",
       "model",
       "review_model",
+      "artifact_check",
+      "merge_block_labels",
     ]) {
       await ctx.state.delete(key);
     }

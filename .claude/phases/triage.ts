@@ -78,6 +78,10 @@ defineAlias({
       async updateWorkItem(id, prNumber) {
         await ctx.mcp._work_items.work_items_update({ id, prNumber });
       },
+      async listChangedFiles(prNumber) {
+        const files = await ctx.gh.pr(prNumber).files();
+        return files.map((f) => f.filename);
+      },
     });
   },
 });
