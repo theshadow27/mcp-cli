@@ -1,17 +1,17 @@
 {
   "version": 1,
-  "manifestHash": "7c6db54ba9992d3a66ee93eb63948f01cdcbb18a9e9ae01ac12de652e23b4f89",
+  "manifestHash": "1fadf9890088056a9bfb5f8c05bcb68601bca6bf23ead33788f5972a29e594d9",
   "phases": [
     {
       "name": "done",
       "resolvedPath": ".claude/phases/done.ts",
-      "contentHash": "c2f06149a306e11fcf86c5e6f258f9a1d254dba350a6f7db63a1b92b97cde0f7",
-      "schemaHash": "65b20b69643a6f7b1250b4949e0d1dffd022aa9573aadd952a07759879ebc98f"
+      "contentHash": "8c7a1604f4738ee4a79f3dc9a50c88acd233b3562c60107e8d5fc8dd75393390",
+      "schemaHash": "93813ec021f8ee0b78803977856232e324280005e21974deaf7d6662fc638144"
     },
     {
       "name": "impl",
       "resolvedPath": ".claude/phases/impl.ts",
-      "contentHash": "4ea18c3194c7dc7708a7f9ff55f774ebd03bf8e5c7c9dccfc8917557a11b26e1",
+      "contentHash": "521f7473b0268497fc2f019116052a159a3746c423c5d4d32ae8bdd50bf6ddd6",
       "schemaHash": "ffdce08965415cdf4bff93169087ae60b05a84fa07892fece8793b0bc06690b2"
     },
     {
@@ -23,7 +23,7 @@
     {
       "name": "qa",
       "resolvedPath": ".claude/phases/qa.ts",
-      "contentHash": "3d973ec4fa0d9b47bbd609b2047498d4a2fd9af6f790765e3d9cae4c949f4ec8",
+      "contentHash": "daa1715e657cd5ebec371a6682f432cbf648089b6a420faf4fc8cc539b21703e",
       "schemaHash": "2c3159b3558360d1a25caf8e7f4401da2dba237bf3799807bc8c68497290cd40"
     },
     {
@@ -35,13 +35,13 @@
     {
       "name": "review",
       "resolvedPath": ".claude/phases/review.ts",
-      "contentHash": "23f5836df4aa597a1ef0b5844277c5cc135fb8a99d5491653a5969b42ffad6f1",
+      "contentHash": "8dba2280a06f9c9d61ad80c8015c4404d6078301c934a8c708d87ef411eb7e81",
       "schemaHash": "722c5636d497444124371fe5ddabf15a1ca14b0b95fed8e066b3c2cacf1e8080"
     },
     {
       "name": "triage",
       "resolvedPath": ".claude/phases/triage.ts",
-      "contentHash": "310873836d6e75965d5a4034731c5553b6f79adb4bccb9fbbe7409231f22606f",
+      "contentHash": "abb70a85a6b8478c303a20c4e501f07f98e6918191e42ee2a9aff30e77e2e904",
       "schemaHash": "03a042ac366a29c9f33de68cf1b24300bc899126e4084a4fa1303247afbc772c"
     }
   ],
