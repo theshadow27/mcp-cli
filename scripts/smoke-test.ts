@@ -41,7 +41,7 @@ export default defineAlias({
   description: "Smoke test alias",
   input: z.object({}),
   output: z.object({ ok: z.boolean() }),
-  handler: async () => ({ ok: true }),
+  fn: async () => ({ ok: true }),
 });
 `;
 
@@ -122,11 +122,11 @@ await run("mcx ls exits 0", async () => {
 });
 
 await run("mcx alias save/call/delete cycle", async () => {
-  // NOTE: this check currently fails on the compiled binary due to #2821
-  // (compiled daemon can't resolve ./alias-executor.ts; the error is also
-  // printed to stdout with exit 0, which is why it went unnoticed). That is
-  // the smoke doing its job — catching a real compiled-binary regression. It
-  // will pass once #2821 lands.
+  // Exercises the compiled argv-redispatch + dynamic import() executor path
+  // that regressed in #2821 (compiled daemon couldn't resolve the embedded
+  // alias-executor module, and the failure was masked as exit 0 on stdout).
+  // Both are fixed: dispatch routes through the layout-tolerant resolver, and
+  // an isError result now exits non-zero.
   // Save (source token "-" reads the script from stdin)
   const save = await $`echo ${SMOKE_SCRIPT} | ${MCX} alias save ${SMOKE_ALIAS} -`.quiet().nothrow();
   assert(save.exitCode === 0, `alias save exit code ${save.exitCode}: ${save.stderr.toString()}`);

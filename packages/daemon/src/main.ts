@@ -7,27 +7,47 @@
 
 import { assertBunVersion } from "@mcp-cli/core";
 import { startDaemon } from "./index";
+import { workerPath } from "./worker-path";
 
 assertBunVersion();
 
 /**
- * Worker entries that can be dispatched via argv in compiled binaries.
+ * Worker source filenames dispatchable via argv in compiled binaries.
  *
- * In compiled mode, Bun.spawn([process.execPath, './alias-executor.ts'])
- * re-invokes the mcpd binary with the worker path as an argument. Without
- * this dispatch, the binary unconditionally starts a second daemon (#1411).
+ * In compiled mode, Bun.spawn([process.execPath, <worker-path>]) re-invokes the
+ * mcpd binary with the worker path as an argument. Without this dispatch, the
+ * binary unconditionally starts a second daemon (#1411).
  */
-const WORKER_ENTRIES: Record<string, string> = {
-  "alias-executor.ts": "./alias-executor.ts",
-};
+const WORKER_ENTRIES = ["alias-executor.ts"];
 
-/** Check if argv indicates a worker subprocess dispatch. */
+/** Extension-less stem so a `.ts` source matches an embedded `.js`. */
+function entryStem(name: string): string {
+  return name.replace(/\.[cm]?[jt]s$/, "");
+}
+
+/**
+ * If argv indicates a worker subprocess dispatch, return the canonical worker
+ * source filename (to be resolved via the layout-tolerant resolver before
+ * import), else undefined.
+ *
+ * The daemon spawns `mcpd <resolved-worker-path>`, where that path is the
+ * embedded module resolved via `workerPath()` — `.js` in a compiled binary
+ * (`/$bunfs/…`), `.ts` in dev. Matching a literal `.ts` suffix therefore misses
+ * the compiled dispatch and starts a second daemon (#2821), so match the stem
+ * against both extensions.
+ */
 export function resolveWorkerEntry(argv: string[]): string | undefined {
   const lastArg = argv.at(-1);
   if (!lastArg) return undefined;
-  for (const [suffix, modulePath] of Object.entries(WORKER_ENTRIES)) {
-    if (lastArg === `./${suffix}` || lastArg.endsWith(`/${suffix}`)) {
-      return modulePath;
+  for (const entry of WORKER_ENTRIES) {
+    const stem = entryStem(entry);
+    if (
+      lastArg === `./${stem}.ts` ||
+      lastArg === `./${stem}.js` ||
+      lastArg.endsWith(`/${stem}.ts`) ||
+      lastArg.endsWith(`/${stem}.js`)
+    ) {
+      return entry;
     }
   }
   return undefined;
@@ -72,7 +92,11 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   const workerEntry = resolveWorkerEntry(process.argv);
   if (workerEntry) {
-    import(workerEntry);
+    // Resolve through the layout-tolerant resolver rather than importing a
+    // predicted literal path: the embedded module layout is Bun-outbase
+    // dependent (#2801), and a predicted `./alias-executor.ts` fails to
+    // resolve in the compiled binary's module graph (#2821).
+    import(workerPath(workerEntry));
   } else {
     main().catch((err) => {
       console.error("[mcpd] Fatal:", err);
