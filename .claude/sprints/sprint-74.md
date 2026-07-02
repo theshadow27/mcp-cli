@@ -47,6 +47,8 @@ Drain the sprint-73 fallout: restore trust in the gate (build-smoke accuracy, du
 
 - **#2821** (added 2026-07-01 19:50 EDT): compiled `mcpd` cannot import `./alias-executor.ts` via argv-redispatch (`WORKER_ENTRIES` in `packages/daemon/src/main.ts` predicts a literal embed path) + masking bug (`mcx call _aliases` prints the error to stdout and exits 0). Found by #2797's isolated smoke test; reproduces on clean main. P1. **blockedBy #2801/PR #2822 merge** — the fix must route the argv dispatch through the new layout-tolerant resolver in `worker-path.ts` rather than re-predicting a path. Predicted files: `packages/daemon/src/main.ts`, alias-call error path; no overlap with other in-flight issues. #2797 lands without its CI-wiring step; that step becomes a follow-up after #2821.
 
+- **#2825** (added 2026-07-01 ~19:57 EDT, ESCALATED → **needs-attention** 2026-07-01 21:50 EDT): stdio load/drain test regression, first failure at the #2793/PR #2814 merge. Investigation confirmed + deterministically reproduced a result-line drop mechanism; repair PR #2830 fixes it (review:pass, QA revert-check proved causal necessity) — but #2830's own CI failed the same 12s timeout on the fixed tree (run 28556322363), so a second mechanism (drain throughput under runner contention) is suspected. Halted per one-repair escalation rule; timeline + options on the issue. **Held PRs pending human decision: #2818 (#2771), #2820 (#2785), #2823 (#2660), #2831 (#2821), #2830 itself.**
+
 ### Hot-shared file watch
 - `scripts/build.ts`: #2800 → #2801 (serialized above)
 - `scripts/_runner/gate-lease.ts` + `am-i-done.ts`: #2761 → #2760, #2771 (serialized above)
