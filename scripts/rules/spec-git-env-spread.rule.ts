@@ -12,11 +12,14 @@
  *
  * Detection:
  *   Find every spawn/exec call whose first argument (or cmd array element) is
- *   the string literal `"git"`. For each such call, resolve the `env` option
- *   value — tracing through up to one variable reference — and check whether
- *   it spreads `process.env` without an explicit `GIT_DIR: undefined` strip.
- *   The delete-based stripping pattern (`const e = {...process.env}; delete
- *   e.GIT_DIR`) is also recognized as safe.
+ *   a git command — the string literal `"git"`, a `git …` command string, a
+ *   `git` template literal, or an argv array headed by `"git"`. Options are
+ *   located per-callee: Bun.spawnSync/execSync at index 1, and the node-form
+ *   `spawnSync`/`execFileSync(cmd, args, opts)` at index 2. For each such call,
+ *   resolve the `env` option value — tracing through up to one variable
+ *   reference — and check whether it spreads `process.env` without an explicit
+ *   `GIT_DIR: undefined` strip. The delete-based stripping pattern (`const e =
+ *   {...process.env}; delete e.GIT_DIR`) is also recognized as safe.
  *
  * Safe forms (not flagged):
  *   - `env: cleanGitEnv()` — function call, no direct process.env spread
@@ -48,9 +51,19 @@ function calleeMethodName(expr: ts.Expression): string | undefined {
   return undefined;
 }
 
+/** True when a command string is `git` or begins with `git `. */
+function isGitCommandString(text: string): boolean {
+  return text === "git" || text.startsWith("git ");
+}
+
 /**
  * True when the first argument to a spawn/exec call is the string literal
- * "git" or an array whose first element is the string literal "git".
+ * "git" (or a git command string / template) or an array whose first element
+ * is the string literal "git".
+ *
+ * Template-literal commands (`execSync(`git init`)`) are recognized via the
+ * no-substitution literal text and, for interpolated commands, the template
+ * head — otherwise a trivial backtick swap bypasses the rule.
  */
 function firstArgIsGit(call: ts.CallExpression): boolean {
   const first = call.arguments[0];
@@ -59,8 +72,11 @@ function firstArgIsGit(call: ts.CallExpression): boolean {
     const head = first.elements[0];
     return !!head && ts.isStringLiteral(head) && head.text === "git";
   }
-  if (ts.isStringLiteral(first)) {
-    return first.text === "git" || first.text.startsWith("git ");
+  if (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) {
+    return isGitCommandString(first.text);
+  }
+  if (ts.isTemplateExpression(first)) {
+    return isGitCommandString(first.head.text);
   }
   return false;
 }
@@ -193,20 +209,35 @@ function findUnsafeProcessEnvSpread(
  * argument. Handles both inline object literals and variable references.
  *
  * Signature variants:
- *   spawn(cmd[], opts)           → opts at index 1
- *   execSync(str, opts)         → opts at index 1
- *   execFileSync(file, args, opts) → opts at index 2 when second arg is an array
+ *   Bun.spawnSync(cmd[], opts)     → opts at index 1 (first arg is an array)
+ *   execSync(str, opts)            → opts at index 1
+ *   execFileSync(file, [args], opts) → opts at index 2 when args are present
+ *   node spawnSync(cmd, [args], opts) → opts at index 2 when args are present
+ *
+ * Bun.spawnSync and node's child_process.spawnSync collide on the name but
+ * differ in arity: Bun takes the argv array as the first arg (opts at 1),
+ * node takes the command string first with args at index 1 (opts at 2).
+ * Disambiguate by whether the first arg is a string (node) vs array (Bun).
  */
 function getEnvValue(call: ts.CallExpression, varDecls: ts.VariableDeclaration[]): ts.Expression | undefined {
   const name = calleeMethodName(call.expression);
   if (!name) return undefined;
 
-  // execFileSync(file, [args], opts): opts may be at index 2
+  // Node-form spawnSync/execFileSync put args at index 1 and opts at index 2.
   let optIdx = 1;
-  if (name === "execFileSync") {
+  if (name === "execFileSync" || name === "spawnSync") {
+    const first = call.arguments[0];
     const second = call.arguments[1];
-    if (second && (ts.isArrayLiteralExpression(second) || ts.isIdentifier(second))) {
-      optIdx = 2;
+    // Only the string-command form has an args slot; Bun.spawnSync([...], opts)
+    // has an array first arg and keeps opts at index 1.
+    if (first && ts.isStringLiteral(first) && second) {
+      if (ts.isArrayLiteralExpression(second)) {
+        optIdx = 2;
+      } else if (ts.isIdentifier(second)) {
+        // Ambiguous: `spawnSync(cmd, argsIdent, opts)` vs `spawnSync(cmd, optsIdent)`.
+        // Prefer index 2 only when a third arg exists.
+        optIdx = call.arguments[2] ? 2 : 1;
+      }
     }
   }
 

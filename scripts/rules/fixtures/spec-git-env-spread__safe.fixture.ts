@@ -10,10 +10,12 @@
  *   4. Delete-based stripping (packages/daemon/src/index.spec.ts pattern)
  *   5. Non-git subprocess spreading process.env (bun, node) — out of scope
  *   6. execSync string-form with hoisted stripped env (cli-orchestration.spec.ts pattern)
+ *   7. node-form spawnSync("git", args, cleanGitEnv()) — opts at index 2 (#2785)
+ *   8. template-literal git command with cleanGitEnv() (#2785)
  */
 
 import { describe, test } from "bun:test";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,5 +72,15 @@ describe("safe git env patterns", () => {
       'git init && git -c user.email="t@t.com" -c user.name="T" commit --allow-empty -m init',
       { cwd: repo, stdio: "pipe", env: gitSafeEnv },
     );
+  });
+
+  test("7. node-form spawnSync(cmd, args, opts) with cleanGitEnv()", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-test-"));
+    spawnSync("git", ["-C", repo, "init", "-q"], { env: cleanGitEnv() });
+  });
+
+  test("8. template-literal git command with cleanGitEnv()", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-test-"));
+    execSync(`git init -q`, { cwd: repo, env: cleanGitEnv() });
   });
 });
