@@ -278,6 +278,24 @@ describe("runQa — no session yet", () => {
       expect(result.prompt).toContain("PR 200");
     }
   });
+
+  test("omits the artifact-boot mandate by default (#2804)", async () => {
+    const state = makeState();
+    const result = await runQa({ provider: "claude" }, makeWork(), state, makeDeps());
+    if (result.action === "spawn") {
+      expect(result.prompt).not.toContain("ARTIFACT-BOOT MANDATE");
+    }
+  });
+
+  test("appends the artifact-boot mandate when artifact_check=required (#2804)", async () => {
+    const state = makeState({ artifact_check: "required" });
+    const result = await runQa({ provider: "claude" }, makeWork(), state, makeDeps());
+    expect(result.action).toBe("spawn");
+    if (result.action === "spawn") {
+      expect(result.prompt).toContain("ARTIFACT-BOOT MANDATE");
+      expect(result.command).toContain(result.prompt);
+    }
+  });
 });
 
 describe("runQa — session exists, waiting for labels", () => {

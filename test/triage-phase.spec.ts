@@ -19,6 +19,7 @@ function makeDeps(overrides: Partial<TriageDeps> = {}): TriageDeps {
     stateGet: () => Promise.resolve(undefined),
     stateSet: () => Promise.resolve(),
     updateWorkItem: () => Promise.resolve(),
+    listChangedFiles: async () => [],
     ...overrides,
   };
 }
@@ -406,6 +407,49 @@ describe("runTriage — state", () => {
     );
     expect(stateWrites.triage_scrutiny).toBe("low");
     expect(stateWrites.triage_reasons).toBe("small; clean");
+  });
+
+  test("sets artifact_check=required when a worker file changed (#2804)", async () => {
+    const stateWrites: Record<string, unknown> = {};
+    await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        listChangedFiles: async () => ["packages/daemon/src/mail-session-worker.ts"],
+        stateSet: async (key, value) => {
+          stateWrites[key] = value;
+        },
+      }),
+    );
+    expect(stateWrites.artifact_check).toBe("required");
+  });
+
+  test("does not set artifact_check for ordinary source changes (#2804)", async () => {
+    const stateWrites: Record<string, unknown> = {};
+    await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        listChangedFiles: async () => ["packages/core/src/config.ts"],
+        stateSet: async (key, value) => {
+          stateWrites[key] = value;
+        },
+      }),
+    );
+    expect("artifact_check" in stateWrites).toBe(false);
+  });
+
+  test("a listChangedFiles failure does not derail triage (#2804)", async () => {
+    const result = await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        listChangedFiles: async () => {
+          throw new Error("gh files fetch failed");
+        },
+      }),
+    );
+    expect(result.action).toBe("goto");
   });
 
   test("updateWorkItem connectivity failure is swallowed", async () => {
