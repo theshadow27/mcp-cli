@@ -89,7 +89,7 @@ export type WorkItemEvent =
 const VALID_TRANSITIONS: Record<WorkItemPhase, ReadonlySet<WorkItemPhase>> = {
   impl: new Set(["review", "qa", "done"]),
   review: new Set(["repair", "qa", "done"]),
-  repair: new Set(["review", "done"]),
+  repair: new Set(["review", "qa", "done"]),
   qa: new Set(["repair", "done"]),
   done: new Set(), // terminal
 };

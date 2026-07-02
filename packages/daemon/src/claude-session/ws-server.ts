@@ -383,6 +383,13 @@ interface WsSession {
   /** Writable stdin sink for stdio transport. Null for WS sessions. */
   stdioWriter: { write(data: string | Uint8Array): number | Promise<number>; flush(): number | Promise<number> } | null;
   /**
+   * Resolves when the stdio stdout reader has drained to EOF. Awaited in the
+   * proc.exited handler before judging completion, so the trailing `result`
+   * NDJSON line (still buffered in the pipe at exit) is processed before the
+   * session can transit through a premature `disconnected` state (#2825).
+   */
+  stdioDrainDone?: Promise<void>;
+  /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
    * Cleared after findImmediateEvent reports it. Prevents wait from returning the same
@@ -985,6 +992,22 @@ export class ClaudeWsServer {
       session.spawnAlive = false;
       if (session.state.state === "ended") return;
       if (session.proc !== proc || (session.state.state as string) === "ended") return;
+
+      // For stdio, process exit does NOT imply stdout is drained — the trailing
+      // `result` line can still sit in the pipe buffer. Wait for the reader to
+      // hit EOF (which the child's stdout close delivers on exit) so that line
+      // is processed before we judge completion. Otherwise we take the else
+      // branch below, flip to `disconnected`, and the #2814 handleStdioLine
+      // guard drops the buffered `result` — session:result never fires (#2825).
+      if (session.transport === "stdio" && session.stdioDrainDone) {
+        try {
+          await session.stdioDrainDone;
+        } catch {
+          // drain rejections are already swallowed inside drain(); guard anyway
+        }
+        if (session.proc !== proc || (session.state.state as string) === "ended") return;
+      }
+
       const stderrTail = proc.stderrTail?.() ?? "";
       const suffix = stderrTail ? `: ${stderrTail}` : "";
       this.logger.error(
@@ -1186,7 +1209,7 @@ export class ClaudeWsServer {
       }
     };
 
-    drain();
+    session.stdioDrainDone = drain();
   }
 
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */

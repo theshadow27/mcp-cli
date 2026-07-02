@@ -32,6 +32,8 @@ import { flockUnlock, tryFlockExclusive } from "./flock";
 
 /** Default number of concurrent heavy test phases allowed across the host. */
 const DEFAULT_SLOTS = 2;
+/** Upper bound on slots — a huge value would exhaust the fd table per poll. */
+const MAX_SLOTS = 64;
 /** Generous fail-open deadline — proceed unleased rather than hang the gate. */
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 /** Base poll interval; jitter is added on top to avoid lockstep retries. */
@@ -55,7 +57,7 @@ export interface GateLeaseOptions {
   logger?: LeaseLogger;
   /** DI seam: sleep implementation (injected in tests). */
   sleep?: (ms: number) => Promise<void>;
-  /** DI seam: monotonic-ish clock (injected in tests). */
+  /** DI seam: monotonic clock (defaults to performance.now; injected in tests). */
   now?: () => number;
   /** DI seam: jitter source (injected in tests). */
   random?: () => number;
@@ -72,11 +74,27 @@ export interface GateLease {
 
 const UNHELD_LEASE: GateLease = { held: false, slot: null, release: () => {} };
 
-function readSlotsFromEnv(): number {
+function readSlotsFromEnv(logger?: LeaseLogger): number {
   const raw = process.env.MCX_GATE_LEASE_SLOTS;
   if (raw === undefined || raw === "") return DEFAULT_SLOTS;
+  // parseInt silently truncates trailing garbage ("2abc" -> 2), which hides a
+  // typo in a tuning value — reject non-integers with a warning instead.
+  if (!/^\s*-?\d+\s*$/.test(raw)) {
+    logger?.warn?.(
+      `gate-lease: MCX_GATE_LEASE_SLOTS="${raw}" is not an integer — using default ${DEFAULT_SLOTS} (#2690)`,
+    );
+    return DEFAULT_SLOTS;
+  }
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) ? n : DEFAULT_SLOTS;
+  if (!Number.isFinite(n)) return DEFAULT_SLOTS;
+  if (n > MAX_SLOTS) {
+    logger?.warn?.(`gate-lease: MCX_GATE_LEASE_SLOTS=${n} exceeds max ${MAX_SLOTS} — capping to ${MAX_SLOTS} (#2690)`);
+    return MAX_SLOTS;
+  }
+  if (n <= 0) {
+    logger?.warn?.(`gate-lease: MCX_GATE_LEASE_SLOTS=${n} disables the gate — proceeding unleased (#2690)`);
+  }
+  return n;
 }
 
 function readTimeoutFromEnv(): number {
@@ -144,18 +162,27 @@ function makeHeldLease(slot: HeldSlot): GateLease {
  * or when the fail-open deadline elapses. Never throws on contention.
  */
 export async function acquireGateLease(opts: GateLeaseOptions = {}): Promise<GateLease> {
-  const slots = opts.slots ?? readSlotsFromEnv();
+  const logger = opts.logger;
+  const slots = opts.slots ?? readSlotsFromEnv(logger);
   if (slots <= 0) return UNHELD_LEASE;
 
   const lockDir = opts.lockDir ?? join(options.MCP_CLI_DIR, "gate-locks");
   const timeoutMs = opts.timeoutMs ?? readTimeoutFromEnv();
   const basePoll = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
   const sleep = opts.sleep ?? defaultSleep;
-  const now = opts.now ?? Date.now;
+  const now = opts.now ?? (() => performance.now());
   const random = opts.random ?? Math.random;
-  const logger = opts.logger;
 
-  mkdirSync(lockDir, { recursive: true });
+  // Fail-open on any fs error creating the lock dir (read-only HOME, disk full,
+  // bad permissions) — the lease must never fail the run it wraps (#2690).
+  try {
+    mkdirSync(lockDir, { recursive: true });
+  } catch (err) {
+    logger?.warn?.(
+      `gate-lease: could not create lock dir ${lockDir} (${(err as Error).message}) — proceeding unleased (fail-open, #2690)`,
+    );
+    return UNHELD_LEASE;
+  }
 
   const deadline = now() + timeoutMs;
   let announcedWait = false;
