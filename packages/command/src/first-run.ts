@@ -6,7 +6,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { McpConfigFile } from "@mcp-cli/core";
-import { PROJECT_MCP_FILENAME, projectConfigPath, readCliConfig, writeCliConfig } from "@mcp-cli/core";
+import {
+  PROJECT_MCP_FILENAME,
+  projectConfigPath,
+  prunePromptedDirs,
+  readCliConfig,
+  writeCliConfig,
+} from "@mcp-cli/core";
 
 /**
  * Check for .mcp.json and show import prompt if this is the first run
@@ -51,6 +57,6 @@ export function maybeShowFirstRunPrompt(cwd = process.cwd()): void {
   console.error(`Found ${PROJECT_MCP_FILENAME} with ${serverCount} server(s) (${nameList}).`);
   console.error("Run `mcx import` to add them, or `mcx import .` to anchor to this directory.");
 
-  // Mark as prompted
-  writeCliConfig({ ...config, promptedDirs: [...prompted, resolvedCwd] });
+  // Mark as prompted, pruning dead worktree paths so the list stays bounded (#2660)
+  writeCliConfig({ ...config, promptedDirs: [...prunePromptedDirs(prompted), resolvedCwd] });
 }

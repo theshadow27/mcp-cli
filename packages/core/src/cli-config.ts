@@ -17,6 +17,17 @@ export function readCliConfig(): CliConfig {
   }
 }
 
+/**
+ * Drop promptedDirs entries whose path no longer exists on disk.
+ *
+ * Worktrees are torn down at session `bye` but their first-run prompt markers
+ * linger forever, so the list grows unbounded (#2660). Pruning on write keeps
+ * it bounded to directories that still exist.
+ */
+export function prunePromptedDirs(dirs: string[]): string[] {
+  return dirs.filter((dir) => existsSync(dir));
+}
+
 /** Write the CLI config file, creating the parent directory if needed. */
 export function writeCliConfig(config: CliConfig): void {
   const dir = dirname(options.MCP_CLI_CONFIG_PATH);
