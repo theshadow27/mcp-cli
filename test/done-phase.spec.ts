@@ -42,7 +42,7 @@ describe("mergePr — label guard", () => {
     if (!result.ok) expect(result.nextAction).toContain("spawn qa");
   });
 
-  test("both qa:pass and qa:fail → missing_qa_pass (stale label)", async () => {
+  test("both qa:pass and qa:fail → inconsistent_labels (#2804)", async () => {
     const result = await mergePr(
       100,
       makeDeps({
@@ -52,8 +52,22 @@ describe("mergePr — label guard", () => {
         },
       }),
     );
-    expect(result).toMatchObject({ ok: false, reason: "missing_qa_pass" });
-    if (!result.ok) expect(result.nextAction).toContain("stale label");
+    expect(result).toMatchObject({ ok: false, reason: "inconsistent_labels" });
+    if (!result.ok) expect(result.blockingLabels).toEqual(expect.arrayContaining(["qa:pass", "qa:fail"]));
+  });
+
+  test("lingering review:changes blocks merge → inconsistent_labels (#2804)", async () => {
+    const result = await mergePr(
+      100,
+      makeDeps({
+        gh: async (op) => {
+          if (op.op === "pr:labels") return ok("qa:pass\nreview:pass\nreview:changes");
+          return ok("0");
+        },
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: "inconsistent_labels" });
+    if (!result.ok) expect(result.blockingLabels).toContain("review:changes");
   });
 
   test("gh labels call fails → merge_failed", async () => {

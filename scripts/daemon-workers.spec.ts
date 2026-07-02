@@ -39,18 +39,12 @@ describe("daemonWorkers bundle list", () => {
     expect(daemonWorkers.length).toBe(new Set(daemonWorkers).size);
   });
 
-  // Bun's default outbase shifts with the entrypoint count (1.3.14: ≤8 embeds
-  // workers flat at /$bunfs/root/, ≥9 nests them under packages/daemon/src/),
-  // which breaks compiled-mode `./<name>.ts` worker resolution for ALL workers
-  // at once while the build still exits 0. Every daemon compile command must
-  // pin the outbase with --root so the layout is deterministic; build.ts also
-  // smoke-boots the compiled binary to verify it (smokeDaemonWorkers).
-  it("build.ts pins --root on every compile command that embeds the workers", () => {
-    const buildSrc = readFileSync(resolve("scripts/build.ts"), "utf-8");
-    const compileLines = buildSrc.split("\n").filter((l) => l.includes("${daemonWorkers}"));
-    expect(compileLines.length).toBeGreaterThan(0);
-    for (const line of compileLines) {
-      expect(line).toContain("--root=${workerRoot}");
-    }
-  });
+  // The former "build.ts pins --root" string-match assertion lived here. It
+  // tested implementation spelling, not behavior — it false-failed on harmless
+  // build.ts refactors and would green-pass if a Bun upgrade broke resolution
+  // at a different layer. Worker resolution now probes the actual embedded
+  // module graph across every known layout via Bun.resolveSync (worker-path.ts,
+  // #2801), so a single predicted layout is no longer load-bearing; the
+  // post-compile boot smoke in build.ts is the behavior-true guard that every
+  // worker actually starts.
 });

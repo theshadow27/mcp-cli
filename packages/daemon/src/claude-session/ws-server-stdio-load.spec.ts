@@ -70,18 +70,29 @@ function burstTranscript(lines: number, lineBytes: number): string {
 }
 
 /**
- * Real-pipe spawn: streams the pre-generated transcript through `cat`, an
- * instant-startup subprocess, so the daemon's stdio drain loop reads from a
- * genuine OS pipe (not an in-memory ReadableStream stub) and `cat` blocks on a
- * full pipe if the drain stalls. This is the only way to exercise real
- * pipe-buffer backpressure — the deadlock #2234 flagged lives in that path —
- * while keeping per-spawn CPU cost low enough to avoid starving the parallel
- * test runner (a heavier `bun` fixture tipped neighbour tests over their
- * timeouts).
+ * Real-pipe spawn: streams the pre-generated transcript through a subprocess,
+ * so the daemon's stdio drain loop reads from a genuine OS pipe (not an
+ * in-memory ReadableStream stub) and the child blocks on a full pipe if the
+ * drain stalls. This is the only way to exercise real pipe-buffer backpressure
+ * — the deadlock #2234 flagged lives in that path — while keeping per-spawn CPU
+ * cost low enough to avoid starving the parallel test runner (a heavier `bun`
+ * fixture tipped neighbour tests over their timeouts).
+ *
+ * The child MUST keep stdin open until it exits, to be faithful to the stdio
+ * contract a real `claude` child honors: the daemon writes the initial prompt
+ * to stdin (startStdioReader → sendToSession) before wiring the reader. A bare
+ * `cat <file>` exits the instant it finishes streaming the file and never reads
+ * stdin, so under runner contention its stdin pipe is already closed when that
+ * write lands → EPIPE → failSend → disconnectSession flips the session to
+ * `disconnected` before drain starts, and the #2814 handleStdioLine guard then
+ * drops the buffered trailing `result` line — session:result never fires and
+ * the test dead-waits to its 12s budget (#2825 round 2). `cat "$1"; cat
+ * >/dev/null` streams the transcript, then drains stdin to EOF so the prompt
+ * write cannot EPIPE (proven 0/10 stalls vs 8/10 for bare cat at load avg 340).
  */
 function catSpawn(transcriptPath: string): SpawnFn {
   return (() => {
-    const proc = Bun.spawn(["cat", transcriptPath], {
+    const proc = Bun.spawn(["sh", "-c", 'cat "$1"; cat >/dev/null', "_", transcriptPath], {
       stdout: "pipe",
       stdin: "pipe",
       stderr: "pipe",

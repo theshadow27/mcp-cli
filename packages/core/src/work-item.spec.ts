@@ -18,6 +18,7 @@ describe("canTransition", () => {
     ["review", "qa"],
     ["review", "done"],
     ["repair", "review"],
+    ["repair", "qa"],
     ["repair", "done"],
     ["qa", "repair"],
     ["qa", "done"],
@@ -35,7 +36,6 @@ describe("canTransition", () => {
     ["review", "impl"],
     ["review", "review"],
     ["repair", "impl"],
-    ["repair", "qa"],
     ["qa", "impl"],
     ["qa", "review"],
     ["qa", "qa"],
@@ -73,6 +73,10 @@ describe("reachablePhases", () => {
 
   it("returns repair, qa, done from review", () => {
     expect([...reachablePhases("review")].sort()).toEqual(["done", "qa", "repair"]);
+  });
+
+  it("returns review, qa, done from repair", () => {
+    expect([...reachablePhases("repair")].sort()).toEqual(["done", "qa", "review"]);
   });
 
   it("returns empty array for unknown phase", () => {

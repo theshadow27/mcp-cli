@@ -46,6 +46,38 @@ describe("mergePr", () => {
     if (!result.ok) expect(result.reason).toBe("missing_qa_pass");
   });
 
+  test("blocks merge when the PR still carries review:changes (#2804)", async () => {
+    const deps = makeDeps({
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass\nreview:pass\nreview:changes", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+    const result = await mergePr(42, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("inconsistent_labels");
+      expect(result.blockingLabels).toContain("review:changes");
+    }
+  });
+
+  test("blocks merge when qa:pass and qa:fail are both present (#2804)", async () => {
+    const deps = makeDeps({
+      async gh(op) {
+        if (op.op === "pr:labels") return { stdout: "qa:pass\nqa:fail", stderr: "", exitCode: 0 };
+        if (op.op === "pr:checks") return { stdout: "0", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+    const result = await mergePr(42, deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("inconsistent_labels");
+      expect(result.blockingLabels).toEqual(expect.arrayContaining(["qa:pass", "qa:fail"]));
+    }
+  });
+
   test("returns ci_not_green when failing checks > 0", async () => {
     const deps = makeDeps({
       async gh(op) {

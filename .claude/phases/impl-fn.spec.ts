@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildImplCommand, buildImplPrompt, resolveImplModel } from "./impl-fn";
+import { buildImplCommand, buildImplPrompt, detectPrescribedRootCause, resolveImplModel } from "./impl-fn";
 
 describe("buildImplPrompt", () => {
   test("includes the issue number", () => {
@@ -23,6 +23,38 @@ describe("buildImplPrompt", () => {
 
   test("resolve step references the correct pr number", () => {
     expect(buildImplPrompt(10, 99)).toContain("mcx pr comments 99 resolve --all-addressed");
+  });
+
+  test("omits the verify-hypothesis mandate by default", () => {
+    expect(buildImplPrompt(42, null)).not.toContain("VERIFY-THE-HYPOTHESIS");
+  });
+
+  test("appends the verify-hypothesis mandate when flagged", () => {
+    const prompt = buildImplPrompt(42, null, { verifyHypothesis: true });
+    expect(prompt).toContain("VERIFY-THE-HYPOTHESIS");
+    expect(prompt).toContain("Reproduction evidence:");
+  });
+});
+
+describe("detectPrescribedRootCause", () => {
+  test("true when the issue carries the flaky label", () => {
+    expect(detectPrescribedRootCause({ labels: ["flaky"], commentBodies: [] })).toBe(true);
+  });
+
+  test("true when the issue carries needs-attention", () => {
+    expect(detectPrescribedRootCause({ labels: ["needs-attention"], commentBodies: [] })).toBe(true);
+  });
+
+  test("true when a comment reads like an investigation writeup", () => {
+    expect(detectPrescribedRootCause({ labels: [], commentBodies: ["Investigation: the race is in X"] })).toBe(true);
+  });
+
+  test("true on a Root cause: comment (case-insensitive)", () => {
+    expect(detectPrescribedRootCause({ labels: [], commentBodies: ["root cause: null deref at foo.ts:12"] })).toBe(true);
+  });
+
+  test("false for an ordinary issue with plain comments", () => {
+    expect(detectPrescribedRootCause({ labels: ["enhancement"], commentBodies: ["+1", "any update?"] })).toBe(false);
   });
 });
 

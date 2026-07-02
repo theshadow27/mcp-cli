@@ -319,6 +319,52 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(resultEvent).toBeDefined();
   });
 
+  test("stdio session that completes-then-exits still emits session:result when proc.exited wins the race (#2825)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // init + assistant are readable first and fully drained; the reader then
+    // parks on read() with an empty buffer.
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:init"), 1000);
+    mock.pushStdout(`${assistantMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:response"), 1000);
+
+    // Resolve proc.exited and let its handler run to completion BEFORE the
+    // trailing result line is delivered — the CI race where exit "wins the
+    // schedule" (faithful to `cat`: final bytes still in the kernel pipe buffer
+    // at exit). Flushing microtasks here is deterministic ordering, not a
+    // time-based wait: the reader is parked (no data), so only the exit
+    // handler runs. Without the drain-await fix (ws-server.ts:983) the handler
+    // flips the session to `disconnected`, and the #2814 handleStdioLine guard
+    // then drops the buffered result — session:result never fires.
+    mock.exitResolve(0);
+    const flush = () => new Promise<void>((r) => queueMicrotask(r));
+    await flush();
+    await flush();
+
+    // Deliver the buffered result line + EOF, exactly as `cat` does at exit.
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    mock.closeStdout();
+
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+    expect(events.some((e) => e.type === "session:result")).toBe(true);
+  });
+
   test("stdio session clears connect timeout on first stdout line", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
