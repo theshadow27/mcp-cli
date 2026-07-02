@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
+import type { Step } from "./_runner/types";
 import { CI, COMPREHENSIVE, PRE_COMMIT, PRE_PUSH } from "./am-i-done";
 
 const names = (steps: { name: string }[]) => steps.map((s) => s.name);
+const leased = (steps: Step[]) => steps.filter((s) => s.lease).map((s) => s.name);
 
 describe("am-i-done step lists", () => {
   // #2737: `mcx phase check` resolves its root to the main checkout from a
@@ -25,5 +27,17 @@ describe("am-i-done step lists", () => {
 
   it("keeps phase-lock in the comprehensive (default) run", () => {
     expect(names(COMPREHENSIVE)).toContain("phase-lock");
+  });
+
+  // #2761: test-changed in the pre-push gate runs a near-full parallel spec
+  // set on a packages/core diff, which stacks on top of leased COMPREHENSIVE
+  // runs from other worktrees and re-creates the oversubscription #2690 fixed.
+  // CI steps stay unleased — each CI runner is its own host.
+  it("leases test-changed in the pre-push gate (#2761)", () => {
+    expect(leased(PRE_PUSH)).toContain("test-changed");
+  });
+
+  it("does not lease test-changed in CI (each runner is its own host)", () => {
+    expect(leased(CI)).not.toContain("test-changed");
   });
 });

@@ -283,6 +283,20 @@ reviewers grepping every PR for potential duplicates across all open
 sibling branches is far higher than the (rare) cost of a single lint
 failure + rebase.
 
+**The overlap analysis is not one-shot — it must be re-run on every plan
+amendment.** When an issue is added mid-sprint (P1 discovered during QA,
+follow-up promoted to the active sprint), predict its touched files (parse
+the issue body for paths, stack traces, "modifies X" mentions) and
+cross-reference against ALL already-batched issues' predicted files before
+launching it. If it shares a file with an in-flight issue, add a
+"#amendment blockedBy #in-flight" edge (or push it to a later batch) and
+update the plan's hot-shared-files list in place so the serialization
+rationale stays current. Sprint 73 skipped this: #2754 was amended in at
+16:10, shared `scripts/_runner/ci-steps.ts` with already-batched #2719,
+launched in parallel anyway, and forced a manual merge-order intervention
+(#2768). The amendment flow in `run.md` ("Sprint-meta edits during run")
+repeats this requirement at the point of use.
+
 ## Step 5: Write the sprint plan
 
 Determine the sprint number:

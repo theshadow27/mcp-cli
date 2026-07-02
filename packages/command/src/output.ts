@@ -47,6 +47,15 @@ export function formatToolResult(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+/**
+ * Whether a tool call result signals an error (MCP `isError: true`).
+ * Such a result must surface as a non-zero exit with the message on stderr,
+ * not a silent exit 0 with the error text on stdout (#2821).
+ */
+export function isToolError(result: unknown): boolean {
+  return typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true;
+}
+
 /** Format and print a tool call result to stdout */
 export function printToolResult(result: unknown): void {
   const text = formatToolResult(result);

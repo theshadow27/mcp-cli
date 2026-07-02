@@ -1,6 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AliasDetail } from "@mcp-cli/core";
-import { extractErrorMessage, formatToolResult, printAliasDebug, printAliasList, printToolList } from "./output";
+import {
+  extractErrorMessage,
+  formatToolResult,
+  isToolError,
+  printAliasDebug,
+  printAliasList,
+  printToolList,
+} from "./output";
 
 describe("formatToolResult", () => {
   test("returns empty string for null", () => {
@@ -308,5 +315,25 @@ describe("extractErrorMessage", () => {
       exitCode: 1,
     });
     expect(extractErrorMessage(err)).toBe("Failed with exit code 1");
+  });
+});
+
+describe("isToolError", () => {
+  test("true for MCP result with isError: true", () => {
+    expect(isToolError({ content: [{ type: "text", text: "boom" }], isError: true })).toBe(true);
+  });
+
+  test("false for successful result", () => {
+    expect(isToolError({ content: [{ type: "text", text: "ok" }] })).toBe(false);
+  });
+
+  test("false for isError explicitly false", () => {
+    expect(isToolError({ content: [], isError: false })).toBe(false);
+  });
+
+  test("false for non-object results", () => {
+    expect(isToolError(null)).toBe(false);
+    expect(isToolError(undefined)).toBe(false);
+    expect(isToolError("isError")).toBe(false);
   });
 });

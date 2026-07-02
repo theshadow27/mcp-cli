@@ -29,6 +29,7 @@
     "doing-it-wrong": "bun scripts/doing-it-wrong.ts",
     "test": "bun install && bun test --parallel --no-orphans --path-ignore-patterns='packages/control/**' && bun test --no-orphans packages/control",
     "test:phases": "cd .claude/phases && bun test --no-orphans",
+    "test:hooks": "cd .git-hooks && bun test --no-orphans",
     "test:coverage": "bun scripts/check-coverage.ts",
     "dev:daemon": "bun packages/daemon/src/main.ts",
     "dev:mcx": "bun packages/command/src/main.ts",

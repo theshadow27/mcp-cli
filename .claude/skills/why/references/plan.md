@@ -22,10 +22,10 @@ If the user only says "well?" / "and?" / "so?" — that is the Stage-2 *investig
 ## The tone-check fork (critical)
 
 - **Deliverable for you / the system** (code, a worktree change, a sprint task): act raw. No tone management needed.
-- **Deliverable for a person** (an email reply, a PR comment, a Teams message): the snark that *calmed the invoking user* will read as *contempt* to the recipient. Run a `stop-slop`-style pass that **keeps the sharpness of the questions and drops the attitude.** The questions stay pointed; the voice goes professional. Jacob handles diplomacy, but don't hand him something that's "clearly Claude" or needlessly abrasive to a third party.
+- **Deliverable for a person** (an email reply, a PR comment, a Teams message): the snark that *calmed the invoking user* will read as *contempt* to the recipient. Run a `stop-slop`-style pass that **keeps the sharpness of the questions and drops the attitude.** The questions stay pointed; the voice goes professional. The user handles diplomacy, but don't hand them something that's "clearly Claude" or needlessly abrasive to a third party.
 
-Worked example — the Dependabot email. The Stage-1 reframe ("Is this repo even alive? Can it be archived?") is correct and sharp. The *sent* version is not snark; it's:
+Worked example — a teammate's PR bumps a retry count to get a "flaky" integration test passing. The Stage-1 reframe ("is it flaky, or is it catching a real race you're about to paper over?") is correct and sharp. The *sent* PR comment is not snark; it's:
 
-> "Those alerts are for a repo that isn't actively maintained or in use as far as I know, so it should probably be archived rather than remediated. Copying in @owner to confirm."
+> "Before we bump retries here — this test caught a real ordering bug once, so I'd want to rule out the same race resurfacing rather than genuine flakiness. Can we check the failure logs first?"
 
 Same question. No attitude. That is the Stage-3 person-facing transform.

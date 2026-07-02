@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { testOptions } from "../../../test/test-options";
-import { readCliConfig, writeCliConfig } from "./cli-config";
+import { prunePromptedDirs, readCliConfig, writeCliConfig } from "./cli-config";
 
 describe("readCliConfig", () => {
   test("returns {} when file is missing", () => {
@@ -26,6 +26,32 @@ describe("readCliConfig", () => {
     using _opts = testOptions({ files: { "config.json": config } });
     expect(readCliConfig()).toEqual(config);
     expect(readCliConfig().wsPort).toBe(19275);
+  });
+});
+
+describe("prunePromptedDirs", () => {
+  test("keeps existing dirs and drops missing ones", () => {
+    using opts = testOptions();
+    const alive = join(opts.dir, "alive");
+    mkdirSync(alive, { recursive: true });
+    const dead = join(opts.dir, "worktrees", "claude-gone");
+
+    expect(prunePromptedDirs([alive, dead])).toEqual([alive]);
+  });
+
+  test("returns empty array when all dirs are stale", () => {
+    using opts = testOptions();
+    expect(prunePromptedDirs([join(opts.dir, "a"), join(opts.dir, "b")])).toEqual([]);
+  });
+
+  test("preserves order of surviving dirs", () => {
+    using opts = testOptions();
+    const a = join(opts.dir, "a");
+    const c = join(opts.dir, "c");
+    mkdirSync(a, { recursive: true });
+    mkdirSync(c, { recursive: true });
+
+    expect(prunePromptedDirs([a, join(opts.dir, "b"), c])).toEqual([a, c]);
   });
 });
 

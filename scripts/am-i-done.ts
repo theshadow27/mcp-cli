@@ -35,7 +35,7 @@ import {
   bunTestWithCrashTolerance,
   changedTestsStep,
   coverageWithCrashTolerance,
-  phasesTestWithCrashTolerance,
+  dirScopedTestWithCrashTolerance,
 } from "./_runner/ci-steps";
 import { detectContext, isCi, isPreCommit, isPrePush } from "./_runner/context";
 import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
@@ -199,8 +199,8 @@ const TEST_PHASES_CI: Step = {
   name: "test-phases",
   description:
     "phase fn-specs (.claude/phases/*-fn.spec.ts) — co-located specs excluded from bunfig pathIgnorePatterns (#2648)",
-  command: phasesTestWithCrashTolerance({
-    phasesDir: resolve(REPO_ROOT, ".claude/phases"),
+  command: dirScopedTestWithCrashTolerance({
+    specDir: resolve(REPO_ROOT, ".claude/phases"),
     logName: "test_phases",
   }),
   source: "scripts/_runner/ci-steps.ts",
@@ -208,6 +208,22 @@ const TEST_PHASES_CI: Step = {
     "run `bun run test:phases` locally to reproduce",
     "specs live in .claude/phases/*-fn.spec.ts — co-located next to each phase module",
     "log artefact: /tmp/test_phases.txt",
+  ],
+};
+
+const TEST_HOOKS_CI: Step = {
+  name: "test-hooks",
+  description:
+    "git-hook specs (.git-hooks/*.spec.ts) — co-located specs excluded from bunfig pathIgnorePatterns (#2771)",
+  command: dirScopedTestWithCrashTolerance({
+    specDir: resolve(REPO_ROOT, ".git-hooks"),
+    logName: "test_hooks",
+  }),
+  source: "scripts/_runner/ci-steps.ts",
+  onFailure: [
+    "run `bun run test:hooks` locally to reproduce",
+    "specs live in .git-hooks/*.spec.ts — co-located next to classify.sh / sprint-active.sh",
+    "log artefact: /tmp/test_hooks.txt",
   ],
 };
 
@@ -229,6 +245,7 @@ const TEST_CHANGED: Step = {
     "diff-aware tests — only files affected by the diff (bun test --changed; parallel, control sequential #2362)",
   command: changedTestsStep({ logName: "test_changed" }),
   source: "scripts/_runner/ci-steps.ts",
+  lease: true,
   onFailure: [
     "real failure: see the captured output above",
     "this runs only tests in your diff's blast radius — CI (`--ci`) runs the full suite + coverage",
@@ -288,6 +305,7 @@ export const COMPREHENSIVE: Step[] = [
   TEST_PARALLEL,
   TEST_CONTROL,
   TEST_PHASES_CI,
+  TEST_HOOKS_CI,
   COVERAGE,
 ];
 export const CI: Step[] = [
@@ -301,6 +319,7 @@ export const CI: Step[] = [
   TEST_NON_DAEMON_CI,
   TEST_DAEMON_CI,
   TEST_PHASES_CI,
+  TEST_HOOKS_CI,
   COVERAGE_CI,
 ];
 
