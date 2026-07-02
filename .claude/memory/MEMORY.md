@@ -26,10 +26,12 @@
 - [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
 - [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
+- [Meta-issue planning guard](feedback_meta_issue_planning_guard.md) — exclude issues whose surface is .claude/phases/**, .mcx.yaml, or .claude/skills/** at plan time (meta; sprint-74 note: #2804 merged with a reload-after-merge protocol but cost 3 lock rounds via #2737)
 - [Never bypass gates (--no-verify banned)](feedback_never_bypass_gate.md) — push blocked by a flake → retry (never --no-verify); same tracked signature → wait + retry once more; NEW signature → stop and report. CI on clean runners is the arbiter
 
 ## Infra / Known Issues
 - [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
+- [Early segfault = check host load first](false-segfault-orphaned-load.md) — am-i-done aborting ~25-30s with a Bun segfault + mass `worker panicked` cascade is usually host CPU starvation (orphaned `bun build/burn.ts` from investigations), not a code bug; check `uptime` + PPID=1 bun procs before treating as real
 - [CI suite SIGTERM at ~97%](ci-suite-sigterm-resource-leak.md) — large `bun test` killed near end with 0 failures, Linux-only, passes isolated = resource leak in test files, NOT a size threshold. A hang / near-end SIGTERM is a STOP-and-fix-root-cause signal — never a killer/reaper/timeout-bump (those caused the 69/70 collapse). Diagnose with bias-free adversarial review. #2641→#2644.
 
 ## Orchestration (non-sprint, general facts)
