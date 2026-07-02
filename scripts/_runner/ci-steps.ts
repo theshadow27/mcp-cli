@@ -271,11 +271,11 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
   };
 }
 
-interface PhasesTestOpts {
+interface DirScopedTestOpts {
   /** Stem used for `<TMP>/<logName>.txt` artefact preservation. */
   logName: string;
-  /** Absolute path to the `.claude/phases` directory. */
-  phasesDir: string;
+  /** Absolute path to the spec directory to run from (e.g. `.claude/phases`, `.git-hooks`). */
+  specDir: string;
 }
 
 /** Count `*.spec.ts` files under a directory (recursive). */
@@ -288,9 +288,9 @@ function countSpecFiles(dir: string): number {
 /**
  * Verify the run actually discovered at least as many spec files as exist on
  * disk. `bun test` exits 0 when it discovers ZERO spec files, so without this
- * floor the step is fail-open: a rename, a bad phasesDir, or a bun upgrade
- * that changes `pathIgnorePatterns` anchoring would silently revert phase
- * specs to the pre-#2648 dark state (#2719). Primary signal: the stdout
+ * floor the step is fail-open: a rename, a bad specDir, or a bun upgrade
+ * that changes `pathIgnorePatterns` anchoring would silently revert these
+ * specs to their pre-runner dark state (#2719). Primary signal: the stdout
  * "Ran N tests across M files" line (files vs files — exact, and survives a
  * #1004 teardown crash). Fallback: the junit `tests` attribute (each spec
  * file contributes ≥1 test, so tests ≥ files). Neither parseable → fail closed.
@@ -308,32 +308,33 @@ function checkDiscoveryFloor(outcome: RunOutcome, junitPath: string, specCount: 
   if (discovered < specCount) {
     return {
       success: false,
-      error: `phase test run discovered ${discovered} ${filesMatch ? "files" : "tests"}, expected >= ${specCount} spec files — check pathIgnorePatterns anchoring and phasesDir (#2719)`,
+      error: `test run discovered ${discovered} ${filesMatch ? "files" : "tests"}, expected >= ${specCount} spec files — check pathIgnorePatterns anchoring and specDir (#2719)`,
     };
   }
   return { success: true };
 }
 
 /**
- * Run `bun test --no-orphans` from within `.claude/phases/` so the files
- * are discovered relative to that CWD — bypassing the root bunfig.toml
- * `pathIgnorePatterns = [".claude/**"]` exclusion that silences them when
- * run from the repo root (#2648). Carries the same #1004 crash-after-pass
- * tolerance as `bunTestWithCrashTolerance`, but fails closed when the run
- * discovers fewer spec files than exist on disk (#2719).
+ * Run `bun test --no-orphans` from within a spec directory (e.g.
+ * `.claude/phases`, `.git-hooks`) so the files are discovered relative to that
+ * CWD — bypassing the root bunfig.toml `pathIgnorePatterns` exclusion that
+ * silences them when run from the repo root (#2648 for phases, #2771 for
+ * hooks). Carries the same #1004 crash-after-pass tolerance as
+ * `bunTestWithCrashTolerance`, but fails closed when the run discovers fewer
+ * spec files than exist on disk (#2719).
  */
-export function phasesTestWithCrashTolerance(opts: PhasesTestOpts): ScriptFunction {
+export function dirScopedTestWithCrashTolerance(opts: DirScopedTestOpts): ScriptFunction {
   return async ({ logger, env }) => {
-    const specCount = countSpecFiles(opts.phasesDir);
+    const specCount = countSpecFiles(opts.specDir);
     if (specCount === 0) {
       return {
         success: false,
-        error: `0 phase spec files found in ${opts.phasesDir} — specs renamed/moved, or bad phasesDir? (#2719)`,
+        error: `0 spec files found in ${opts.specDir} — specs renamed/moved, or bad specDir? (#2719)`,
       };
     }
     const args = ["test", "--no-orphans"];
     const junitPath = junitTmpPath(opts.logName);
-    const first = await runBun(args, logger, env, junitPath, opts.phasesDir);
+    const first = await runBun(args, logger, env, junitPath, opts.specDir);
     persistLog(opts.logName, first.output);
     if (first.code === 0) return checkDiscoveryFloor(first, junitPath, specCount);
     if (hasZeroJunitFailures(first)) {
