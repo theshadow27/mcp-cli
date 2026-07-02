@@ -85,6 +85,7 @@ import { SIZE_HINT, SIZE_OK, applyJqFilter, generateAnalysis, jqParseErrorHints 
 import {
   extractErrorMessage,
   formatToolResult,
+  isToolError,
   printError,
   printRegistryList,
   printServerList,
@@ -599,6 +600,14 @@ async function cmdCall(args: string[]): Promise<void> {
     { server, tool, arguments: toolArgs, timeoutMs: toolTimeoutMs, cwd: process.cwd() },
     { timeoutMs: toolTimeoutMs + 5_000 },
   );
+
+  // A tool call that returned isError must exit non-zero with the message on
+  // stderr — not a silent exit 0 with the error text on stdout (#2821). This
+  // ran before Bug 1's fix masked every compiled alias failure as success.
+  if (isToolError(result)) {
+    printError(formatToolResult(result));
+    process.exit(1);
+  }
 
   // Auto-save long calls as ephemeral aliases (best-effort, non-blocking)
   maybeAutoSaveEphemeral(server, tool, toolArgs, { ipcCall });
