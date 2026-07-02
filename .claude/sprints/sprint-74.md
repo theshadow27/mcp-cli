@@ -1,6 +1,6 @@
 # Sprint 74
 
-> Planned 2026-07-01. Started 2026-07-01 19:25 EDT. Target: 15 PRs.
+> Planned 2026-07-01. Started 2026-07-01 19:25 EDT. Ended 2026-07-02 09:57 EDT. Target: 15 PRs — delivered 16 merged PRs (15 planned-issue PRs incl. #2744 closed-as-fixed without a PR, + 2 amendment P1s #2821/#2825).
 
 ## Goal
 
@@ -78,3 +78,13 @@ Drain the sprint-73 fallout: restore trust in the gate (build-smoke accuracy, du
 ## Context
 
 First sprint after a ~19-day pause (sprint 73 ended 2026-06-12). Sprint 73 shipped the stdio transport arc and exposed the build/coverage gate weaknesses this sprint targets. Meta-fix #2768 (amendment hot-file re-check) applied pre-sprint in PR #2809. Codex provider remains broken (#2482) — all sessions route to claude. Sprint 74 does not end in 7 — no introspection round.
+
+## Results
+
+- **Released**: v1.14.4 (tag at retro, post sprint-PR merge)
+- **PRs merged**: 16 — #2810, #2811, #2812, #2813, #2814, #2816, #2817, #2818, #2819, #2820, #2822, #2823, #2824, #2826, #2830, #2831
+- **Issues closed**: 17 — all 15 planned (incl. #2744 closed as already-fixed-by-#2748 after empirical verification, no PR needed) + 2 mid-sprint P1 amendments (#2821 compiled alias-dispatch, #2825 stdio drain regression)
+- **Issues dropped**: 0
+- **New issues filed**: 9 — #2815 (spec-count sanity enhancement), #2821 + #2825 (amendments, both fixed in-sprint), #2832 (double-Error prefix), #2834/#2835 (alias-dispatch follow-ups), #2836 (bye --cwd worktree removal), #2837 (monitor stale-event replay), #2838 (#2814 guard narrowing — defense-in-depth for the #2825 class); plus data-point comments on #2737 (×2), #2798, #2833
+- **External contribution handled**: PR #2807 (promptedDirs GC) closed in favor of #2823 with architectural rationale (write-site vs read-side-effect pruning)
+- **Escalations**: #2825 ran the full discipline — 2 unframed investigations (round 1: exit-vs-drain race; round 2: refuted throughput hypothesis with measurements, proved fixture EPIPE trigger via A/B), 1 needs-attention halt at the one-repair cap, resumed on complete causal proof; #2804 survived a wrong QA verdict (verifier's tool hit #2737 and validated the base tree) — override with independent verification + CI-as-arbiter
