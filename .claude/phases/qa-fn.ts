@@ -1,6 +1,14 @@
 /** Core qa-phase logic, extracted for testability via dependency injection. */
 
-import { type GhLabelEvent, type GhOp, type GhResult, type VerdictContext, validateVerdictLabel } from "./phase-types";
+import {
+  ARTIFACT_CHECK_MANDATE,
+  ARTIFACT_CHECK_REQUIRED,
+  type GhLabelEvent,
+  type GhOp,
+  type GhResult,
+  type VerdictContext,
+  validateVerdictLabel,
+} from "./phase-types";
 export type { GhOp, GhResult };
 
 export const QA_FAIL_CAP = 2;
@@ -137,13 +145,17 @@ export async function runQa(
   const qaPrompt = `/qa ${work.issueNumber} (PR ${work.prNumber}, branch ${work.branch})`;
 
   if (!sessionId) {
+    // Artifact-boot mandate (#2804) is appended only to the spawn command — not
+    // to the wait/goto prompt fields, which are informational.
+    const artifactCheck = (await state.get<string>("artifact_check")) === ARTIFACT_CHECK_REQUIRED;
+    const spawnPrompt = artifactCheck ? qaPrompt + ARTIFACT_CHECK_MANDATE : qaPrompt;
     const worktreePath = await state.get<string>("worktree_path");
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
     const cmdBase = input.provider.startsWith("acp:")
       ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
       : ["mcx", input.provider, "spawn"];
     const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
-    const command = [...cmdBase, ...worktreeFlags, "--model", qaModel, "-t", qaPrompt, "--allow", ...allowTools];
+    const command = [...cmdBase, ...worktreeFlags, "--model", qaModel, "-t", spawnPrompt, "--allow", ...allowTools];
     const spawnedAt = Date.now();
     await state.set("qa_session_id", `pending:${spawnedAt}`);
     await state.set("qa_spawned_at", spawnedAt);
@@ -153,7 +165,7 @@ export async function runQa(
       reason: "qa session starting",
       model: qaModel,
       command,
-      prompt: qaPrompt,
+      prompt: spawnPrompt,
       allowTools,
     };
   }

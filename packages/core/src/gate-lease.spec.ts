@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,10 +12,17 @@ function freshDir(): string {
   return d;
 }
 
+const savedSlotsEnv = process.env.MCX_GATE_LEASE_SLOTS;
 afterEach(() => {
   while (dirs.length) {
     const d = dirs.pop();
     if (d) rmSync(d, { recursive: true, force: true });
+  }
+  if (savedSlotsEnv === undefined) {
+    // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined"
+    delete process.env.MCX_GATE_LEASE_SLOTS;
+  } else {
+    process.env.MCX_GATE_LEASE_SLOTS = savedSlotsEnv;
   }
 });
 
@@ -110,6 +117,59 @@ describe("acquireGateLease", () => {
     const b = await acquireGateLease({ slots: 1, lockDir, ...noWait });
     expect(b.held).toBe(true);
     b.release();
+  });
+
+  it("fails open with a warning when the lock dir cannot be created", async () => {
+    // Point lockDir at a path under a regular file so mkdir throws ENOTDIR.
+    const base = freshDir();
+    const filePath = join(base, "not-a-dir");
+    writeFileSync(filePath, "x");
+    const lockDir = join(filePath, "gate-locks");
+
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      slots: 2,
+      lockDir,
+      ...noWait,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    expect(lease.held).toBe(false);
+    expect(lease.slot).toBeNull();
+    expect(warnings.some((w) => w.includes("could not create lock dir") && w.includes("fail-open"))).toBe(true);
+    lease.release(); // must not throw
+  });
+});
+
+describe("MCX_GATE_LEASE_SLOTS validation", () => {
+  it("caps to the max and warns when the env value is absurdly large", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "999999";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({ lockDir, ...noWait, logger: { warn: (m) => warnings.push(m) } });
+    expect(lease.held).toBe(true);
+    expect(lease.slot).toBe(0);
+    expect(warnings.some((w) => w.includes("exceeds max") && w.includes("capping"))).toBe(true);
+    lease.release();
+  });
+
+  it("warns and falls back to the default for a non-integer env value", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "2abc";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({ lockDir, ...noWait, logger: { warn: (m) => warnings.push(m) } });
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("is not an integer"))).toBe(true);
+    lease.release();
+  });
+
+  it("warns when a negative env value disables the gate", async () => {
+    process.env.MCX_GATE_LEASE_SLOTS = "-1";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({ lockDir, ...noWait, logger: { warn: (m) => warnings.push(m) } });
+    expect(lease.held).toBe(false);
+    expect(lease.slot).toBeNull();
+    expect(warnings.some((w) => w.includes("disables the gate"))).toBe(true);
   });
 });
 

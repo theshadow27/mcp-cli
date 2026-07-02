@@ -41,6 +41,11 @@ export interface AuditResult {
   top_prune_candidates: string[];
 }
 
+export interface AuditValidation {
+  ok: boolean;
+  problems: string[];
+}
+
 export interface MemoryDeps {
   /** Resolve the git repo root. Returns null if not in a git repo, LookupFailure on error. */
   getGitRoot: () => LookupResult<string | null>;
@@ -195,6 +200,45 @@ export function parseHaikuResponse(raw: string): AuditResult | null {
   }
 }
 
+/**
+ * Validate that a parsed audit result is well-formed and complete.
+ *
+ * Haiku can truncate its output while still emitting syntactically valid JSON —
+ * e.g. a verdict for only 9 of 25 files, or an object missing `top_prune_candidates`.
+ * Such partial results must be a hard failure, not a silent exit-0 with corrupt data.
+ */
+export function validateAuditResult(result: AuditResult, expectedFiles: string[]): AuditValidation {
+  const problems: string[] = [];
+
+  if (!Array.isArray(result.findings)) {
+    problems.push("response has no 'findings' array");
+    return { ok: false, problems };
+  }
+  if (!Array.isArray(result.top_prune_candidates)) {
+    problems.push("response has no 'top_prune_candidates' array");
+  }
+
+  const audited = new Set<string>();
+  for (const f of result.findings) {
+    if (!f || typeof f.file !== "string" || typeof f.status !== "string") {
+      problems.push("a finding is missing required fields (file/status)");
+      continue;
+    }
+    audited.add(f.file);
+  }
+
+  const missing = expectedFiles.filter((f) => !audited.has(f));
+  if (missing.length > 0) {
+    const shown = missing.slice(0, 5).join(", ");
+    const suffix = missing.length > 5 ? ", …" : "";
+    problems.push(
+      `audit incomplete: ${audited.size}/${expectedFiles.length} files evaluated; ${missing.length} missing (${shown}${suffix})`,
+    );
+  }
+
+  return { ok: problems.length === 0, problems };
+}
+
 export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps): Promise<void> {
   const memoryDir = findMemoryDir(deps);
   if (!memoryDir) {
@@ -242,6 +286,16 @@ export async function runMemoryAudit(opts: { json: boolean }, deps: MemoryDeps):
     } catch {
       // disk full / permissions — preview above is the best we can do
     }
+    deps.exit(1);
+  }
+
+  const validation = validateAuditResult(
+    result,
+    ruleFiles.map((f) => f.name),
+  );
+  if (!validation.ok) {
+    deps.logError("memory audit: result failed validation — likely truncated or partial LLM output:");
+    for (const p of validation.problems) deps.logError(`  - ${p}`);
     deps.exit(1);
   }
 

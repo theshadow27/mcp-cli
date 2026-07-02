@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
 import { daemonWorkers } from "./daemon-workers";
+import { WORKER_SMOKE_FAILURE_PATTERN } from "./smoke-failure-pattern";
 
 // Ensure deps are installed (fast no-op when already present)
 await $`bun install`.quiet();
@@ -183,6 +184,11 @@ const mcpctlConfig: BinaryBuildConfig = {
 
 const bundleCleanup: string[] = [];
 
+// Grace period after SIGTERM before escalating the smoke daemon to SIGKILL.
+const SMOKE_KILL_GRACE_MS = 5000;
+// Deadline for all worker-backed servers to boot (generous for loaded CI runners).
+const SMOKE_DEADLINE_MS = 60_000;
+
 /**
  * Post-compile smoke: boot the freshly compiled mcpd with an isolated state
  * dir and assert every worker-backed virtual server actually starts.
@@ -214,37 +220,46 @@ async function smokeDaemonWorkers(mcpdPath: string): Promise<void> {
   });
 
   let output = "";
-  const decoder = new TextDecoder();
-  const pump = async (stream: ReadableStream<Uint8Array>) => {
-    for await (const chunk of stream) output += decoder.decode(chunk);
-  };
-  const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
-
-  const failurePattern = /ModuleNotFound|Failed to start/;
   let failure: string | null = null;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (failurePattern.test(output)) {
-      failure = "daemon reported a startup failure";
-      break;
+  try {
+    const decoder = new TextDecoder();
+    const pump = async (stream: ReadableStream<Uint8Array>) => {
+      for await (const chunk of stream) output += decoder.decode(chunk);
+    };
+    const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+
+    const deadline = Date.now() + SMOKE_DEADLINE_MS;
+    while (Date.now() < deadline) {
+      if (WORKER_SMOKE_FAILURE_PATTERN.test(output)) {
+        failure = "daemon reported a worker startup failure";
+        break;
+      }
+      if (expected.every((line) => output.includes(line))) break;
+      if (proc.exitCode !== null) {
+        failure = `daemon exited early (code ${proc.exitCode})`;
+        break;
+      }
+      await Bun.sleep(100);
     }
-    if (expected.every((line) => output.includes(line))) break;
-    if (proc.exitCode !== null) {
-      failure = `daemon exited early (code ${proc.exitCode})`;
-      break;
+
+    proc.kill();
+    // Bounded grace period: a wedged worker thread must not hang the required
+    // `build` job indefinitely on an un-timed `await proc.exited`.
+    const killTimer = setTimeout(() => proc.kill(9), SMOKE_KILL_GRACE_MS);
+    await proc.exited;
+    clearTimeout(killTimer);
+    await pumps;
+
+    const missing = expected.filter((line) => !output.includes(line));
+    if (!failure && missing.length > 0) {
+      failure = `timed out waiting for: ${missing.join(", ")}`;
     }
-    await Bun.sleep(100);
+  } finally {
+    // Guard against a throw between spawn and kill leaking the daemon + tmpdir.
+    if (proc.exitCode === null) proc.kill(9);
+    rmSync(stateDir, { recursive: true, force: true });
   }
 
-  proc.kill();
-  await proc.exited;
-  await pumps;
-  rmSync(stateDir, { recursive: true, force: true });
-
-  const missing = expected.filter((line) => !output.includes(line));
-  if (!failure && missing.length > 0) {
-    failure = `timed out waiting for: ${missing.join(", ")}`;
-  }
   if (failure) {
     console.error(`mcpd worker smoke FAILED (${mcpdPath}): ${failure}`);
     console.error("--- daemon output ---");
