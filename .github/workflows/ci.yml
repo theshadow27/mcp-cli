@@ -224,6 +224,44 @@ jobs:
         run: bun scripts/build.ts
       - if: needs.detect.outputs.docs_only != 'true'
         run: ls -lh dist/
+      # Compiled-binary smoke (#2797): exercises dist/mcx, dist/mcpd, and
+      # dist/mcpctl end-to-end against an isolated throwaway MCP_CLI_DIR —
+      # version injection, mcpctl no-TTY guard, `mcx ls`, the alias
+      # save/call/delete cycle (the #2821 compiled alias-dispatch class), and
+      # a full mcx → mcpd → mock session-worker spawn (the #2762 class that
+      # `bun test` on source can never catch). Lives here rather than in the
+      # am-i-done runner because it needs the freshly compiled dist/ binaries,
+      # which only the build job produces — same placement rationale as the
+      # Playwright resolver smoke below. Crash policy: retry once on a Bun
+      # crash (exit 132/139) as flake insurance, then FAIL. This deliberately
+      # does NOT mirror the pass-on-double-crash wrapper of the older smoke
+      # steps: #1004 is CLOSED (fixed upstream 2026-04-11), and a
+      # deterministic segfault in the compiled binaries is exactly the
+      # regression class this gate exists to block.
+      - name: Compiled binary smoke test
+        if: needs.detect.outputs.docs_only != 'true'
+        timeout-minutes: 5
+        run: |
+          set +e
+          bun run smoke-test 2>&1 | tee /tmp/smoke_test.txt
+          code=${PIPESTATUS[0]}
+          if [ $code -eq 0 ]; then
+            exit 0
+          elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
+            echo "::warning::Bun crash (exit $code) during binary smoke test — retrying once"
+            bun run smoke-test 2>&1 | tee /tmp/smoke_test_retry.txt
+            code2=${PIPESTATUS[0]}
+            if [ $code2 -eq 0 ]; then
+              exit 0
+            elif [ $code2 -eq 132 ] || [ $code2 -eq 139 ]; then
+              echo "::error::Bun crashed twice consecutively (exit $code2) during the binary smoke test. #1004 is CLOSED (fixed upstream) — do NOT file under it. Open the bun.report URL from the crash output so Bun gets the telemetry, then file a NEW issue with the bun.report URL, crash address, Bun version, and this commit SHA (per CLAUDE.md)."
+              exit $code2
+            else
+              exit $code2
+            fi
+          else
+            exit $code
+          fi
       - name: Playwright resolver binary smoke test
         if: needs.detect.outputs.docs_only != 'true'
         timeout-minutes: 5
