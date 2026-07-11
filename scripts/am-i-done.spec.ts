@@ -7,16 +7,17 @@ const names = (steps: { name: string }[]) => steps.map((s) => s.name);
 const leased = (steps: Step[]) => steps.filter((s) => s.lease).map((s) => s.name);
 
 describe("am-i-done step lists", () => {
-  // #2737: `mcx phase check` resolves its root to the main checkout from a
-  // linked worktree, so the local hooks must NOT run phase-lock — it would
-  // false-positive-block every clean worktree commit/push and false-negative
-  // the worktree's own lock drift. Sprints run entirely in worktrees.
-  it("does not wire phase-lock into the pre-commit hook", () => {
-    expect(names(PRE_COMMIT)).not.toContain("phase-lock");
+  // #2737: `mcx phase check` now resolves its working-tree files (.mcx.lock,
+  // phase sources) against the worktree's own root (findWorktreeRoot), not the
+  // main checkout — so it is sound from a linked worktree and the local hooks
+  // run it. This is what closed the false-positive/false-negative that had
+  // kept it out of the local gates. Sprints run entirely in worktrees.
+  it("wires phase-lock into the pre-commit hook", () => {
+    expect(names(PRE_COMMIT)).toContain("phase-lock");
   });
 
-  it("does not wire phase-lock into the pre-push hook", () => {
-    expect(names(PRE_PUSH)).not.toContain("phase-lock");
+  it("wires phase-lock into the pre-push hook", () => {
+    expect(names(PRE_PUSH)).toContain("phase-lock");
   });
 
   // The check is sound against a real checkout (root == repo root), so CI and

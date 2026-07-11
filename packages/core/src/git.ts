@@ -198,3 +198,48 @@ export function findGitRoot(cwd: string = process.cwd()): string | null {
   gitRootCache.set(cwd, result);
   return result;
 }
+
+/** Process-local cache: resolved cwd → worktree root (null = not a git repo). */
+const worktreeRootCache = new Map<string, string | null>();
+
+/** Clear the findWorktreeRoot process-local cache. Intended for tests and long-lived processes that move worktrees. */
+export function clearFindWorktreeRootCache(): void {
+  worktreeRootCache.clear();
+}
+
+/**
+ * Resolve the working-tree root of `cwd` — the toplevel of *this* checkout,
+ * NOT remapped to the main checkout for linked worktrees.
+ *
+ * Unlike {@link findGitRoot} (which maps linked worktrees back to the main
+ * checkout via `--git-common-dir` so every worktree shares one key for daemon
+ * state), this returns the worktree's own `--show-toplevel`. Use it for
+ * per-checkout working-tree files — `.mcx.lock`, `.mcx.yaml`, phase sources —
+ * that each linked worktree owns its own copy of. Resolving those from the
+ * main checkout makes `phase check`/`install` operate on the wrong tree from a
+ * worktree. See #2737 (distinct from #2673, which keys runtime *state*).
+ *
+ * Returns null when `cwd` is not inside a git repository. Results are cached
+ * process-locally by cwd.
+ */
+export function findWorktreeRoot(cwd: string = process.cwd()): string | null {
+  if (worktreeRootCache.has(cwd)) return worktreeRootCache.get(cwd) as string | null;
+
+  const env = gitDiscoverEnv();
+  let result: string | null = null;
+  try {
+    const top = spawnCaptureSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      timeoutMs: GIT_REV_PARSE_TIMEOUT_MS,
+      env,
+    });
+    if (top.exitCode === 0) {
+      const toplevel = top.stdout.trim();
+      if (toplevel) result = toplevel;
+    }
+  } catch {
+    // result stays null
+  }
+
+  worktreeRootCache.set(cwd, result);
+  return result;
+}
