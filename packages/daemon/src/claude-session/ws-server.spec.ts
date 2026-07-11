@@ -2100,6 +2100,25 @@ describe("ClaudeWsServer", () => {
     expect(result).toEqual({ worktree: null, cwd: null, repoRoot: null });
   });
 
+  test("bye of a --cwd session never reports a worktree for removal (#2836)", async () => {
+    // A session spawned with --cwd into a worktree it did NOT create carries a
+    // cwd but no worktree name. Its bye must not claim the worktree — only the
+    // creating (--worktree) session owns removal.
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    await server.start();
+
+    server.prepareSession("cwd-session", {
+      prompt: "Hello",
+      cwd: "/repo/.claude/worktrees/claude-shared",
+      repoRoot: "/repo",
+    });
+    server.spawnClaude("cwd-session");
+
+    const result = await server.bye("cwd-session");
+    expect(result.worktree).toBeNull();
+  });
+
   test("bye suppresses worktree cleanup when another session shares the same worktree (#1837)", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
