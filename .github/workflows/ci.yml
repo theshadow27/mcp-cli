@@ -191,8 +191,8 @@ jobs:
           if [ $code -eq 0 ]; then
             exit 0
           elif grep -q "^ 0 fail$" /tmp/test_pty.txt; then
-            echo "::warning::Bun crash (exit $code) after all tests passed — treating as pass (see #1004)"
-            exit 0
+            echo "::error::Bun crashed (exit $code) after all PTY tests passed. #1004 is CLOSED (fixed upstream 2026-04-11) — do NOT file under it. Open the bun.report URL from the crash output so Bun gets the telemetry, then file a NEW issue with the bun.report URL, crash address, Bun version, and this commit SHA (per CLAUDE.md)."
+            exit $code
           else
             exit $code
           fi
@@ -272,14 +272,14 @@ jobs:
           if [ $code -eq 0 ]; then
             exit 0
           elif [ $code -eq 132 ] || [ $code -eq 139 ]; then
-            echo "::warning::Bun crash (exit $code) during playwright smoke test — retrying once (see #1004)"
+            echo "::warning::Bun crash (exit $code) during playwright smoke test — retrying once"
             bun scripts/smoke-playwright.ts 2>&1 | tee /tmp/smoke_playwright_retry.txt
             code2=${PIPESTATUS[0]}
             if [ $code2 -eq 0 ]; then
               exit 0
             elif [ $code2 -eq 132 ] || [ $code2 -eq 139 ]; then
-              echo "::warning::Bun crash on retry too — treating as pass (known upstream bug, see #1004)"
-              exit 0
+              echo "::error::Bun crashed twice consecutively (exit $code2) during the playwright smoke test. #1004 is CLOSED (fixed upstream 2026-04-11) — do NOT file under it. Open the bun.report URL from the crash output so Bun gets the telemetry, then file a NEW issue with the bun.report URL, crash address, Bun version, and this commit SHA (per CLAUDE.md)."
+              exit $code2
             else
               exit $code2
             fi
