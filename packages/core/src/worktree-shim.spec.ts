@@ -488,6 +488,72 @@ describe("cleanupWorktree", () => {
     expect(infoMsgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
   });
 
+  test("idempotent no-op when plain remove reports 'is not a working tree' (#2836)", () => {
+    // A sibling `bye` on a session sharing this worktree already removed it.
+    // The directory lingers so existsSync() is true, but git no longer tracks it.
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "shared-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    let forceAttempted = false;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove") && cmd.includes("--force")) {
+        forceAttempted = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("remove"))
+        return { stdout: "", stderr: `fatal: '${worktreePath}' is not a working tree`, exitCode: 128 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    cleanupWorktree("shared-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
+
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    // No "Failed to remove worktree" error; treated as an already-removed no-op.
+    expect(errorMsgs.some((m) => m.includes("Failed to remove worktree"))).toBe(false);
+    expect(infoMsgs.some((m) => m.includes("Worktree already removed"))).toBe(true);
+    // --force must NOT be attempted — git has already dropped the registration.
+    expect(forceAttempted).toBe(false);
+  });
+
+  test("idempotent no-op when --force remove reports 'is not a working tree' (#2836)", () => {
+    // Concurrent teardown wins between the plain remove and the --force retry.
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "race-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      // Plain remove exits 0 but dir persists → triggers --force; --force then
+      // races a sibling teardown and reports the worktree is already gone.
+      if (cmd.includes("remove") && cmd.includes("--force"))
+        return { stdout: "", stderr: `fatal: '${worktreePath}' is not a working tree`, exitCode: 128 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    cleanupWorktree("race-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
+
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(errorMsgs.some((m) => m.includes("Failed to remove worktree"))).toBe(false);
+    expect(infoMsgs.some((m) => m.includes("Worktree already removed"))).toBe(true);
+  });
+
   test("attempts removal when git status fails but directory exists (corrupted worktree)", () => {
     tmpDir = makeTmpDir();
     const worktreeBase = join(tmpDir, ".claude", "worktrees");

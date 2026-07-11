@@ -332,6 +332,15 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
 }
 
 /**
+ * Whether a `git worktree remove` stderr indicates the path is no longer a
+ * registered worktree (already removed). git's message is
+ * `fatal: '<path>' is not a working tree`.
+ */
+function isNotAWorktreeError(stderr: string): boolean {
+  return /not a working tree/i.test(stderr);
+}
+
+/**
  * Attempt `git worktree remove`, verify the directory is actually gone,
  * and retry with --force if needed. Only prints success after verification.
  * Returns true if the directory was verified removed.
@@ -351,6 +360,15 @@ function removeWorktreeWithVerification(
     "remove",
     worktreePath,
   ]);
+
+  // Idempotency: git reports "is not a working tree" when this path is no longer
+  // a registered worktree — an earlier or concurrent teardown (e.g. a sibling
+  // `bye` on a session sharing the worktree) already removed it. Treat as a
+  // no-op success rather than surfacing a spurious error (#2836).
+  if (removeExit !== 0 && isNotAWorktreeError(removeStderr)) {
+    deps.printInfo(`Worktree already removed: ${worktreePath}`);
+    return true;
+  }
 
   if (removeExit === 0 && !bareBeforeCleanup && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
     deps.printError(
@@ -402,6 +420,14 @@ function removeWorktreeWithVerification(
 
   if (!existsSync(worktreePath)) {
     deps.printInfo(`Removed worktree (--force): ${worktreePath}`);
+    return true;
+  }
+
+  // Idempotency (concurrent teardown mid-force): if either attempt reported the
+  // path is no longer a registered worktree, git already dropped it — no-op
+  // success rather than a spurious "Failed to remove worktree" (#2836).
+  if (isNotAWorktreeError(forceStderr) || isNotAWorktreeError(removeStderr)) {
+    deps.printInfo(`Worktree already removed: ${worktreePath}`);
     return true;
   }
 
