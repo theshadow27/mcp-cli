@@ -1214,16 +1214,26 @@ export class ClaudeWsServer {
 
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
   private handleStdioLine(sessionId: string, session: WsSession, line: string): void {
-    // Drop late emissions from a torn-down session. After disconnectSession kills
-    // the stdio proc, buffered stdout lines can still drain in; feeding them to the
-    // state machine would corrupt a disconnected/ended session. (#2793)
-    if (session.state.state === "disconnected" || session.state.state === "ended") return;
-
     let messages: NdjsonMessage[];
     try {
       messages = parseFrame(line);
     } catch {
       this.logger.error(`[_claude] Failed to parse stdio NDJSON from session ${sessionId}`);
+      return;
+    }
+
+    // Buffered stdout can drain in after the session is torn down: disconnectSession
+    // kills the stdio proc and flips state to disconnected/ended, but bytes already in
+    // the pipe still reach the reader. Feeding late assistant/progress lines to the
+    // state machine would corrupt a torn-down session, so they are dropped (#2793/#2814)
+    // — EXCEPT a `result`, which is the completion signal the daemon may be dead-waiting
+    // on. A `result` produced *before* the disconnect became visible is valid; dropping
+    // it strands the resultWaiter forever. Two independent premature-disconnect triggers
+    // hit this guard: the proc.exited exit-vs-drain race (#2830) and an EPIPE on the
+    // initial prompt write that disconnects before the reader is even wired (#2825/#2838).
+    // Honoring `result` regardless of transient state fixes the whole class structurally.
+    const st = session.state.state;
+    if ((st === "disconnected" || st === "ended") && !messages.some((m) => m.type === "result")) {
       return;
     }
 
