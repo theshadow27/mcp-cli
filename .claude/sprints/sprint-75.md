@@ -1,6 +1,6 @@
 # Sprint 75
 
-> Planned 2026-07-11. Target: 16 PRs (15 + pre-start amendment #2848).
+> Planned 2026-07-11. Target: 16 PRs (15 + pre-start amendment #2848). Started 2026-07-11 18:30 EDT.
 
 ## Goal
 
