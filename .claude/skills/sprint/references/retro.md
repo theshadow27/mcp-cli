@@ -177,6 +177,12 @@ tag the release at the merged sha (if a release commit was added in
 
 ```bash
 SPRINT_PR=<the sprint-{N} PR number>
+REPO=<ABSOLUTE path to the main checkout, e.g. /Users/you/github/mcp-cli>
+
+# Every git call below is pinned with `git -C "$REPO"`. Never rely on the
+# shell's cwd here: compound `cd X && …` commands persist the cd across
+# later tool calls, and cwd drift into the sprint worktree is exactly how
+# sprint 74 tagged v1.14.4 at the pre-squash branch tip (#2839).
 
 # (a) Convert from draft to ready and arm auto-merge
 gh pr ready "$SPRINT_PR"
@@ -185,28 +191,42 @@ gh pr merge "$SPRINT_PR" --squash --delete-branch --auto
 # (b) Wait for merge
 until [ "$(gh pr view "$SPRINT_PR" --json state -q .state)" = "MERGED" ]; do sleep 30; done
 
-# (c) Pull main into the orchestrator's main checkout to capture the squashed sha.
-#     Remove the staged plan file first — `plan.md` Step 6a kept an uncommitted
-#     copy in main checkout so phase scripts could read it during run, but the
-#     squash merge brings in the now-tracked version, and `git pull --ff-only`
-#     aborts on the untracked-would-be-overwritten conflict. Without this,
-#     `MERGED_SHA` resolves to the pre-merge HEAD and the tag lands at the
-#     wrong commit (sprint 51 retro hit this — caught + retagged before any
-#     consumer pulled, but only because `git rev-parse HEAD` was sanity-checked
-#     against the expected squashed sha).
-git checkout main
-rm -f .claude/sprints/sprint-{N}.md
-git pull --ff-only
-MERGED_SHA=$(git rev-parse HEAD)
+# (c) Resolve MERGED_SHA from the GitHub API — NEVER from local HEAD.
+#     Local resolution has produced a wrong-sha tag twice (#2839):
+#     sprint 51 (`git pull --ff-only` aborted on the untracked plan copy,
+#     so HEAD was pre-merge) and sprint 74 (cwd drift → stale checkout).
+#     The API's mergeCommit is authoritative and immune to both.
+MERGED_SHA=$(gh pr view "$SPRINT_PR" --json mergeCommit -q .mergeCommit.oid)
 
-# (d) Tag — only if this sprint cut a release. Verify the merged commit is
-#     the squashed sprint commit (it'll be a single squash commit, not
-#     "release: vX.Y.Z" anymore — the title is whatever GitHub squashed it
-#     to, typically the PR title). The release commit is INSIDE the squash;
-#     the tag points at the merged sha regardless.
+#     Then sync the local main checkout. Remove the staged plan copy first —
+#     `plan.md` Step 6a kept it uncommitted so phase scripts could read it
+#     during run, and the squash brings in the tracked version, which makes
+#     `git pull --ff-only` abort on the would-be-overwritten conflict.
+git -C "$REPO" checkout main
+rm -f "$REPO/.claude/sprints/sprint-{N}.md"
+git -C "$REPO" fetch origin main
+git -C "$REPO" pull --ff-only
+
+# (d) Tag — only if this sprint cut a release. The release commit is INSIDE
+#     the squash; the tag points at the merged sha. Three HARD GUARDS
+#     (#2839) — all must pass or the tag is not created:
 if [ -n "$RELEASE_VERSION" ]; then
-  git tag "$RELEASE_VERSION" "$MERGED_SHA"
-  git push origin "$RELEASE_VERSION"
+  # Guard 1: the sha we are about to tag is actually on origin/main
+  #          (fetched above). Ancestor check, not equality — another commit
+  #          may legitimately land on main between merge and tag.
+  git -C "$REPO" merge-base --is-ancestor "$MERGED_SHA" origin/main \
+    || { echo "ABORT(#2839): $MERGED_SHA is not on origin/main — refusing to tag" >&2; exit 1; }
+
+  # Guard 2: the commit being tagged carries the version being released.
+  git -C "$REPO" show "$MERGED_SHA:package.json" | grep -q "\"version\": \"${RELEASE_VERSION#v}\"" \
+    || { echo "ABORT(#2839): package.json at $MERGED_SHA is not version ${RELEASE_VERSION#v} — wrong commit or missing release commit" >&2; exit 1; }
+
+  # Guard 3: never silently move an existing tag.
+  ! git -C "$REPO" rev-parse -q --verify "refs/tags/$RELEASE_VERSION" >/dev/null \
+    || { echo "ABORT(#2839): tag $RELEASE_VERSION already exists locally — investigate before retagging" >&2; exit 1; }
+
+  git -C "$REPO" tag "$RELEASE_VERSION" "$MERGED_SHA"
+  git -C "$REPO" push origin "$RELEASE_VERSION"
 
   gh release create "$RELEASE_VERSION" --title "$RELEASE_VERSION" --notes "$(cat <<'EOF'
 <release notes prepared in review.md Step 3>
