@@ -99,6 +99,17 @@ export class SessionState {
    */
   private initEmitted = false;
 
+  /**
+   * num_turns of the last emitted `session:result`/`session:error` event.
+   * num_turns is cumulative and strictly increases per real turn, so a
+   * replayed historical `result` (WS-reconnect / revive replay) carries the
+   * old value and is suppressed. Reset in resetForClear() — a /clear respawns
+   * a fresh conversation whose num_turns restarts at 1. NOT reset in
+   * reconnect(): a reconnect is the same conversation, so a replayed result
+   * there should be suppressed (#2837).
+   */
+  private lastEmittedNumTurns = -1;
+
   constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
     this.sessionId = sessionId;
     this.state = "connecting";
@@ -199,6 +210,9 @@ export class SessionState {
     if (this.state === "ended") return [];
     this.state = "connecting";
     this.initEmitted = false;
+    // /clear respawns a fresh conversation whose num_turns restarts at 1;
+    // that first post-clear result is legitimate and must not be suppressed.
+    this.lastEmittedNumTurns = -1;
     this.pendingPermissions.clear();
     return [{ type: "session:cleared" }];
   }
@@ -324,6 +338,8 @@ export class SessionState {
       // per-message usage throughout the turn. Result usage would double-count.
       this.state = "idle";
       this.rateLimited = false;
+      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      this.lastEmittedNumTurns = this.numTurns;
       return [
         {
           type: "session:result",
@@ -341,6 +357,8 @@ export class SessionState {
       this.cost = r.total_cost_usd;
       this.numTurns = r.num_turns;
       this.state = "idle";
+      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      this.lastEmittedNumTurns = this.numTurns;
       return [{ type: "session:error", errors: r.errors ?? [], cost: this.cost }];
     }
 
@@ -357,6 +375,9 @@ export class SessionState {
       if (r.total_cost_usd != null) this.cost = r.total_cost_usd;
       if (r.num_turns != null) this.numTurns = r.num_turns;
       this.state = "idle";
+
+      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      this.lastEmittedNumTurns = this.numTurns;
 
       const errors = r.errors ?? [];
       if (r.subtype !== "success" && (r.is_error === true || errors.length > 0)) {
