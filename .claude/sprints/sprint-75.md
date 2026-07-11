@@ -1,6 +1,6 @@
 # Sprint 75
 
-> Planned 2026-07-11. Target: 15 PRs.
+> Planned 2026-07-11. Target: 16 PRs (15 + pre-start amendment #2848).
 
 ## Goal
 
@@ -25,6 +25,7 @@ Orchestrator reliability: fix the stdio drop-and-hang class, the monitor/daemon 
 | 2815 | coverage: defense-in-depth against silent spec-count reduction | low | 3 | opus | claude | filler |
 | 2843 | ci.yml: two inline steps still pass-by-policy on Bun crash citing closed #1004 | low | 3 | sonnet | claude | filler |
 | 2749 | mcx claude ls: spurious "git diff failed (exit null)" on stderr | low | 3 | sonnet | claude | filler |
+| 2848 | acp: grok banner before JSON-RPC frames kills session start (tolerate preamble + surface first bytes on failure) | low-medium | 3 | opus | claude | goal |
 
 ## Batch Plan
 
@@ -35,7 +36,7 @@ Orchestrator reliability: fix the stdio drop-and-hang class, the monitor/daemon 
 #2833, #2508, #2788, #2782, #2835
 
 ### Batch 3 (backfill)
-#2837, #2662, #2815, #2843, #2749
+#2837, #2662, #2815, #2843, #2749, #2848
 
 ### blockedBy edges
 - #2833 blockedBy #2838 (both rewrite the ws-server.ts drain/exit/disconnect state machine, L990–L1220)
@@ -58,6 +59,7 @@ Orchestrator reliability: fix the stdio drop-and-hang class, the monitor/daemon 
 - **#2737 — product-code fix, not phase-file surface**: `packages/core/src/git.ts` findGitRoot + `packages/command/src/commands/phase.ts` resolveRoot. Includes re-adding phase-lock to PRE_COMMIT/PRE_PUSH in `scripts/am-i-done.ts` and dropping the absence assertions in am-i-done.spec.ts. Two recorded manifestations (#2826 QA round, #2728 deferral) are the acceptance evidence: `mcx phase check` from a linked worktree must resolve the worktree tree, not the main checkout.
 - **#2840 — P1 usability**: analog to landed #1546; scope is oauth-retry.ts `_runFlow`, oauth-provider.ts `tokens()`/`invalidateCredentials` (+ `skipKeychainTokens` opt mirroring `skipKeychainClientId`), and the auth.ts error text. Verify against SDK 1.29.0 behavior described on the issue.
 - **#2836 must NOT change the bye default** (that's blocked #1750): only gate removal on isCreator + make removal idempotent ("is not a working tree" → no-op).
+- **#2848 (pre-start amendment, 2026-07-11)**: implement suggested fixes (1) + (3) together — skip non-JSON preamble lines until the first parseable JSON-RPC frame in the ACP stdio reader (hardens against ANY banner-printing agent, not just grok), and on handshake failure surface the first bytes actually read instead of the bare "Process exited". Surface: `packages/daemon/src/acp-session/` (+ `packages/acp/src/agents.ts` only if a spawn-env flag is added — prefer not). Test with a fake agent that emits a banner line then valid ACP; no overlap with any batched issue (claude-session and acp-session are disjoint trees). The issue's trailing codex log/status bug is being split into its own issue — do NOT fix it under #2848.
 
 ## Excluded
 
