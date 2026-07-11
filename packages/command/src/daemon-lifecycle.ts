@@ -404,6 +404,19 @@ export function isDaemonInitializing(): boolean {
 }
 
 /**
+ * Non-destructive liveness probe for a bound daemon (#2508).
+ *
+ * True when the PID file is fresh, the process is alive and is actually mcpd,
+ * and the socket file still exists. Unlike isDaemonRunning() this never cleans
+ * stale files and never pings — safe to call repeatedly from a passive
+ * `mcx monitor` silence watchdog without racing the auto-start file dance.
+ */
+export function isDaemonPidAlive(): boolean {
+  if (readLivePidData() === null) return false;
+  return existsSync(options.SOCKET_PATH);
+}
+
+/**
  * Non-destructive daemon reachability check for polling during startup.
  *
  * Unlike isDaemonRunning(), this never calls cleanStaleFiles(). During the
