@@ -404,6 +404,12 @@ describe("ClaudeWsServer — stdio transport", () => {
     // The #2793 protection survives: the late `init` (a non-result line arriving after
     // teardown) is still dropped — only `result` is honored past disconnect.
     expect(events.some((e) => e.type === "session:init")).toBe(false);
+
+    // No zombie: once the buffered result completes the work, the proc.exited handler
+    // (spawn dead + workCompleted) auto-terminates the disconnected session, removing it
+    // from the map rather than leaving it parked in `disconnected`/`idle` forever.
+    await pollUntil(() => !server.listSessions().some((s) => s.sessionId === sessionId), 1000);
+    expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
   });
 
   test("stdio session clears connect timeout on first stdout line", async () => {

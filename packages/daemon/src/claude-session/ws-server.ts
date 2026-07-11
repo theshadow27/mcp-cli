@@ -1222,19 +1222,30 @@ export class ClaudeWsServer {
       return;
     }
 
-    // Buffered stdout can drain in after the session is torn down: disconnectSession
-    // kills the stdio proc and flips state to disconnected/ended, but bytes already in
-    // the pipe still reach the reader. Feeding late assistant/progress lines to the
-    // state machine would corrupt a torn-down session, so they are dropped (#2793/#2814)
-    // — EXCEPT a `result`, which is the completion signal the daemon may be dead-waiting
-    // on. A `result` produced *before* the disconnect became visible is valid; dropping
-    // it strands the resultWaiter forever. Two independent premature-disconnect triggers
-    // hit this guard: the proc.exited exit-vs-drain race (#2830) and an EPIPE on the
-    // initial prompt write that disconnects before the reader is even wired (#2825/#2838).
-    // Honoring `result` regardless of transient state fixes the whole class structurally.
+    // Buffered stdout can drain in after the session is torn down: the stdio proc is
+    // killed but bytes already in the pipe still reach the reader. Feeding late lines to
+    // the state machine would corrupt a torn-down session, so they are dropped (#2793/#2814).
+    // The teardown kind determines how far the drop goes:
     const st = session.state.state;
-    if ((st === "disconnected" || st === "ended") && !messages.some((m) => m.type === "result")) {
+    if (st === "ended") {
+      // VOLUNTARY teardown (bye / shutdown / terminateSession — which also removes the
+      // session from the map). Nothing is dead-waiting on it, so drop everything. Honoring
+      // a late `result` here would resurrect the orphaned object to "idle" (handleResult
+      // unconditionally sets state=idle) and fire a spurious duplicate session:result to
+      // wildcard event waiters. Neither #2830 nor #2825 reaches `ended` — both flip to
+      // `disconnected` — so honoring past `ended` buys nothing and only regresses. (#2838)
       return;
+    }
+    if (st === "disconnected") {
+      // INVOLUNTARY teardown (disconnectSession on EPIPE / spawn-exit). A `result` buffered
+      // *before* the disconnect became visible is the completion signal the daemon may be
+      // dead-waiting on; dropping it strands the resultWaiter forever. Two triggers hit this:
+      // the proc.exited exit-vs-drain race (#2830) and an EPIPE on the initial prompt write
+      // that disconnects before the reader is wired (#2825/#2838). Honor the `result` but drop
+      // every non-result late line to preserve the #2793 protection, even when a frame batches
+      // a result alongside stale lines.
+      messages = messages.filter((m) => m.type === "result");
+      if (messages.length === 0) return;
     }
 
     for (const msg of messages) {
