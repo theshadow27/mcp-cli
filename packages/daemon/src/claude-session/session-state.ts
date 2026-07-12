@@ -46,6 +46,22 @@ export type SessionEvent =
   | { type: "session:containment_escalated"; toolName: string; reason: string; strikes: number }
   | { type: "session:containment_reset"; toolName: string; reason: string; strikes: number };
 
+// ── Result-suppression diagnostics (#2859) ──
+
+/** Which branch of handleResult() suppressed a replayed result. */
+export type SuppressedResultBranch = "result" | "error" | "fallback";
+
+/**
+ * Recorded when handleResult()'s idempotency guard drops a replayed
+ * result/error. Read by the caller to emit a debug log + metric so an
+ * over-firing guard is diagnosable instead of a silent hang.
+ */
+export interface SuppressedResultInfo {
+  branch: SuppressedResultBranch;
+  numTurns: number;
+  lastEmitted: number;
+}
+
 // ── Outbound message (string ready to send over WS) ──
 
 export type OutboundMessage = string;
@@ -93,6 +109,16 @@ export class SessionState {
   parseMismatch = false;
 
   /**
+   * Set when handleResult()'s num_turns idempotency guard (#2837) suppressed a
+   * replayed result/error at one of its `return []` points. Cleared on every
+   * handleMessage call, like parseMismatch. The caller (ws-server) reads it to
+   * emit a debug log + increment `mcpd_session_result_suppressed_total` so an
+   * over-firing guard is not invisible in production — a swallowed completion
+   * would otherwise be indistinguishable from a hung session (#2859).
+   */
+  suppressedResult: SuppressedResultInfo | null = null;
+
+  /**
    * True after the first `session:init` event has been emitted. Subsequent
    * `system/init` messages (stdio re-emits one every turn) still update
    * model/cwd but suppress the event to avoid downstream noise.
@@ -127,6 +153,7 @@ export class SessionState {
    */
   handleMessage(msg: NdjsonMessage): SessionEvent[] {
     this.parseMismatch = false;
+    this.suppressedResult = null;
     if (IGNORED_TYPES.has(msg.type)) return [];
     if (msg.type === "system" && msg.subtype === "status") return [];
 
@@ -343,7 +370,14 @@ export class SessionState {
       // per-message usage throughout the turn. Result usage would double-count.
       this.state = "idle";
       this.rateLimited = false;
-      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      if (this.numTurns <= this.lastEmittedNumTurns) {
+        this.suppressedResult = {
+          branch: "result",
+          numTurns: this.numTurns,
+          lastEmitted: this.lastEmittedNumTurns,
+        };
+        return [];
+      }
       this.lastEmittedNumTurns = this.numTurns;
       return [
         {
@@ -362,7 +396,14 @@ export class SessionState {
       this.cost = r.total_cost_usd;
       this.numTurns = r.num_turns;
       this.state = "idle";
-      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      if (this.numTurns <= this.lastEmittedNumTurns) {
+        this.suppressedResult = {
+          branch: "error",
+          numTurns: this.numTurns,
+          lastEmitted: this.lastEmittedNumTurns,
+        };
+        return [];
+      }
       this.lastEmittedNumTurns = this.numTurns;
       return [{ type: "session:error", errors: r.errors ?? [], cost: this.cost }];
     }
@@ -387,7 +428,14 @@ export class SessionState {
       // suppress a genuine completion — a silent hang, since session:result is
       // the sole driver of workCompleted / waiter resolution. Fail open (#2837).
       if (r.num_turns != null) {
-        if (this.numTurns <= this.lastEmittedNumTurns) return [];
+        if (this.numTurns <= this.lastEmittedNumTurns) {
+          this.suppressedResult = {
+            branch: "fallback",
+            numTurns: this.numTurns,
+            lastEmitted: this.lastEmittedNumTurns,
+          };
+          return [];
+        }
         this.lastEmittedNumTurns = this.numTurns;
       }
 
