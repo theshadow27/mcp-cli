@@ -65,8 +65,8 @@ function makeDeps(
     callTool?: GcDeps["callTool"];
     mtimes?: Map<string, number>;
     mergedPrBranches?: Set<string> | null;
-    /** Branches whose PR is MERGED or CLOSED (worktree-reclaim signal). Defaults to `mergedPrBranches`. */
-    resolvedPrBranches?: Set<string>;
+    /** Branch → PR head SHA for MERGED/CLOSED PRs (worktree-reclaim signal). Merges with `mergedPrBranches`. */
+    resolvedPrBranches?: Map<string, string>;
   } = {},
 ): GcDeps & { logs: string[]; errors: string[]; execCalls: string[][] } {
   const logs: string[] = [];
@@ -91,8 +91,12 @@ function makeDeps(
       if (overrides.mergedPrBranches === undefined && overrides.resolvedPrBranches === undefined) return null;
       if (overrides.mergedPrBranches === null) return null;
       const merged = overrides.mergedPrBranches ?? new Set<string>();
-      // resolved is a superset of merged; default it to merged when not given.
-      const resolved = new Set<string>([...merged, ...(overrides.resolvedPrBranches ?? [])]);
+      // resolved is a superset of merged; each branch maps to its PR head SHA.
+      const resolved = new Map<string, string>();
+      for (const b of merged) resolved.set(b, overrides.resolvedPrBranches?.get(b) ?? "prheadsha");
+      if (overrides.resolvedPrBranches) {
+        for (const [b, sha] of overrides.resolvedPrBranches) resolved.set(b, sha);
+      }
       return { merged, resolved };
     },
     printError: (m) => errors.push(m),
@@ -327,11 +331,19 @@ describe("runGc worktrees", () => {
     // feat-a squash-merged (not an ancestor of main → absent from --merged);
     // feat-b genuinely unmerged with no resolved PR.
     responses.set("git -C /repo branch --merged main", { stdout: "* main\n" });
+    // Ahead-of-forge guard: feat-a's tip matches origin (0 ahead) → safe.
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse HEAD", { stdout: "sha-a" });
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse --verify --quiet refs/remotes/origin/feat-a", {
+      stdout: "sha-a",
+    });
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-list --count refs/remotes/origin/feat-a..HEAD", {
+      stdout: "0",
+    });
 
     const d = makeDeps({
       execResponses: responses,
-      // feat-a's PR is MERGED (squash); resolvedPrBranches carries the signal.
-      resolvedPrBranches: new Set(["feat-a"]),
+      // feat-a's PR is MERGED (squash); resolvedPrBranches carries the signal + head SHA.
+      resolvedPrBranches: new Map([["feat-a", "sha-a"]]),
     });
 
     await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
@@ -340,6 +352,55 @@ describe("runGc worktrees", () => {
     expect(d.logs.some((l) => l.includes("would remove 1"))).toBe(true);
     expect(d.logs.some((l) => l.includes("wt-a"))).toBe(true);
     expect(d.logs.some((l) => l.includes("1 skipped (unmerged)"))).toBe(true);
+  });
+
+  test("does NOT reclaim a closed-PR worktree whose clean tip is ahead of the forge (#2662 data-loss guard)", async () => {
+    const responses = makeWorktreeResponses();
+    // feat-a not ancestry-merged; its PR is CLOSED. Author committed locally
+    // after close → clean tree, but tip is ahead of origin/feat-a.
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n" });
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse HEAD", { stdout: "local-ahead-sha" });
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse --verify --quiet refs/remotes/origin/feat-a", {
+      stdout: "origin-sha",
+    });
+    // 2 unpushed commits.
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-list --count refs/remotes/origin/feat-a..HEAD", {
+      stdout: "2",
+    });
+
+    const d = makeDeps({
+      execResponses: responses,
+      resolvedPrBranches: new Map([["feat-a", "origin-sha"]]),
+    });
+
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    // feat-a must NOT be reclaimed — its unpushed commits would be orphaned.
+    expect(d.logs.some((l) => l.includes("would remove 0"))).toBe(true);
+    expect(d.logs.some((l) => l.includes("1 skipped (unpushed commits)"))).toBe(true);
+    expect(d.logs.some((l) => l.includes("wt-a") && l.includes("- "))).toBe(false);
+  });
+
+  test("reclaims squash-merged worktree when origin/<branch> is pruned and tip matches PR head (#2662)", async () => {
+    const responses = makeWorktreeResponses();
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n" });
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse HEAD", { stdout: "pushed-head-sha" });
+    // origin/feat-a already pruned → --verify fails; fall back to PR headRefOid.
+    responses.set("git -C /repo/.claude/worktrees/wt-a rev-parse --verify --quiet refs/remotes/origin/feat-a", {
+      stdout: "",
+      exitCode: 1,
+    });
+
+    const d = makeDeps({
+      execResponses: responses,
+      // PR head SHA equals the local tip → forge has everything → safe.
+      resolvedPrBranches: new Map([["feat-a", "pushed-head-sha"]]),
+    });
+
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    expect(d.logs.some((l) => l.includes("would remove 1"))).toBe(true);
+    expect(d.logs.some((l) => l.includes("wt-a"))).toBe(true);
   });
 
   test("warns when GitHub API is unavailable but still prunes ancestry-merged worktrees", async () => {

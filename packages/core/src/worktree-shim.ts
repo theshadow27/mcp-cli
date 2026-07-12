@@ -79,13 +79,20 @@ export interface WorktreePruneOptions {
    */
   refreshActive?: () => Promise<Set<string>>;
   /**
-   * Branch names whose PR is MERGED or CLOSED on the forge. Squash-merges leave
-   * the branch tip as a non-ancestor of the default branch, so `git branch
-   * --merged` never lists them (#2662); a resolved PR is the authoritative
-   * "done" signal for those worktrees. Branches removed via this signal are
-   * deleted with `-D` since `git branch -d` rejects a non-ancestor tip.
+   * Branches whose PR is MERGED or CLOSED on the forge, mapped to the PR's head
+   * commit SHA (headRefOid). Squash-merges leave the branch tip as a
+   * non-ancestor of the default branch, so `git branch --merged` never lists
+   * them (#2662); a resolved PR is the authoritative "done" signal for those
+   * worktrees. Branches removed via this signal are deleted with `-D` since
+   * `git branch -d` rejects a non-ancestor tip.
+   *
+   * The head SHA is a data-loss backstop: a CLOSED PR whose author kept
+   * committing locally (or never pushed a final commit) leaves a clean worktree
+   * that is *ahead* of the forge. Reclaiming it would orphan those commits, so
+   * the prune loop skips any tip ahead of `origin/<branch>`, falling back to the
+   * head SHA when the remote ref has already been pruned.
    */
-  resolvedByPr?: Set<string>;
+  resolvedByPr?: Map<string, string>;
 }
 
 /** Result of a prune operation. */
@@ -97,6 +104,11 @@ export interface WorktreePruneResult {
   /** Names of worktrees that were actually removed (empty in dry-run). */
   prunedNames: string[];
   skippedUnmerged: string[];
+  /**
+   * Branches skipped because their clean worktree is ahead of the forge —
+   * committed-but-unpushed work that reclaim-via-PR-state must not destroy.
+   */
+  skippedUnpushed: string[];
   /** Branches that were deleted (empty in dry-run). */
   deletedBranches: Set<string>;
 }
@@ -452,6 +464,49 @@ function removeWorktreeWithVerification(
 }
 
 /**
+ * Guard against orphaning committed-but-unpushed work when reclaiming a
+ * worktree via the resolved-PR path (which routes around the ancestry check and
+ * force-deletes the branch).
+ *
+ * Returns true — "do not reclaim" — when the local tip holds commits the forge
+ * does not have:
+ *  - If `origin/<branch>` exists, the tip is ahead iff `rev-list
+ *    origin/<branch>..HEAD` is non-zero.
+ *  - If the remote ref has been pruned, fall back to the PR's head SHA
+ *    (`headRefOid`): equal ⇒ forge has exactly our tip (safe); anything else ⇒
+ *    treat as ahead (a MERGED/CLOSED PR branch never advances on the forge, so
+ *    any divergence is local-only work).
+ *  - If neither signal is available, fail closed (protect).
+ *
+ * Remote-tracking refs live in the common git dir, so they are visible from the
+ * worktree checkout; all queries run with `-C worktreePath` so `HEAD` is the
+ * branch tip.
+ */
+function isAheadOfForge(
+  worktreePath: string,
+  branch: string,
+  headRefOid: string | undefined,
+  deps: WorktreeShimDeps,
+): boolean {
+  const head = deps.exec(["git", "-C", worktreePath, "rev-parse", "HEAD"]);
+  if (head.exitCode !== 0) return true; // can't determine the local tip → protect
+  const localTip = head.stdout.trim();
+
+  const originRef = `refs/remotes/origin/${branch}`;
+  const verify = deps.exec(["git", "-C", worktreePath, "rev-parse", "--verify", "--quiet", originRef]);
+  if (verify.exitCode === 0) {
+    const ahead = deps.exec(["git", "-C", worktreePath, "rev-list", "--count", `${originRef}..HEAD`]);
+    if (ahead.exitCode !== 0) return true; // can't count → protect
+    return Number(ahead.stdout.trim()) > 0;
+  }
+
+  // origin/<branch> pruned — the PR head SHA is the last thing the forge saw.
+  if (headRefOid) return localTip !== headRefOid;
+
+  return true; // no remote ref and no head SHA → protect
+}
+
+/**
  * Delete a branch after its worktree is removed.
  *
  * Default (safe) uses `git branch -d`, which only deletes ancestry-merged
@@ -584,6 +639,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
   const removable: string[] = [];
   const prunedNames: string[] = [];
   const skippedUnmerged: string[] = [];
+  const skippedUnpushed: string[] = [];
   const deletedBranches = new Set<string>();
   // Resolve symlinks on cwd — macOS does not resolve them in process.cwd(),
   // so a shell that cd'd through a symlink into a candidate worktree would
@@ -616,8 +672,9 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     // A branch is "done" when git ancestry says merged OR its PR is resolved
     // (MERGED/CLOSED). The PR signal is what catches squash-merges, whose tip
     // is a non-ancestor of the default branch (#2662).
+    const ancestryMerged = wt.branch ? mergedBranches.has(wt.branch) : false;
     const prResolved = wt.branch ? (resolvedByPr?.has(wt.branch) ?? false) : false;
-    if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch) && !prResolved) {
+    if (!skipMergeCheck && wt.branch && !ancestryMerged && !prResolved) {
       skippedUnmerged.push(wt.branch);
       continue;
     }
@@ -625,6 +682,18 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     // Check if clean (trim to handle trailing newline from some git versions)
     const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", wt.path, "status", "--porcelain"]);
     if (statusExit !== 0 || status.trim() !== "") continue;
+
+    // Data-loss guard: ancestry-merged tips are fully contained in the default
+    // branch, but a PR-resolved-only tip (squash/closed) can hold committed-but-
+    // unpushed work even when the tree is clean. Reclaiming would `-D` the branch
+    // and orphan those commits. Skip when the tip is ahead of the forge.
+    if (wt.branch && prResolved && !ancestryMerged) {
+      if (isAheadOfForge(wt.path, wt.branch, resolvedByPr?.get(wt.branch), deps)) {
+        deps.printError(`Warning: worktree branch is ahead of the forge, not removing (unpushed commits): ${wt.path}`);
+        skippedUnpushed.push(wt.branch);
+        continue;
+      }
+    }
 
     // Guard: refuse to remove a worktree that contains the current CWD.
     if (cwd && (cwd === wt.path || cwd.startsWith(`${wt.path}/`))) {
@@ -688,7 +757,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     }
   }
 
-  return { pruned, removable, prunedNames, skippedUnmerged, deletedBranches };
+  return { pruned, removable, prunedNames, skippedUnmerged, skippedUnpushed, deletedBranches };
 }
 
 // ── Errors ──

@@ -105,11 +105,13 @@ export interface GcDeps extends WorktreeShimDeps {
   /**
    * Returns branch→PR-state signals from one batched `gh` call, or null if the
    * API is unavailable. `merged` = branches with a MERGED PR (enables `-D`
-   * force-delete of squash-merged branches). `resolved` = MERGED or CLOSED
-   * (the "done" signal that lets worktree GC reclaim squash-merged and
-   * abandoned-PR worktrees `git branch --merged` can't see — #2662).
+   * force-delete of squash-merged branches). `resolved` maps every MERGED-or-
+   * CLOSED branch to its PR head SHA (headRefOid) — the "done" signal that lets
+   * worktree GC reclaim squash-merged and abandoned-PR worktrees `git branch
+   * --merged` can't see (#2662), while the head SHA guards against orphaning
+   * unpushed commits when `origin/<branch>` has been pruned.
    */
-  queryPrBranches: (cwd: string) => { merged: Set<string>; resolved: Set<string> } | null;
+  queryPrBranches: (cwd: string) => { merged: Set<string>; resolved: Map<string, string> } | null;
   log: (msg: string) => void;
   logError: (msg: string) => void;
 }
@@ -154,20 +156,20 @@ export function defaultGcDeps(): GcDeps {
     queryPrBranches: (cwd) => {
       const result = spawnCaptureSync(
         "gh",
-        ["pr", "list", "--state", "all", "--json", "headRefName,state", "--limit", "1000"],
+        ["pr", "list", "--state", "all", "--json", "headRefName,state,headRefOid", "--limit", "1000"],
         { cwd },
       );
       if (!result.ok) return null;
       try {
-        const prs = JSON.parse(result.stdout) as Array<{ headRefName: string; state: string }>;
+        const prs = JSON.parse(result.stdout) as Array<{ headRefName: string; state: string; headRefOid: string }>;
         const merged = new Set<string>();
-        const resolved = new Set<string>();
+        const resolved = new Map<string, string>();
         for (const pr of prs) {
           if (pr.state === "MERGED") {
             merged.add(pr.headRefName);
-            resolved.add(pr.headRefName);
+            resolved.set(pr.headRefName, pr.headRefOid);
           } else if (pr.state === "CLOSED") {
-            resolved.add(pr.headRefName);
+            resolved.set(pr.headRefName, pr.headRefOid);
           }
         }
         return { merged, resolved };
@@ -198,8 +200,8 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
   // Fetch PR-state signals at most once per run — both the worktree and branch
   // phases consume it. `undefined` = not yet fetched; `null` = fetched but the
   // API was unavailable.
-  let prBranchesCache: { merged: Set<string>; resolved: Set<string> } | null | undefined;
-  const getPrBranches = (): { merged: Set<string>; resolved: Set<string> } | null => {
+  let prBranchesCache: { merged: Set<string>; resolved: Map<string, string> } | null | undefined;
+  const getPrBranches = (): { merged: Set<string>; resolved: Map<string, string> } | null => {
     if (prBranchesCache === undefined) prBranchesCache = deps.queryPrBranches(cwd);
     return prBranchesCache;
   };
@@ -267,7 +269,7 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
     // that `git branch --merged` can't see (#2662). Only query when there are
     // mcx worktrees to consider; warn (but continue with ancestry-only) if the
     // forge is unreachable.
-    let resolvedByPr: Set<string> | undefined;
+    let resolvedByPr: Map<string, string> | undefined;
     if (listed.worktrees.length > 0) {
       const pr = getPrBranches();
       if (pr) {
@@ -315,6 +317,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       if (result.skippedUnmerged.length > 0) {
         deps.log(`${prefix}worktrees: ${result.skippedUnmerged.length} skipped (unmerged)`);
       }
+      if (result.skippedUnpushed.length > 0) {
+        deps.log(`${prefix}worktrees: ${result.skippedUnpushed.length} skipped (unpushed commits)`);
+      }
       if (recentSkipped.length > 0) {
         deps.log(`${prefix}worktrees: ${recentSkipped.length} skipped (too recent)`);
       }
@@ -327,8 +332,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       }
     } else {
       const unmerged = result.skippedUnmerged.length > 0 ? `, skipped ${result.skippedUnmerged.length} unmerged` : "";
+      const unpushed = result.skippedUnpushed.length > 0 ? `, skipped ${result.skippedUnpushed.length} unpushed` : "";
       const tooRecent = recentSkipped.length > 0 ? `, skipped ${recentSkipped.length} too recent` : "";
-      deps.logError(`worktrees: removed ${result.pruned}${unmerged}${tooRecent}`);
+      deps.logError(`worktrees: removed ${result.pruned}${unmerged}${unpushed}${tooRecent}`);
       if (result.pruned > 0) {
         gcResult.prunedWorktrees = result.prunedNames;
         for (const b of result.deletedBranches) {
