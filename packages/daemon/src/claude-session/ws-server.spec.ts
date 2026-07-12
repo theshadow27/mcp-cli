@@ -1208,6 +1208,33 @@ describe("ClaudeWsServer", () => {
     await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
   });
 
+  test("waitForResult on completed-then-disconnected session resolves with buffered result (#2858)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Drive the session to completion (workCompleted flips true, lastResult captured).
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+    // WS drops after completion — transient state flips to "disconnected" while the
+    // spawn is still alive, mirroring the stdio EPIPE trigger where the result frame
+    // is already in hand but the transport is gone.
+    ws.close();
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    // waitForResult must trust workCompleted and return the buffered result, not reject.
+    const result = await server.waitForResult("test-session", 5000);
+    expect(result.success).toBe(true);
+    expect(result.result).toBe("Done!");
+  });
+
   test("process exit rejects pending result waiters", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });

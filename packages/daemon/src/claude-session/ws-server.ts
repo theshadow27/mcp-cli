@@ -420,9 +420,19 @@ interface WsSession {
    * by state transitions (unlike state which goes idle→disconnected on WS drop).
    * Used to decide auto-termination on process exit — survives the WS-close-then-
    * proc-exit race where transient state is already "disconnected".
-   * Reset only on clearSession (respawn = fresh work cycle).
+   * Turn-scoped: reset on clearSession (respawn) and on each follow-up sendPrompt,
+   * mirroring workCompletedSignal — a new turn hasn't completed until its result fires.
    */
   workCompleted: boolean;
+  /**
+   * The SessionResult captured the last time session:result or session:error fired
+   * (the same payload handed to resultWaiters). Retained so waitForResult can trust
+   * the sticky workCompleted flag and return the buffered result even after a
+   * disconnect flipped transient state to "disconnected"/"ended" — the stdio EPIPE
+   * trigger where the child's `result` line arrives after the transport dies (#2858).
+   * Reset to null on clearSession (respawn = fresh work cycle), mirroring workCompleted.
+   */
+  lastResult: SessionResult | null;
   /**
    * Reason provided with the last interrupt call. Prepended to the next sendPrompt
    * so the session sees why it was interrupted before the new instruction.
@@ -772,6 +782,7 @@ export class ClaudeWsServer {
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
         workCompleted: false,
+        lastResult: null,
         pendingInterruptReason: null,
         traceparent: null,
         stuckDetector: null,
@@ -875,6 +886,7 @@ export class ClaudeWsServer {
       createdAt: Date.now(),
       pendingImmediate: false,
       workCompleted: false,
+      lastResult: null,
       pendingInterruptReason: null,
       traceparent: null,
       stuckDetector: null,
@@ -1123,8 +1135,13 @@ export class ClaudeWsServer {
 
     const session = this.getSession(sessionId);
     // New turn: re-arm the completion signal so the proc.exited drain race keys off
-    // THIS prompt's result, not the already-resolved prior turn's (#2833).
+    // THIS prompt's result, not the already-resolved prior turn's (#2833). Reset the
+    // sticky workCompleted flag + lastResult for the same reason — otherwise a
+    // waitForResult on the new turn would fast-path to the prior turn's stale result
+    // before this turn finishes (#2858). Both are turn-scoped, like the signal.
     this.armWorkCompletedSignal(session);
+    session.workCompleted = false;
+    session.lastResult = null;
     const pendingReason = session.pendingInterruptReason;
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
@@ -1490,6 +1507,7 @@ export class ClaudeWsServer {
     if (session.clearing) return;
     session.clearing = true;
     session.workCompleted = false;
+    session.lastResult = null;
     session.pendingInterruptReason = null;
 
     // Reset state machine (preserves cumulative cost/tokens)
@@ -1709,6 +1727,17 @@ export class ClaudeWsServer {
   /** Wait for a session to produce a result. */
   waitForResult(sessionId: string, timeoutMs: number): Promise<SessionResult> {
     const session = this.getSession(sessionId);
+
+    // Fast-path: trust the sticky workCompleted flag over transient state (#2858).
+    // On the stdio EPIPE trigger, failSend → disconnectSession flips state to
+    // "disconnected" synchronously while the child's `result` line is still buffered;
+    // handleStdioLine (#2852) then fires session:result and captures lastResult. The
+    // exit handler (proc.exited) and disconnectSession already treat workCompleted as
+    // the source of truth for a clean finish — waitForResult must too, or `mcx claude
+    // spawn --wait` gets a rejection instead of the result the session actually produced.
+    if (session.workCompleted && session.lastResult) {
+      return Promise.resolve(session.lastResult);
+    }
 
     if (session.state.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
@@ -2227,14 +2256,16 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         try {
-          this.resolveWaiters(session, {
+          const result: SessionResult = {
             sessionId,
             success: true,
             result: event.result,
             cost: event.cost,
             tokens: event.tokens,
             numTurns: event.numTurns,
-          });
+          };
+          session.lastResult = result;
+          this.resolveWaiters(session, result);
         } catch (err) {
           logErr("resolveWaiters failed", err);
         }
@@ -2255,14 +2286,16 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         try {
-          this.resolveWaiters(session, {
+          const result: SessionResult = {
             sessionId,
             success: false,
             errors: event.errors,
             cost: event.cost,
             tokens: 0,
             numTurns: 0,
-          });
+          };
+          session.lastResult = result;
+          this.resolveWaiters(session, result);
         } catch (err) {
           logErr("resolveWaiters failed", err);
         }
