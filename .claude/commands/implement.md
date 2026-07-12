@@ -10,17 +10,26 @@ The user will provide a GitHub issue number (e.g., `/implement 12` or `/implemen
 
 ### Step 0: Prepare Branch
 
-Start from a clean, up-to-date main:
+**You must be on an issue-named branch before your first commit — never push
+from the worktree's auto-created `worktree-claude-*` (or `agent-*`) scratch
+branch.** gc/cleanup heuristics key on those prefixes to reclaim disposable
+worktrees (#2662), so a PR pushed from one can have its branch deleted while
+the PR is still open (#2866).
+
+If you are in a **worktree** (the common sprint case — `git branch --show-current`
+prints `worktree-claude-*` or `agent-*`), you cannot `git checkout main` (main
+is checked out in the base repo). Rename the current branch in place instead:
+
+```bash
+git branch -m fix/issue-<number>-<short-slug>   # renames the scratch branch
+```
+
+If you are in the **base repo** (branch is `main`), start clean and cut a new branch:
 
 ```bash
 git checkout main
 git pull origin main
-```
-
-Create a feature branch named after the issue:
-
-```bash
-git checkout -b feat/issue-<number>-<short-slug>
+git checkout -b fix/issue-<number>-<short-slug>
 ```
 
 Use a prefix that matches the expected commit type (`feat/`, `fix/`, `refactor/`, etc.).
@@ -159,8 +168,19 @@ Stage the relevant files and create a commit. Follow the repo's commit style (lo
 
 ### Step 7: Push and Create PR
 
+**Guard: refuse to push a scratch branch.** Confirm you are not still on the
+worktree's auto-created branch before pushing — pushing one creates an opaque
+PR whose branch gc may reclaim (#2866):
+
 ```bash
-git push -u origin <branch>
+branch=$(git branch --show-current)
+case "$branch" in
+  worktree-claude-*|agent-*)
+    echo "REFUSING to push scratch branch '$branch' — rename first (see Step 0):" >&2
+    echo "  git branch -m fix/issue-<number>-<short-slug>" >&2
+    exit 1 ;;
+esac
+git push -u origin "$branch"
 ```
 
 Then create a pull request targeting main:
