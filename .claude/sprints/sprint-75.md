@@ -76,3 +76,12 @@ Orchestrator reliability: fix the stdio drop-and-hang class, the monitor/daemon 
 ## Context
 
 Sprint 74 (gate integrity) closed 2026-07-02 with v1.14.4; its last deliverable (#2797 CI smoke wiring) landed 2026-07-11 via PR #2842 during recovery, which also produced #2841/#2843. This sprint drains the rest of the 74 fallout: the #2825 stdio class gets its structural fix (#2838/#2833), the orchestrator's two blind spots (#2508 dead-daemon bind, #2837 stale-event replay) get fixed or root-caused, and #2737 stops taxing every phase-file PR. Codex provider remains broken (#2482) — all sessions route to claude. Sprint 75 does not end in 7 — no introspection round.
+
+## Results
+
+- **Released**: v1.14.5 (tagged at retro after sprint PR #2847 merges)
+- **PRs merged**: 17 — #2851, #2852, #2854, #2855, #2856, #2857, #2863, #2864, #2865, #2867, #2869, #2870, #2873, #2874, #2876, #2878, #2880
+- **Issues closed**: 18 — all 16 planned (+ amendment #2848), in-sprint amendment #2853, and #2727 closed-as-done at sprint start (clean-tree confirmation)
+- **Issues dropped**: 0 — 17/17 tracked items merged; no needs-attention outcomes
+- **New issues filed**: 9+ — #2850 (test-partition globs gitignored build/), #2853 (idle-timer pollUntil flake; fixed in-sprint), #2860 (idempotency guard restart boundary), #2866 (workers push from scratch worktree-* branches, ×3), #2868 (terminal-state absorbing invariant + suppression observability), #2875 (gc follow-up), #2877 (cli-orchestration.spec.ts zero-headroom pollUntil), #2879 (drain no-result residual), #2881 (decoder-flush + doc drift)
+- **Notable**: #2837 nerd-snipe gate root-caused the stale-idle replay before impl (num_turns idempotency); #2788's prescribed root cause was disproven against the CI artifact and the real fix landed in session-deps.ts; orchestrator caught a data-loss edge on #2662's gc after a qa:pass (closed-PR reclaim had no ahead-of-remote guard — repaired + re-verified fail-closed); one ~7.5h quota pause mid-sprint with clean resume; two "Bun crash" characterizations corrected to pollUntil-headroom flakes via downloaded artifacts.
