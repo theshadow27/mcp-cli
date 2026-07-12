@@ -8,6 +8,8 @@
  *   permission      — handshake + session/new + sends session/request_permission, completes after response
  *   crash-after-prompt — handshake + session/new + prompt completes + exit code 2
  *   silent          — handshake + session/new + prompt accepted, then no events (for watchdog testing)
+ *   banner-then-handshake — prints a non-JSON update banner on stdout, then behaves like `simple`
+ *   banner-then-exit — prints a non-JSON update banner on stdout, then exits 1 without handshaking
  *   fs-write        — handshake + session/new + sends fs/write_text_file request, then completes
  *   fs-read         — handshake + session/new + sends fs/read_text_file request, then completes
  *   fs-read-symlink — sends fs/read for an in-cwd symlink whose target escapes the worktree
@@ -33,7 +35,19 @@ const MED_COMPLETE_DELAY_MS = 100;
 /** Long tail delay — paired with permission / terminal flows that require user-side decisions. */
 const LONG_COMPLETE_DELAY_MS = 200;
 
-const mode = process.argv[2] ?? "simple";
+const rawMode = process.argv[2] ?? "simple";
+
+const UPDATE_BANNER = "A new version of Grok Build is available: 0.2.91 -> 0.2.93 [stable]";
+
+if (rawMode === "banner-then-handshake" || rawMode === "banner-then-exit") {
+  // Emit a non-JSON banner on stdout before any JSON-RPC framing — mimics an agent
+  // with a pending self-update (see #2848).
+  process.stdout.write(`${UPDATE_BANNER}\n`);
+  if (rawMode === "banner-then-exit") process.exit(1);
+}
+
+// banner-then-handshake behaves like `simple` for the rest of the flow.
+const mode = rawMode === "banner-then-handshake" ? "simple" : rawMode;
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 
