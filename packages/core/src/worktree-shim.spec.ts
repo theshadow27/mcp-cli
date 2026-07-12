@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import {
   cleanupWorktree,
   createWorktree,
   getDefaultBranch,
+  isSquashMerged,
   listMcxWorktrees,
   parseWorktreeList,
   pruneWorktrees,
@@ -761,6 +763,90 @@ describe("listMcxWorktrees", () => {
 
 // ── pruneWorktrees ──
 
+describe("isSquashMerged (real git)", () => {
+  // Runs real git plumbing (merge-base, commit-tree, cherry) against a
+  // throwaway repo — the only way to prove the patch-equivalence algorithm
+  // actually detects a squash-merge and does not false-positive (#2887).
+  // git honors an inherited GIT_DIR/GIT_WORK_TREE over `-C`, so when this spec
+  // runs under a git hook (e.g. pre-push, which exports GIT_DIR), a bare
+  // `git commit` would land in the REAL repo instead of the temp fixture. Strip
+  // all GIT_* vars so every command is confined to the throwaway repo.
+  const cleanGitEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!k.startsWith("GIT_") && v !== undefined) cleanGitEnv[k] = v;
+  }
+
+  const realExec: WorktreeShimDeps["exec"] = (cmd) => {
+    const r = spawnSync(cmd[0], cmd.slice(1), { encoding: "utf8", env: cleanGitEnv });
+    return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.status ?? 1 };
+  };
+  const deps: WorktreeShimDeps = { exec: realExec, printError: () => {}, printInfo: () => {} };
+
+  function git(repo: string, ...args: string[]): void {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env: cleanGitEnv });
+    if ((r.status ?? 1) !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+  }
+
+  function initRepo(): string {
+    const repo = makeTmpDir();
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "config", "user.email", "t@t.t");
+    git(repo, "config", "user.name", "t");
+    git(repo, "commit", "--allow-empty", "-q", "-m", "base");
+    return repo;
+  }
+
+  test("detects a squash-merged branch (cumulative diff already in main)", () => {
+    const repo = initRepo();
+    try {
+      // feat: two commits that together produce feature.txt="hello\nworld"
+      git(repo, "checkout", "-q", "-b", "feat");
+      writeFileSync(join(repo, "feature.txt"), "hello\n");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-q", "-m", "feat 1");
+      writeFileSync(join(repo, "feature.txt"), "hello\nworld\n");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-q", "-m", "feat 2");
+
+      // Simulate a squash-merge into main: one commit with the same net tree.
+      git(repo, "checkout", "-q", "main");
+      writeFileSync(join(repo, "feature.txt"), "hello\nworld\n");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-q", "-m", "squash: feat (#123)");
+
+      expect(isSquashMerged(repo, "feat", "main", deps)).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("does not false-positive on a genuinely-unmerged branch with a unique diff", () => {
+    const repo = initRepo();
+    try {
+      git(repo, "checkout", "-q", "-b", "feat");
+      writeFileSync(join(repo, "feature.txt"), "unique feature work\n");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-q", "-m", "feat unique");
+
+      // main advances with unrelated work — feat's diff is NOT present in main.
+      git(repo, "checkout", "-q", "main");
+      writeFileSync(join(repo, "other.txt"), "unrelated\n");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-q", "-m", "unrelated");
+
+      expect(isSquashMerged(repo, "feat", "main", deps)).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("returns false (fail-closed) when git plumbing fails", () => {
+    // Nonexistent repo path → merge-base fails → no reclaim on uncertainty.
+    const missing = join(tmpdir(), `no-such-repo-${Date.now()}`);
+    expect(isSquashMerged(missing, "feat", "main", deps)).toBe(false);
+  });
+});
+
 describe("pruneWorktrees", () => {
   test("prunes clean merged worktrees", async () => {
     const porcelainOutput = [
@@ -913,6 +999,161 @@ describe("pruneWorktrees", () => {
     expect(result.deletedBranches.has("claude/feat-squashed")).toBe(true);
     // Force-delete must be used; plain `-d` alone would leak the branch.
     expect(calls.some((c) => c.includes("-D") && c.includes("claude/feat-squashed"))).toBe(true);
+  });
+
+  test("reclaims a squash-merged branch detected offline via patch-equivalence and force-deletes (-D)", async () => {
+    // #2887: neither ancestry (--merged) nor resolvedByPr fires. isSquashMerged
+    // reports the branch diff is already in main; the branch tip equals its
+    // origin ref (not ahead) so it is safe to reclaim with -D.
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-squashed-offline",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-squashed-offline",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 }; // NOT ancestry-merged
+      // squash detection plumbing
+      if (cmd.includes("merge-base")) return { stdout: "base-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("commit-tree")) return { stdout: "dangling-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("cherry")) return { stdout: "- dangling-sha\n", stderr: "", exitCode: 0 }; // equivalent
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-D")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "not fully merged", exitCode: 1 };
+      // ahead-of-forge: origin/<branch> exists and equals the tip → not ahead
+      if (cmd.includes("rev-parse") && cmd.some((a) => a.includes("refs/remotes/origin/")))
+        return { stdout: "tip-sha", stderr: "", exitCode: 0 };
+      // post-delete verification: refs/heads/<branch> is gone
+      if (cmd.includes("rev-parse") && cmd.some((a) => a.includes("refs/heads/")))
+        return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("rev-list")) return { stdout: "0\n", stderr: "", exitCode: 0 }; // 0 ahead
+      if (cmd.includes("rev-parse")) return { stdout: "tip-sha", stderr: "", exitCode: 0 }; // local HEAD
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      // No PR entry — the squash signal is what makes this reclaimable.
+      resolvedByPr: new Map(),
+    });
+
+    expect(result.pruned).toBe(1);
+    expect(result.prunedNames).toEqual(["feat-squashed-offline"]);
+    expect(result.skippedUnmerged).toEqual([]);
+    expect(result.skippedUnpushed).toEqual([]);
+    expect(result.deletedBranches.has("claude/feat-squashed-offline")).toBe(true);
+    expect(calls.some((c) => c.includes("-D") && c.includes("claude/feat-squashed-offline"))).toBe(true);
+  });
+
+  test("skips a squash-detected branch that is ahead of the forge (unpushed commits) → skippedUnpushed", async () => {
+    // #2887 data-loss guard: the branch diff is patch-equivalent to main, but
+    // the local tip carries commits the forge has not seen. Deleting would
+    // orphan them, so the squash path must honor the ahead-of-forge guard
+    // exactly as the PR path does.
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-squashed-ahead",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-squashed-ahead",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("merge-base")) return { stdout: "base-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("commit-tree")) return { stdout: "dangling-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("cherry")) return { stdout: "- dangling-sha\n", stderr: "", exitCode: 0 }; // patch-equivalent
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean tree
+      // origin/<branch> exists but the local tip is ahead → protect
+      if (cmd.includes("rev-parse") && cmd.includes("--verify"))
+        return { stdout: "origin-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("rev-list")) return { stdout: "2\n", stderr: "", exitCode: 0 }; // 2 commits ahead
+      if (cmd.includes("rev-parse")) return { stdout: "local-sha", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map(),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(result.skippedUnpushed).toEqual(["claude/feat-squashed-ahead"]);
+    // Must never remove the worktree or force-delete the branch.
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    expect(calls.some((c) => c.includes("-D"))).toBe(false);
+  });
+
+  test("does NOT reclaim a genuinely-unmerged branch whose diff merely resembles main", async () => {
+    // #2887 false-positive guard: patch-equivalence must not fire on a branch
+    // with a unique diff. `git cherry` reports '+' (not in default branch), so
+    // isSquashMerged is false and the branch is protected via skippedUnmerged.
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-lookalike",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-lookalike",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("merge-base")) return { stdout: "base-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("commit-tree")) return { stdout: "dangling-sha", stderr: "", exitCode: 0 };
+      if (cmd.includes("cherry")) return { stdout: "+ dangling-sha\n", stderr: "", exitCode: 0 }; // unique diff
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map(),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(result.skippedUnmerged).toEqual(["claude/feat-lookalike"]);
+    // Never removed, never force-deleted.
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    expect(calls.some((c) => c.includes("-D"))).toBe(false);
   });
 
   test("does not reclaim a clean resolved-PR worktree that is ahead of the forge (unpushed commits)", async () => {
