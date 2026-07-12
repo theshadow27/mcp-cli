@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseSitesArg, shouldAutoRestart } from "./site-worker";
+import { parseSitesArg, shouldAutoRestart, shouldFallbackToCookie } from "./site-worker";
 import type { LastBrowserSession } from "./site-worker";
 
 describe("parseSitesArg", () => {
@@ -68,5 +68,25 @@ describe("shouldAutoRestart", () => {
 
   test("false when both null session and vault not empty", () => {
     expect(shouldAutoRestart(null, false)).toBe(false);
+  });
+});
+
+describe("shouldFallbackToCookie", () => {
+  test("true on 401 (unauthorized)", () => {
+    expect(shouldFallbackToCookie(401)).toBe(true);
+  });
+
+  test("true on 403 (Microsoft expired/insufficient token)", () => {
+    expect(shouldFallbackToCookie(403)).toBe(true);
+  });
+
+  test("false on 200 success", () => {
+    expect(shouldFallbackToCookie(200)).toBe(false);
+  });
+
+  test("false on other 4xx/5xx (404, 429, 500)", () => {
+    expect(shouldFallbackToCookie(404)).toBe(false);
+    expect(shouldFallbackToCookie(429)).toBe(false);
+    expect(shouldFallbackToCookie(500)).toBe(false);
   });
 });
