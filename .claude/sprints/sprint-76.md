@@ -2,6 +2,7 @@
 
 > Planned 2026-07-12 09:55 EDT. Target: 17 PRs.
 > Amended 2026-07-12 12:54 EDT — added #2887 (git-level squash-merge gc signal) to Batch 3 as filler.
+> Started 2026-07-12 12:55 EDT.
 
 ## Goal
 
