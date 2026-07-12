@@ -8,6 +8,7 @@ import { testOptions } from "../../../test/test-options";
 import {
   _buildStaleDaemonWarning,
   _formatReloadRefusal,
+  _isDaemonNewerThanCli,
   _isTransientConnectionError,
   _parseBuildEpoch,
   _resetStartCooldown,
@@ -510,6 +511,40 @@ describe("_buildStaleDaemonWarning", () => {
     expect(warning).toContain("1.0.0");
     expect(warning).toContain("1.1.0");
     expect(warning).toContain("mcx daemon reload");
+  });
+});
+
+// -- _isDaemonNewerThanCli (#2782 reload downgrade guard) --
+
+describe("_isDaemonNewerThanCli", () => {
+  it("returns false when daemon has no build version (predates tracking)", () => {
+    expect(_isDaemonNewerThanCli(undefined, "1.0.0+2000")).toBe(false);
+  });
+
+  it("returns false when versions match", () => {
+    expect(_isDaemonNewerThanCli("1.0.0+1000", "1.0.0+1000")).toBe(false);
+  });
+
+  it("returns true when daemon is compiled and CLI is dev", () => {
+    // Compiled daemon vs dev CLI — daemon is authoritative; reload would downgrade
+    expect(_isDaemonNewerThanCli("1.11.2+1779669196", "1.11.2-dev")).toBe(true);
+  });
+
+  it("returns false when CLI is compiled and daemon is dev", () => {
+    // Daemon dev, CLI compiled — daemon is stale; reload is a legit upgrade
+    expect(_isDaemonNewerThanCli("1.11.2-dev", "1.11.2+1779669196")).toBe(false);
+  });
+
+  it("returns true when daemon epoch is newer than CLI epoch", () => {
+    expect(_isDaemonNewerThanCli("1.0.0+2000000000", "1.0.0+1000000000")).toBe(true);
+  });
+
+  it("returns false when daemon epoch is older than CLI epoch", () => {
+    expect(_isDaemonNewerThanCli("1.0.0+1000000000", "1.0.0+2000000000")).toBe(false);
+  });
+
+  it("returns false when both are dev builds (no direction)", () => {
+    expect(_isDaemonNewerThanCli("0.1.0-dev", "0.2.0-dev")).toBe(false);
   });
 });
 

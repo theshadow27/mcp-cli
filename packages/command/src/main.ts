@@ -16,6 +16,7 @@
 
 import type { DaemonStatus, QuotaStatusResult, ServerStatus } from "@mcp-cli/core";
 import {
+  BUILD_VERSION,
   IpcCallError,
   MCP_TOOL_TIMEOUT_MS,
   PING_TIMEOUT_MS,
@@ -70,6 +71,8 @@ import { cmdVfs } from "./commands/vfs";
 import {
   ShutdownRefusedError,
   _formatReloadRefusal,
+  _isDaemonNewerThanCli,
+  getRunningDaemonBuildVersion,
   getSourceStalenessWarning,
   getStaleDaemonWarning,
   ipcCall,
@@ -901,6 +904,17 @@ async function cmdDaemon(args: string[]): Promise<void> {
     // Unlike `restart` (force:true), reload defaults force:false so the daemon's
     // active-session guard holds — the fix for a build-mismatched (split-brain) daemon.
     const force = args.includes("--force");
+    const downgrade = args.includes("--downgrade");
+    // Direction check (#2782): a stale client must not silently downgrade a newer
+    // daemon. The new daemon auto-starts from the client's binary, so if the running
+    // daemon is newer, reloading inverts the build mismatch it's meant to fix.
+    const oldBuild = getRunningDaemonBuildVersion();
+    if (!downgrade && _isDaemonNewerThanCli(oldBuild)) {
+      printError(
+        `Refusing to reload: the running daemon (${oldBuild}) is newer than this client (${BUILD_VERSION}). Reloading would downgrade the daemon to the client's older build. Run \`mcx daemon reload\` from the newer binary (\`dist/mcx\` or the installed \`mcx\` on PATH), or pass --downgrade to override.`,
+      );
+      process.exit(1);
+    }
     console.error("Reloading daemon...");
     try {
       await stopDaemon({ force });
@@ -913,7 +927,8 @@ async function cmdDaemon(args: string[]): Promise<void> {
     }
     // Next ipcCall auto-starts a fresh build-matched daemon.
     await ipcCall("ping");
-    console.error("Daemon reloaded.");
+    const newBuild = getRunningDaemonBuildVersion();
+    console.error(`Daemon reloaded: build ${oldBuild ?? "unknown"} → ${newBuild ?? "unknown"}.`);
   } else if (sub === "shutdown" || sub === "stop") {
     const force = args.includes("--force");
     try {
@@ -927,7 +942,7 @@ async function cmdDaemon(args: string[]): Promise<void> {
     }
     console.error("Daemon shut down.");
   } else {
-    printError("Usage: mcx daemon restart|reload|shutdown [--force]");
+    printError("Usage: mcx daemon restart|reload|shutdown [--force] [--downgrade]");
     process.exit(1);
   }
 }
