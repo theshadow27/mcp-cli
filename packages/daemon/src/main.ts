@@ -35,8 +35,15 @@ function entryStem(name: string): string {
  * (`/$bunfs/…`), `.ts` in dev. Matching a literal `.ts` suffix therefore misses
  * the compiled dispatch and starts a second daemon (#2821), so match the stem
  * against both extensions.
+ *
+ * The raw positional argv is attacker-controllable, so the match alone is not
+ * proof of a genuine worker dispatch: a `mcpd <path-ending-in-alias-executor.js>`
+ * call from outside the daemon would otherwise route into the executor. Gate on
+ * the `MCPD_WORKER` sentinel that the spawner sets (`alias-server.ts`) so only a
+ * daemon-spawned subprocess is routed (#2835).
  */
-export function resolveWorkerEntry(argv: string[]): string | undefined {
+export function resolveWorkerEntry(argv: string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!env.MCPD_WORKER) return undefined;
   const lastArg = argv.at(-1);
   if (!lastArg) return undefined;
   for (const entry of WORKER_ENTRIES) {
@@ -96,7 +103,16 @@ if (import.meta.main) {
     // predicted literal path: the embedded module layout is Bun-outbase
     // dependent (#2801), and a predicted `./alias-executor.ts` fails to
     // resolve in the compiled binary's module graph (#2821).
-    import(workerPath(workerEntry));
+    //
+    // The dynamic import is awaited inside an IIFE so a rejecting embedded
+    // module init surfaces a loud `[mcpd]` diagnostic and a non-zero exit,
+    // rather than a bare Bun unhandledRejection with no guaranteed exit (#2835).
+    (async () => {
+      await import(workerPath(workerEntry));
+    })().catch((err) => {
+      console.error("[mcpd] worker dispatch failed:", err);
+      process.exit(1);
+    });
   } else {
     main().catch((err) => {
       console.error("[mcpd] Fatal:", err);

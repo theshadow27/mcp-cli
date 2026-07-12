@@ -21,16 +21,28 @@ export interface AcpProcessOptions {
   onMessage: (msg: Record<string, unknown>) => void;
   /** Called when the process exits. */
   onExit: (code: number | null, signal: string | null) => void;
-  /** Called on parse errors (malformed NDJSON lines). */
+  /** Called on parse errors (malformed NDJSON lines) after the first valid JSON-RPC frame. */
   onError?: (error: Error, rawLine: string) => void;
+  /**
+   * Called for each non-JSON line seen *before* the first parseable JSON-RPC frame.
+   * These are banner / MOTD / update-notice lines that some agents (grok, gemini, …)
+   * print on stdout before ACP framing begins. They are skipped, not treated as errors.
+   */
+  onPreamble?: (rawLine: string) => void;
   /** Called with stderr chunks. */
   onStderr?: (chunk: string) => void;
 }
+
+/** Cap on how many preamble lines / characters we retain for diagnostics. */
+const MAX_PREAMBLE_LINES = 20;
+const MAX_PREAMBLE_CHARS = 2000;
 
 export class AcpProcess {
   private handle: ManagedHandle | null = null;
   private readonly opts: AcpProcessOptions;
   private _exited = false;
+  private _sawFirstFrame = false;
+  private readonly _preamble: string[] = [];
 
   constructor(opts: AcpProcessOptions) {
     this.opts = opts;
@@ -97,6 +109,38 @@ export class AcpProcess {
     return this._exited;
   }
 
+  /**
+   * Non-JSON lines emitted on stdout before the first JSON-RPC frame, joined.
+   * Empty once a frame has been parsed with no preceding noise. Used to surface
+   * the real cause when a handshake fails ("expected JSON-RPC, got: <banner>").
+   */
+  get preambleText(): string {
+    return this._preamble.join("\n");
+  }
+
+  /** Parse a single stdout line: route to onMessage, preamble, or onError. */
+  private handleLine(trimmed: string): void {
+    if (!trimmed) return;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      this._sawFirstFrame = true;
+      this.opts.onMessage(parsed);
+    } catch (err) {
+      if (!this._sawFirstFrame) {
+        this.recordPreamble(trimmed);
+        this.opts.onPreamble?.(trimmed);
+      } else {
+        this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), trimmed);
+      }
+    }
+  }
+
+  private recordPreamble(line: string): void {
+    if (this._preamble.length >= MAX_PREAMBLE_LINES) return;
+    if (this.preambleText.length + line.length > MAX_PREAMBLE_CHARS) return;
+    this._preamble.push(line);
+  }
+
   /** Read stdout line by line and parse as JSON. */
   private async readLines(): Promise<void> {
     const stdout = this.handle?.stdout;
@@ -116,25 +160,11 @@ export class AcpProcess {
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-            this.opts.onMessage(parsed);
-          } catch (err) {
-            this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), trimmed);
-          }
+          this.handleLine(line.trim());
         }
       }
 
-      if (buffer.trim()) {
-        try {
-          const parsed = JSON.parse(buffer.trim()) as Record<string, unknown>;
-          this.opts.onMessage(parsed);
-        } catch (err) {
-          this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), buffer.trim());
-        }
-      }
+      this.handleLine(buffer.trim());
     } catch (err) {
       if (!this._exited) {
         this.opts.onError?.(err instanceof Error ? err : new Error(String(err)), "");

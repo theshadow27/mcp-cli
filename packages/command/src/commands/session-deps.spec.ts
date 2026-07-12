@@ -118,6 +118,11 @@ describe("defaultGetDiffStats", () => {
     const result = await defaultGetDiffStats(dir);
     expect(isLookupFailure(result)).toBe(true);
   });
+
+  test("returns null for nonexistent path (deleted worktree)", async () => {
+    const result = await defaultGetDiffStats("/tmp/mcp-nonexistent-worktree-xyzzy");
+    expect(result).toBeNull();
+  });
 });
 
 // ── defaultGetPrStatus ──
@@ -143,7 +148,12 @@ describe("defaultGetPrStatus", () => {
     Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: GIT_ENV });
     Bun.spawnSync(["git", "-C", dir, "commit", "--allow-empty", "-m", "init"], { env: GIT_ENV });
     const result = await defaultGetPrStatus(dir);
-    // gh pr list will fail (no remote) → LookupFailure, or return null/empty
+    // A remote-less cwd makes `gh pr list` resolve to no repo → LookupFailure
+    // (or null/empty). This stays permissive: asserting LookupFailure *only*
+    // couples the test to `gh`'s live repo-resolution, which is not
+    // deterministic across environments — the very network-flake this fix
+    // (missing `cwd: worktreePath`, #2788) removes. The real regression guard
+    // is the `cwd` argument itself and the comment on it in session-deps.ts.
     expect(result === null || isLookupFailure(result)).toBe(true);
   });
 
@@ -151,5 +161,10 @@ describe("defaultGetPrStatus", () => {
     dir = mkdtempSync(join(tmpdir(), "mcp-pr-test-"));
     const result = await defaultGetPrStatus(dir);
     expect(isLookupFailure(result)).toBe(true);
+  });
+
+  test("returns null for nonexistent path (deleted worktree)", async () => {
+    const result = await defaultGetPrStatus("/tmp/mcp-nonexistent-worktree-xyzzy");
+    expect(result).toBeNull();
   });
 });

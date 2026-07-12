@@ -174,6 +174,25 @@ describe("AcpSession (with fake ACP agent)", () => {
     expect(errEvent?.errors[0]).toMatch(/exited with code 2/);
   });
 
+  test("start() succeeds when the agent prints a non-JSON update banner first", async () => {
+    const { session, events } = makeSession({ agent: "banner-then-handshake" });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+
+    expect(result.type).toBe("session:result");
+    expect(session.currentState).toBe("idle");
+    expect(events.some((e) => e.type === "session:init")).toBe(true);
+  });
+
+  test("start() surfaces the banner bytes when handshake fails after a preamble", async () => {
+    const { session } = makeSession({ agent: "banner-then-exit" });
+
+    await expect(session.start()).rejects.toThrow(/non-JSON-RPC output before the handshake/);
+    await expect(session.start()).rejects.toThrow(/A new version of Grok Build is available/);
+  });
+
   test("permission request with allow rule auto-approves", async () => {
     const { session, events } = makeSession({
       agent: "permission",

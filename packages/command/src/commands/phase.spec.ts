@@ -1200,37 +1200,71 @@ function makeDriftDeps(cwd: string) {
   return { deps, logs, errs, getExitCode: () => exitCode };
 }
 
-describe("cmdPhase root resolution from a worktree (#2673)", () => {
-  test("phase check resolves .mcx.lock from the main checkout root, not the worktree CWD", async () => {
-    // Main checkout: manifest + source + a freshly installed (in-sync) lock.
+describe("cmdPhase working-tree root resolution from a worktree (#2737)", () => {
+  test("phase check reads the worktree's OWN .mcx.lock, not the main checkout's", async () => {
+    // Main checkout: manifest + source + a STALE lock (main lags the branch —
+    // the normal state for any in-progress worktree, per #2737).
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
     const { deps } = makeDriftDeps(dir);
     await cmdPhase(["install"], deps);
+    const staleMain = parseLockfile(readFileSync(join(dir, ".mcx.lock"), "utf-8"));
+    staleMain.phases[0].contentHash = "0".repeat(64);
+    writeFileSync(join(dir, ".mcx.lock"), serializeLockfile(staleMain));
 
-    // Worktree checkout: identical sources but a STALE committed lock — this is
-    // the #2570 scenario where the lock at HEAD lagged the source.
+    // Worktree checkout: identical sources with a FRESH, in-sync lock.
     const worktree = mkdtempSync(join(tmpdir(), "mcx-phase-wt-"));
     try {
       writeFileSync(join(worktree, ".mcx.yaml"), simpleManifest);
       writeFileSync(join(worktree, "impl.ts"), simpleAlias);
-      const stale = parseLockfile(readFileSync(join(dir, ".mcx.lock"), "utf-8"));
-      stale.phases[0].contentHash = "0".repeat(64);
-      writeFileSync(join(worktree, ".mcx.lock"), serializeLockfile(stale));
+      await cmdPhase(["install"], { ...makeDriftDeps(worktree).deps, resolveWorktreeRoot: (c) => c });
 
-      // Control: with no root mapping, checking from the worktree reads the
-      // worktree's stale lock and falsely reports drift.
-      const control = await catchExit(() => cmdPhase(["check"], { cwd: () => worktree, resolveRoot: (c) => c }));
-      expect(control.code).toBe(1);
-      expect(control.err).toContain("out of date");
-
-      // Fix: mapping the worktree CWD back to the main checkout root reads the
-      // in-sync lock and reports ok.
-      const mapped = await catchExit(() =>
-        cmdPhase(["check"], { cwd: () => worktree, resolveRoot: (c) => (c === worktree ? dir : c) }),
+      // Bug (#2673 over-correction): mapping the worktree CWD to the main
+      // checkout reads main's STALE lock and false-fails.
+      const mappedToMain = await catchExit(() =>
+        cmdPhase(["check"], {
+          cwd: () => worktree,
+          resolveWorktreeRoot: (c) => (c === worktree ? dir : c),
+          resolveRoot: (c) => c,
+        }),
       );
-      expect(mapped.code).toBeUndefined();
-      expect(mapped.out).toContain("lockfile ok");
+      expect(mappedToMain.code).toBe(1);
+      expect(mappedToMain.err).toContain("out of date");
+
+      // Fix (#2737): resolving working-tree files against the worktree's own
+      // root reads the worktree's in-sync lock and reports ok — even though
+      // main's lock is stale.
+      const worktreeLocal = await catchExit(() =>
+        cmdPhase(["check"], { cwd: () => worktree, resolveWorktreeRoot: (c) => c, resolveRoot: (c) => dir }),
+      );
+      expect(worktreeLocal.code).toBeUndefined();
+      expect(worktreeLocal.out).toContain("lockfile ok");
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  test("phase install writes .mcx.lock into the worktree, not the main checkout", async () => {
+    // Main checkout: manifest + source, no lock yet.
+    writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
+    writeFileSync(join(dir, "impl.ts"), simpleAlias);
+
+    const worktree = mkdtempSync(join(tmpdir(), "mcx-phase-wt-install-"));
+    try {
+      writeFileSync(join(worktree, ".mcx.yaml"), simpleManifest);
+      writeFileSync(join(worktree, "impl.ts"), simpleAlias);
+
+      // Install from the worktree, with the worktree resolving to itself and
+      // the (distinct) state root pointing at main.
+      await cmdPhase(["install"], {
+        ...makeDriftDeps(worktree).deps,
+        resolveWorktreeRoot: (c) => c,
+        resolveRoot: (c) => dir,
+      });
+
+      // The lock landed in the worktree; the main checkout was untouched.
+      expect(existsSync(join(worktree, ".mcx.lock"))).toBe(true);
+      expect(existsSync(join(dir, ".mcx.lock"))).toBe(false);
     } finally {
       rmSync(worktree, { recursive: true, force: true });
     }

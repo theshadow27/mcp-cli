@@ -133,6 +133,40 @@ describe("McpOAuthProvider", () => {
       expect(tokens?.expires_in).toBeUndefined();
       db.close();
     });
+
+    test("skipKeychainTokens bypasses keychain fallback, returning undefined (refresh-retry path)", async () => {
+      const db = createDb();
+      // Keychain holds a (revoked) token — must NOT be served on the retry path.
+      mockReadKeychain.mockImplementation(() =>
+        Promise.resolve({ accessToken: "kc-revoked", refreshToken: "kc-revoked-refresh", clientId: "kc-client" }),
+      );
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        skipKeychainTokens: true,
+        readKeychain: mockReadKeychain,
+      });
+      const tokens = await provider.tokens();
+
+      expect(tokens).toBeUndefined();
+      // Short-circuits before loadKeychain() is reached
+      expect(mockReadKeychain).not.toHaveBeenCalled();
+      db.close();
+    });
+
+    test("skipKeychainTokens does not affect SQLite tokens (SQLite still wins)", async () => {
+      const db = createDb();
+      db.saveTokens("srv", { access_token: "sqlite-tok", token_type: "Bearer" });
+      mockReadKeychain.mockImplementation(() => Promise.resolve({ accessToken: "kc", clientId: "kc-client" }));
+
+      const provider = new McpOAuthProvider("srv", "https://api.example.com", db, {
+        skipKeychainTokens: true,
+        readKeychain: mockReadKeychain,
+      });
+      const tokens = await provider.tokens();
+
+      expect(tokens?.access_token).toBe("sqlite-tok");
+      db.close();
+    });
   });
 
   // -- clientInformation() --

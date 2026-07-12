@@ -365,6 +365,90 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(events.some((e) => e.type === "session:result")).toBe(true);
   });
 
+  test("stdio session still emits session:result when the initial prompt write EPIPEs before the reader is wired (#2838)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    // The child produced its full transcript into the pipe buffer before the daemon
+    // ever wrote the prompt — enqueue init + result up front so they survive the kill
+    // that disconnectSession issues (already-enqueued chunks drain before EOF).
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+
+    // Make the initial stdin prompt write throw EPIPE. startStdioReader writes the
+    // prompt (sendToSession) BEFORE wiring the reader, so this flips the session to
+    // `disconnected` synchronously — the reader then drains the buffered result into
+    // the #2814 guard. This is the deterministic form of the load-induced EPIPE that
+    // #2825 round-2 proved (bare `cat` exits without reading stdin); using DI keeps it
+    // race-free instead of depending on runner contention.
+    mock.failWrites(new Error("EPIPE: broken pipe, send"));
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // The buffered result must still fire session:result despite the disconnect.
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+    expect(events.some((e) => e.type === "session:result")).toBe(true);
+
+    // The #2793 protection survives: the late `init` (a non-result line arriving after
+    // teardown) is still dropped — only `result` is honored past disconnect.
+    expect(events.some((e) => e.type === "session:init")).toBe(false);
+
+    // No zombie: once the buffered result completes the work, the proc.exited handler
+    // (spawn dead + workCompleted) auto-terminates the disconnected session, removing it
+    // from the map rather than leaving it parked in `disconnected`/`idle` forever.
+    await pollUntil(() => !server.listSessions().some((s) => s.sessionId === sessionId), 1000);
+    expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
+  });
+
+  test("stdio proc.exited handler does not hang when a grandchild holds stdout fd past exit (#2833)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Child emits its full transcript and result, then exits. The result is drained
+    // and processed (workCompleted = true) BEFORE the process exits.
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+
+    // Process exits, but a grandchild inherited stdout fd 1 and keeps the pipe open:
+    // stdout NEVER closes, so the drain's parked read() would await EOF forever.
+    // Deliberately do NOT call closeStdout — that is the grandchild-holds-fd condition.
+    mock.exitResolve(0);
+
+    // Pre-#2833 the proc.exited handler awaited stdioDrainDone unbounded and stalled
+    // here forever — no auto-terminate. The fix races the drain against the completion
+    // signal and cancels the reader, so the completed session is torn down promptly.
+    await pollUntil(() => !server.listSessions().some((s) => s.sessionId === sessionId), 1000);
+    expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
+    expect(events.some((e) => e.type === "session:result")).toBe(true);
+  });
+
   test("stdio session clears connect timeout on first stdout line", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({

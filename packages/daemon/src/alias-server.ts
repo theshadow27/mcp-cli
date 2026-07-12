@@ -157,7 +157,7 @@ export class AliasServer {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: "text" as const, text: `Error: ${message}` }],
+          content: [{ type: "text" as const, text: message }],
           isError: true,
         };
       }
@@ -223,7 +223,7 @@ export class AliasServer {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        content: [{ type: "text" as const, text: message }],
         isError: true,
       };
     }
@@ -339,6 +339,10 @@ export class AliasServer {
       const result = await spawnCapture(process.execPath, [this.executorPath], {
         input: stdinPayload,
         timeoutMs,
+        // Corroborate the worker dispatch in main.ts's resolveWorkerEntry: only a
+        // daemon-spawned executor carries this sentinel (#2835). env is
+        // pass-through (replaces, not merges), so spread the parent env.
+        env: { ...process.env, MCPD_WORKER: "1" },
       });
 
       if (result.ok && result.stderr.trim()) {

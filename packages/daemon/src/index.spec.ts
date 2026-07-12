@@ -315,7 +315,7 @@ describe("daemon index.ts", () => {
       const res = await rpc(socketPath, "shutdown");
       expect(res.result).toEqual({ ok: true });
 
-      await pollUntil(() => handle?.isShuttingDown, 1_000);
+      await pollUntil(() => handle?.isShuttingDown);
       expect(handle?.isShuttingDown).toBe(true);
     });
   });
@@ -347,7 +347,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 500);
+        await pollUntil(() => handle?.isShuttingDown);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -366,7 +366,7 @@ describe("daemon index.ts", () => {
         }
 
         // Now stop pinging and let it idle out
-        await pollUntil(() => handle?.isShuttingDown, 1_000);
+        await pollUntil(() => handle?.isShuttingDown);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -375,7 +375,7 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
-        await pollUntil(() => handle?.isShuttingDown, 500);
+        await pollUntil(() => handle?.isShuttingDown);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });

@@ -301,6 +301,112 @@ describe("SessionState", () => {
       expect(session.cost).toBe(0.1);
       expect(session.numTurns).toBe(7);
     });
+
+    // -- #2837: num_turns-keyed idempotency guard --
+    //
+    // Replayed historical `result` messages (WS-reconnect / revive replay)
+    // carry the OLD num_turns, so they must not re-emit session:result with a
+    // stale payload but a fresh envelope. num_turns is cumulative and strictly
+    // increases per real turn, making it a false-positive-proof dedup key.
+
+    test("A: duplicate result on an idle session does not re-emit session:result", () => {
+      const session = activeSession();
+      const first = session.handleMessage(RESULT_SUCCESS);
+      expect(first).toHaveLength(1);
+      expect(first[0].type).toBe("session:result");
+
+      // Replayed identical result (same num_turns=3), stale payload.
+      const replay = session.handleMessage({
+        ...RESULT_SUCCESS,
+        result: "STALE-RESULT-FROM-3H-AGO",
+      });
+      expect(replay).toEqual([]);
+      // Fields are still updated even when the event is suppressed.
+      expect(session.state).toBe("idle");
+      expect(session.numTurns).toBe(3);
+    });
+
+    test("B: reconnect replay re-emits session:init but not session:result", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3, emits
+
+      // WS drops and reconnects; the CLI replays the full history.
+      session.disconnect("ws dropped");
+      session.reconnect();
+
+      const initEvents = session.handleMessage(SYSTEM_INIT);
+      expect(initEvents.map((e) => e.type)).toEqual(["session:init"]);
+      session.handleMessage(ASSISTANT_MSG);
+      // Replayed result carries the same num_turns=3 — suppressed.
+      const replay = session.handleMessage(RESULT_SUCCESS);
+      expect(replay).toEqual([]);
+    });
+
+    test("C: consecutive results with no turn advance emit only once", () => {
+      const session = activeSession();
+      const e1 = session.handleMessage(RESULT_SUCCESS);
+      const e2 = session.handleMessage(RESULT_SUCCESS);
+      const e3 = session.handleMessage(RESULT_SUCCESS);
+      expect(e1).toHaveLength(1);
+      expect(e2).toEqual([]);
+      expect(e3).toEqual([]);
+    });
+
+    test("a genuinely new turn (higher num_turns) still emits", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3
+
+      session.queuePrompt("Next task");
+      session.handleMessage(ASSISTANT_MSG);
+      const events = session.handleMessage({ ...RESULT_SUCCESS, num_turns: 4 });
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+    });
+
+    test("first result after /clear still emits even though num_turns restarts at 1", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3, lastEmitted=3
+
+      // /clear respawns a fresh conversation whose num_turns restarts at 1.
+      session.resetForClear();
+      session.handleMessage(SYSTEM_INIT);
+      session.handleMessage(ASSISTANT_MSG);
+      const events = session.handleMessage({ ...RESULT_SUCCESS, num_turns: 1 });
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+    });
+
+    test("fallback result without num_turns still emits after a prior turn (fail open)", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3, lastEmitted=3
+
+      // A genuine new completion arrives via the fallback path (CLI wire drift)
+      // with num_turns ABSENT. this.numTurns still holds 3 == lastEmittedNumTurns,
+      // so a naive guard would suppress it — but num_turns absent means we can't
+      // prove it's a replay, so it must fail open. Suppressing here would hang a
+      // pending send --wait, since session:result is the sole waiter driver (#2837).
+      session.queuePrompt("next task");
+      session.handleMessage(ASSISTANT_MSG);
+      const { num_turns: _omitted, ...fallbackNoTurns } = RESULT_SUCCESS;
+      const events = session.handleMessage(fallbackNoTurns);
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+    });
+
+    test("suppression targets only a true replay, never a genuine advancing turn", () => {
+      const session = activeSession();
+      // Genuine turn — emits (a waiter here would resolve).
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1); // num_turns=3
+      // Exact replay (same num_turns) — the only thing suppressed.
+      expect(session.handleMessage(RESULT_SUCCESS)).toEqual([]);
+      // Next genuine turn (num_turns advances) — emits again; a pending waiter
+      // for this turn is never starved by the guard.
+      session.queuePrompt("next task");
+      session.handleMessage(ASSISTANT_MSG);
+      const events = session.handleMessage({ ...RESULT_SUCCESS, num_turns: 4 });
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("session:result");
+    });
   });
 
   // -- can_use_tool --

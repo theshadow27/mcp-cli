@@ -53,6 +53,7 @@ import {
   expandPreset,
   extractMetadata,
   findGitRoot,
+  findWorktreeRoot,
   hashFileSync,
   hashImportClosureSync,
   historyTargets,
@@ -91,7 +92,18 @@ export interface PhaseInstallDeps {
   readFile: (path: string) => Promise<string>;
   executeAliasBundled: typeof executeAliasBundled;
   cwd: () => string;
+  /**
+   * Resolve runtime *state* root (transition log, daemon DB). For a linked
+   * worktree this maps back to the main checkout so state is shared (#2673).
+   */
   resolveRoot: (cwd: string) => string;
+  /**
+   * Resolve the *working-tree* root (`.mcx.lock`, `.mcx.yaml`, phase sources).
+   * Unlike {@link resolveRoot}, this stays inside the worktree — those files
+   * are per-checkout, so `phase check`/`install`/`list` must operate on the
+   * worktree's own copies, not the main checkout's (#2737).
+   */
+  resolveWorktreeRoot: (cwd: string) => string;
   log: (msg: string) => void;
   logError: (msg: string) => void;
   exit: (code: number) => never;
@@ -109,6 +121,7 @@ const defaultDeps: PhaseInstallDeps = {
   executeAliasBundled,
   cwd: () => process.cwd(),
   resolveRoot: (cwd) => findGitRoot(cwd) ?? cwd,
+  resolveWorktreeRoot: (cwd) => findWorktreeRoot(cwd) ?? cwd,
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
   exit: (code) => process.exit(code),
@@ -296,7 +309,14 @@ export interface PhaseRunOptions {
 }
 
 export interface PhaseRunDeps {
+  /** Working-tree root — where the manifest and phase sources live (#2737). */
   cwd: string;
+  /**
+   * Runtime-state root for the transition log. Defaults to `cwd`. From a
+   * linked worktree, pass the main-checkout root so transitions are shared
+   * across worktrees (#2673); `cwd` stays worktree-local for the manifest.
+   */
+  stateCwd?: string;
   now?: () => Date;
 }
 
@@ -414,7 +434,7 @@ export function phaseRun(
   }
   const { path: manifestPath, manifest } = loaded;
 
-  const logPath = transitionLogPath(deps.cwd);
+  const logPath = transitionLogPath(deps.stateCwd ?? deps.cwd);
   const decision = commitTransition(logPath, {
     manifest,
     from: options.from,
@@ -728,14 +748,21 @@ export async function cmdPhase(
   execDeps?: Partial<PhaseExecuteDeps>,
 ): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
-  // Resolve manifest / .mcx.lock / transition-log lookups from the main
-  // checkout root, not the raw CWD. From a linked worktree, process.cwd() is
-  // the worktree checkout whose committed .mcx.lock can be stale, while phase
-  // *state* is keyed by findGitRoot's main-checkout root — so a lock that is in
-  // sync at the root falsely reports "out of date" from a worktree. Mapping the
-  // lookup root through the same resolver keeps both consistent (#2673).
+  // Two distinct roots (#2737, correcting #2673's over-unification):
+  //   d.cwd()    → the *working-tree* root (this checkout's own toplevel).
+  //                .mcx.lock, .mcx.yaml, and phase sources are per-checkout, so
+  //                install/check/list/show/why must read the worktree's copies.
+  //                From a linked worktree, resolving these to the main checkout
+  //                either false-fails (main's lock lags the branch) or silently
+  //                writes into main's tree.
+  //   stateCwd() → the runtime-*state* root (main checkout for linked
+  //                worktrees). The transition log (.mcx/) is shared across
+  //                worktrees, keyed to one repo (#2673).
   const rawCwd = d.cwd;
-  d.cwd = () => d.resolveRoot(rawCwd());
+  d.cwd = () => d.resolveWorktreeRoot(rawCwd());
+  // findGitRoot (via resolveRoot) maps the worktree back to the main checkout;
+  // for a normal checkout it is a no-op, so this is correct in both cases.
+  const stateCwd = () => d.resolveRoot(d.cwd());
   const sub = args[0];
 
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -864,7 +891,7 @@ export async function cmdPhase(
 
     if (sub === "log") {
       const opts = parsePhaseLogArgs(args.slice(1));
-      const entries = filterTransitionLog(readAllTransitions(transitionLogPath(d.cwd())), opts);
+      const entries = filterTransitionLog(readAllTransitions(transitionLogPath(stateCwd())), opts);
       if (opts.json) {
         for (const e of entries) d.log(JSON.stringify(e));
       } else if (entries.length === 0) {
@@ -895,12 +922,13 @@ export async function cmdPhase(
         const filtered = argv.filter((a) => a !== "--no-execute");
         const opts = parsePhaseRunArgs(filtered);
         const cwd = d.cwd();
+        const stateRoot = stateCwd();
         // Mirror pickResolvedFrom from executePhase (#1802, #1824).
         let resolvedFrom: string | null = opts.from;
         if (resolvedFrom === null) {
           const manifestForFrom = d.loadManifest(cwd);
           const priorTargets = manifestForFrom
-            ? historyTargets(readTransitionHistory(transitionLogPath(cwd), opts.workItemId).filter(isCommitted))
+            ? historyTargets(readTransitionHistory(transitionLogPath(stateRoot), opts.workItemId).filter(isCommitted))
             : [];
           let dbCandidate: string | null = null;
           if (opts.workItemId !== null && manifestForFrom) {
@@ -930,7 +958,7 @@ export async function cmdPhase(
               )
             : (dbCandidate ?? logCandidate);
         }
-        const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd });
+        const result = phaseRun({ ...opts, from: resolvedFrom }, { cwd, stateCwd: stateRoot });
         const source = result.manifest.phases[opts.target]?.source ?? "(unknown)";
         const tag = result.forced ? " [FORCED]" : "";
         const trail = result.from ?? "(initial)";
@@ -1256,7 +1284,12 @@ export async function executePhase(
 ): Promise<void> {
   const d: PhaseInstallDeps = { ...defaultDeps, ...deps };
   const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
+  // Working-tree root (manifest, phase sources, branch guard) vs. runtime-state
+  // root (transition log). For a linked worktree, resolveRoot maps back to the
+  // main checkout so the transition log is shared; for a normal checkout it is
+  // a no-op. See #2737 / #2673.
   const cwd = d.cwd();
+  const stateRoot = d.resolveRoot(cwd);
 
   let parsed: PhaseExecuteArgs;
   try {
@@ -1309,7 +1342,7 @@ export async function executePhase(
   // we spend cycles running the handler. The final commit below repeats
   // this under the transition lock; pre-check is a fail-fast guard, not
   // the source of truth.
-  const logPath = transitionLogPath(cwd);
+  const logPath = transitionLogPath(stateRoot);
   const prior = readTransitionHistory(logPath, parsed.workItemId).filter(isCommitted);
   const priorTargets = historyTargets(prior);
   // Resolve "from" phase (#1802, #1824):
@@ -1491,7 +1524,7 @@ export async function executePhase(
       workItemId: parsed.workItemId,
       forceMessage: parsed.forceMessage,
     },
-    { cwd, now: ex.now },
+    { cwd, stateCwd: stateRoot, now: ex.now },
   );
   const source = phase.source ?? "(unknown)";
   const tag = txResult.forced ? " [FORCED]" : "";

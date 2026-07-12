@@ -11,7 +11,14 @@
 import { resolve } from "node:path";
 import type { MonitorEvent } from "@mcp-cli/core";
 import { formatMonitorEvent, globToRegex, openEventStream, resolveRealpath } from "@mcp-cli/core";
+import { isDaemonPidAlive } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
+
+// The daemon emits a heartbeat after 30s of event-bus silence (see
+// EventStreamServer.EVENTBUS_HEARTBEAT_MS). A passive monitor should therefore
+// see *something* at least every 30s from a live daemon. Wait for 3 missed
+// heartbeats before declaring the channel dead, to tolerate GC / IO pauses.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 
 export interface MonitorArgs {
   json: boolean;
@@ -42,6 +49,10 @@ export interface MonitorDeps {
   onSigint: (fn: () => void) => void;
   onStdoutError: (fn: (err: Error) => void) => void;
   createTimeout?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  /** Non-destructive probe: is the bound daemon's process + socket still alive? (#2508) */
+  checkDaemonLiveness: () => boolean;
+  /** Silence window before the liveness watchdog fires. `<= 0` disables it. */
+  livenessTimeoutMs: number;
 }
 
 const defaultDeps: MonitorDeps = {
@@ -53,6 +64,8 @@ const defaultDeps: MonitorDeps = {
   exit: (code) => process.exit(code),
   onSigint: (fn) => process.once("SIGINT", fn),
   onStdoutError: (fn) => process.stdout.on("error", fn),
+  checkDaemonLiveness: isDaemonPidAlive,
+  livenessTimeoutMs: DEFAULT_LIVENESS_TIMEOUT_MS,
 };
 
 export function parseMonitorArgs(args: string[]): MonitorArgs {
@@ -187,13 +200,49 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   let done = false;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let watchdogId: ReturnType<typeof setTimeout> | undefined;
+
+  const clearWatchdog = () => {
+    if (watchdogId !== undefined) {
+      clearTimeout(watchdogId);
+      watchdogId = undefined;
+    }
+  };
 
   const finish = (code: number) => {
     if (done) return;
     done = true;
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+    clearWatchdog();
     abort();
     d.exit(code);
+  };
+
+  const silenceSecs = () => Math.round(d.livenessTimeoutMs / 1000);
+
+  // Liveness watchdog (#2508): a passive monitor must never silently outlive the
+  // daemon it is bound to. Re-armed on every received event; if it fires, the
+  // channel has been silent past the heartbeat window. Probe the daemon: if its
+  // PID/socket are gone, the daemon is a corpse — exit loudly instead of hanging
+  // blind. If the process is somehow still alive, warn and keep watching.
+  const armWatchdog = () => {
+    if (d.livenessTimeoutMs <= 0) return;
+    clearWatchdog();
+    watchdogId = (d.createTimeout ?? setTimeout)(() => {
+      if (done) return;
+      if (!d.checkDaemonLiveness()) {
+        d.writeStderr(
+          `monitor: bound daemon is not responding — no events or heartbeat for ${silenceSecs()}s and its PID/socket are gone. The daemon has died; exiting so you are not left blind.\n`,
+        );
+        finish(3);
+      } else {
+        d.writeStderr(
+          `monitor: warning — no daemon heartbeat for ${silenceSecs()}s, but the daemon PID is alive. Still watching.\n`,
+        );
+        armWatchdog();
+      }
+    }, d.livenessTimeoutMs) as ReturnType<typeof setTimeout>;
+    watchdogId.unref?.();
   };
 
   if (parsed.timeout !== undefined) {
@@ -211,8 +260,12 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
   let terminatorSatisfied = false;
   const untilRegex = parsed.until !== undefined ? globToRegex(parsed.until) : undefined;
 
+  // Arm before the first event so a daemon that dies immediately after bind is caught.
+  armWatchdog();
+
   try {
     for await (const event of events) {
+      armWatchdog();
       if (useJson) {
         d.writeStdout(`${JSON.stringify(event)}\n`);
       } else {
@@ -244,6 +297,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+    clearWatchdog();
   }
 
   if (!done && !terminatorSatisfied) {
@@ -252,6 +306,16 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
       done = true;
       d.writeStderr("monitor: stream ended before terminator\n");
       d.exit(2);
+    } else if (!d.checkDaemonLiveness()) {
+      // Passive monitor with no terminator: the stream ended on its own. In
+      // production openEventStream only ends when the socket closes, so a dead
+      // daemon here means the channel died under us (#2508). Never return 0
+      // blind — surface it loudly and exit non-zero.
+      done = true;
+      d.writeStderr(
+        "monitor: bound daemon vanished — the event stream closed and its PID/socket are gone. Exiting non-zero instead of silently returning.\n",
+      );
+      d.exit(3);
     }
   }
 }

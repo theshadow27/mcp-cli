@@ -404,6 +404,19 @@ export function isDaemonInitializing(): boolean {
 }
 
 /**
+ * Non-destructive liveness probe for a bound daemon (#2508).
+ *
+ * True when the PID file is fresh, the process is alive and is actually mcpd,
+ * and the socket file still exists. Unlike isDaemonRunning() this never cleans
+ * stale files and never pings — safe to call repeatedly from a passive
+ * `mcx monitor` silence watchdog without racing the auto-start file dance.
+ */
+export function isDaemonPidAlive(): boolean {
+  if (readLivePidData() === null) return false;
+  return existsSync(options.SOCKET_PATH);
+}
+
+/**
  * Non-destructive daemon reachability check for polling during startup.
  *
  * Unlike isDaemonRunning(), this never calls cleanStaleFiles(). During the
@@ -550,6 +563,31 @@ export function getStaleDaemonWarning(): string | null {
   const data = readLivePidData();
   if (!data) return null;
   return _buildStaleDaemonWarning(data.buildVersion);
+}
+
+/** Read the build version of the currently-running (live) daemon from its PID file.
+ *  Returns undefined if no live daemon or the PID file predates build-version tracking. */
+export function getRunningDaemonBuildVersion(): string | undefined {
+  return readLivePidData()?.buildVersion;
+}
+
+/**
+ * True when the running daemon is a strictly newer build than the CLI, meaning a
+ * `reload` would silently downgrade the daemon to the (older) client's build (#2782).
+ * Mirrors the "use the build-matched client" cases in `_buildStaleDaemonWarning`.
+ */
+export function _isDaemonNewerThanCli(
+  daemonBuildVersion: string | undefined,
+  cliBuildVersion = BUILD_VERSION,
+): boolean {
+  if (!daemonBuildVersion || daemonBuildVersion === cliBuildVersion) return false;
+  const daemonEpoch = _parseBuildEpoch(daemonBuildVersion);
+  const cliEpoch = _parseBuildEpoch(cliBuildVersion);
+  // Compiled daemon, dev CLI — daemon is the newer/authoritative side (#2370).
+  if (daemonEpoch !== null && cliEpoch === null) return true;
+  // Both compiled — the higher epoch is newer.
+  if (daemonEpoch !== null && cliEpoch !== null) return daemonEpoch > cliEpoch;
+  return false;
 }
 
 /**

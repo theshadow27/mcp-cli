@@ -117,6 +117,9 @@ export class AcpSession {
       onError: (err, line) => {
         console.error(`[acp-session:${this.sessionId}] Parse error: ${err.message} (line: ${line})`);
       },
+      onPreamble: (line) => {
+        console.error(`[acp-session:${this.sessionId}] Skipping non-JSON preamble before handshake: ${line}`);
+      },
     });
 
     this.proc.spawn();
@@ -159,7 +162,15 @@ export class AcpSession {
       this.transcript.push(userEntry(this.config.prompt));
       await this.startPrompt(this.config.prompt);
     } catch (err) {
+      const preamble = this.proc.preambleText;
       this.proc.kill();
+      if (preamble) {
+        const orig = err instanceof Error ? err.message : String(err);
+        const shown = preamble.length > 500 ? `${preamble.slice(0, 500)}…` : preamble;
+        throw new Error(
+          `${orig} — agent "${this.agentDisplayName}" emitted non-JSON-RPC output before the handshake (expected JSON-RPC, got: ${JSON.stringify(shown)}). This is often a self-update or MOTD banner; re-run to let the agent consume it.`,
+        );
+      }
       throw err;
     }
   }

@@ -102,8 +102,16 @@ export interface GcDeps extends WorktreeShimDeps {
   callTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Returns mtime (ms since epoch) for the given path, or null if it can't be stat'd. */
   getMtime: (path: string) => number | null;
-  /** Returns branch names that have a merged PR on GitHub, or null if the API is unavailable. */
-  queryMergedPrBranches: (cwd: string) => Set<string> | null;
+  /**
+   * Returns branch→PR-state signals from one batched `gh` call, or null if the
+   * API is unavailable. `merged` = branches with a MERGED PR (enables `-D`
+   * force-delete of squash-merged branches). `resolved` maps every MERGED-or-
+   * CLOSED branch to its PR head SHA (headRefOid) — the "done" signal that lets
+   * worktree GC reclaim squash-merged and abandoned-PR worktrees `git branch
+   * --merged` can't see (#2662), while the head SHA guards against orphaning
+   * unpushed commits when `origin/<branch>` has been pruned.
+   */
+  queryPrBranches: (cwd: string) => { merged: Set<string>; resolved: Map<string, string> } | null;
   log: (msg: string) => void;
   logError: (msg: string) => void;
 }
@@ -145,16 +153,26 @@ export function defaultGcDeps(): GcDeps {
         return null;
       }
     },
-    queryMergedPrBranches: (cwd) => {
+    queryPrBranches: (cwd) => {
       const result = spawnCaptureSync(
         "gh",
-        ["pr", "list", "--state", "merged", "--json", "headRefName", "--limit", "500"],
+        ["pr", "list", "--state", "all", "--json", "headRefName,state,headRefOid", "--limit", "1000"],
         { cwd },
       );
       if (!result.ok) return null;
       try {
-        const prs = JSON.parse(result.stdout) as Array<{ headRefName: string }>;
-        return new Set(prs.map((pr) => pr.headRefName));
+        const prs = JSON.parse(result.stdout) as Array<{ headRefName: string; state: string; headRefOid: string }>;
+        const merged = new Set<string>();
+        const resolved = new Map<string, string>();
+        for (const pr of prs) {
+          if (pr.state === "MERGED") {
+            merged.add(pr.headRefName);
+            resolved.set(pr.headRefName, pr.headRefOid);
+          } else if (pr.state === "CLOSED") {
+            resolved.set(pr.headRefName, pr.headRefOid);
+          }
+        }
+        return { merged, resolved };
       } catch {
         return null;
       }
@@ -178,6 +196,15 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
   const { cwd } = deps;
   const prefix = opts.dryRun ? `${c.dim}[dry-run]${c.reset} ` : "";
   const gcResult: GcResult = { prunedWorktrees: [], deletedBranches: [] };
+
+  // Fetch PR-state signals at most once per run — both the worktree and branch
+  // phases consume it. `undefined` = not yet fetched; `null` = fetched but the
+  // API was unavailable.
+  let prBranchesCache: { merged: Set<string>; resolved: Map<string, string> } | null | undefined;
+  const getPrBranches = (): { merged: Set<string>; resolved: Map<string, string> } | null => {
+    if (prBranchesCache === undefined) prBranchesCache = deps.queryPrBranches(cwd);
+    return prBranchesCache;
+  };
 
   // Branches deleted during the worktree phase — skipped by the branch phase
   // to avoid "not found" false failures on the second `git branch -d`.
@@ -238,6 +265,20 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       if (wt.branch) checkedOutFromList.add(wt.branch);
     }
 
+    // PR-state signal: lets prune reclaim squash-merged and closed-PR worktrees
+    // that `git branch --merged` can't see (#2662). Only query when there are
+    // mcx worktrees to consider; warn (but continue with ancestry-only) if the
+    // forge is unreachable.
+    let resolvedByPr: Map<string, string> | undefined;
+    if (listed.worktrees.length > 0) {
+      const pr = getPrBranches();
+      if (pr) {
+        resolvedByPr = pr.resolved;
+      } else {
+        deps.logError("gc: GitHub API unavailable — squash-merged/closed worktrees may not be reclaimed");
+      }
+    }
+
     // refreshActive re-queries sessions between removals (TOCTOU mitigation).
     // Only meaningful in live mode; in dry-run we don't execute.
     //
@@ -265,6 +306,7 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       deps,
       dryRun: opts.dryRun,
       refreshActive,
+      resolvedByPr,
     });
 
     worktreeDeletedBranches = result.deletedBranches;
@@ -274,6 +316,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       for (const name of result.removable) deps.log(`  ${c.red}-${c.reset} ${name}`);
       if (result.skippedUnmerged.length > 0) {
         deps.log(`${prefix}worktrees: ${result.skippedUnmerged.length} skipped (unmerged)`);
+      }
+      if (result.skippedUnpushed.length > 0) {
+        deps.log(`${prefix}worktrees: ${result.skippedUnpushed.length} skipped (unpushed commits)`);
       }
       if (recentSkipped.length > 0) {
         deps.log(`${prefix}worktrees: ${recentSkipped.length} skipped (too recent)`);
@@ -287,8 +332,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
       }
     } else {
       const unmerged = result.skippedUnmerged.length > 0 ? `, skipped ${result.skippedUnmerged.length} unmerged` : "";
+      const unpushed = result.skippedUnpushed.length > 0 ? `, skipped ${result.skippedUnpushed.length} unpushed` : "";
       const tooRecent = recentSkipped.length > 0 ? `, skipped ${recentSkipped.length} too recent` : "";
-      deps.logError(`worktrees: removed ${result.pruned}${unmerged}${tooRecent}`);
+      deps.logError(`worktrees: removed ${result.pruned}${unmerged}${unpushed}${tooRecent}`);
       if (result.pruned > 0) {
         gcResult.prunedWorktrees = result.prunedNames;
         for (const b of result.deletedBranches) {
@@ -322,8 +368,9 @@ export async function runGc(opts: GcOptions, deps: GcDeps): Promise<GcResult> {
     );
 
     // Query GitHub for branches with merged PRs — enables force-delete for
-    // squash/rebase-merged branches where `git branch -d` fails.
-    const mergedPrBranches = candidates.length > 0 ? deps.queryMergedPrBranches(cwd) : null;
+    // squash/rebase-merged branches where `git branch -d` fails. Reuses the
+    // per-run PR-state cache shared with the worktree phase.
+    const mergedPrBranches = candidates.length > 0 ? (getPrBranches()?.merged ?? null) : null;
     if (candidates.length > 0 && !mergedPrBranches) {
       deps.logError("gc: GitHub API unavailable — squash-merged branches may not be cleaned");
     }

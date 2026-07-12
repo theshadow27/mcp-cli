@@ -50,6 +50,13 @@ export interface OAuthProviderOpts {
    * restored after deleteClientInfo() clears the SQLite row.
    */
   skipKeychainClientId?: boolean;
+  /**
+   * When true, skip the macOS Keychain fallback in tokens().
+   * Used by the refresh-retry path so a revoked keychain refresh_token is
+   * not re-served after invalidateCredentials("tokens") clears the SQLite
+   * row — otherwise the retry would loop on the same invalid_grant.
+   */
+  skipKeychainTokens?: boolean;
 }
 
 export class McpOAuthProvider implements OAuthClientProvider {
@@ -165,6 +172,9 @@ export class McpOAuthProvider implements OAuthClientProvider {
     if (dbTokens) return dbTokens;
 
     // 2. Check Keychain (Claude Code tokens)
+    //    Skipped when skipKeychainTokens is set (refresh-retry path — the
+    //    keychain entry may hold a revoked refresh_token we just invalidated).
+    if (this.opts.skipKeychainTokens) return undefined;
     const kc = await this.loadKeychain();
     if (kc) {
       const tokens: OAuthTokens = {

@@ -488,6 +488,72 @@ describe("cleanupWorktree", () => {
     expect(infoMsgs.some((m) => m.startsWith("Deleted branch"))).toBe(false);
   });
 
+  test("idempotent no-op when plain remove reports 'is not a working tree' (#2836)", () => {
+    // A sibling `bye` on a session sharing this worktree already removed it.
+    // The directory lingers so existsSync() is true, but git no longer tracks it.
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "shared-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    let forceAttempted = false;
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      if (cmd.includes("remove") && cmd.includes("--force")) {
+        forceAttempted = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("remove"))
+        return { stdout: "", stderr: `fatal: '${worktreePath}' is not a working tree`, exitCode: 128 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    cleanupWorktree("shared-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
+
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    // No "Failed to remove worktree" error; treated as an already-removed no-op.
+    expect(errorMsgs.some((m) => m.includes("Failed to remove worktree"))).toBe(false);
+    expect(infoMsgs.some((m) => m.includes("Worktree already removed"))).toBe(true);
+    // --force must NOT be attempted — git has already dropped the registration.
+    expect(forceAttempted).toBe(false);
+  });
+
+  test("idempotent no-op when --force remove reports 'is not a working tree' (#2836)", () => {
+    // Concurrent teardown wins between the plain remove and the --force retry.
+    tmpDir = makeTmpDir();
+    const worktreeBase = join(tmpDir, ".claude", "worktrees");
+    const worktreePath = join(worktreeBase, "race-wt");
+    mkdirSync(worktreePath, { recursive: true });
+
+    const exec = mock((cmd: string[]) => {
+      if (cmd.includes("status") && cmd.includes("--porcelain")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("--show-current")) return { stdout: "feat/branch", stderr: "", exitCode: 0 };
+      // Plain remove exits 0 but dir persists → triggers --force; --force then
+      // races a sibling teardown and reports the worktree is already gone.
+      if (cmd.includes("remove") && cmd.includes("--force"))
+        return { stdout: "", stderr: `fatal: '${worktreePath}' is not a working tree`, exitCode: 128 };
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("core.bare")) return { stdout: "false", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    cleanupWorktree("race-wt", worktreePath, { exec, printError, printInfo }, tmpDir);
+
+    const errorMsgs = (printError as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    const infoMsgs = (printInfo as ReturnType<typeof mock>).mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(errorMsgs.some((m) => m.includes("Failed to remove worktree"))).toBe(false);
+    expect(infoMsgs.some((m) => m.includes("Worktree already removed"))).toBe(true);
+  });
+
   test("attempts removal when git status fails but directory exists (corrupted worktree)", () => {
     tmpDir = makeTmpDir();
     const worktreeBase = join(tmpDir, ".claude", "worktrees");
@@ -796,6 +862,260 @@ describe("pruneWorktrees", () => {
 
     expect(result.pruned).toBe(0);
     expect(result.skippedUnmerged).toEqual(["claude/feat-wip"]);
+  });
+
+  test("reclaims squash-merged worktree via resolvedByPr and force-deletes branch (-D)", async () => {
+    // Squash-merge: the branch tip is NOT an ancestor of main, so it never
+    // appears in `git branch --merged` — ancestry alone leaks it (#2662).
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-squashed",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-squashed",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 }; // NOT ancestry-merged
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      // `git branch -d` would fail on a non-ancestor; `-D` succeeds.
+      if (cmd.includes("-D")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "not fully merged", exitCode: 1 };
+      // Ahead-of-forge guard: origin/<branch> pruned → --verify fails; fall back
+      // to the PR head SHA, which equals the local tip → not ahead → safe.
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
+      if (cmd.includes("rev-parse")) return { stdout: "sha-squashed", stderr: "", exitCode: 0 }; // local HEAD
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map([["claude/feat-squashed", "sha-squashed"]]),
+    });
+
+    expect(result.pruned).toBe(1);
+    expect(result.prunedNames).toEqual(["feat-squashed"]);
+    expect(result.skippedUnmerged).toEqual([]);
+    expect(result.skippedUnpushed).toEqual([]);
+    expect(result.deletedBranches.has("claude/feat-squashed")).toBe(true);
+    // Force-delete must be used; plain `-d` alone would leak the branch.
+    expect(calls.some((c) => c.includes("-D") && c.includes("claude/feat-squashed"))).toBe(true);
+  });
+
+  test("does not reclaim a clean resolved-PR worktree that is ahead of the forge (unpushed commits)", async () => {
+    // A CLOSED PR whose author kept committing locally: clean tree, but the tip
+    // is ahead of origin/<branch>. Reclaiming would `-D` the branch and orphan
+    // those commits (#2662 data-loss guard).
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-ahead",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-ahead",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 }; // NOT ancestry-merged
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean
+      if (cmd.includes("rev-parse") && cmd.includes("--verify"))
+        return { stdout: "origin-sha", stderr: "", exitCode: 0 }; // origin/<branch> exists
+      if (cmd.includes("rev-parse")) return { stdout: "local-sha", stderr: "", exitCode: 0 }; // local HEAD
+      if (cmd.includes("rev-list")) return { stdout: "3\n", stderr: "", exitCode: 0 }; // 3 commits ahead
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map([["claude/feat-ahead", "origin-sha"]]),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(result.skippedUnpushed).toEqual(["claude/feat-ahead"]);
+    // Must never remove the worktree or force-delete the branch.
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+    expect(calls.some((c) => c.includes("-D"))).toBe(false);
+  });
+
+  test("does not remove a worktree with unstaged changes even when its PR is resolved", async () => {
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-dirty",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-dirty",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: " M file.ts\n", stderr: "", exitCode: 0 }; // unstaged modification
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map([["claude/feat-dirty", "sha"]]),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+  });
+
+  test("does not remove a worktree with STAGED changes even when its PR is resolved", async () => {
+    // Staged changes show as "M  file.ts" in --porcelain output (first col = index, second = worktree).
+    // The check is status.trim() !== "" — any non-empty output must block removal.
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-staged",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-staged",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "M  file.ts\n", stderr: "", exitCode: 0 }; // staged modification
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map([["claude/feat-staged", "sha"]]),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+  });
+
+  test("does not remove a worktree with UNTRACKED files even when its PR is resolved", async () => {
+    // Untracked files show as "?? newfile.ts" in --porcelain output.
+    // A worktree with untracked files is not safe to reclaim — those files would vanish.
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-untracked",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-untracked",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: "?? newfile.ts\n", stderr: "", exitCode: 0 }; // untracked
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map([["claude/feat-untracked", "sha"]]),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+  });
+
+  test("does not remove a worktree whose branch has unpushed commits (not in merged or resolvedByPr)", async () => {
+    // A branch with committed-but-not-pushed work and no resolved PR must survive.
+    // The protection here is skippedUnmerged: if the branch isn't in --merged AND
+    // isn't in resolvedByPr, pruneWorktrees adds it to skippedUnmerged and skips it.
+    // The working tree can be clean (commits don't show in git status --porcelain).
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-unpushed",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-unpushed",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      // Branch NOT in --merged (unpushed commits make it non-ancestor)
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      // Working tree is clean — committed changes don't show in status
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    // resolvedByPr is empty — no PR exists for this branch
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Map(),
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(result.skippedUnmerged).toContain("claude/feat-unpushed");
+    // Must never attempt removal
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
   });
 
   test("batch guard: calls ensureCoreBareUnset after pruning when core.bare=true on last removal", async () => {

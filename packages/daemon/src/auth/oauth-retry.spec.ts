@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { StateDb } from "../db/state";
 import { metrics } from "../metrics";
 import { OAuthCallbackTimeoutError } from "./callback-server";
@@ -305,6 +306,204 @@ describe("runOAuthFlowWithDcrRetry", () => {
 
     // Only one attempt — access_denied is not a timeout, no retry
     expect(callbackNum).toBe(1);
+    db.close();
+  });
+
+  // -- invalid_grant (revoked/rotated refresh token) recovery (#2840) --
+
+  test("recovers from invalid_grant by retrying via browser (fresh authorization_code flow)", async () => {
+    const db = createDb();
+    const seenRefreshTokens: Array<string | undefined> = [];
+    let redirectCalls = 0;
+
+    const result = await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {
+        // Keychain holds a refresh token that the server has revoked.
+        readKeychain: async (): Promise<KeychainTokens> =>
+          Promise.resolve({ accessToken: "kc-tok", refreshToken: "kc-revoked-refresh", clientId: "kc-client" }),
+      },
+      {
+        authFn: async (provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          redirectCalls++;
+          const toks = await (provider as { tokens(): Promise<{ refresh_token?: string } | undefined> }).tokens();
+          seenRefreshTokens.push(toks?.refresh_token);
+          // First attempt: SDK refresh throws invalid_grant. Retry: no token.
+          if (redirectCalls === 1) {
+            throw new InvalidGrantError("The refresh_token provided was invalid.");
+          }
+          return "REDIRECT";
+        },
+        startCallbackServer: () => makeCallback(Promise.resolve("code-fresh")),
+      },
+    );
+
+    expect(result).toBe("authenticated");
+    // First attempt sees the revoked keychain refresh token; retry skips the
+    // keychain fallback so no stale token is re-served (would loop otherwise).
+    expect(seenRefreshTokens).toEqual(["kc-revoked-refresh", undefined]);
+    db.close();
+  });
+
+  test("invalid_grant retry deletes SQLite tokens before the fresh flow", async () => {
+    const db = createDb();
+    db.saveTokens(SERVER, { access_token: "stale", token_type: "Bearer", refresh_token: "stale-refresh" });
+
+    let redirectCalls = 0;
+    await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          redirectCalls++;
+          if (redirectCalls === 1) throw new InvalidGrantError("invalid refresh");
+          return "REDIRECT";
+        },
+        startCallbackServer: () => makeCallback(Promise.resolve("code-fresh")),
+      },
+    );
+
+    // Stale SQLite token was invalidated on the retry path
+    expect(db.getTokens(SERVER)).toBeUndefined();
+    db.close();
+  });
+
+  test("does not loop forever on repeated invalid_grant — rethrows after one retry", async () => {
+    const db = createDb();
+    let callbackNum = 0;
+
+    await expect(
+      runOAuthFlowWithDcrRetry(
+        SERVER,
+        SERVER_URL,
+        db,
+        {},
+        {
+          authFn: async (_provider, authOpts) => {
+            if (authOpts.authorizationCode) return "AUTHORIZED";
+            throw new InvalidGrantError("still invalid");
+          },
+          startCallbackServer: () => {
+            callbackNum++;
+            return makeCallback(Promise.resolve("code"));
+          },
+        },
+      ),
+    ).rejects.toThrow("still invalid");
+
+    // Exactly two attempts: initial + one retry
+    expect(callbackNum).toBe(2);
+    db.close();
+  });
+
+  test("increments oauth_refresh_retry_total{triggered,success} on invalid_grant recovery", async () => {
+    const db = createDb();
+    let redirectCalls = 0;
+
+    const snap = (outcome: string): number =>
+      metrics.toJSON().counters.find((c) => c.name === "oauth_refresh_retry_total" && c.labels?.outcome === outcome)
+        ?.value ?? 0;
+
+    const triggeredBefore = snap("triggered");
+    const successBefore = snap("success");
+
+    await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          redirectCalls++;
+          if (redirectCalls === 1) throw new InvalidGrantError("invalid");
+          return "REDIRECT";
+        },
+        startCallbackServer: () => makeCallback(Promise.resolve("code-x")),
+      },
+    );
+
+    expect(snap("triggered") - triggeredBefore).toBe(1);
+    expect(snap("success") - successBefore).toBe(1);
+    db.close();
+  });
+
+  test("skipKeychainTokens opt bypasses the keychain token on the first attempt (--force plumbing)", async () => {
+    const db = createDb();
+    const seenRefreshTokens: Array<string | undefined> = [];
+    let redirectCalls = 0;
+
+    // --force threads skipKeychainTokens:true. A keychain token is present but
+    // must NEVER be served — the flow goes straight to a fresh browser auth with
+    // no invalid_grant round-trip (that round-trip is what --force must avoid).
+    const result = await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {
+        skipKeychainTokens: true,
+        readKeychain: async (): Promise<KeychainTokens> =>
+          Promise.resolve({ accessToken: "kc-tok", refreshToken: "kc-revoked-refresh", clientId: "kc-client" }),
+      },
+      {
+        authFn: async (provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          redirectCalls++;
+          const toks = await (provider as { tokens(): Promise<{ refresh_token?: string } | undefined> }).tokens();
+          seenRefreshTokens.push(toks?.refresh_token);
+          return "REDIRECT";
+        },
+        startCallbackServer: () => makeCallback(Promise.resolve("code-fresh")),
+      },
+    );
+
+    expect(result).toBe("authenticated");
+    // Exactly one redirect (no invalid_grant retry) and the keychain refresh
+    // token was never surfaced — skipped from the very first attempt.
+    expect(redirectCalls).toBe(1);
+    expect(seenRefreshTokens).toEqual([undefined]);
+    db.close();
+  });
+
+  test("recovers from a DCR timeout AND a subsequent invalid_grant in one flow (independent budgets)", async () => {
+    const db = createDb();
+    let callbackNum = 0;
+    let redirectCalls = 0;
+
+    // Server burns client_ids (DCR timeout) and holds a revoked refresh token.
+    // Both recoveries must fire in a single flow — a shared retry budget would
+    // let the DCR retry starve the invalid_grant retry (or vice versa).
+    const result = await runOAuthFlowWithDcrRetry(
+      SERVER,
+      SERVER_URL,
+      db,
+      {},
+      {
+        authFn: async (_provider, authOpts) => {
+          if (authOpts.authorizationCode) return "AUTHORIZED";
+          redirectCalls++;
+          // After the DCR retry, the second attempt hits the revoked token.
+          if (redirectCalls === 2) throw new InvalidGrantError("revoked");
+          return "REDIRECT";
+        },
+        startCallbackServer: () => {
+          callbackNum++;
+          // First attempt times out → burns client_id → DCR retry.
+          if (callbackNum === 1) return makeCallback(Promise.reject(new OAuthCallbackTimeoutError()));
+          return makeCallback(Promise.resolve("code-fresh"));
+        },
+      },
+    );
+
+    expect(result).toBe("authenticated");
+    // initial (timeout) + DCR retry (invalid_grant) + invalid_grant retry = 3
+    expect(callbackNum).toBe(3);
     db.close();
   });
 

@@ -444,6 +444,8 @@ function makeStreamDeps(events: MonitorEvent[], overrides: Partial<MonitorDeps> 
     },
     onSigint: () => {},
     onStdoutError: () => {},
+    checkDaemonLiveness: () => true,
+    livenessTimeoutMs: 0,
     ...overrides,
   };
 }
@@ -529,6 +531,8 @@ describe("cmdMonitor", () => {
       openEventStream: () => ({ events: abortStream, abort: () => {} }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -554,6 +558,8 @@ describe("cmdMonitor", () => {
       openEventStream: () => ({ events: errorStream, abort: () => {} }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: (l) => stderr.push(l),
       exit: (code) => {
@@ -580,6 +586,8 @@ describe("cmdMonitor", () => {
       }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -603,6 +611,8 @@ describe("cmdMonitor", () => {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -646,6 +656,8 @@ describe("cmdMonitor", () => {
       }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -683,6 +695,8 @@ describe("cmdMonitor", () => {
       }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -710,6 +724,8 @@ describe("cmdMonitor", () => {
       }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -816,6 +832,8 @@ describe("cmdMonitor", () => {
       }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -884,6 +902,8 @@ describe("cmdMonitor", () => {
       openEventStream: () => ({ events: emptyGen(), abort: () => {} }),
       isTTY: true,
       getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 0,
       writeStdout: () => {},
       writeStderr: () => {},
       exit: (code) => {
@@ -901,6 +921,135 @@ describe("cmdMonitor", () => {
     expect(capturedErrHandler).toBeDefined();
     const otherErr = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     capturedErrHandler?.(otherErr);
+    expect(exitCalls).toHaveLength(0);
+  });
+
+  // ── Liveness watchdog (#2508): passive monitor must never outlive its daemon ──
+
+  test("watchdog exits 3 loudly when the bound daemon dies mid-stream", async () => {
+    let resolveStream: (() => void) | undefined;
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    let watchdogFn: (() => void) | undefined;
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: hangingStream(),
+        abort: () => {
+          resolveStream?.();
+        },
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => false, // daemon is a corpse
+      livenessTimeoutMs: 90_000,
+      writeStdout: () => {},
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: () => {},
+      onStdoutError: () => {},
+      createTimeout: (fn) => {
+        watchdogFn = fn;
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor([], deps);
+    await Promise.resolve();
+    // Simulate the silence window elapsing.
+    watchdogFn?.();
+    await promise;
+
+    expect(exitCalls).toEqual([3]);
+    expect(stderr.join("")).toContain("bound daemon is not responding");
+  });
+
+  test("watchdog warns and keeps watching when daemon PID is still alive", async () => {
+    let resolveStream: (() => void) | undefined;
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const timerFns: Array<() => void> = [];
+    let sigintFn: (() => void) | undefined;
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: hangingStream(),
+        abort: () => {
+          resolveStream?.();
+        },
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true, // alive but silent
+      livenessTimeoutMs: 90_000,
+      writeStdout: () => {},
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: (fn) => {
+        sigintFn = fn;
+      },
+      onStdoutError: () => {},
+      createTimeout: (fn) => {
+        timerFns.push(fn);
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor([], deps);
+    await Promise.resolve();
+    timerFns[0]?.(); // fire watchdog once
+
+    expect(exitCalls).toHaveLength(0);
+    expect(stderr.join("")).toContain("no daemon heartbeat");
+    expect(timerFns.length).toBeGreaterThanOrEqual(2); // re-armed
+
+    sigintFn?.(); // clean shutdown
+    await promise;
+    expect(exitCalls).toEqual([0]);
+  });
+
+  test("stream end with dead daemon and no terminator exits 3, not a blind 0", async () => {
+    const events = [makeEvent(SESSION_RESULT, {})];
+    const stderr: string[] = [];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      checkDaemonLiveness: () => false,
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(exitCalls).toEqual([3]);
+    expect(stderr.join("")).toContain("bound daemon vanished");
+  });
+
+  test("stream end with live daemon and no terminator still exits cleanly", async () => {
+    const events = [makeEvent(SESSION_RESULT, {})];
+    const exitCalls: number[] = [];
+    const deps = makeStreamDeps(events, {
+      checkDaemonLiveness: () => true,
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+    });
+    await cmdMonitor([], deps);
     expect(exitCalls).toHaveLength(0);
   });
 
