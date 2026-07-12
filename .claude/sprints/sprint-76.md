@@ -1,6 +1,7 @@
 # Sprint 76
 
-> Planned 2026-07-12 09:55 EDT. Target: 16 PRs.
+> Planned 2026-07-12 09:55 EDT. Target: 17 PRs.
+> Amended 2026-07-12 12:54 EDT — added #2887 (git-level squash-merge gc signal) to Batch 3 as filler.
 
 ## Goal
 
@@ -26,6 +27,7 @@ Close the stdio/daemon session-result reliability class opened by sprint 75, and
 | 2603 | doing-it-wrong rule: PROVIDER_NAMES drift vs *-session-worker.ts files | low | 3 | opus | claude | filler |
 | 2877 | cli-orchestration.spec.ts:554 pollUntil(5000) has zero headroom against Bun's 5s timeout | low | 3 | opus | claude | filler |
 | 2553 | agent-protocol conformance rules — items 6-7 ONLY (Appendix A type-set + mirror-replay checks) | medium | 3 | opus | claude | filler |
+| 2887 | git-level squash-merge detection (patch-equivalence) as a 3rd worktree-reclaim signal | high | 3 | opus | claude | filler |
 
 ## Batch Plan
 
@@ -36,7 +38,7 @@ Close the stdio/daemon session-result reliability class opened by sprint 75, and
 #2879, #2859, #2862, #2555, #2850
 
 ### Batch 3 (backfill)
-#2883, #2829, #2478, #2603, #2877, #2553
+#2883, #2829, #2478, #2603, #2877, #2553, #2887
 
 ### Dependency edges (translate to `addBlockedBy` at run time)
 - #2879 blockedBy #2858 (both edit `packages/daemon/src/claude-session/ws-server.ts` — 2858 at waitForResult ~1710, 2879 at proc.exited ~1030; serialize to avoid a shared-file rebase)
@@ -47,12 +49,14 @@ Close the stdio/daemon session-result reliability class opened by sprint 75, and
 - `scripts/_runner/ci-steps.ts` — #2780, #2883 (serialized). #2883 also reads the already-exported `RAN_FILES_RE` from `coverage-report.ts` — no edit there, no collision.
 - `packages/daemon/src/claude-session/session-state.ts` — only #2859 now (#2860/#2868 deferred), no collision.
 - New `scripts/rules/*.rule.ts` files (#2555, #2603) are distinct filenames — no collision with each other or #2553's conformance rules.
+- `packages/core/src/worktree-shim.ts` + `packages/command/src/commands/gc.ts` — only #2887. No other pick touches either. **#2887 must keep its git primitive in `worktree-shim.ts`, NOT `packages/core/src/git.ts`** — #2862 edits git.ts (findGitRoot/findWorktreeRoot) this sprint; an additive export there is a same-file collision risk. Constraint pinned in the #2887 body.
 - No dispatch-table (main.ts / router / registry) collisions among these picks.
 
 ### Pre-session clarifications required
 - **#2879**: design-sensitive. The bounded `reader.cancel()` guard for the abnormal-exit sub-case must NOT reintroduce a wall-clock delay — #2825 banned that pattern (the ws-server-stdio-load drain-timeout regression). Gate the cancel on "no result expected", not on a timer. High scrutiny → adversarial + QA.
 - **#2860 rescope note (deferred, not picked)**: its Option B docstring already landed; only Option A (actual lastEmittedNumTurns persistence) remained, and that needs design — deferred.
 - **#2553**: scope is **items 6-7 only** (the two conformance lint rules: Appendix A event/message inventory validated against `BASE_WORKER_EVENT_TYPES` + per-provider `CONTROL_MESSAGE_TYPES`; and `forwardSessionEvent` symmetry across providers). Doc-polish items 1-5 are a stretch goal, not required for QA pass.
+- **#2887** (high scrutiny — data-loss risk): the new git-level squash signal deletes non-ancestor branch tips with `git branch -D`. A false-positive patch-equivalence match that force-deletes committed-but-unpushed work is the worst-case regression. MUST preserve the #2662 skip buckets (dirty / active-session / `isAheadOfForge`-unpushed → `skippedUnpushed`) and ship a spec for the ahead-of-forge and genuinely-unmerged-lookalike cases. Port theshadow27's existing validated script (source pending in the #2887 comment) rather than re-deriving. Keep git plumbing in `worktree-shim.ts` (see hot-shared note).
 
 ## Context
 
