@@ -3,6 +3,7 @@
 > Planned 2026-07-12 09:55 EDT. Target: 17 PRs.
 > Amended 2026-07-12 12:54 EDT — added #2887 (git-level squash-merge gc signal) to Batch 3 as filler.
 > Started 2026-07-12 12:55 EDT.
+> Amended 2026-07-12 13:15 EDT — added #2892 (opencode-server.spec.ts global-metrics test-isolation defect; flake-patrol verdict on the #2889 CI red). Hot-file check: touches only packages/daemon/src/opencode-server.spec.ts — no overlap with any batched or in-flight pick.
 
 ## Goal
 
@@ -29,6 +30,7 @@ Close the stdio/daemon session-result reliability class opened by sprint 75, and
 | 2877 | cli-orchestration.spec.ts:554 pollUntil(5000) has zero headroom against Bun's 5s timeout | low | 3 | opus | claude | filler |
 | 2553 | agent-protocol conformance rules — items 6-7 ONLY (Appendix A type-set + mirror-replay checks) | medium | 3 | opus | claude | filler |
 | 2887 | git-level squash-merge detection (patch-equivalence) as a 3rd worktree-reclaim signal | high | 3 | opus | claude | filler |
+| 2892 | opencode-server.spec.ts asserts on global metrics singleton — port #956/#975 isolation fix (amendment) | low | 2 | opus | claude | goal |
 
 ## Batch Plan
 
