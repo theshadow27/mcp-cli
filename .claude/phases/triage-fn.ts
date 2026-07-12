@@ -30,6 +30,7 @@ export interface TriageDeps {
   waitForEvent(filter: TriageEventFilter, opts?: { timeoutMs?: number; since?: number }): Promise<TriageEvent>;
   stateGet<T>(key: string): Promise<T | undefined>;
   stateSet(key: string, value: unknown): Promise<void>;
+  stateDelete(key: string): Promise<void>;
   updateWorkItem(id: string, prNumber: number): Promise<void>;
   /** Changed file paths on the PR — drives the artifact-check gate (#2804). */
   listChangedFiles(prNumber: number): Promise<string[]>;
@@ -122,6 +123,10 @@ export async function runTriage(
     const changedFiles = await deps.listChangedFiles(prNumber);
     if (requiresArtifactCheck(changedFiles)) {
       await deps.stateSet("artifact_check", ARTIFACT_CHECK_REQUIRED);
+    } else {
+      // Self-correcting (#2829): a re-triage on a PR that no longer touches
+      // plumbing must clear a previously-set flag, not leave it stale.
+      await deps.stateDelete("artifact_check");
     }
   } catch {
     /* best-effort — artifact-check is advisory, never blocks triage */

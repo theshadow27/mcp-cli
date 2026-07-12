@@ -18,6 +18,7 @@ function makeDeps(overrides: Partial<TriageDeps> = {}): TriageDeps {
     waitForEvent: () => Promise.reject(new Error("waitForEvent not configured")),
     stateGet: () => Promise.resolve(undefined),
     stateSet: () => Promise.resolve(),
+    stateDelete: () => Promise.resolve(),
     updateWorkItem: () => Promise.resolve(),
     listChangedFiles: async () => [],
     ...overrides,
@@ -422,6 +423,21 @@ describe("runTriage — state", () => {
       }),
     );
     expect(stateWrites.artifact_check).toBe("required");
+  });
+
+  test("clears a stale artifact_check when the PR no longer touches plumbing (#2829)", async () => {
+    const deleted: string[] = [];
+    await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        listChangedFiles: async () => ["packages/core/src/config.ts"],
+        stateDelete: async (key) => {
+          deleted.push(key);
+        },
+      }),
+    );
+    expect(deleted).toContain("artifact_check");
   });
 
   test("does not set artifact_check for ordinary source changes (#2804)", async () => {

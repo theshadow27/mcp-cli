@@ -11,10 +11,14 @@ function makeWork(overrides: Partial<NeedsAttentionWork> = {}): NeedsAttentionWo
   return { id: "#42", prNumber: 100, issueNumber: 42, ...overrides };
 }
 
-function makeState(initial: Record<string, unknown> = {}): NeedsAttentionState {
+function makeState(initial: Record<string, unknown> = {}): NeedsAttentionState & { store: Map<string, unknown> } {
   const store = new Map<string, unknown>(Object.entries(initial));
   return {
+    store,
     get: async <T>(key: string) => store.get(key) as T | undefined,
+    delete: async (key: string) => {
+      store.delete(key);
+    },
   };
 }
 
@@ -178,5 +182,28 @@ describe("runNeedsAttention — side effects", () => {
         }),
       ),
     ).resolves.toBeDefined();
+  });
+
+  test("clears artifact_check and merge_block_labels on escalation (#2829)", async () => {
+    const state = makeState({
+      artifact_check: "required",
+      merge_block_labels: "review:changes",
+      review_round: 2,
+    });
+    await runNeedsAttention(makeWork(), state, makeDeps());
+    expect(state.store.has("artifact_check")).toBe(false);
+    expect(state.store.has("merge_block_labels")).toBe(false);
+    // Round counters are untouched — only the two blocking keys are cleared.
+    expect(state.store.get("review_round")).toBe(2);
+  });
+
+  test("a state.delete failure does not derail escalation (#2829)", async () => {
+    const brokenState: NeedsAttentionState = {
+      get: async () => undefined,
+      delete: async () => {
+        throw new Error("db down");
+      },
+    };
+    await expect(runNeedsAttention(makeWork(), brokenState, makeDeps())).resolves.toBeDefined();
   });
 });

@@ -8,6 +8,7 @@ export interface NeedsAttentionWork {
 
 export interface NeedsAttentionState {
   get<T>(key: string): Promise<T | undefined>;
+  delete(key: string): Promise<void>;
 }
 
 export interface NeedsAttentionDeps {
@@ -69,6 +70,13 @@ export async function runNeedsAttention(
     commented = true;
   } catch {
     /* best-effort */
+  }
+
+  // Terminal-path parity with done (#2829): clear the artifact-check / merge-block
+  // state keys so an escalated (non-merged) work item doesn't retain stale
+  // blocking-label / artifact-check state in its work_items row.
+  for (const key of ["artifact_check", "merge_block_labels"]) {
+    await state.delete(key).catch(() => {});
   }
 
   try {
