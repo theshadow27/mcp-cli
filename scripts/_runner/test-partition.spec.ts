@@ -1,16 +1,24 @@
 import { describe, expect, it } from "bun:test";
-import { globSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
 import { DAEMON_TEST_PATHS, NON_DAEMON_TEST_PATHS, parseFlag, parseRepeatableFlag } from "../am-i-done";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../..");
 
+// Enumerate tracked spec files via `git ls-files` rather than a filesystem glob so
+// untracked/gitignored scratch specs (e.g. under build/) never enter the partition check (#2850).
+// Dot-directory specs (.claude/**, .git-hooks/**) are excluded to match the prior glob semantics:
+// they are run by dedicated CI steps (test:phases, test:hooks), not the two partitions checked here.
 function allSpecFiles(): string[] {
-  return globSync("**/*.spec.ts", {
-    cwd: REPO_ROOT,
-    ignore: ["node_modules/**", "**/node_modules/**"],
-  });
+  const result = spawnSync("git", ["ls-files", "*.spec.ts"], { cwd: REPO_ROOT, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`git ls-files failed: ${result.stderr}`);
+  }
+  return result.stdout
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .filter((f) => !f.split("/").some((seg) => seg.startsWith(".")));
 }
 
 function matchesPath(file: string, paths: string[]): boolean {
