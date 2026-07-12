@@ -78,6 +78,14 @@ export interface WorktreePruneOptions {
    * list and remove. Callers without a way to refresh may omit.
    */
   refreshActive?: () => Promise<Set<string>>;
+  /**
+   * Branch names whose PR is MERGED or CLOSED on the forge. Squash-merges leave
+   * the branch tip as a non-ancestor of the default branch, so `git branch
+   * --merged` never lists them (#2662); a resolved PR is the authoritative
+   * "done" signal for those worktrees. Branches removed via this signal are
+   * deleted with `-D` since `git branch -d` rejects a non-ancestor tip.
+   */
+  resolvedByPr?: Set<string>;
 }
 
 /** Result of a prune operation. */
@@ -302,7 +310,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
       }
       if (hookExit === 0 && !existsSync(worktreePath)) {
         deps.printInfo(`Removed worktree via hook: ${worktreePath}`);
-        deleteIfSafeToDelete(branch, effectiveRoot, deps);
+        deletePrunedBranch(branch, effectiveRoot, deps);
       } else if (hookExit === 0) {
         deps.printError(`Worktree teardown hook returned success but directory still exists: ${worktreePath}`);
       } else {
@@ -310,7 +318,7 @@ export function cleanupWorktree(worktree: string, cwd: string, deps: WorktreeShi
       }
     } else {
       if (removeWorktreeWithVerification(effectiveRoot, worktreePath, deps)) {
-        deleteIfSafeToDelete(branch, effectiveRoot, deps);
+        deletePrunedBranch(branch, effectiveRoot, deps);
       }
     }
   } else {
@@ -443,14 +451,22 @@ function removeWorktreeWithVerification(
   return false;
 }
 
-/** Delete a branch if git branch -d considers it safe (merged into HEAD or upstream). */
-function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeShimDeps): boolean {
+/**
+ * Delete a branch after its worktree is removed.
+ *
+ * Default (safe) uses `git branch -d`, which only deletes ancestry-merged
+ * branches. Pass `force` when a resolved PR (MERGED/CLOSED) is the authority —
+ * a squash-merged tip is a non-ancestor, so `-d` would refuse it (#2662).
+ */
+function deletePrunedBranch(branch: string, repoRoot: string, deps: WorktreeShimDeps, force = false): boolean {
   if (!branch) return false;
   const bareBeforeDelete = isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd));
-  const { exitCode } = deps.exec(["git", "-C", repoRoot, "branch", "-d", branch]);
+  const { exitCode } = deps.exec(["git", "-C", repoRoot, "branch", force ? "-D" : "-d", branch]);
   if (exitCode === 0) {
     if (!bareBeforeDelete && isCoreBareSet(repoRoot, (cmd) => deps.exec(cmd))) {
-      deps.printError(`[shim] core.bare flipped to true by: git branch -d ${branch} (repo=${repoRoot}) — see #1330`);
+      deps.printError(
+        `[shim] core.bare flipped to true by: git branch ${force ? "-D" : "-d"} ${branch} (repo=${repoRoot}) — see #1330`,
+      );
     }
     // Verify the branch is actually gone
     const { exitCode: verifyExit } = deps.exec([
@@ -465,7 +481,7 @@ function deleteIfSafeToDelete(branch: string, repoRoot: string, deps: WorktreeSh
       deps.printInfo(`Deleted branch: ${branch} (safe)`);
       return true;
     }
-    deps.printError(`Warning: git branch -d returned success but branch still exists: ${branch}`);
+    deps.printError(`Warning: git branch ${force ? "-D" : "-d"} returned success but branch still exists: ${branch}`);
     return false;
   }
   return false;
@@ -532,7 +548,7 @@ export function getDefaultBranch(deps: WorktreeShimDeps, cwd: string): string {
  * Skips worktrees with active sessions and unmerged branches.
  */
 export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<WorktreePruneResult> {
-  const { repoRoot, deps, dryRun = false, refreshActive } = opts;
+  const { repoRoot, deps, dryRun = false, refreshActive, resolvedByPr } = opts;
   let activeWorktrees = opts.activeWorktrees;
   const wtConfig = readWorktreeConfig(repoRoot);
   const { worktrees, worktreeBase } = listMcxWorktrees(repoRoot, deps);
@@ -597,7 +613,11 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       }
     }
     if (activeWorktrees.has(wtName)) continue;
-    if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch)) {
+    // A branch is "done" when git ancestry says merged OR its PR is resolved
+    // (MERGED/CLOSED). The PR signal is what catches squash-merges, whose tip
+    // is a non-ancestor of the default branch (#2662).
+    const prResolved = wt.branch ? (resolvedByPr?.has(wt.branch) ?? false) : false;
+    if (!skipMergeCheck && wt.branch && !mergedBranches.has(wt.branch) && !prResolved) {
       skippedUnmerged.push(wt.branch);
       continue;
     }
@@ -635,7 +655,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
         deps.printInfo(`Removed worktree via hook: ${wt.path}`);
         pruned++;
         prunedNames.push(wtName);
-        if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
+        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, prResolved)) {
           deletedBranches.add(wt.branch);
         }
       } else if (hookExit === 0) {
@@ -647,7 +667,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       if (removeWorktreeWithVerification(repoRoot, wt.path, deps)) {
         pruned++;
         prunedNames.push(wtName);
-        if (wt.branch && deleteIfSafeToDelete(wt.branch, repoRoot, deps)) {
+        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, prResolved)) {
           deletedBranches.add(wt.branch);
         }
       }

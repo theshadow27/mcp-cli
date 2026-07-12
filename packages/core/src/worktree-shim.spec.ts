@@ -864,6 +864,90 @@ describe("pruneWorktrees", () => {
     expect(result.skippedUnmerged).toEqual(["claude/feat-wip"]);
   });
 
+  test("reclaims squash-merged worktree via resolvedByPr and force-deletes branch (-D)", async () => {
+    // Squash-merge: the branch tip is NOT an ancestor of main, so it never
+    // appears in `git branch --merged` — ancestry alone leaks it (#2662).
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-squashed",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-squashed",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 }; // NOT ancestry-merged
+      if (cmd.includes("status")) return { stdout: "", stderr: "", exitCode: 0 }; // clean
+      if (cmd.includes("remove")) return { stdout: "", stderr: "", exitCode: 0 };
+      // `git branch -d` would fail on a non-ancestor; `-D` succeeds.
+      if (cmd.includes("-D")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd.includes("-d")) return { stdout: "", stderr: "not fully merged", exitCode: 1 };
+      if (cmd.includes("rev-parse") && cmd.includes("--verify")) return { stdout: "", stderr: "", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Set(["claude/feat-squashed"]),
+    });
+
+    expect(result.pruned).toBe(1);
+    expect(result.prunedNames).toEqual(["feat-squashed"]);
+    expect(result.skippedUnmerged).toEqual([]);
+    expect(result.deletedBranches.has("claude/feat-squashed")).toBe(true);
+    // Force-delete must be used; plain `-d` alone would leak the branch.
+    expect(calls.some((c) => c.includes("-D") && c.includes("claude/feat-squashed"))).toBe(true);
+  });
+
+  test("does not remove a dirty worktree even when its PR is resolved", async () => {
+    const porcelainOutput = [
+      "worktree /repo",
+      "HEAD abc123",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/.claude/worktrees/feat-dirty",
+      "HEAD def456",
+      "branch refs/heads/claude/feat-dirty",
+      "",
+    ].join("\n");
+
+    const calls: string[][] = [];
+    const exec = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd.includes("list") && cmd.includes("--porcelain"))
+        return { stdout: porcelainOutput, stderr: "", exitCode: 0 };
+      if (cmd.includes("symbolic-ref")) return { stdout: "refs/remotes/origin/main", stderr: "", exitCode: 0 };
+      if (cmd.includes("--merged")) return { stdout: "  main\n", stderr: "", exitCode: 0 };
+      if (cmd.includes("status")) return { stdout: " M file.ts\n", stderr: "", exitCode: 0 }; // DIRTY
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const printError = mock(() => {});
+    const printInfo = mock(() => {});
+
+    const result = await pruneWorktrees({
+      repoRoot: "/repo",
+      activeWorktrees: new Set(),
+      deps: { exec, printError, printInfo },
+      resolvedByPr: new Set(["claude/feat-dirty"]),
+    });
+
+    expect(result.pruned).toBe(0);
+    // Never attempt removal of a dirty tree, regardless of PR state.
+    expect(calls.some((c) => c.includes("remove"))).toBe(false);
+  });
+
   test("batch guard: calls ensureCoreBareUnset after pruning when core.bare=true on last removal", async () => {
     // Simulate the recurrence bug: individual per-removal fix runs but a subsequent
     // removal flips core.bare back to true. The final batch guard should catch it.

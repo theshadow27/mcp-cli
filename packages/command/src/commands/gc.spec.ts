@@ -65,6 +65,8 @@ function makeDeps(
     callTool?: GcDeps["callTool"];
     mtimes?: Map<string, number>;
     mergedPrBranches?: Set<string> | null;
+    /** Branches whose PR is MERGED or CLOSED (worktree-reclaim signal). Defaults to `mergedPrBranches`. */
+    resolvedPrBranches?: Set<string>;
   } = {},
 ): GcDeps & { logs: string[]; errors: string[]; execCalls: string[][] } {
   const logs: string[] = [];
@@ -85,7 +87,14 @@ function makeDeps(
     callTool: overrides.callTool ?? (async () => "[]"),
     exec,
     getMtime: (p) => overrides.mtimes?.get(p) ?? null,
-    queryMergedPrBranches: () => (overrides.mergedPrBranches !== undefined ? overrides.mergedPrBranches : null),
+    queryPrBranches: () => {
+      if (overrides.mergedPrBranches === undefined && overrides.resolvedPrBranches === undefined) return null;
+      if (overrides.mergedPrBranches === null) return null;
+      const merged = overrides.mergedPrBranches ?? new Set<string>();
+      // resolved is a superset of merged; default it to merged when not given.
+      const resolved = new Set<string>([...merged, ...(overrides.resolvedPrBranches ?? [])]);
+      return { merged, resolved };
+    },
     printError: (m) => errors.push(m),
     printInfo: (m) => logs.push(m),
     log: (m) => logs.push(m),
@@ -311,6 +320,38 @@ describe("runGc worktrees", () => {
 
     expect(d.logs.some((l) => l.includes("would remove 0"))).toBe(true);
     expect(d.logs.some((l) => l.includes("2 skipped (unmerged)"))).toBe(true);
+  });
+
+  test("reclaims squash-merged worktree via PR state when ancestry check misses it (#2662)", async () => {
+    const responses = makeWorktreeResponses();
+    // feat-a squash-merged (not an ancestor of main → absent from --merged);
+    // feat-b genuinely unmerged with no resolved PR.
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n" });
+
+    const d = makeDeps({
+      execResponses: responses,
+      // feat-a's PR is MERGED (squash); resolvedPrBranches carries the signal.
+      resolvedPrBranches: new Set(["feat-a"]),
+    });
+
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    // feat-a reclaimed via PR state; feat-b still skipped as unmerged.
+    expect(d.logs.some((l) => l.includes("would remove 1"))).toBe(true);
+    expect(d.logs.some((l) => l.includes("wt-a"))).toBe(true);
+    expect(d.logs.some((l) => l.includes("1 skipped (unmerged)"))).toBe(true);
+  });
+
+  test("warns when GitHub API is unavailable but still prunes ancestry-merged worktrees", async () => {
+    const responses = makeWorktreeResponses();
+    // wt-a/wt-b are ancestry-merged; gh is unavailable (default null).
+    const d = makeDeps({ execResponses: responses });
+
+    await runGc({ dryRun: true, olderThanMs: 86_400_000, branchesOnly: false, worktreesOnly: true }, d);
+
+    expect(d.errors.some((e) => e.includes("squash-merged/closed worktrees may not be reclaimed"))).toBe(true);
+    // Ancestry-merged worktrees are still reclaimed even offline.
+    expect(d.logs.some((l) => l.includes("would remove 2"))).toBe(true);
   });
 
   test("active-session worktree is skipped even without age filter", async () => {
