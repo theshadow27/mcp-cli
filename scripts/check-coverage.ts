@@ -127,7 +127,12 @@ const EXCLUSIONS: Record<string, string> = {
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { coveragePathInDiff, resolveChangedSourceFiles } from "./coverage-diff";
-import { checkSpecCountFloor, countExpectedSpecFiles, formatExclusionList } from "./coverage-report";
+import {
+  checkSpecCountFloor,
+  countExpectedSpecFiles,
+  formatDegradedRunError,
+  formatExclusionList,
+} from "./coverage-report";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -445,6 +450,27 @@ console.log(
   `Per-file:  ${PER_FILE_MIN_LINES}% lines minimum (${Object.keys(EXCLUSIONS).length} exclusions${isDiffScoped ? `, diff-scoped to ${changedFiles.size} changed file(s)` : ""})`,
 );
 
+// --- Spec-count sanity floor (#2815, #2759) — checked FIRST ---
+// Guard against a silent shrink of the coverage surface: if run-1 discovers
+// fewer spec files than exist on disk under its run paths, a worker was
+// silently SIGTERM'd (host oversubscription #2690) or a glob/path regression
+// dropped files. The per-file floor and global thresholds above were recomputed
+// against fewer files — the low-coverage files they would flag (e.g.
+// reporter.ts, opencode-client.ts) are an artifact of the missing run, not a
+// real regression. Fail closed and short-circuit BEFORE printing the misleading
+// per-file/global failures so the reader re-runs rather than chasing unrelated
+// files (#2759). Checked against run-1 output only (the coverage table we
+// parse); run-2 daemon specs have their own discovery gate in ci-steps.ts (#2719).
+const expectedSpecFiles = countExpectedSpecFiles(nonDaemonPaths, resolve(import.meta.dir, ".."));
+const specFloor = checkSpecCountFloor(coverageRun1, expectedSpecFiles);
+console.log(`Spec floor: ${specFloor.discovered ?? "?"} discovered / ${specFloor.expected} expected spec file(s)`);
+if (!specFloor.ok) {
+  for (const line of formatDegradedRunError(specFloor)) {
+    console.error(line);
+  }
+  process.exit(1);
+}
+
 let failed = false;
 
 if (globalFuncs < GLOBAL_THRESHOLDS.functions) {
@@ -454,20 +480,6 @@ if (globalFuncs < GLOBAL_THRESHOLDS.functions) {
 
 if (globalLines < GLOBAL_THRESHOLDS.lines) {
   console.error(`\nFAIL: Line coverage ${globalLines}% is below global threshold ${GLOBAL_THRESHOLDS.lines}%`);
-  failed = true;
-}
-
-// --- Spec-count sanity floor (#2815) ---
-// Guard against a silent shrink of the coverage surface: if run-1 discovers
-// fewer spec files than exist on disk under its run paths, the per-file floor
-// above was recomputed against fewer files and would still print PASS. Fail
-// closed. Checked against run-1 output only (the coverage table we parse);
-// run-2 daemon specs have their own discovery gate in ci-steps.ts (#2719).
-const expectedSpecFiles = countExpectedSpecFiles(nonDaemonPaths, resolve(import.meta.dir, ".."));
-const specFloor = checkSpecCountFloor(coverageRun1, expectedSpecFiles);
-console.log(`Spec floor: ${specFloor.discovered ?? "?"} discovered / ${specFloor.expected} expected spec file(s)`);
-if (!specFloor.ok) {
-  console.error(`\nFAIL: ${specFloor.reason}`);
   failed = true;
 }
 

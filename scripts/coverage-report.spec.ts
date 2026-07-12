@@ -6,6 +6,7 @@ import {
   RAN_FILES_RE,
   checkSpecCountFloor,
   countExpectedSpecFiles,
+  formatDegradedRunError,
   formatExclusionList,
   parseDiscoveredFileCount,
 } from "./coverage-report";
@@ -112,6 +113,25 @@ describe("checkSpecCountFloor", () => {
     expect(r.ok).toBe(false);
     expect(r.discovered).toBeNull();
     expect(r.reason).toContain("failing closed");
+  });
+});
+
+describe("formatDegradedRunError", () => {
+  test("reports the discovered/expected mismatch and suppression + re-run guidance", () => {
+    const r = checkSpecCountFloor("Ran 100 tests across 221 files.", 315);
+    const lines = formatDegradedRunError(r);
+    const joined = lines.join("\n");
+    expect(joined).toContain("Suspected worker crash");
+    expect(joined).toContain("221 discovered < 315 expected");
+    expect(joined).toContain("unreliable and have been suppressed");
+    expect(joined).toContain("Re-run");
+    expect(joined).toContain("#2759");
+  });
+
+  test("renders '?' for an unparseable summary (null discovered)", () => {
+    const r = checkSpecCountFloor("bun changed its output format", 315);
+    const joined = formatDegradedRunError(r).join("\n");
+    expect(joined).toContain("? discovered < 315 expected");
   });
 });
 
