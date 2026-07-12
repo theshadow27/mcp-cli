@@ -390,6 +390,25 @@ interface WsSession {
    */
   stdioDrainDone?: Promise<void>;
   /**
+   * Live stdout reader for the stdio drain loop. Held so teardown paths and the
+   * proc.exited handler can `cancel()` it — a grandchild that inherits the child's
+   * stdout write fd keeps the pipe open past child exit, so a parked `reader.read()`
+   * never sees EOF and `stdioDrainDone` would await forever. Cancelling unblocks the
+   * parked read so the drain resolves. Null for WS transport and after the drain ends.
+   * (#2833)
+   */
+  stdioReader: ReadableStreamDefaultReader<Uint8Array> | null;
+  /**
+   * Resolves the first time work completes (session:result / session:error fires).
+   * The proc.exited stdio path races this against `stdioDrainDone` so the handler
+   * stops waiting the instant the completion signal is in hand — never on a wall
+   * clock — which unblocks the grandchild-holds-fd hang without dropping a buffered
+   * result (a wall-clock cap would reintroduce #2825). Re-armed on clearSession. (#2833)
+   */
+  workCompletedSignal: Promise<void>;
+  /** Resolver for {@link workCompletedSignal}; idempotent (re-armed on clearSession). */
+  signalWorkCompleted: () => void;
+  /**
    * Whether this session has an unreported actionable state (idle or waiting_permission).
    * Set to true when the session transitions to an actionable state via a real event.
    * Cleared after findImmediateEvent reports it. Prevents wait from returning the same
@@ -423,6 +442,19 @@ const MAX_EVENT_BUFFER = 1000;
 const EVENT_BUFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_WORK_ITEM_BUFFER = 100;
 const WORK_ITEM_BUFFER_TTL_MS = 60 * 1000; // 1 minute — work item events are polled, not streamed
+
+/**
+ * Build a one-shot completion signal for a session. `promise` resolves the first
+ * time `resolve` is called; subsequent calls are no-ops. Used to let the proc.exited
+ * stdio drain stop as soon as work completes, without a wall-clock timeout (#2833).
+ */
+function makeWorkCompletedSignal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 /** Summarize tool input to a short display string (max 80 chars). */
 export function summarizeInput(input: Record<string, unknown>): string {
@@ -717,6 +749,7 @@ export class ClaudeWsServer {
 
       const router = new PermissionRouter("auto");
 
+      const restoredSignal = makeWorkCompletedSignal();
       this.sessions.set(s.sessionId, {
         state,
         router,
@@ -744,6 +777,9 @@ export class ClaudeWsServer {
         stuckDetector: null,
         transport: s.transport ?? "ws",
         stdioWriter: null,
+        stdioReader: null,
+        workCompletedSignal: restoredSignal.promise,
+        signalWorkCompleted: restoredSignal.resolve,
       });
       restored++;
       this.logger.info(`[_claude] Restored session ${s.sessionId} (state: disconnected, pid: ${s.pid})`);
@@ -815,6 +851,7 @@ export class ClaudeWsServer {
     }
     const name = config.name ?? this.generateName();
     const resolvedTransport = config.transport ?? "ws";
+    const completionSignal = makeWorkCompletedSignal();
 
     this.sessions.set(sessionId, {
       state,
@@ -843,6 +880,9 @@ export class ClaudeWsServer {
       stuckDetector: null,
       transport: resolvedTransport,
       stdioWriter: null,
+      stdioReader: null,
+      workCompletedSignal: completionSignal.promise,
+      signalWorkCompleted: completionSignal.resolve,
     });
     return { name, transport: resolvedTransport };
   }
@@ -1000,6 +1040,16 @@ export class ClaudeWsServer {
       // branch below, flip to `disconnected`, and the #2814 handleStdioLine
       // guard drops the buffered `result` — session:result never fires (#2825).
       if (session.transport === "stdio" && session.stdioDrainDone) {
+        // Do NOT await the drain unbounded: a grandchild that inherited the child's
+        // stdout write fd holds the pipe open past exit, so the drain's parked read()
+        // never sees EOF and this handler would hang forever — no disconnect, no
+        // resultWaiter rejection, no auto-terminate (#2833). Instead race the drain
+        // against the work-completion signal. As soon as the buffered `result` is in
+        // hand (or genuine EOF arrives) we stop waiting and cancel the reader to
+        // release the parked read. This never drops a result the way a wall-clock cap
+        // would (#2825): we only stop early once completion is proven.
+        await Promise.race([session.stdioDrainDone, session.workCompletedSignal]);
+        await this.cancelStdioReader(session);
         try {
           await session.stdioDrainDone;
         } catch {
@@ -1072,6 +1122,9 @@ export class ClaudeWsServer {
     }
 
     const session = this.getSession(sessionId);
+    // New turn: re-arm the completion signal so the proc.exited drain race keys off
+    // THIS prompt's result, not the already-resolved prior turn's (#2833).
+    this.armWorkCompletedSignal(session);
     const pendingReason = session.pendingInterruptReason;
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
@@ -1165,6 +1218,10 @@ export class ClaudeWsServer {
       return;
     }
 
+    // Arm the completion signal for this process lifetime's first work cycle so the
+    // proc.exited drain race keys off THIS run's result, not a stale prior one (#2833).
+    this.armWorkCompletedSignal(session);
+
     // Send initial user message via stdin — this is the equivalent of
     // handleOpen's ws.send(userMessage) for WS transport.
     const prompt = session.config.prompt;
@@ -1173,14 +1230,23 @@ export class ClaudeWsServer {
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     const reader = stdout.getReader();
+    session.stdioReader = reader;
     const decoder = new TextDecoder();
     let buffer = "";
 
     const drain = async () => {
+      // Genuine EOF (child closed stdout) vs an external cancel (teardown /
+      // proc.exited unblocking a parked read past a grandchild-held fd) both surface
+      // as `done: true`. Distinguish them via the session ref: cancelStdioReader nulls
+      // it before cancelling, so `stdioReader !== reader` means we were cancelled. (#2833)
+      let genuineEof = false;
       try {
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            genuineEof = session.stdioReader === reader;
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
 
           for (let nlIdx = buffer.indexOf("\n"); nlIdx !== -1; nlIdx = buffer.indexOf("\n")) {
@@ -1207,9 +1273,57 @@ export class ClaudeWsServer {
       if (remaining) {
         this.handleStdioLine(sessionId, session, remaining);
       }
+      // A non-EOF exit that leaves unprocessed bytes means the final line(s) were
+      // truncated (reader cancelled or errored mid-stream) — log it rather than
+      // treating it as a clean end, so post-mortems can tell (#2833).
+      if (!genuineEof && remaining) {
+        this.logger.error(
+          `[_claude] stdio drain for session ${sessionId} ended without EOF (reader cancelled or errored) — ${remaining.length} trailing byte(s) may be truncated`,
+        );
+      }
+      // Release the reader lock and drop the ref (if it still points at us) so the
+      // stream can be finalized and a teardown cancel becomes a no-op.
+      try {
+        reader.releaseLock();
+      } catch {
+        // already released (e.g. by cancel()) — nothing to do
+      }
+      if (session.stdioReader === reader) session.stdioReader = null;
     };
 
     session.stdioDrainDone = drain();
+  }
+
+  /**
+   * Re-arm a session's work-completion signal for a fresh work cycle. The prior
+   * promise has already resolved (or is being discarded); the new one resolves on
+   * the next session:result/error. Called at each spawn and each follow-up prompt so
+   * the proc.exited drain race never keys off a stale earlier turn's result (#2833).
+   */
+  private armWorkCompletedSignal(session: WsSession): void {
+    const sig = makeWorkCompletedSignal();
+    session.workCompletedSignal = sig.promise;
+    session.signalWorkCompleted = sig.resolve;
+  }
+
+  /**
+   * Cancel the stdio stdout reader so a parked drain `read()` resolves and
+   * `stdioDrainDone` can settle. A grandchild that inherited the child's stdout
+   * write fd holds the pipe open past child exit, so the drain would otherwise await
+   * EOF forever — stalling teardown and the proc.exited handler (#2833). Idempotent;
+   * a no-op on WS sessions and once the drain has already ended.
+   */
+  private async cancelStdioReader(session: WsSession): Promise<void> {
+    const reader = session.stdioReader;
+    if (!reader) return;
+    // Null first so the drain loop can tell this was an external cancel (not a
+    // genuine EOF) and log any trailing truncation.
+    session.stdioReader = null;
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed/errored — the drain settles regardless
+    }
   }
 
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
@@ -1421,6 +1535,9 @@ export class ClaudeWsServer {
       const dying = session.proc;
       session.proc = null;
       session.spawnAlive = false;
+      // Release any parked stdio drain before killing/respawning so the old reader
+      // lock doesn't leak into the fresh spawn (#2833).
+      await this.cancelStdioReader(session);
       await this.killAndAwaitProc(dying);
     }
 
@@ -2095,6 +2212,7 @@ export class ClaudeWsServer {
       case "session:result":
         session.pendingImmediate = true;
         session.workCompleted = true;
+        session.signalWorkCompleted();
         this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
@@ -2124,6 +2242,7 @@ export class ClaudeWsServer {
       case "session:error":
         session.pendingImmediate = true;
         session.workCompleted = true;
+        session.signalWorkCompleted();
         this.disposeStuckDetector(session);
         try {
           this.resolveEventWaiters(sessionId, {
@@ -2807,6 +2926,11 @@ export class ClaudeWsServer {
       session.pid = null;
       session.pidCachedAt = null;
       session.spawnAlive = false;
+      // Release a drain parked on a read() that will never EOF (grandchild holds
+      // stdout fd) so it doesn't leak the reader lock (#2833). Fire-and-forget: the
+      // cancel only needs to be *issued*, not awaited, before killing — awaiting it
+      // would defer the synchronous proc.kill() inside killAndAwaitProc.
+      void this.cancelStdioReader(session);
       await this.killAndAwaitProc(dying);
     } else if (session.pid) {
       // Restored sessions have no proc ref but may still have a live process.
