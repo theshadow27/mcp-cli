@@ -21,9 +21,15 @@ import { resolve as resolvePath } from "node:path";
 import { AGENT_PROTOCOL_VERSION, SITE_SERVER_NAME } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createBrowserHandlers, toolError as error, toolOk as ok, shouldAutoRestart } from "./site/browser-handlers";
+import {
+  createBrowserHandlers,
+  toolError as error,
+  toolOk as ok,
+  shouldAutoRestart,
+  shouldFallbackToCookie,
+} from "./site/browser-handlers";
 import type { ToolResult } from "./site/browser-handlers";
-export { shouldAutoRestart, parseSitesArg } from "./site/browser-handlers";
+export { shouldAutoRestart, shouldFallbackToCookie, parseSitesArg } from "./site/browser-handlers";
 export type { LastBrowserSession } from "./site/browser-handlers";
 import type { SiteSpec } from "./site/browser/engine";
 import {
@@ -275,9 +281,9 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
               }
             : undefined,
         });
-        if (result.status === 401 && browserSnapshot) {
+        if (shouldFallbackToCookie(result.status) && browserSnapshot) {
           console.error(
-            `[site] call=${callName} site=${site.name} authMode=auto bearer returned 401, falling back to cookie`,
+            `[site] call=${callName} site=${site.name} authMode=auto bearer returned ${result.status}, falling back to cookie`,
           );
           result = await cookieProxyCall({ site: site.name, resolved, browser: browserSnapshot });
         }
