@@ -114,7 +114,7 @@ function assistantMessage(sessionId: string): string {
   });
 }
 
-function resultMessage(sessionId: string): string {
+function resultMessage(sessionId: string, numTurns = 1): string {
   return serialize({
     type: "result",
     subtype: "success",
@@ -122,7 +122,7 @@ function resultMessage(sessionId: string): string {
     result: "Done!",
     duration_ms: 1000,
     duration_api_ms: 800,
-    num_turns: 1,
+    num_turns: numTurns,
     total_cost_usd: 0.01,
     usage: { input_tokens: 100, output_tokens: 50 },
     uuid: "test-uuid",
@@ -2436,8 +2436,10 @@ describe("ClaudeWsServer", () => {
       // Wait with cursor at current — should block until new event
       const resultPromise = server.waitForEventsSince(null, currentSeq, 5000);
 
-      // Send another result to trigger a new event — no sleep needed; resultPromise awaits it
-      ws.send(resultMessage("test-session"));
+      // Send another result to trigger a new event — no sleep needed; resultPromise awaits it.
+      // Bump num_turns to model a genuine new turn (the #2837 idempotency guard
+      // suppresses a replayed result that carries the same num_turns).
+      ws.send(resultMessage("test-session", 2));
 
       const result: WaitResult = await resultPromise;
       expect(result.seq).toBeGreaterThan(currentSeq);

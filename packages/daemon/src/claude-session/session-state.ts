@@ -99,6 +99,22 @@ export class SessionState {
    */
   private initEmitted = false;
 
+  /**
+   * num_turns of the last emitted `session:result`/`session:error` event.
+   * num_turns is cumulative and strictly increases per real turn, so a
+   * replayed historical `result` (WS-reconnect / revive replay) carries the
+   * old value and is suppressed. Reset in resetForClear() — a /clear respawns
+   * a fresh conversation whose num_turns restarts at 1. NOT reset in
+   * reconnect(): a reconnect is the same conversation, so a replayed result
+   * there should be suppressed (#2837).
+   *
+   * Scope: this dedup is per-instance and does NOT survive a daemon restart —
+   * restoreSessions() builds a fresh SessionState (lastEmittedNumTurns=-1) and
+   * does not restore it, so a post-restart revive replay can re-emit once.
+   * Persisting it across restart is tracked in #2860.
+   */
+  private lastEmittedNumTurns = -1;
+
   constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
     this.sessionId = sessionId;
     this.state = "connecting";
@@ -199,6 +215,9 @@ export class SessionState {
     if (this.state === "ended") return [];
     this.state = "connecting";
     this.initEmitted = false;
+    // /clear respawns a fresh conversation whose num_turns restarts at 1;
+    // that first post-clear result is legitimate and must not be suppressed.
+    this.lastEmittedNumTurns = -1;
     this.pendingPermissions.clear();
     return [{ type: "session:cleared" }];
   }
@@ -324,6 +343,8 @@ export class SessionState {
       // per-message usage throughout the turn. Result usage would double-count.
       this.state = "idle";
       this.rateLimited = false;
+      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      this.lastEmittedNumTurns = this.numTurns;
       return [
         {
           type: "session:result",
@@ -341,6 +362,8 @@ export class SessionState {
       this.cost = r.total_cost_usd;
       this.numTurns = r.num_turns;
       this.state = "idle";
+      if (this.numTurns <= this.lastEmittedNumTurns) return [];
+      this.lastEmittedNumTurns = this.numTurns;
       return [{ type: "session:error", errors: r.errors ?? [], cost: this.cost }];
     }
 
@@ -357,6 +380,16 @@ export class SessionState {
       if (r.total_cost_usd != null) this.cost = r.total_cost_usd;
       if (r.num_turns != null) this.numTurns = r.num_turns;
       this.state = "idle";
+
+      // Only dedup when the message actually carried num_turns. If it's absent
+      // (ResultFallback.num_turns is optional), this.numTurns still holds the
+      // PRIOR turn's value == lastEmittedNumTurns, so the guard would wrongly
+      // suppress a genuine completion — a silent hang, since session:result is
+      // the sole driver of workCompleted / waiter resolution. Fail open (#2837).
+      if (r.num_turns != null) {
+        if (this.numTurns <= this.lastEmittedNumTurns) return [];
+        this.lastEmittedNumTurns = this.numTurns;
+      }
 
       const errors = r.errors ?? [];
       if (r.subtype !== "success" && (r.is_error === true || errors.length > 0)) {
