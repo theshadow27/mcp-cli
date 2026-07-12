@@ -770,6 +770,7 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
   wsServer.onStderrLine = (sessionId, line, timestamp) =>
     self.postMessage({ type: "db:stderr", sessionId, line, timestamp });
+  wsServer.onMetric = (name, labels) => self.postMessage({ type: "metrics:inc", name, labels });
   const port = await wsServer.start(wsPort);
 
   // Start MCP Server

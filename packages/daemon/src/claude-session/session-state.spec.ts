@@ -393,6 +393,52 @@ describe("SessionState", () => {
       expect(events[0].type).toBe("session:result");
     });
 
+    // -- #2859: suppression observability --
+    //
+    // When the guard fires it must record `suppressedResult` so the caller
+    // (ws-server) can emit a debug log + metric. Without this, an over-firing
+    // guard drops a completion invisibly — no event, no log, no metric.
+
+    test("records suppressedResult (branch=result) when a success replay is dropped", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3, emits
+      const replay = session.handleMessage(RESULT_SUCCESS);
+      expect(replay).toEqual([]);
+      expect(session.suppressedResult).toEqual({ branch: "result", numTurns: 3, lastEmitted: 3 });
+    });
+
+    test("records suppressedResult (branch=error) when an error replay is dropped", () => {
+      const session = activeSession();
+      const first = session.handleMessage(RESULT_ERROR); // num_turns=1
+      expect(first[0].type).toBe("session:error");
+      const replay = session.handleMessage(RESULT_ERROR);
+      expect(replay).toEqual([]);
+      expect(session.suppressedResult).toEqual({ branch: "error", numTurns: 1, lastEmitted: 1 });
+    });
+
+    test("records suppressedResult (branch=fallback) when a fallback replay carrying num_turns is dropped", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // num_turns=3, emits
+      // Fallback path (missing subtype so strict schemas fail) but num_turns present == replay.
+      const { subtype: _s, ...fallbackReplay } = RESULT_SUCCESS;
+      const replay = session.handleMessage(fallbackReplay);
+      expect(replay).toEqual([]);
+      expect(session.suppressedResult).toEqual({ branch: "fallback", numTurns: 3, lastEmitted: 3 });
+    });
+
+    test("suppressedResult is null on a genuine emit and cleared on the next message", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS); // genuine emit
+      expect(session.suppressedResult).toBeNull();
+
+      session.handleMessage(RESULT_SUCCESS); // replay — sets it
+      expect(session.suppressedResult).not.toBeNull();
+
+      // A subsequent non-result message clears the flag.
+      session.handleMessage(ASSISTANT_MSG);
+      expect(session.suppressedResult).toBeNull();
+    });
+
     test("suppression targets only a true replay, never a genuine advancing turn", () => {
       const session = activeSession();
       // Genuine turn — emits (a waiter here would resolve).

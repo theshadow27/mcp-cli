@@ -507,6 +507,14 @@ export class ClaudeWsServer {
   onStderrLine: ((sessionId: string, line: string, timestamp: number) => void) | null = null;
 
   /**
+   * Called to increment a worker-side metric counter on the main thread's
+   * collector (the worker's own `metrics` singleton is a separate instance).
+   * Wired by the worker to `metrics:inc`. Used to surface result-suppression
+   * over-firing (#2859).
+   */
+  onMetric: ((name: string, labels?: Record<string, string>) => void) | null = null;
+
+  /**
    * Optional TLS material. When set, `Bun.serve` runs in HTTPS mode and binds
    * on `[::1]` instead of the default. Patched-claude (#1808) requires
    * `wss://` and an IPv6 hostname that maps onto an entry in its allowlist.
@@ -1326,6 +1334,22 @@ export class ClaudeWsServer {
     }
   }
 
+  /**
+   * Surface a result-suppression by the num_turns idempotency guard (#2837):
+   * emit a debug log + increment a metric so an over-firing guard is
+   * diagnosable rather than a silent dropped completion (#2859). No-op when
+   * the last message wasn't suppressed. Shared by the WS and stdio loops.
+   */
+  private emitSuppressionDiagnostics(sessionId: string, state: SessionState): void {
+    const s = state.suppressedResult;
+    if (!s) return;
+    this.logger.debug(
+      `[_claude] suppressed replayed result num_turns=${s.numTurns} ` +
+        `lastEmitted=${s.lastEmitted} sessionId=${sessionId} branch=${s.branch}`,
+    );
+    this.onMetric?.("mcpd_session_result_suppressed_total", { branch: s.branch });
+  }
+
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
   private handleStdioLine(sessionId: string, session: WsSession, line: string): void {
     let messages: NdjsonMessage[];
@@ -1365,6 +1389,7 @@ export class ClaudeWsServer {
     for (const msg of messages) {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
+      this.emitSuppressionDiagnostics(sessionId, session.state);
 
       if (session.state.parseMismatch) {
         this.logger.error(
@@ -1385,7 +1410,9 @@ export class ClaudeWsServer {
         );
       }
 
-      if (msg.type === "result" && events.length === 0) {
+      // A suppressed replay legitimately produces no events (#2859) — don't
+      // misreport it as a stuck session; emitSuppressionDiagnostics already logged it.
+      if (msg.type === "result" && events.length === 0 && !session.state.suppressedResult) {
         this.logger.error(
           `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
             `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
@@ -2093,6 +2120,7 @@ export class ClaudeWsServer {
     for (const msg of messages) {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
+      this.emitSuppressionDiagnostics(sessionId, session.state);
 
       // Log when a fallback schema was used — the strict schema didn't match
       // but we still extracted what we could and kept working.
@@ -2121,7 +2149,9 @@ export class ClaudeWsServer {
       }
 
       // Warn if a result message produced no events — even the fallback failed.
-      if (msg.type === "result" && events.length === 0) {
+      // A suppressed replay legitimately produces no events (#2859) — don't
+      // misreport it as a stuck session; emitSuppressionDiagnostics already logged it.
+      if (msg.type === "result" && events.length === 0 && !session.state.suppressedResult) {
         this.logger.error(
           `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
             `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,

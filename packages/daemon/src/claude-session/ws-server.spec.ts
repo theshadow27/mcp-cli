@@ -559,6 +559,45 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("suppressed replay increments onMetric + debug-logs, and is not misreported as stuck (#2859)", async () => {
+    const ms = mockSpawn();
+    const { logger, texts } = capturingLogger();
+    const metricCalls: { name: string; labels?: Record<string, string> }[] = [];
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    server.onMetric = (name, labels) => metricCalls.push({ name, labels });
+    const port = await server.start();
+
+    server.prepareSession("suppress-1", { prompt: "Hello" });
+    server.spawnClaude("suppress-1");
+
+    const ws = await connectMockClaude(port, "suppress-1");
+    try {
+      await waitForMessage(ws);
+
+      const resultPromise = server.waitForResult("suppress-1", 5000);
+      ws.send(systemInitMessage("suppress-1"));
+      ws.send(assistantMessage("suppress-1"));
+      ws.send(resultMessage("suppress-1", 3)); // genuine completion, num_turns=3
+      await resultPromise;
+
+      // Replay the same result (same num_turns) — the guard must suppress it.
+      ws.send(resultMessage("suppress-1", 3));
+      await pollUntil(() => metricCalls.some((c) => c.name === "mcpd_session_result_suppressed_total"));
+
+      const suppressed = metricCalls.find((c) => c.name === "mcpd_session_result_suppressed_total");
+      expect(suppressed?.labels).toEqual({ branch: "result" });
+
+      const joined = texts.join("\n");
+      expect(joined).toContain("suppressed replayed result");
+      expect(joined).toContain("num_turns=3");
+      expect(joined).toContain("branch=result");
+      // The misleading "session stuck" error must NOT fire for a legitimate replay.
+      expect(joined).not.toContain("produced no events even after fallback");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("can_use_tool with auto router is auto-approved", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
