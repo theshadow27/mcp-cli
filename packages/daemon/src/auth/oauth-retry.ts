@@ -62,7 +62,10 @@ export async function runOAuthFlowWithDcrRetry(
   server: string,
   serverUrl: string,
   db: StateDb,
-  opts: Pick<OAuthProviderOpts, "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain">,
+  opts: Pick<
+    OAuthProviderOpts,
+    "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain" | "skipKeychainTokens"
+  >,
   deps?: OAuthRetryDeps,
 ): Promise<"already_authorized" | "authenticated"> {
   if (activeAuthFlows.has(server)) {
@@ -80,7 +83,10 @@ async function _runFlow(
   server: string,
   serverUrl: string,
   db: StateDb,
-  opts: Pick<OAuthProviderOpts, "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain">,
+  opts: Pick<
+    OAuthProviderOpts,
+    "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain" | "skipKeychainTokens"
+  >,
   deps?: OAuthRetryDeps,
 ): Promise<"already_authorized" | "authenticated"> {
   const doAuth =
@@ -88,15 +94,19 @@ async function _runFlow(
     ((provider: OAuthClientProvider, authOpts: { serverUrl: string; scope?: string; authorizationCode?: string }) =>
       auth(provider, authOpts));
   const makeCallback = deps?.startCallbackServer ?? startCallbackServer;
-  const MAX_RETRIES = 1;
 
-  // Recovery flags carried into the retry attempt. Independent: a DCR timeout
-  // burns the keychain client_id; an invalid_grant burns the keychain tokens.
+  // Two independent one-shot recoveries: a DCR timeout burns the keychain
+  // client_id; an invalid_grant burns the keychain tokens. Each gets its own
+  // budget (a shared counter would let one starve the other), so a server that
+  // needs both can recover from both. Total attempts are still bounded to
+  // initial + one retry per cause.
   let skipKeychainClientId = false;
-  let skipKeychainTokens = false;
-  let retriedForInvalidGrant = false;
+  let skipKeychainTokens = opts.skipKeychainTokens ?? false;
+  let dcrRetried = false;
+  let invalidGrantRetried = false;
+  const MAX_ATTEMPTS = 3;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const callback = makeCallback(opts.callbackPort);
     try {
       const provider = new McpOAuthProvider(server, serverUrl, db, {
@@ -115,19 +125,20 @@ async function _runFlow(
       // result === "REDIRECT" — browser opened; wait for the authorization code
       const code = await callback.waitForCode;
       await doAuth(provider, { serverUrl, authorizationCode: code });
-      if (skipKeychainClientId) {
+      if (dcrRetried) {
         metrics.counter("oauth_dcr_retry_total", { server, outcome: "success" }).inc();
       }
-      if (retriedForInvalidGrant) {
+      if (invalidGrantRetried) {
         metrics.counter("oauth_refresh_retry_total", { server, outcome: "success" }).inc();
       }
       return "authenticated";
     } catch (err) {
       const isTimeout = err instanceof OAuthCallbackTimeoutError;
-      if (isTimeout && attempt < MAX_RETRIES) {
+      if (isTimeout && !dcrRetried) {
         console.error(
           "[auth] OAuth callback timed out (possibly 5xx on authorize) — deleting cached client registration and retrying...",
         );
+        dcrRetried = true;
         skipKeychainClientId = true;
         db.deleteClientInfo(server);
         continue;
@@ -139,15 +150,15 @@ async function _runFlow(
           { cause: err },
         );
       }
-      if (isInvalidGrantError(err) && attempt < MAX_RETRIES) {
+      if (isInvalidGrantError(err) && !invalidGrantRetried) {
         console.error(
           `[auth] refresh token for "${server}" was rejected (invalid_grant) — clearing stored tokens and retrying via browser...`,
         );
         // Delete SQLite tokens; the retry provider skips the keychain fallback
         // so the revoked refresh_token is not re-served (would loop otherwise).
         new McpOAuthProvider(server, serverUrl, db).invalidateCredentials("tokens");
+        invalidGrantRetried = true;
         skipKeychainTokens = true;
-        retriedForInvalidGrant = true;
         metrics.counter("oauth_refresh_retry_total", { server, outcome: "triggered" }).inc();
         continue;
       }
