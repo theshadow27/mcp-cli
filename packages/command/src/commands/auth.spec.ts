@@ -58,6 +58,14 @@ describe("extractAuthFlags", () => {
     expect(result.rest).toEqual(["server-name", "--unknown"]);
     expect(result.status).toBe(false);
     expect(result.help).toBe(false);
+    expect(result.force).toBe(false);
+  });
+
+  test("extracts --force and --reset flags", () => {
+    expect(extractAuthFlags(["srv", "--force"]).force).toBe(true);
+    const reset = extractAuthFlags(["srv", "--reset"]);
+    expect(reset.force).toBe(true);
+    expect(reset.rest).toEqual(["srv"]);
   });
 });
 
@@ -205,9 +213,28 @@ describe("cmdAuth <server>", () => {
 
     await cmdAuth(["notion"], deps);
 
-    expect(deps.ipcCall).toHaveBeenCalledWith("triggerAuth", { server: "notion" });
+    expect(deps.ipcCall).toHaveBeenCalledWith("triggerAuth", { server: "notion", force: false });
     expect(deps.errors[0]).toBe("Authenticating with notion...");
     expect(deps.errors[1]).toBe("Authenticated successfully");
+  });
+
+  test("--force passes force:true and notes it in the status line", async () => {
+    const result: TriggerAuthResult = { ok: true, message: "Authenticated successfully" };
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve(result as never)) });
+
+    await cmdAuth(["notion", "--force"], deps);
+
+    expect(deps.ipcCall).toHaveBeenCalledWith("triggerAuth", { server: "notion", force: true });
+    expect(deps.errors[0]).toBe("Authenticating with notion (forcing clean re-auth)...");
+  });
+
+  test("--reset is an alias for --force", async () => {
+    const result: TriggerAuthResult = { ok: true, message: "Done" };
+    const deps = makeDeps({ ipcCall: mock(() => Promise.resolve(result as never)) });
+
+    await cmdAuth(["notion", "--reset"], deps);
+
+    expect(deps.ipcCall).toHaveBeenCalledWith("triggerAuth", { server: "notion", force: true });
   });
 
   test("outputs JSON with --json flag", async () => {

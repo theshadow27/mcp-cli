@@ -33,9 +33,10 @@ Usage:
   mcx auth <server> --status    Check auth status without triggering login
 
 Flags:
-  --json, -j     Output as JSON
-  --status       Check status only (don't trigger auth flow)
-  --help, -h     Show this help`);
+  --json, -j       Output as JSON
+  --status         Check status only (don't trigger auth flow)
+  --force, --reset Drop the stored credential first, forcing a fresh browser flow
+  --help, -h       Show this help`);
 }
 
 export function statusLabel(s: ServerAuthStatus): string {
@@ -62,14 +63,22 @@ export function authSupportLabel(s: ServerAuthStatus): string {
   }
 }
 
-export function extractAuthFlags(args: string[]): { status: boolean; help: boolean; rest: string[] } {
+export function extractAuthFlags(args: string[]): {
+  status: boolean;
+  help: boolean;
+  force: boolean;
+  rest: string[];
+} {
   const rest: string[] = [];
   let status = false;
   let help = false;
+  let force = false;
 
   for (const arg of args) {
     if (arg === "--status") {
       status = true;
+    } else if (arg === "--force" || arg === "--reset") {
+      force = true;
     } else if (arg === "--help" || arg === "-h") {
       help = true;
     } else {
@@ -77,7 +86,7 @@ export function extractAuthFlags(args: string[]): { status: boolean; help: boole
     }
   }
 
-  return { status, help, rest };
+  return { status, help, force, rest };
 }
 
 export function stripAnsi(s: string): string {
@@ -91,7 +100,7 @@ export async function cmdAuth(args: string[], deps?: Partial<AuthDeps>): Promise
 
   // Extract flags
   const { json, rest: r1 } = extractJsonFlag(args);
-  const { status: statusOnly, help, rest } = extractAuthFlags(r1);
+  const { status: statusOnly, help, force, rest } = extractAuthFlags(r1);
 
   if (help) {
     printHelp(d.log);
@@ -148,8 +157,8 @@ export async function cmdAuth(args: string[], deps?: Partial<AuthDeps>): Promise
   }
 
   // Server specified without --status: trigger auth
-  d.logError(`Authenticating with ${server}...`);
-  const result = await d.ipcCall("triggerAuth", { server });
+  d.logError(`Authenticating with ${server}${force ? " (forcing clean re-auth)" : ""}...`);
+  const result = await d.ipcCall("triggerAuth", { server, force });
 
   if (json) {
     d.log(JSON.stringify({ ok: result.ok, message: result.message, server }, null, 2));

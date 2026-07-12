@@ -130,6 +130,9 @@ export const GrepToolsParamsSchema = z.object({
 
 export const TriggerAuthParamsSchema = z.object({
   server: z.string(),
+  /** Force a clean re-auth: invalidate stored tokens before the flow so a
+   *  stale/revoked credential is not reused (skips waiting for API rejection). */
+  force: z.boolean().optional(),
 });
 
 export const AuthStatusParamsSchema = z.object({

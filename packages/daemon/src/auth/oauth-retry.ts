@@ -10,6 +10,7 @@
 
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { InvalidGrantError, OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { StateDb } from "../db/state";
 import { metrics } from "../metrics";
 import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
@@ -28,6 +29,17 @@ export class AuthFlowInProgressError extends Error {
 /** @internal Reset for test isolation. */
 export function _resetActiveAuthFlows(): void {
   activeAuthFlows.clear();
+}
+
+/**
+ * True when the error is an OAuth `invalid_grant` — i.e. the refresh_token
+ * was rejected (revoked/rotated/expired). The SDK constructs an
+ * `InvalidGrantError` for the `invalid_grant` code; the `errorCode` check is a
+ * belt-and-suspenders guard against instanceof gaps (duplicate SDK copies).
+ */
+function isInvalidGrantError(err: unknown): boolean {
+  if (err instanceof InvalidGrantError) return true;
+  return err instanceof OAuthError && err.errorCode === "invalid_grant";
 }
 
 export interface OAuthRetryDeps {
@@ -78,13 +90,19 @@ async function _runFlow(
   const makeCallback = deps?.startCallbackServer ?? startCallbackServer;
   const MAX_RETRIES = 1;
 
+  // Recovery flags carried into the retry attempt. Independent: a DCR timeout
+  // burns the keychain client_id; an invalid_grant burns the keychain tokens.
+  let skipKeychainClientId = false;
+  let skipKeychainTokens = false;
+  let retriedForInvalidGrant = false;
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const skipKeychainClientId = attempt > 0;
     const callback = makeCallback(opts.callbackPort);
     try {
       const provider = new McpOAuthProvider(server, serverUrl, db, {
         ...opts,
         skipKeychainClientId,
+        skipKeychainTokens,
       });
       provider.setRedirectUrl(callback.url);
       const authScope = provider.getEffectiveScope() ?? DEFAULT_OAUTH_SCOPE;
@@ -100,6 +118,9 @@ async function _runFlow(
       if (skipKeychainClientId) {
         metrics.counter("oauth_dcr_retry_total", { server, outcome: "success" }).inc();
       }
+      if (retriedForInvalidGrant) {
+        metrics.counter("oauth_refresh_retry_total", { server, outcome: "success" }).inc();
+      }
       return "authenticated";
     } catch (err) {
       const isTimeout = err instanceof OAuthCallbackTimeoutError;
@@ -107,6 +128,7 @@ async function _runFlow(
         console.error(
           "[auth] OAuth callback timed out (possibly 5xx on authorize) — deleting cached client registration and retrying...",
         );
+        skipKeychainClientId = true;
         db.deleteClientInfo(server);
         continue;
       }
@@ -116,6 +138,18 @@ async function _runFlow(
           "OAuth callback timed out twice; no recovery available — authorization failed after DCR retry",
           { cause: err },
         );
+      }
+      if (isInvalidGrantError(err) && attempt < MAX_RETRIES) {
+        console.error(
+          `[auth] refresh token for "${server}" was rejected (invalid_grant) — clearing stored tokens and retrying via browser...`,
+        );
+        // Delete SQLite tokens; the retry provider skips the keychain fallback
+        // so the revoked refresh_token is not re-served (would loop otherwise).
+        new McpOAuthProvider(server, serverUrl, db).invalidateCredentials("tokens");
+        skipKeychainTokens = true;
+        retriedForInvalidGrant = true;
+        metrics.counter("oauth_refresh_retry_total", { server, outcome: "triggered" }).inc();
+        continue;
       }
       throw err;
     } finally {
