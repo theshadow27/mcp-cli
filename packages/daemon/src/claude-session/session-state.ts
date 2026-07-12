@@ -107,6 +107,11 @@ export class SessionState {
    * a fresh conversation whose num_turns restarts at 1. NOT reset in
    * reconnect(): a reconnect is the same conversation, so a replayed result
    * there should be suppressed (#2837).
+   *
+   * Scope: this dedup is per-instance and does NOT survive a daemon restart —
+   * restoreSessions() builds a fresh SessionState (lastEmittedNumTurns=-1) and
+   * does not restore it, so a post-restart revive replay can re-emit once.
+   * Persisting it across restart is tracked in #2860.
    */
   private lastEmittedNumTurns = -1;
 
@@ -376,8 +381,15 @@ export class SessionState {
       if (r.num_turns != null) this.numTurns = r.num_turns;
       this.state = "idle";
 
-      if (this.numTurns <= this.lastEmittedNumTurns) return [];
-      this.lastEmittedNumTurns = this.numTurns;
+      // Only dedup when the message actually carried num_turns. If it's absent
+      // (ResultFallback.num_turns is optional), this.numTurns still holds the
+      // PRIOR turn's value == lastEmittedNumTurns, so the guard would wrongly
+      // suppress a genuine completion — a silent hang, since session:result is
+      // the sole driver of workCompleted / waiter resolution. Fail open (#2837).
+      if (r.num_turns != null) {
+        if (this.numTurns <= this.lastEmittedNumTurns) return [];
+        this.lastEmittedNumTurns = this.numTurns;
+      }
 
       const errors = r.errors ?? [];
       if (r.subtype !== "success" && (r.is_error === true || errors.length > 0)) {
