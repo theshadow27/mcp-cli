@@ -16,7 +16,7 @@ export class AuthHandlers {
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("triggerAuth", async (params, _ctx) => {
-      const { server } = TriggerAuthParamsSchema.parse(params);
+      const { server, force } = TriggerAuthParamsSchema.parse(params);
       const serverUrl = this.pool.getServerUrl(server);
 
       // Non-remote server — check for `auth` tool convention
@@ -55,12 +55,42 @@ export class AuthHandlers {
       const serverConfig = this.pool.getServerConfig(server);
       const { clientId, clientSecret, callbackPort, scope } = serverConfig ?? {};
 
-      const flowResult = await runOAuthFlowWithDcrRetry(server, serverUrl, poolDb, {
-        clientId,
-        clientSecret,
-        callbackPort,
-        scope,
-      });
+      // Which store the credential came from — captured BEFORE --force deletes
+      // the SQLite row below, so the failure message names the real source.
+      const store = poolDb.getTokens(server) ? "mcx (SQLite)" : "the macOS Keychain (Claude Code)";
+
+      // --force: drop the stored credential up front so a stale/revoked token is
+      // not reused, forcing a clean interactive flow without waiting for the
+      // token endpoint to reject it. Deleting the SQLite row alone is not enough:
+      // the keychain is read-only to mcx, so we also pass skipKeychainTokens to
+      // bypass the keychain fallback — otherwise a keychain-stored token (the
+      // #2840 scenario) would still be served and --force would be a no-op.
+      if (force) {
+        new McpOAuthProvider(server, serverUrl, poolDb).invalidateCredentials("tokens");
+      }
+
+      let flowResult: Awaited<ReturnType<typeof runOAuthFlowWithDcrRetry>>;
+      try {
+        flowResult = await runOAuthFlowWithDcrRetry(server, serverUrl, poolDb, {
+          clientId,
+          clientSecret,
+          callbackPort,
+          scope,
+          skipKeychainTokens: force,
+        });
+      } catch (err) {
+        // Name the server + credential store + recovery path. The bare SDK
+        // message ("The refresh_token provided was invalid.") gave no context.
+        const detail = err instanceof Error ? err.message : String(err);
+        throw Object.assign(
+          new Error(
+            `Authentication for "${server}" failed: ${detail}\n` +
+              `The stored credential (from ${store}) could not be used and automatic browser re-auth did not complete.\n` +
+              `Retry with: mcx auth ${server} --force  (drops the stored credential and forces a fresh browser flow).`,
+          ),
+          { code: IPC_ERROR.INTERNAL_ERROR },
+        );
+      }
 
       await this.pool.restart(server);
 
