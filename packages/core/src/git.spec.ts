@@ -2,7 +2,15 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ExecFn, clearFindGitRootCache, ensureCoreBareUnset, findGitRoot, fixCoreBare } from "./git";
+import {
+  type ExecFn,
+  clearFindGitRootCache,
+  clearFindWorktreeRootCache,
+  ensureCoreBareUnset,
+  findGitRoot,
+  findWorktreeRoot,
+  fixCoreBare,
+} from "./git";
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
@@ -334,6 +342,76 @@ describe("findGitRoot", () => {
       clearFindGitRootCache();
       const after = findGitRoot(repo);
       expect(before).toBe(after); // same result after cache clear
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+});
+
+describe("findWorktreeRoot (#2737)", () => {
+  const cleanEnv = cleanGitEnv();
+  const gitOpts = { env: cleanEnv, stdout: "ignore" as const, stderr: "ignore" as const };
+  const commitEnv = {
+    ...cleanEnv,
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@t",
+  };
+
+  test("returns the worktree's OWN toplevel, not the main checkout, from a linked worktree", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-wt-local-"));
+    const wt = join(repo, "linked-wt");
+    try {
+      clearFindWorktreeRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], gitOpts);
+      Bun.spawnSync(["git", "-C", repo, "commit", "--allow-empty", "-m", "init", "-q"], { ...gitOpts, env: commitEnv });
+      Bun.spawnSync(["git", "-C", repo, "worktree", "add", wt, "-b", "wt-branch", "-q"], gitOpts);
+
+      const wtRoot = findWorktreeRoot(wt);
+      const mainRoot = findGitRoot(wt);
+      // findGitRoot maps the worktree back to main; findWorktreeRoot does NOT.
+      expect(wtRoot).not.toBeNull();
+      expect(wtRoot && (wtRoot === wt || wtRoot.endsWith(wt.replace(/^\/private/, "")))).toBeTruthy();
+      expect(wtRoot).not.toBe(mainRoot);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("returns the repo root from a subdirectory of a normal checkout", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-wt-sub-"));
+    try {
+      clearFindWorktreeRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      const sub = join(repo, "nested", "deeper");
+      mkdirSync(sub, { recursive: true });
+      const got = findWorktreeRoot(sub);
+      expect(got && (got === repo || got.endsWith(repo.replace(/^\/private/, "")))).toBeTruthy();
+    } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+
+  test("returns null outside any git repository", () => {
+    const dir = mkdtempSync(join(tmpdir(), "git-wt-none-"));
+    try {
+      clearFindWorktreeRootCache();
+      expect(findWorktreeRoot(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("clearFindWorktreeRootCache resets the cache", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-wt-cache-"));
+    try {
+      clearFindWorktreeRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      const before = findWorktreeRoot(repo);
+      clearFindWorktreeRootCache();
+      const after = findWorktreeRoot(repo);
+      expect(before).toBe(after);
     } finally {
       rmSync(repo, { recursive: true });
     }
