@@ -280,6 +280,61 @@ describe("AliasServer", () => {
     expect(content[0].text).toContain("not found");
   });
 
+  function setupThrowingAlias(opts: ReturnType<typeof testOptions>) {
+    db = new StateDb(opts.DB_PATH);
+    mkdirSync(opts.ALIASES_DIR, { recursive: true });
+    const scriptPath = join(opts.ALIASES_DIR, "boom.ts");
+    writeFileSync(
+      scriptPath,
+      [
+        'import { defineAlias, z } from "mcp-cli";',
+        "defineAlias({",
+        '  name: "boom",',
+        '  description: "Always throws",',
+        "  input: z.object({}),",
+        "  output: z.object({}),",
+        '  fn: () => { throw new Error("kaboom"); },',
+        "});",
+      ].join("\n"),
+    );
+    db.saveAlias(
+      "boom",
+      scriptPath,
+      "Always throws",
+      "defineAlias",
+      JSON.stringify({ type: "object", properties: {} }),
+      JSON.stringify({ type: "object", properties: {} }),
+    );
+    return { db, scriptPath };
+  }
+
+  test("callTool error text has no doubled 'Error:' prefix", async () => {
+    using opts = testOptions();
+    const { db: testDb } = setupThrowingAlias(opts);
+    server = new AliasServer(testDb);
+
+    const { client } = await server.start();
+    const result = await client.callTool({ name: "boom", arguments: {} });
+    const content = result.content as Array<{ type: string; text: string }>;
+
+    expect(result.isError).toBe(true);
+    expect(content[0].text).toBe("kaboom");
+    expect(content[0].text).not.toMatch(/^Error:/);
+  });
+
+  test("callToolWithChain error text has no doubled 'Error:' prefix", async () => {
+    using opts = testOptions();
+    const { db: testDb } = setupThrowingAlias(opts);
+    server = new AliasServer(testDb);
+    await server.start();
+
+    const result = await server.callToolWithChain("boom", {}, []);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("kaboom");
+    expect(result.content[0].text).not.toMatch(/^Error:/);
+  });
+
   test("start() with no aliases returns empty tool list", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
