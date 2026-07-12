@@ -4,13 +4,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type ExecFn,
+  type GitSpawnFn,
   clearFindGitRootCache,
   clearFindWorktreeRootCache,
+  computeGitRootResult,
+  computeWorktreeRootResult,
   ensureCoreBareUnset,
   findGitRoot,
   findWorktreeRoot,
   fixCoreBare,
 } from "./git";
+import type { SpawnResult } from "./subprocess";
+
+/** Build a SpawnResult with sensible defaults, overriding only what a test cares about. */
+function spawnResult(overrides: Partial<SpawnResult>): SpawnResult {
+  return {
+    ok: false,
+    exitCode: null,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+    ...overrides,
+  };
+}
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
@@ -413,6 +431,99 @@ describe("findWorktreeRoot (#2737)", () => {
       const after = findWorktreeRoot(repo);
       expect(before).toBe(after);
     } finally {
+      rmSync(repo, { recursive: true });
+    }
+  });
+});
+
+describe("git-unavailable vs not-a-repo distinction (#2862)", () => {
+  // A --show-toplevel spawn that reports a hard timeout (SIGTERM via the
+  // GIT_REV_PARSE_TIMEOUT_MS deadline).
+  const timeoutSpawn: GitSpawnFn = () => spawnResult({ timedOut: true, signal: "SIGTERM" });
+  // A spawn that failed to launch (git binary missing / ENOENT) — spawnCaptureSync
+  // catches and returns exitCode: null, timedOut: false.
+  const spawnFailed: GitSpawnFn = () => spawnResult({ exitCode: null });
+  // A genuine "outside any repo" — git answered with exit 128.
+  const notARepo: GitSpawnFn = () => spawnResult({ exitCode: 128, stderr: "fatal: not a git repository" });
+
+  describe("computeWorktreeRootResult", () => {
+    test("timeout → git-unavailable(timeout), not not-a-repo", () => {
+      const r = computeWorktreeRootResult("/anywhere", timeoutSpawn);
+      expect(r.kind).toBe("git-unavailable");
+      if (r.kind === "git-unavailable") expect(r.reason).toBe("timeout");
+    });
+
+    test("spawn failure → git-unavailable(spawn-failed)", () => {
+      const r = computeWorktreeRootResult("/anywhere", spawnFailed);
+      expect(r.kind).toBe("git-unavailable");
+      if (r.kind === "git-unavailable") expect(r.reason).toBe("spawn-failed");
+    });
+
+    test("outside a repo (exit 128) → not-a-repo", () => {
+      expect(computeWorktreeRootResult("/anywhere", notARepo).kind).toBe("not-a-repo");
+    });
+
+    test("success → root with the toplevel path", () => {
+      const ok: GitSpawnFn = () => spawnResult({ ok: true, exitCode: 0, stdout: "/repo/top\n" });
+      const r = computeWorktreeRootResult("/repo/top/sub", ok);
+      expect(r).toEqual({ kind: "root", path: "/repo/top" });
+    });
+  });
+
+  describe("computeGitRootResult", () => {
+    test("timeout on --show-toplevel → git-unavailable(timeout), no bare fallback", () => {
+      const r = computeGitRootResult("/anywhere", timeoutSpawn);
+      expect(r.kind).toBe("git-unavailable");
+      if (r.kind === "git-unavailable") expect(r.reason).toBe("timeout");
+    });
+
+    test("spawn failure → git-unavailable(spawn-failed)", () => {
+      const r = computeGitRootResult("/anywhere", spawnFailed);
+      expect(r.kind).toBe("git-unavailable");
+      if (r.kind === "git-unavailable") expect(r.reason).toBe("spawn-failed");
+    });
+
+    test("--show-toplevel exit 128 but --git-common-dir succeeds → root (bare repo)", () => {
+      // Bare-repo path: --show-toplevel errors (non-zero, not a timeout/spawn-fail),
+      // then --git-common-dir answers. Must still resolve, not collapse to unavailable.
+      const bare: GitSpawnFn = (_cmd, args) =>
+        args.includes("--show-toplevel")
+          ? spawnResult({ exitCode: 128, stderr: "fatal: this operation must be run in a work tree" })
+          : spawnResult({ ok: true, exitCode: 0, stdout: "/bare/repo.git\n" });
+      const r = computeGitRootResult("/bare/repo.git", bare);
+      expect(r.kind).toBe("root");
+    });
+
+    test("--show-toplevel exits 0 with empty stdout → not-a-repo", () => {
+      const empty: GitSpawnFn = () => spawnResult({ ok: true, exitCode: 0, stdout: "\n" });
+      expect(computeGitRootResult("/x", empty).kind).toBe("not-a-repo");
+    });
+  });
+});
+
+describe("gitDiscoverEnv strip reaches --show-toplevel (#2862 secondary gap)", () => {
+  test("findWorktreeRoot resolves the correct toplevel even with GIT_DIR/GIT_WORK_TREE injected", () => {
+    const repo = mkdtempSync(join(tmpdir(), "git-envstrip-"));
+    const priorGitDir = process.env.GIT_DIR;
+    const priorWorkTree = process.env.GIT_WORK_TREE;
+    try {
+      clearFindWorktreeRootCache();
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      const sub = join(repo, "nested");
+      mkdirSync(sub, { recursive: true });
+      // Git hooks inject these; without the strip in gitDiscoverEnv() the probe
+      // would honor GIT_DIR=/tmp and resolve the wrong (or no) tree.
+      process.env.GIT_DIR = "/tmp";
+      process.env.GIT_WORK_TREE = "/tmp";
+      const got = findWorktreeRoot(sub);
+      expect(got && (got === repo || got.endsWith(repo.replace(/^\/private/, "")))).toBeTruthy();
+    } finally {
+      // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined" (the string)
+      if (priorGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = priorGitDir;
+      // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined" (the string)
+      if (priorWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = priorWorkTree;
       rmSync(repo, { recursive: true });
     }
   });
