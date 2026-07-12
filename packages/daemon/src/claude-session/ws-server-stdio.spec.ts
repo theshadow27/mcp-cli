@@ -412,6 +412,43 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
   });
 
+  test("stdio proc.exited handler does not hang when a grandchild holds stdout fd past exit (#2833)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Child emits its full transcript and result, then exits. The result is drained
+    // and processed (workCompleted = true) BEFORE the process exits.
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+
+    // Process exits, but a grandchild inherited stdout fd 1 and keeps the pipe open:
+    // stdout NEVER closes, so the drain's parked read() would await EOF forever.
+    // Deliberately do NOT call closeStdout — that is the grandchild-holds-fd condition.
+    mock.exitResolve(0);
+
+    // Pre-#2833 the proc.exited handler awaited stdioDrainDone unbounded and stalled
+    // here forever — no auto-terminate. The fix races the drain against the completion
+    // signal and cancels the reader, so the completed session is torn down promptly.
+    await pollUntil(() => !server.listSessions().some((s) => s.sessionId === sessionId), 1000);
+    expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
+    expect(events.some((e) => e.type === "session:result")).toBe(true);
+  });
+
   test("stdio session clears connect timeout on first stdout line", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
