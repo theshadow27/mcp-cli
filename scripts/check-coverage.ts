@@ -127,6 +127,7 @@ const EXCLUSIONS: Record<string, string> = {
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { coveragePathInDiff, resolveChangedSourceFiles } from "./coverage-diff";
+import { checkSpecCountFloor, countExpectedSpecFiles, formatExclusionList } from "./coverage-report";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -456,6 +457,20 @@ if (globalLines < GLOBAL_THRESHOLDS.lines) {
   failed = true;
 }
 
+// --- Spec-count sanity floor (#2815) ---
+// Guard against a silent shrink of the coverage surface: if run-1 discovers
+// fewer spec files than exist on disk under its run paths, the per-file floor
+// above was recomputed against fewer files and would still print PASS. Fail
+// closed. Checked against run-1 output only (the coverage table we parse);
+// run-2 daemon specs have their own discovery gate in ci-steps.ts (#2719).
+const expectedSpecFiles = countExpectedSpecFiles(nonDaemonPaths, resolve(import.meta.dir, ".."));
+const specFloor = checkSpecCountFloor(coverageRun1, expectedSpecFiles);
+console.log(`Spec floor: ${specFloor.discovered ?? "?"} discovered / ${specFloor.expected} expected spec file(s)`);
+if (!specFloor.ok) {
+  console.error(`\nFAIL: ${specFloor.reason}`);
+  failed = true;
+}
+
 if (preExistingGaps.length > 0) {
   console.warn(
     `\nWARN: ${preExistingGaps.length} file(s) below ${PER_FILE_MIN_LINES}% on main (not in diff — skipped):`,
@@ -471,6 +486,13 @@ if (failures.length > 0) {
     console.error(`  ${lines.toFixed(1)}%  ${file}`);
   }
   console.error("\nEither add tests or add an exclusion with a reason in scripts/check-coverage.ts");
+  // Itemize the active exclusions so a file masked at the .endsWith() check is
+  // visible here rather than silently skipped (#2815). If the failing file is
+  // already covered by a broader suffix pattern, it shows up in this list.
+  console.error(`\n${Object.keys(EXCLUSIONS).length} active per-file exclusion(s):`);
+  for (const line of formatExclusionList(EXCLUSIONS)) {
+    console.error(line);
+  }
   failed = true;
 }
 
