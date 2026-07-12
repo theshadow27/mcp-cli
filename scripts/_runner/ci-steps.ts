@@ -263,10 +263,12 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
-    if (isBunPanic(second.code, second.signal)) {
-      logger.warn("bun panic on retry too — treating as pass (known upstream bug, #1004)");
-      return { success: true };
-    }
+    // A panic on BOTH runs is only tolerated when the retry recorded zero
+    // failures — which the check above already handled. A double panic with no
+    // pass evidence (no junit, no " 0 fail" line) is a hard failure, not a
+    // pass-by-policy: promoting it would report a partition green with zero
+    // proof the suite passed, and hides the "abort instead of fail" gaming
+    // vector (SIGABRT/SIGTRAP are userspace-raisable). #2780.
     return { success: false, error: `exit ${second.code}` };
   };
 }

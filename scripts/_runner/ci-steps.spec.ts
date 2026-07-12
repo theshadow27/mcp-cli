@@ -285,12 +285,29 @@ exit 1
     expect(result).toMatchObject({ success: false });
   });
 
-  it("exit 132 panic on both runs → pass-by-policy (#1004)", async () => {
-    // The fake bun deterministically returns the same exit code each time: a
-    // 132 panic on the first run triggers the retry, the retry panics again,
-    // and a panic-on-retry is treated as pass per #1004 (known upstream bug).
+  it("exit 132 panic on both runs with NO pass evidence → hard failure (#2780)", async () => {
+    // The fake bun deterministically returns exit 132 with no " 0 fail" line
+    // and junit failures=1 each time: the first panic triggers the retry, the
+    // retry panics again, and — since neither run recorded a clean summary —
+    // the double panic is a hard failure, not a tolerated pass. Promoting it
+    // would report the partition green with zero proof the suite passed (#2780).
     const dir = makeFakeBun({ code: 132 });
     const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_x" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
+  });
+
+  it("exit 132 panic on first run, panic + ' 0 fail' on retry → pass-by-policy (#1004)", async () => {
+    // The genuine #1004 shape after the #2780 tightening: the first run panics
+    // with real failure evidence (no retry short-circuit), then the retry also
+    // panics BUT records zero failures. The retry's clean summary is authoritative
+    // — a panic AFTER a clean run is the tolerated upstream bug.
+    const dir = makeTwoPassFakeBun({ code: 132, stdout: failingSummary }, { code: 132, stdout: passingSummary });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_double_panic_evidence" });
     const result = await runWith(dir, () =>
       (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
         logger: createCaptureLogger(),
@@ -339,7 +356,11 @@ exit 139
     expect(result).toEqual({ success: true });
   });
 
-  it("SIGSEGV signal kill on both runs → pass-by-policy (#2754)", async () => {
+  it("SIGSEGV signal kill on both runs with NO pass evidence → hard failure (#2780)", async () => {
+    // A signal kill writes no junit file and emits no " 0 fail" line, so both
+    // runs carry zero pass evidence. Post-#2780 that is a hard failure — the
+    // retry fires (the #2754 regression is still covered by the "then exit 0"
+    // tests above), but a double panic without corroboration is not promoted.
     const dir = makeAlwaysSignalFakeBun("SIGSEGV");
     const step = bunTestWithCrashTolerance({ paths: ["packages/daemon"], logName: "test_sig2" });
     const result = await runWith(dir, () =>
@@ -347,16 +368,13 @@ exit 139
         logger: createCaptureLogger(),
       }),
     );
-    expect(result).toEqual({ success: true });
+    expect(result).toMatchObject({ success: false });
   });
 
-  it("non-daemon partition (no daemon-only flag) retries a SIGSEGV panic — regression for #2754 qa:fail", async () => {
-    // Before this fix the non-daemon CI partition was wired retryOn132:false and
-    // the retry gate short-circuited on that flag BEFORE the panic classifier ran,
-    // so a SIGSEGV in the non-daemon suite (e.g. acp-cost-tracking-evidence.spec.ts)
-    // hard-failed CI with no retry — the exact crash this PR set out to absorb.
-    // Panic-retry is now unconditional: a signal kill on both runs is pass-by-policy
-    // regardless of partition.
+  it("non-daemon partition: SIGSEGV panic on both runs with NO evidence → hard failure (#2780)", async () => {
+    // The #2754 retry is unconditional across partitions (no retryOn132 flag),
+    // but the #2780 tightening means a double SIGSEGV with no clean summary
+    // fails regardless of partition — it is no longer pass-by-policy.
     const dir = makeAlwaysSignalFakeBun("SIGSEGV");
     const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_sig3" });
     const result = await runWith(dir, () =>
@@ -364,7 +382,7 @@ exit 139
         logger: createCaptureLogger(),
       }),
     );
-    expect(result).toEqual({ success: true });
+    expect(result).toMatchObject({ success: false });
   });
 
   it("SIGTRAP and SIGABRT signal kills are retried as panics (#2754 owner comment)", async () => {
@@ -378,6 +396,24 @@ exit 139
       );
       expect(result).toEqual({ success: true });
     }
+  });
+
+  it("SIGTERM is NOT a panic — a SIGTERM-killed run is not retried (pins the exclusion, #2780)", async () => {
+    // SIGTERM is the runner's own timeout-kill signal; retrying it would mask a
+    // hang. It is deliberately excluded from isBunPanic. This test pins that:
+    // the fake bun is killed by SIGTERM on the first run, then would exit 0 with
+    // a clean summary on any retry. Because SIGTERM is not a panic, the retry
+    // never fires and the first-run kill falls straight through to a failure.
+    // A future edit adding SIGTERM to the panic set would let the retry succeed,
+    // flipping this assertion to success — which is exactly what must not happen.
+    const dir = makeSignalThenExitFakeBun("SIGTERM", { code: 0, stdout: passingSummary });
+    const step = bunTestWithCrashTolerance({ paths: ["packages/core"], logName: "test_sigterm" });
+    const result = await runWith(dir, () =>
+      (step as (o: { logger: ReturnType<typeof createCaptureLogger> }) => Promise<unknown>)({
+        logger: createCaptureLogger(),
+      }),
+    );
+    expect(result).toMatchObject({ success: false });
   });
 
   it("forwards StepOptions.env to the spawned subprocess (#2389 review)", async () => {
