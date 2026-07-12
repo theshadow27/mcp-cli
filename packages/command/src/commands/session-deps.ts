@@ -5,6 +5,7 @@
  * `claude.ts`, `agent.ts`, and `session-display.ts` share one implementation.
  */
 
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { LookupResult } from "@mcp-cli/core";
 import {
@@ -87,14 +88,20 @@ export function parseDiffShortstat(output: string): string | null {
 }
 
 export async function defaultGetDiffStats(worktreePath: string): Promise<LookupResult<string | null>> {
+  if (!existsSync(worktreePath)) return null;
   const result = await spawnCapture("git", ["diff", "--shortstat"], { cwd: worktreePath, env: cleanGitHookEnv() });
-  if (!result.ok) return lookupFailure(`git diff failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+  if (!result.ok) {
+    const exitDetail = result.exitCode !== null ? `exit ${result.exitCode}` : `signal ${result.signal ?? "unknown"}`;
+    const stderrDetail = result.stderr.trim();
+    return lookupFailure(`git diff failed (${exitDetail})${stderrDetail ? `: ${stderrDetail}` : ""}`);
+  }
   return parseDiffShortstat(result.stdout);
 }
 
 // ── PR status ──
 
 export async function defaultGetPrStatus(worktreePath: string): Promise<LookupResult<PrStatus | null>> {
+  if (!existsSync(worktreePath)) return null;
   const branchResult = await spawnCapture("git", ["branch", "--show-current"], {
     cwd: worktreePath,
     env: cleanGitHookEnv(),

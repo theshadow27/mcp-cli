@@ -118,6 +118,11 @@ describe("defaultGetDiffStats", () => {
     const result = await defaultGetDiffStats(dir);
     expect(isLookupFailure(result)).toBe(true);
   });
+
+  test("returns null for nonexistent path (deleted worktree)", async () => {
+    const result = await defaultGetDiffStats("/tmp/mcp-nonexistent-worktree-xyzzy");
+    expect(result).toBeNull();
+  });
 });
 
 // ── defaultGetPrStatus ──
@@ -151,5 +156,10 @@ describe("defaultGetPrStatus", () => {
     dir = mkdtempSync(join(tmpdir(), "mcp-pr-test-"));
     const result = await defaultGetPrStatus(dir);
     expect(isLookupFailure(result)).toBe(true);
+  });
+
+  test("returns null for nonexistent path (deleted worktree)", async () => {
+    const result = await defaultGetPrStatus("/tmp/mcp-nonexistent-worktree-xyzzy");
+    expect(result).toBeNull();
   });
 });
