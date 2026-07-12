@@ -111,16 +111,17 @@ export async function defaultGetPrStatus(worktreePath: string): Promise<LookupRe
   const branch = branchResult.stdout.trim();
   if (!branch) return null;
 
-  const prOut = await runOrLookupFailure("gh", [
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--json",
-    "number,state",
-    "--limit",
-    "1",
-  ]);
+  // `cwd: worktreePath` is load-bearing: without it `gh` resolves the base repo
+  // from the process's cwd, not the worktree — querying the wrong remote in
+  // production, and in tests making a live network call against whatever repo
+  // the runner happens to sit in (that non-deterministically blew the 5s test
+  // timeout and surfaced as a phantom coverage failure, #2788). A local-only
+  // repo has no remote, so `gh` fails fast here instead of hitting the network.
+  const prOut = await runOrLookupFailure(
+    "gh",
+    ["pr", "list", "--head", branch, "--json", "number,state", "--limit", "1"],
+    { cwd: worktreePath },
+  );
   if (isLookupFailure(prOut)) return prOut;
 
   let prs: Array<{ number: number; state: string }>;
