@@ -29,7 +29,7 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
 
-import { RAN_FILES_RE } from "../coverage-report";
+import { RAN_FILES_RE } from "../bun-summary";
 import { buildImportGraph } from "../rules/_engine/import-graph";
 import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import type { Logger, ScriptFunction, StepResult } from "./types";
@@ -228,9 +228,9 @@ const ZERO_FAIL_RE = /^ 0 fail$/m;
 // FAILURE as a #1419 crash-after-pass and let CI swallow it (#2744).
 const COVERAGE_PASS_RE = /^PASS: All coverage thresholds met/m;
 const FAIL_LINE_RE = /^FAIL:/m;
-// RAN_FILES_RE (bun's "Ran N tests across M files" summary) is a shared parse
-// contract for bun's output format — single source of truth in coverage-report.ts
-// so a bun-upgrade reword can't drift the two copies out of lockstep (#2883).
+// RAN_FILES_RE (bun's "Ran N tests across M files" summary) is imported from
+// ../bun-summary — the single source of truth — so a bun-upgrade reword can't
+// drift the copies here and in coverage-report.ts out of lockstep (#2883).
 // Like ZERO_FAIL_RE it is written to stdout incrementally, so it survives a #1004
 // teardown crash that drops the junit sidecar. The file count is the durable
 // fallback for the phases discovered-spec floor (#2719).

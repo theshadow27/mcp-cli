@@ -10,8 +10,10 @@ import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Glob } from "bun";
 
-/** Bun's end-of-run summary line, e.g. "Ran 6158 tests across 225 files. [57.07s]". */
-export const RAN_FILES_RE = /^Ran \d+ tests? across (\d+) files?/m;
+import { RAN_FILES_RE } from "./bun-summary";
+
+/** Re-exported from ./bun-summary — the single source of truth (#2883). */
+export { RAN_FILES_RE };
 
 /** Parse the discovered spec-file count from `bun test` stdout. null when absent. */
 export function parseDiscoveredFileCount(output: string): number | null {
