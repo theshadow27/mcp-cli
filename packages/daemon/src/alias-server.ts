@@ -339,6 +339,10 @@ export class AliasServer {
       const result = await spawnCapture(process.execPath, [this.executorPath], {
         input: stdinPayload,
         timeoutMs,
+        // Corroborate the worker dispatch in main.ts's resolveWorkerEntry: only a
+        // daemon-spawned executor carries this sentinel (#2835). env is
+        // pass-through (replaces, not merges), so spread the parent env.
+        env: { ...process.env, MCPD_WORKER: "1" },
       });
 
       if (result.ok && result.stderr.trim()) {
