@@ -1060,14 +1060,16 @@ export class ClaudeWsServer {
       // branch below, flip to `disconnected`, and the #2814 handleStdioLine
       // guard drops the buffered `result` — session:result never fires (#2825).
       if (session.transport === "stdio" && session.stdioDrainDone) {
-        // Do NOT await the drain unbounded: a grandchild that inherited the child's
-        // stdout write fd holds the pipe open past exit, so the drain's parked read()
-        // never sees EOF and this handler would hang forever — no disconnect, no
-        // resultWaiter rejection, no auto-terminate (#2833). Instead race the drain
-        // against the work-completion signal. As soon as the buffered `result` is in
-        // hand (or genuine EOF arrives) we stop waiting and cancel the reader to
-        // release the parked read. This never drops a result the way a wall-clock cap
-        // would (#2825): we only stop early once completion is proven.
+        // Race the drain against the work-completion signal so a buffered trailing
+        // `result` is processed before we judge completion. The drain itself is now
+        // bounded — it self-terminates once the child is dead and its read parks on an
+        // empty queue (see the post-exit path in startStdioReader), so this await
+        // cannot hang even when a grandchild holds stdout fd 1 open past exit and the
+        // child never emitted a result (#2833/#2879). workCompletedSignal is the fast
+        // path: it resolves the instant the buffered result is in hand, before the
+        // drain finishes its post-exit quiesce. Neither drops a result the way a
+        // wall-clock cap would (#2825): the drain stops only once the queue is proven
+        // empty, never on elapsed time.
         await Promise.race([session.stdioDrainDone, session.workCompletedSignal]);
         await this.cancelStdioReader(session);
         try {
@@ -1259,6 +1261,13 @@ export class ClaudeWsServer {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // Sentinels for the post-exit read race (below). String literals are unit types so
+    // `===` narrows the read-result union cleanly, and a real read result is always an
+    // object — the two can never collide.
+    const EXITED = "stdio-child-exited" as const;
+    const PARKED = "stdio-read-parked" as const;
+    const exited = proc.exited.then(() => EXITED);
+
     const drain = async () => {
       // Genuine EOF (child closed stdout) vs an external cancel (teardown /
       // proc.exited unblocking a parked read past a grandchild-held fd) both surface
@@ -1267,12 +1276,60 @@ export class ClaudeWsServer {
       let genuineEof = false;
       try {
         for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
+          const readP = reader.read();
+          // While the child is alive, block indefinitely for the next frame — a
+          // long-idle session between turns is normal. Once the child has exited,
+          // `exited` is already resolved and wins this race immediately, handing us
+          // off to the bounded post-exit path below.
+          const raced = await Promise.race([readP, exited]);
+
+          let chunk: Awaited<ReturnType<typeof reader.read>>;
+          if (raced === EXITED) {
+            // Child is dead. Every byte it wrote is either already read or still
+            // transiting the OS-pipe→stream pump — an IO/macrotask boundary, so a
+            // bare microtask yield would be too early. Wait one full event-loop turn
+            // for the pump to flush, then decide whether this read produced data or
+            // is genuinely parked on an empty queue.
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            // `Promise.resolve(PARKED)` is already settled, but Promise.race attaches
+            // reactions in argument order: if `readP` settled during the turn its
+            // reaction runs first and wins; only a still-pending (parked) read loses
+            // to PARKED. So this is a race-free "did the read produce data?" check.
+            const settled = await Promise.race([readP, Promise.resolve(PARKED)]);
+            if (settled === PARKED) {
+              // Parked read + dead child + empty queue = "no result is coming."
+              // The stream never EOFs (a grandchild inherited stdout fd 1 and holds
+              // the write end open past child exit — #2833/#2879), so awaiting EOF
+              // would hang the proc.exited handler forever. Stop draining instead.
+              //
+              // This drops nothing: the loop consumes every queued byte — resolving
+              // workCompletedSignal on any terminal `result`/`error` — before a read
+              // can park, so a parked read PROVES the queue is empty. The stop is
+              // gated on that state (child dead + parked), not on a wall-clock cap,
+              // so it does not reintroduce the #2825 drain-timeout truncation.
+              //
+              // Residual gap the code cannot show: if a never-EOF stream emits a
+              // terminal frame AND the child crashes AND the OS-pipe→stream pump has
+              // still not delivered those bytes after a full event-loop turn, the
+              // frame is dropped. This triple-conjunction does not arise for real
+              // `claude`, which closes stdout on exit — delivering EOF (the `done`
+              // branch) rather than ever reaching this parked path.
+              genuineEof = false;
+              // Cancel to resolve the outstanding parked read and free the lock; the
+              // flush below then releases cleanly (releaseLock throws on a pending read).
+              await reader.cancel().catch(() => {});
+              break;
+            }
+            chunk = settled;
+          } else {
+            chunk = raced;
+          }
+
+          if (chunk.done) {
             genuineEof = session.stdioReader === reader;
             break;
           }
-          buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(chunk.value, { stream: true });
 
           for (let nlIdx = buffer.indexOf("\n"); nlIdx !== -1; nlIdx = buffer.indexOf("\n")) {
             const line = buffer.slice(0, nlIdx).trim();
