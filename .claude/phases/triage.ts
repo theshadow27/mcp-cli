@@ -75,6 +75,7 @@ defineAlias({
       },
       stateGet: (key) => ctx.state.get(key),
       stateSet: (key, value) => ctx.state.set(key, value),
+      stateDelete: (key) => ctx.state.delete(key),
       async updateWorkItem(id, prNumber) {
         await ctx.mcp._work_items.work_items_update({ id, prNumber });
       },
