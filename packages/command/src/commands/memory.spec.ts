@@ -284,6 +284,45 @@ describe("runMemoryAudit", () => {
     expect(deps.errors.join("\n")).toContain("code 1");
   });
 
+  test("fails fast with a clear message when the Haiku call times out", async () => {
+    const deps = makeDeps({
+      spawnCapture: (cmd) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        // Simulate a hung claude --print: SIGTERM'd by the timeout, no output.
+        return { stdout: "", stderr: "", exitCode: null as unknown as number, timedOut: true };
+      },
+    });
+    await expect(runMemoryAudit({ json: true }, deps)).rejects.toThrow("exit(1)");
+    const errLog = deps.errors.join("\n");
+    expect(errLog).toContain("timed out");
+    expect(errLog).not.toContain("exited with code");
+    // Nothing emitted to stdout — must not hang, must not print partial output.
+    expect(deps.logs.length).toBe(0);
+  });
+
+  test("passes a timeout to the Haiku spawn so it cannot hang indefinitely", async () => {
+    let haikuTimeout: number | undefined;
+    const deps = makeDeps({
+      spawnCapture: (cmd, opts) => {
+        if (cmd[0] === "gh") return { stdout: "[]", stderr: "", exitCode: 0 };
+        haikuTimeout = opts?.timeoutMs;
+        return {
+          stdout: JSON.stringify({
+            findings: [
+              { file: "feedback_test.md", status: "load-bearing", reason: "ok", related: null },
+              { file: "feedback_old.md", status: "stale", reason: "gone", related: null },
+            ],
+            top_prune_candidates: [],
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+    await runMemoryAudit({ json: true }, deps);
+    expect(haikuTimeout).toBeGreaterThan(0);
+  });
+
   test("logs diagnostic when claude returns empty stdout with exitCode 0", async () => {
     const deps = makeDeps({
       spawnCapture: (cmd) => {

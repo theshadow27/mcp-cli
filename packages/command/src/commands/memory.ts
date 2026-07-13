@@ -53,8 +53,15 @@ export interface MemoryDeps {
   cwd: () => string;
   /** Check whether a directory exists. */
   dirExists: (path: string) => boolean;
-  /** Spawn a process and capture stdout/stderr/exitCode. Never throws. */
-  spawnCapture: (cmd: string[], opts?: { input?: string }) => { stdout: string; stderr: string; exitCode: number };
+  /**
+   * Spawn a process and capture stdout/stderr/exitCode. Never throws.
+   * `timeoutMs` bounds the call; on expiry the child is SIGTERM'd and
+   * `timedOut` is set so callers can fail loudly instead of hanging forever.
+   */
+  spawnCapture: (
+    cmd: string[],
+    opts?: { input?: string; timeoutMs?: number },
+  ) => { stdout: string; stderr: string; exitCode: number; timedOut?: boolean };
   /** Write content to a temp file and return the path. */
   writeTempFile: (content: string) => string;
   /** Read a file. Returns null if it doesn't exist or is unreadable. */
@@ -69,6 +76,11 @@ export interface MemoryDeps {
 }
 
 const HAIKU_MODEL = resolveModelName("haiku");
+
+/** Upper bound on the Haiku audit call. A hung `claude --print` must fail loud, not hang forever (#2884). */
+const HAIKU_TIMEOUT_MS = 120_000;
+/** Upper bound on the `gh issue list` call — same class of silent-hang risk. */
+const GH_TIMEOUT_MS = 30_000;
 
 const AUDIT_PROMPT = `You are auditing a project's persistent memory rules. Rules are stored as markdown files in .claude/memory/ and indexed in MEMORY.md.
 
@@ -143,7 +155,17 @@ function callHaiku(prompt: string, deps: MemoryDeps): string | null {
     return null;
   }
 
-  const result = deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], { input: prompt });
+  const result = deps.spawnCapture([binary, "--print", "--model", HAIKU_MODEL], {
+    input: prompt,
+    timeoutMs: HAIKU_TIMEOUT_MS,
+  });
+
+  if (result.timedOut) {
+    deps.logError(
+      `memory audit: claude --print timed out after ${HAIKU_TIMEOUT_MS / 1000}s with no response — the model call is hung. Retry, or check claude auth/connectivity.`,
+    );
+    return null;
+  }
 
   if (result.exitCode !== 0) {
     const stderrMsg = result.stderr.trim();
@@ -162,17 +184,11 @@ function callHaiku(prompt: string, deps: MemoryDeps): string | null {
  * Fetch the last N closed GitHub issues as a newline-delimited summary for prompt inclusion.
  */
 function fetchClosedIssues(deps: MemoryDeps, limit = 50): string {
-  const result = deps.spawnCapture([
-    "gh",
-    "issue",
-    "list",
-    "--state",
-    "closed",
-    "--limit",
-    String(limit),
-    "--json",
-    "number,title,closedAt",
-  ]);
+  const result = deps.spawnCapture(
+    ["gh", "issue", "list", "--state", "closed", "--limit", String(limit), "--json", "number,title,closedAt"],
+    { timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (result.timedOut) return "(gh timed out)";
   if (result.exitCode !== 0) return "(gh unavailable)";
   try {
     const issues = JSON.parse(result.stdout) as Array<{ number: number; title: string; closedAt: string }>;
@@ -343,11 +359,12 @@ export function defaultDeps(): MemoryDeps {
     cwd: () => process.cwd(),
     dirExists: (path) => existsSync(path),
     spawnCapture: (cmd, opts) => {
-      const r = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { input: opts?.input });
+      const r = spawnCaptureSync(cmd[0] ?? "", cmd.slice(1), { input: opts?.input, timeoutMs: opts?.timeoutMs });
       return {
         stdout: r.stdout,
         stderr: r.stderr,
         exitCode: r.exitCode ?? 1,
+        timedOut: r.timedOut,
       };
     },
     writeTempFile: (content) => {
