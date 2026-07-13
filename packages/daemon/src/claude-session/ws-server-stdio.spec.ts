@@ -449,6 +449,89 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(events.some((e) => e.type === "session:result")).toBe(true);
   });
 
+  test("stdio buffered result is not dropped when the child exits concurrently and a grandchild holds stdout fd (#2833 ordering / #2879 race)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Buffer init + result AND exit in the same tick — WITHOUT first waiting for
+    // session:result. This stresses the self-terminating drain's ordering: the
+    // post-exit parked-check must let the still-queued result be read (data wins the
+    // race) rather than breaking early and dropping it. stdout never closes (grandchild
+    // holds the fd), so a premature break would strand the buffered result.
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    mock.exitResolve(0);
+
+    // The buffered result must still fire session:result and the completed session must
+    // auto-terminate — no dropped result, no hang.
+    await pollUntil(() => events.some((e) => e.type === "session:result"), 1000);
+    expect(events.some((e) => e.type === "session:result")).toBe(true);
+    await pollUntil(() => !server.listSessions().some((s) => s.sessionId === sessionId), 1000);
+    expect(server.listSessions().some((s) => s.sessionId === sessionId)).toBe(false);
+  });
+
+  test("stdio proc.exited handler does not hang when the child crashes without a result and a grandchild holds stdout fd (#2879)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const events: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      events.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Do something", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // A caller is dead-waiting on a result — it must be rejected, not hung forever.
+    const resultWait = server.waitForResult(sessionId, 5000);
+    let resultRejected = false;
+    resultWait.catch(() => {
+      resultRejected = true;
+    });
+
+    // Child emits init + an assistant message (state → active), then CRASHES without
+    // ever emitting a result/error frame — workCompletedSignal never resolves.
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${assistantMessage(sessionId)}\n`);
+    await pollUntil(() => events.some((e) => e.type === "session:response"), 1000);
+
+    // Process exits, but a grandchild inherited stdout fd 1 and keeps the pipe open:
+    // stdout NEVER closes (no closeStdout), so the drain's parked read() would await EOF
+    // forever. Pre-#2879 the proc.exited handler raced [stdioDrainDone, workCompletedSignal]
+    // — BOTH hang (no EOF, no result), so the session never disconnected. The self-
+    // terminating drain now stops on the parked read and the handler proceeds.
+    mock.exitResolve(137);
+
+    // The never-completed session transitions to disconnected (not auto-terminated —
+    // no result), and the dead-waiting resultWaiter is rejected. No hang.
+    await pollUntil(() => events.some((e) => e.type === "session:disconnected"), 1000);
+    expect(events.some((e) => e.type === "session:disconnected")).toBe(true);
+    await pollUntil(() => resultRejected, 1000);
+    expect(resultRejected).toBe(true);
+    // Crash without a result frame must NOT synthesize a session:result.
+    expect(events.some((e) => e.type === "session:result")).toBe(false);
+  });
+
   test("stdio session clears connect timeout on first stdout line", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
