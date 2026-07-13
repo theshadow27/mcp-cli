@@ -29,6 +29,7 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
 
+import { RAN_FILES_RE } from "../bun-summary";
 import { buildImportGraph } from "../rules/_engine/import-graph";
 import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import type { Logger, ScriptFunction, StepResult } from "./types";
@@ -227,11 +228,12 @@ const ZERO_FAIL_RE = /^ 0 fail$/m;
 // FAILURE as a #1419 crash-after-pass and let CI swallow it (#2744).
 const COVERAGE_PASS_RE = /^PASS: All coverage thresholds met/m;
 const FAIL_LINE_RE = /^FAIL:/m;
-// Bun's end-of-run summary: "Ran 129 tests across 6 files. [20.00ms]". Like
-// ZERO_FAIL_RE it is written to stdout incrementally, so it survives a #1004
+// RAN_FILES_RE (bun's "Ran N tests across M files" summary) is imported from
+// ../bun-summary — the single source of truth — so a bun-upgrade reword can't
+// drift the copies here and in coverage-report.ts out of lockstep (#2883).
+// Like ZERO_FAIL_RE it is written to stdout incrementally, so it survives a #1004
 // teardown crash that drops the junit sidecar. The file count is the durable
 // fallback for the phases discovered-spec floor (#2719).
-const RAN_FILES_RE = /^Ran \d+ tests? across (\d+) files?/m;
 
 interface TestOpts {
   /** `bun test` positional arguments — directories and/or spec files. */
@@ -263,10 +265,12 @@ export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
       logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
       return { success: true };
     }
-    if (isBunPanic(second.code, second.signal)) {
-      logger.warn("bun panic on retry too — treating as pass (known upstream bug, #1004)");
-      return { success: true };
-    }
+    // A panic on BOTH runs is only tolerated when the retry recorded zero
+    // failures — which the check above already handled. A double panic with no
+    // pass evidence (no junit, no " 0 fail" line) is a hard failure, not a
+    // pass-by-policy: promoting it would report a partition green with zero
+    // proof the suite passed, and hides the "abort instead of fail" gaming
+    // vector (SIGABRT/SIGTRAP are userspace-raisable). #2780.
     return { success: false, error: `exit ${second.code}` };
   };
 }

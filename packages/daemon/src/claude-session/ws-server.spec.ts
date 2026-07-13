@@ -559,6 +559,45 @@ describe("ClaudeWsServer", () => {
     }
   });
 
+  test("suppressed replay increments onMetric + debug-logs, and is not misreported as stuck (#2859)", async () => {
+    const ms = mockSpawn();
+    const { logger, texts } = capturingLogger();
+    const metricCalls: { name: string; labels?: Record<string, string> }[] = [];
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger });
+    server.onMetric = (name, labels) => metricCalls.push({ name, labels });
+    const port = await server.start();
+
+    server.prepareSession("suppress-1", { prompt: "Hello" });
+    server.spawnClaude("suppress-1");
+
+    const ws = await connectMockClaude(port, "suppress-1");
+    try {
+      await waitForMessage(ws);
+
+      const resultPromise = server.waitForResult("suppress-1", 5000);
+      ws.send(systemInitMessage("suppress-1"));
+      ws.send(assistantMessage("suppress-1"));
+      ws.send(resultMessage("suppress-1", 3)); // genuine completion, num_turns=3
+      await resultPromise;
+
+      // Replay the same result (same num_turns) — the guard must suppress it.
+      ws.send(resultMessage("suppress-1", 3));
+      await pollUntil(() => metricCalls.some((c) => c.name === "mcpd_session_result_suppressed_total"));
+
+      const suppressed = metricCalls.find((c) => c.name === "mcpd_session_result_suppressed_total");
+      expect(suppressed?.labels).toEqual({ branch: "result" });
+
+      const joined = texts.join("\n");
+      expect(joined).toContain("suppressed replayed result");
+      expect(joined).toContain("num_turns=3");
+      expect(joined).toContain("branch=result");
+      // The misleading "session stuck" error must NOT fire for a legitimate replay.
+      expect(joined).not.toContain("produced no events even after fallback");
+    } finally {
+      ws.close();
+    }
+  });
+
   test("can_use_tool with auto router is auto-approved", async () => {
     const ms = mockSpawn();
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
@@ -1206,6 +1245,33 @@ describe("ClaudeWsServer", () => {
     await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     await expect(server.waitForResult("test-session", 5000)).rejects.toThrow("Session is disconnected");
+  });
+
+  test("waitForResult on completed-then-disconnected session resolves with buffered result (#2858)", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
+    const port = await server.start();
+
+    server.prepareSession("test-session", { prompt: "Hello" });
+    server.spawnClaude("test-session");
+
+    // Drive the session to completion (workCompleted flips true, lastResult captured).
+    const ws = await connectMockClaude(port, "test-session");
+    await waitForMessage(ws);
+    ws.send(systemInitMessage("test-session"));
+    ws.send(resultMessage("test-session"));
+    await pollUntil(() => server?.listSessions().some((s) => s.sessionId === "test-session" && s.state === "idle"));
+
+    // WS drops after completion — transient state flips to "disconnected" while the
+    // spawn is still alive, mirroring the stdio EPIPE trigger where the result frame
+    // is already in hand but the transport is gone.
+    ws.close();
+    await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
+
+    // waitForResult must trust workCompleted and return the buffered result, not reject.
+    const result = await server.waitForResult("test-session", 5000);
+    expect(result.success).toBe(true);
+    expect(result.result).toBe("Done!");
   });
 
   test("process exit rejects pending result waiters", async () => {

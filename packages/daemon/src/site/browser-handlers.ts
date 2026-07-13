@@ -34,6 +34,11 @@ export function shouldAutoRestart(session: LastBrowserSession | null, vaultEmpty
   return session !== null && vaultEmpty;
 }
 
+// Microsoft APIs (and some others) return 403 for expired/insufficient tokens, not 401.
+export function shouldFallbackToCookie(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
 // ── parseSitesArg ──
 
 const SITES_ARG_ERROR = "'sites' must be a non-empty array of site name strings";

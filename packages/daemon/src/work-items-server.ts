@@ -109,7 +109,8 @@ const TOOLS = [
   },
   {
     name: "work_items_get",
-    description: "Get a single work item by ID, PR number, or issue number.",
+    description:
+      "Get a single work item by ID, PR number, or issue number. This is a queryable existence probe: a missing row is a normal answer, not an error. Returns a non-error, discriminable result — `{ found: true, item }` when present, `{ found: false, ...lookupKeys }` when absent — so callers (including `mcx call`, which exits 1 on isError) can branch on existence. isError is reserved for malformed calls (no lookup key supplied) and genuine internal failures.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -382,10 +383,17 @@ export class WorkItemsServer {
             if (!item && prNumber) item = this.workItemDb.getWorkItemByPr(prNumber);
             if (!item && issueNumber) item = this.workItemDb.getWorkItemByIssue(issueNumber);
 
+            // Absence is a queryable answer, not a failure (#2834): return a
+            // non-error discriminable payload so `mcx call` (which exits 1 on
+            // isError, #2821) can be used as an existence probe.
             if (!item) {
-              return { content: [{ type: "text" as const, text: "Work item not found" }], isError: true };
+              const notFound: { found: false; id?: string; prNumber?: number; issueNumber?: number } = { found: false };
+              if (id !== undefined) notFound.id = id;
+              if (prNumber !== undefined) notFound.prNumber = prNumber;
+              if (issueNumber !== undefined) notFound.issueNumber = issueNumber;
+              return { content: [{ type: "text" as const, text: JSON.stringify(notFound) }] };
             }
-            return { content: [{ type: "text" as const, text: JSON.stringify(item) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ found: true, item }) }] };
           }
 
           case "work_items_update": {

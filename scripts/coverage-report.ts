@@ -10,8 +10,10 @@ import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Glob } from "bun";
 
-/** Bun's end-of-run summary line, e.g. "Ran 6158 tests across 225 files. [57.07s]". */
-export const RAN_FILES_RE = /^Ran \d+ tests? across (\d+) files?/m;
+import { RAN_FILES_RE } from "./bun-summary";
+
+/** Re-exported from ./bun-summary — the single source of truth (#2883). */
+export { RAN_FILES_RE };
 
 /** Parse the discovered spec-file count from `bun test` stdout. null when absent. */
 export function parseDiscoveredFileCount(output: string): number | null {
@@ -81,4 +83,22 @@ export function checkSpecCountFloor(output: string, expected: number): SpecFloor
 /** Itemize active per-file exclusions (path — reason) for transparent output (#2815). */
 export function formatExclusionList(exclusions: Record<string, string>): string[] {
   return Object.entries(exclusions).map(([path, reason]) => `  ${path} — ${reason}`);
+}
+
+/**
+ * Hard-error output for a degraded coverage run (#2759). When the spec-count
+ * floor trips, the per-file and global coverage numbers were computed from a
+ * partial file set — a worker was silently SIGTERM'd under host oversubscription
+ * (#2690), or a glob/path regression shrank the surface. The low-coverage files
+ * such a run flags (e.g. reporter.ts, opencode-client.ts) are an artifact of the
+ * missing files, not a real regression, so callers must suppress the per-file
+ * failure listing and re-run rather than chase unrelated files.
+ */
+export function formatDegradedRunError(result: SpecFloorResult): string[] {
+  return [
+    `\nFAIL: ${result.reason}`,
+    `\nSuspected worker crash — spec file count mismatch (${result.discovered ?? "?"} discovered < ${result.expected} expected).`,
+    "Per-file and global coverage results are unreliable and have been suppressed.",
+    "Re-run `bun run am-i-done` (#2759).",
+  ];
 }

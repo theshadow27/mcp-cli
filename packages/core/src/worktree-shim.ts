@@ -507,6 +507,57 @@ function isAheadOfForge(
 }
 
 /**
+ * Detect a squash-merge at the git layer via patch-equivalence (#2887).
+ *
+ * `git branch --merged` never lists a squash-merged branch because its tip is a
+ * non-ancestor of the default branch, and a resolved PR is only visible while
+ * `gh pr list` still returns it. This third signal is offline and
+ * PR-independent: it synthesizes a single squash commit of the branch's
+ * cumulative diff and asks whether that diff is already present in the default
+ * branch.
+ *
+ *   mergeBase = git merge-base <defaultBranch> <branch>
+ *   tree      = git rev-parse <branch>^{tree}
+ *   dangling  = git commit-tree <tree> -p <mergeBase> -m _   # synthetic squash
+ *   git cherry <defaultBranch> <dangling>   # '-' prefix ⇒ diff already in default
+ *
+ * `git cherry` compares by patch-id, so it only reports equivalence when the
+ * branch's cumulative diff genuinely matches something already merged — a
+ * branch that merely resembles main (unique diff) yields '+' and is NOT a
+ * match. Any git failure returns false (fail-closed: never reclaim on
+ * uncertainty). Branches matched here are non-ancestor tips, so callers must
+ * delete with `-D` and must still honor the ahead-of-forge unpushed guard.
+ */
+export function isSquashMerged(
+  repoRoot: string,
+  branch: string,
+  defaultBranch: string,
+  deps: WorktreeShimDeps,
+): boolean {
+  const mergeBase = deps.exec(["git", "-C", repoRoot, "merge-base", defaultBranch, branch]);
+  if (mergeBase.exitCode !== 0) return false;
+  const base = mergeBase.stdout.trim();
+  if (!base) return false;
+
+  const tree = deps.exec(["git", "-C", repoRoot, "rev-parse", `${branch}^{tree}`]);
+  if (tree.exitCode !== 0) return false;
+  const treeSha = tree.stdout.trim();
+  if (!treeSha) return false;
+
+  const dangling = deps.exec(["git", "-C", repoRoot, "commit-tree", treeSha, "-p", base, "-m", "_"]);
+  if (dangling.exitCode !== 0) return false;
+  const danglingSha = dangling.stdout.trim();
+  if (!danglingSha) return false;
+
+  const cherry = deps.exec(["git", "-C", repoRoot, "cherry", defaultBranch, danglingSha]);
+  if (cherry.exitCode !== 0) return false;
+  // `git cherry` prints "- <sha>" when the change is already in defaultBranch
+  // (patch-equivalent) and "+ <sha>" when it is unique. Empty output ⇒ nothing
+  // to compare ⇒ not a match.
+  return cherry.stdout.trim().startsWith("-");
+}
+
+/**
  * Delete a branch after its worktree is removed.
  *
  * Default (safe) uses `git branch -d`, which only deletes ancestry-merged
@@ -670,24 +721,38 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
     }
     if (activeWorktrees.has(wtName)) continue;
     // A branch is "done" when git ancestry says merged OR its PR is resolved
-    // (MERGED/CLOSED). The PR signal is what catches squash-merges, whose tip
-    // is a non-ancestor of the default branch (#2662).
+    // (MERGED/CLOSED) OR its cumulative diff is patch-equivalent to something
+    // already in the default branch. The PR signal catches squash-merges whose
+    // tip is a non-ancestor (#2662); the patch-equivalence signal catches the
+    // same class offline when the PR has aged out of `gh pr list` or was never
+    // opened (#2887). Only compute the (more expensive) git-level squash check
+    // when the two cheaper signals miss.
     const ancestryMerged = wt.branch ? mergedBranches.has(wt.branch) : false;
     const prResolved = wt.branch ? (resolvedByPr?.has(wt.branch) ?? false) : false;
-    if (!skipMergeCheck && wt.branch && !ancestryMerged && !prResolved) {
+    const squashMerged =
+      wt.branch && !ancestryMerged && !prResolved ? isSquashMerged(repoRoot, wt.branch, defaultBranch, deps) : false;
+    if (!skipMergeCheck && wt.branch && !ancestryMerged && !prResolved && !squashMerged) {
       skippedUnmerged.push(wt.branch);
       continue;
     }
+
+    // Both the PR-resolved and the squash-detected signals reclaim non-ancestor
+    // tips, so both delete with `-D` and both must clear the ahead-of-forge
+    // guard below.
+    const nonAncestorReclaim = (prResolved || squashMerged) && !ancestryMerged;
 
     // Check if clean (trim to handle trailing newline from some git versions)
     const { stdout: status, exitCode: statusExit } = deps.exec(["git", "-C", wt.path, "status", "--porcelain"]);
     if (statusExit !== 0 || status.trim() !== "") continue;
 
     // Data-loss guard: ancestry-merged tips are fully contained in the default
-    // branch, but a PR-resolved-only tip (squash/closed) can hold committed-but-
-    // unpushed work even when the tree is clean. Reclaiming would `-D` the branch
-    // and orphan those commits. Skip when the tip is ahead of the forge.
-    if (wt.branch && prResolved && !ancestryMerged) {
+    // branch, but a non-ancestor tip reclaimed via PR-state (squash/closed) or
+    // via git-level patch-equivalence can hold committed-but-unpushed work even
+    // when the tree is clean. Reclaiming would `-D` the branch and orphan those
+    // commits. Skip when the tip is ahead of the forge. A squash-detected branch
+    // has no PR head SHA backstop, so isAheadOfForge falls back to the
+    // origin/<branch> ref (protecting when it is absent) — see #2887.
+    if (wt.branch && nonAncestorReclaim) {
       if (isAheadOfForge(wt.path, wt.branch, resolvedByPr?.get(wt.branch), deps)) {
         deps.printError(`Warning: worktree branch is ahead of the forge, not removing (unpushed commits): ${wt.path}`);
         skippedUnpushed.push(wt.branch);
@@ -724,7 +789,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
         deps.printInfo(`Removed worktree via hook: ${wt.path}`);
         pruned++;
         prunedNames.push(wtName);
-        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, prResolved)) {
+        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, nonAncestorReclaim)) {
           deletedBranches.add(wt.branch);
         }
       } else if (hookExit === 0) {
@@ -736,7 +801,7 @@ export async function pruneWorktrees(opts: WorktreePruneOptions): Promise<Worktr
       if (removeWorktreeWithVerification(repoRoot, wt.path, deps)) {
         pruned++;
         prunedNames.push(wtName);
-        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, prResolved)) {
+        if (wt.branch && deletePrunedBranch(wt.branch, repoRoot, deps, nonAncestorReclaim)) {
           deletedBranches.add(wt.branch);
         }
       }

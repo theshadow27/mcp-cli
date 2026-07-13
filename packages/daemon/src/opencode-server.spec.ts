@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { OPENCODE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
-import { metrics } from "./metrics";
+import { MetricsCollector } from "./metrics";
 import { OpenCodeServer, buildOpenCodeToolCache, isOpenCodeWorkerEvent } from "./opencode-server";
 import { OPENCODE_TOOLS } from "./opencode-session/tools";
 
@@ -566,13 +566,29 @@ describe("OpenCodeServer", () => {
 
 // ── connect timeout metric ──
 
+// Mock worker so these tests neither spawn a real worker nor touch the global
+// metrics singleton — the isolation gap that made this suite flaky (#2892).
+function mockWorkerFactory() {
+  return (_scriptPath: string) => {
+    const w = {
+      postMessage: mock((_msg: unknown) => {
+        queueMicrotask(() => {
+          w.onmessage?.({ data: { type: "ready" } } as MessageEvent);
+        });
+      }),
+      terminate: mock(() => {}),
+      addEventListener: mock(() => {}),
+      removeEventListener: mock(() => {}),
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      onerror: null as ((event: ErrorEvent | Event) => void) | null,
+    };
+    return w as unknown as Worker;
+  };
+}
+
 describe("OpenCodeServer connect timeout metric", () => {
   let server: OpenCodeServer | undefined;
   let db: StateDb | undefined;
-
-  beforeEach(() => {
-    metrics.reset();
-  });
 
   afterEach(async () => {
     await server?.stop();
@@ -590,19 +606,36 @@ describe("OpenCodeServer connect timeout metric", () => {
       close: async () => {},
     } as unknown as Client;
 
-    server = new OpenCodeServer(db, undefined, () => neverConnect, silentLogger, 50);
+    const testMetrics = new MetricsCollector();
+    // OpenCodeServer arg order: workerFactory (6th), metricsCollector (7th).
+    server = new OpenCodeServer(db, undefined, () => neverConnect, silentLogger, 50, mockWorkerFactory(), testMetrics);
 
     await expect(server.start()).rejects.toThrow("MCP handshake timeout (0.05s)");
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(1);
   });
 
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
     db = new StateDb(opts.DB_PATH);
-    server = new OpenCodeServer(db, undefined, undefined, silentLogger);
+
+    const instantConnect = {
+      connect: async () => {},
+      close: async () => {},
+    } as unknown as Client;
+
+    const testMetrics = new MetricsCollector();
+    server = new OpenCodeServer(
+      db,
+      undefined,
+      () => instantConnect,
+      silentLogger,
+      10_000,
+      mockWorkerFactory(),
+      testMetrics,
+    );
 
     await server.start();
 
-    expect(metrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
+    expect(testMetrics.counter("mcpd_connect_timeouts_total").value()).toBe(0);
   });
 });

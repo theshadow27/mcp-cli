@@ -221,12 +221,14 @@ describe("WorkItemsServer", () => {
     const parsed = JSON.parse(content[0].text);
     expect(parsed.deleted).toBe("pr:100");
 
-    // Verify it's gone
+    // Verify it's gone — a not-found probe is a non-error discriminable result (#2834)
     const getResult = await client.callTool({
       name: "work_items_get",
       arguments: { id: "pr:100" },
     });
-    expect(getResult.isError).toBe(true);
+    expect(getResult.isError).toBeFalsy();
+    const gone = JSON.parse((getResult.content as Array<{ text: string }>)[0].text);
+    expect(gone).toEqual({ found: false, id: "pr:100" });
   });
 
   test("work_items_list returns all items", async () => {
@@ -290,8 +292,9 @@ describe("WorkItemsServer", () => {
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
-    const item = JSON.parse(content[0].text);
-    expect(item.prNumber).toBe(42);
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.found).toBe(true);
+    expect(parsed.item.prNumber).toBe(42);
   });
 
   test("work_items_get retrieves by PR number", async () => {
@@ -310,8 +313,9 @@ describe("WorkItemsServer", () => {
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
-    const item = JSON.parse(content[0].text);
-    expect(item.id).toBe("pr:42");
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.found).toBe(true);
+    expect(parsed.item.id).toBe("pr:42");
   });
 
   test("work_items_get retrieves by issue number", async () => {
@@ -330,11 +334,15 @@ describe("WorkItemsServer", () => {
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
-    const item = JSON.parse(content[0].text);
-    expect(item.id).toBe("issue:99");
+    const parsed = JSON.parse(content[0].text);
+    expect(parsed.found).toBe(true);
+    expect(parsed.item.id).toBe("issue:99");
   });
 
-  test("work_items_get returns error when item not found", async () => {
+  // #2834: a missing row is a queryable answer, not a crash. work_items_get is an
+  // existence probe, so a not-found result must be non-error and discriminable —
+  // otherwise `mcx call` exits 1 (#2821) and a probing agent can't branch on it.
+  test("work_items_get returns a non-error { found: false } probe when item not found", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -345,9 +353,28 @@ describe("WorkItemsServer", () => {
       arguments: { id: "nonexistent" },
     });
 
-    expect(result.isError).toBe(true);
+    expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
-    expect(content[0].text).toContain("not found");
+    expect(JSON.parse(content[0].text)).toEqual({ found: false, id: "nonexistent" });
+  });
+
+  test("work_items_get { found: false } echoes prNumber / issueNumber lookup keys", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+
+    const { client } = await server.start();
+
+    const byPr = await client.callTool({ name: "work_items_get", arguments: { prNumber: 777 } });
+    expect(byPr.isError).toBeFalsy();
+    expect(JSON.parse((byPr.content as Array<{ text: string }>)[0].text)).toEqual({ found: false, prNumber: 777 });
+
+    const byIssue = await client.callTool({ name: "work_items_get", arguments: { issueNumber: 888 } });
+    expect(byIssue.isError).toBeFalsy();
+    expect(JSON.parse((byIssue.content as Array<{ text: string }>)[0].text)).toEqual({
+      found: false,
+      issueNumber: 888,
+    });
   });
 
   test("work_items_get returns error when no lookup key provided", async () => {

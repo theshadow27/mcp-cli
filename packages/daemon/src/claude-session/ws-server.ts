@@ -420,9 +420,19 @@ interface WsSession {
    * by state transitions (unlike state which goes idle→disconnected on WS drop).
    * Used to decide auto-termination on process exit — survives the WS-close-then-
    * proc-exit race where transient state is already "disconnected".
-   * Reset only on clearSession (respawn = fresh work cycle).
+   * Turn-scoped: reset on clearSession (respawn) and on each follow-up sendPrompt,
+   * mirroring workCompletedSignal — a new turn hasn't completed until its result fires.
    */
   workCompleted: boolean;
+  /**
+   * The SessionResult captured the last time session:result or session:error fired
+   * (the same payload handed to resultWaiters). Retained so waitForResult can trust
+   * the sticky workCompleted flag and return the buffered result even after a
+   * disconnect flipped transient state to "disconnected"/"ended" — the stdio EPIPE
+   * trigger where the child's `result` line arrives after the transport dies (#2858).
+   * Reset to null on clearSession (respawn = fresh work cycle), mirroring workCompleted.
+   */
+  lastResult: SessionResult | null;
   /**
    * Reason provided with the last interrupt call. Prepended to the next sendPrompt
    * so the session sees why it was interrupted before the new instruction.
@@ -505,6 +515,14 @@ export class ClaudeWsServer {
    * postmortems are recoverable via `mcx logs <session-id>` (#2738).
    */
   onStderrLine: ((sessionId: string, line: string, timestamp: number) => void) | null = null;
+
+  /**
+   * Called to increment a worker-side metric counter on the main thread's
+   * collector (the worker's own `metrics` singleton is a separate instance).
+   * Wired by the worker to `metrics:inc`. Used to surface result-suppression
+   * over-firing (#2859).
+   */
+  onMetric: ((name: string, labels?: Record<string, string>) => void) | null = null;
 
   /**
    * Optional TLS material. When set, `Bun.serve` runs in HTTPS mode and binds
@@ -772,6 +790,7 @@ export class ClaudeWsServer {
         createdAt: s.spawnedAt ? new Date(`${s.spawnedAt}Z`).getTime() : Date.now(),
         pendingImmediate: false, // Restored sessions have no new events
         workCompleted: false,
+        lastResult: null,
         pendingInterruptReason: null,
         traceparent: null,
         stuckDetector: null,
@@ -875,6 +894,7 @@ export class ClaudeWsServer {
       createdAt: Date.now(),
       pendingImmediate: false,
       workCompleted: false,
+      lastResult: null,
       pendingInterruptReason: null,
       traceparent: null,
       stuckDetector: null,
@@ -1040,14 +1060,16 @@ export class ClaudeWsServer {
       // branch below, flip to `disconnected`, and the #2814 handleStdioLine
       // guard drops the buffered `result` — session:result never fires (#2825).
       if (session.transport === "stdio" && session.stdioDrainDone) {
-        // Do NOT await the drain unbounded: a grandchild that inherited the child's
-        // stdout write fd holds the pipe open past exit, so the drain's parked read()
-        // never sees EOF and this handler would hang forever — no disconnect, no
-        // resultWaiter rejection, no auto-terminate (#2833). Instead race the drain
-        // against the work-completion signal. As soon as the buffered `result` is in
-        // hand (or genuine EOF arrives) we stop waiting and cancel the reader to
-        // release the parked read. This never drops a result the way a wall-clock cap
-        // would (#2825): we only stop early once completion is proven.
+        // Race the drain against the work-completion signal so a buffered trailing
+        // `result` is processed before we judge completion. The drain itself is now
+        // bounded — it self-terminates once the child is dead and its read parks on an
+        // empty queue (see the post-exit path in startStdioReader), so this await
+        // cannot hang even when a grandchild holds stdout fd 1 open past exit and the
+        // child never emitted a result (#2833/#2879). workCompletedSignal is the fast
+        // path: it resolves the instant the buffered result is in hand, before the
+        // drain finishes its post-exit quiesce. Neither drops a result the way a
+        // wall-clock cap would (#2825): the drain stops only once the queue is proven
+        // empty, never on elapsed time.
         await Promise.race([session.stdioDrainDone, session.workCompletedSignal]);
         await this.cancelStdioReader(session);
         try {
@@ -1123,8 +1145,13 @@ export class ClaudeWsServer {
 
     const session = this.getSession(sessionId);
     // New turn: re-arm the completion signal so the proc.exited drain race keys off
-    // THIS prompt's result, not the already-resolved prior turn's (#2833).
+    // THIS prompt's result, not the already-resolved prior turn's (#2833). Reset the
+    // sticky workCompleted flag + lastResult for the same reason — otherwise a
+    // waitForResult on the new turn would fast-path to the prior turn's stale result
+    // before this turn finishes (#2858). Both are turn-scoped, like the signal.
     this.armWorkCompletedSignal(session);
+    session.workCompleted = false;
+    session.lastResult = null;
     const pendingReason = session.pendingInterruptReason;
     const effective = pendingReason ? `[Interrupt context: ${pendingReason}]\n\n${message}` : message;
     const outbound = session.state.queuePrompt(effective);
@@ -1234,6 +1261,13 @@ export class ClaudeWsServer {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    // Sentinels for the post-exit read race (below). String literals are unit types so
+    // `===` narrows the read-result union cleanly, and a real read result is always an
+    // object — the two can never collide.
+    const EXITED = "stdio-child-exited" as const;
+    const PARKED = "stdio-read-parked" as const;
+    const exited = proc.exited.then(() => EXITED);
+
     const drain = async () => {
       // Genuine EOF (child closed stdout) vs an external cancel (teardown /
       // proc.exited unblocking a parked read past a grandchild-held fd) both surface
@@ -1242,12 +1276,60 @@ export class ClaudeWsServer {
       let genuineEof = false;
       try {
         for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
+          const readP = reader.read();
+          // While the child is alive, block indefinitely for the next frame — a
+          // long-idle session between turns is normal. Once the child has exited,
+          // `exited` is already resolved and wins this race immediately, handing us
+          // off to the bounded post-exit path below.
+          const raced = await Promise.race([readP, exited]);
+
+          let chunk: Awaited<ReturnType<typeof reader.read>>;
+          if (raced === EXITED) {
+            // Child is dead. Every byte it wrote is either already read or still
+            // transiting the OS-pipe→stream pump — an IO/macrotask boundary, so a
+            // bare microtask yield would be too early. Wait one full event-loop turn
+            // for the pump to flush, then decide whether this read produced data or
+            // is genuinely parked on an empty queue.
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            // `Promise.resolve(PARKED)` is already settled, but Promise.race attaches
+            // reactions in argument order: if `readP` settled during the turn its
+            // reaction runs first and wins; only a still-pending (parked) read loses
+            // to PARKED. So this is a race-free "did the read produce data?" check.
+            const settled = await Promise.race([readP, Promise.resolve(PARKED)]);
+            if (settled === PARKED) {
+              // Parked read + dead child + empty queue = "no result is coming."
+              // The stream never EOFs (a grandchild inherited stdout fd 1 and holds
+              // the write end open past child exit — #2833/#2879), so awaiting EOF
+              // would hang the proc.exited handler forever. Stop draining instead.
+              //
+              // This drops nothing: the loop consumes every queued byte — resolving
+              // workCompletedSignal on any terminal `result`/`error` — before a read
+              // can park, so a parked read PROVES the queue is empty. The stop is
+              // gated on that state (child dead + parked), not on a wall-clock cap,
+              // so it does not reintroduce the #2825 drain-timeout truncation.
+              //
+              // Residual gap the code cannot show: if a never-EOF stream emits a
+              // terminal frame AND the child crashes AND the OS-pipe→stream pump has
+              // still not delivered those bytes after a full event-loop turn, the
+              // frame is dropped. This triple-conjunction does not arise for real
+              // `claude`, which closes stdout on exit — delivering EOF (the `done`
+              // branch) rather than ever reaching this parked path.
+              genuineEof = false;
+              // Cancel to resolve the outstanding parked read and free the lock; the
+              // flush below then releases cleanly (releaseLock throws on a pending read).
+              await reader.cancel().catch(() => {});
+              break;
+            }
+            chunk = settled;
+          } else {
+            chunk = raced;
+          }
+
+          if (chunk.done) {
             genuineEof = session.stdioReader === reader;
             break;
           }
-          buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(chunk.value, { stream: true });
 
           for (let nlIdx = buffer.indexOf("\n"); nlIdx !== -1; nlIdx = buffer.indexOf("\n")) {
             const line = buffer.slice(0, nlIdx).trim();
@@ -1326,6 +1408,22 @@ export class ClaudeWsServer {
     }
   }
 
+  /**
+   * Surface a result-suppression by the num_turns idempotency guard (#2837):
+   * emit a debug log + increment a metric so an over-firing guard is
+   * diagnosable rather than a silent dropped completion (#2859). No-op when
+   * the last message wasn't suppressed. Shared by the WS and stdio loops.
+   */
+  private emitSuppressionDiagnostics(sessionId: string, state: SessionState): void {
+    const s = state.suppressedResult;
+    if (!s) return;
+    this.logger.debug(
+      `[_claude] suppressed replayed result num_turns=${s.numTurns} ` +
+        `lastEmitted=${s.lastEmitted} sessionId=${sessionId} branch=${s.branch}`,
+    );
+    this.onMetric?.("mcpd_session_result_suppressed_total", { branch: s.branch });
+  }
+
   /** Parse and dispatch a single NDJSON line from stdio stdout — mirrors handleMessage for WS. */
   private handleStdioLine(sessionId: string, session: WsSession, line: string): void {
     let messages: NdjsonMessage[];
@@ -1365,6 +1463,7 @@ export class ClaudeWsServer {
     for (const msg of messages) {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
+      this.emitSuppressionDiagnostics(sessionId, session.state);
 
       if (session.state.parseMismatch) {
         this.logger.error(
@@ -1385,7 +1484,9 @@ export class ClaudeWsServer {
         );
       }
 
-      if (msg.type === "result" && events.length === 0) {
+      // A suppressed replay legitimately produces no events (#2859) — don't
+      // misreport it as a stuck session; emitSuppressionDiagnostics already logged it.
+      if (msg.type === "result" && events.length === 0 && !session.state.suppressedResult) {
         this.logger.error(
           `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
             `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
@@ -1490,6 +1591,7 @@ export class ClaudeWsServer {
     if (session.clearing) return;
     session.clearing = true;
     session.workCompleted = false;
+    session.lastResult = null;
     session.pendingInterruptReason = null;
 
     // Reset state machine (preserves cumulative cost/tokens)
@@ -1709,6 +1811,17 @@ export class ClaudeWsServer {
   /** Wait for a session to produce a result. */
   waitForResult(sessionId: string, timeoutMs: number): Promise<SessionResult> {
     const session = this.getSession(sessionId);
+
+    // Fast-path: trust the sticky workCompleted flag over transient state (#2858).
+    // On the stdio EPIPE trigger, failSend → disconnectSession flips state to
+    // "disconnected" synchronously while the child's `result` line is still buffered;
+    // handleStdioLine (#2852) then fires session:result and captures lastResult. The
+    // exit handler (proc.exited) and disconnectSession already treat workCompleted as
+    // the source of truth for a clean finish — waitForResult must too, or `mcx claude
+    // spawn --wait` gets a rejection instead of the result the session actually produced.
+    if (session.workCompleted && session.lastResult) {
+      return Promise.resolve(session.lastResult);
+    }
 
     if (session.state.state === "ended") {
       return Promise.reject(new Error("Session already ended"));
@@ -2093,6 +2206,7 @@ export class ClaudeWsServer {
     for (const msg of messages) {
       this.addTranscript(session, "inbound", msg);
       const events = session.state.handleMessage(msg);
+      this.emitSuppressionDiagnostics(sessionId, session.state);
 
       // Log when a fallback schema was used — the strict schema didn't match
       // but we still extracted what we could and kept working.
@@ -2121,7 +2235,9 @@ export class ClaudeWsServer {
       }
 
       // Warn if a result message produced no events — even the fallback failed.
-      if (msg.type === "result" && events.length === 0) {
+      // A suppressed replay legitimately produces no events (#2859) — don't
+      // misreport it as a stuck session; emitSuppressionDiagnostics already logged it.
+      if (msg.type === "result" && events.length === 0 && !session.state.suppressedResult) {
         this.logger.error(
           `[_claude] Result message for session ${sessionId} produced no events even after fallback — ` +
             `session stuck in "${session.state.state}" state. Keys: ${Object.keys(msg).join(", ")}`,
@@ -2227,14 +2343,16 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         try {
-          this.resolveWaiters(session, {
+          const result: SessionResult = {
             sessionId,
             success: true,
             result: event.result,
             cost: event.cost,
             tokens: event.tokens,
             numTurns: event.numTurns,
-          });
+          };
+          session.lastResult = result;
+          this.resolveWaiters(session, result);
         } catch (err) {
           logErr("resolveWaiters failed", err);
         }
@@ -2255,14 +2373,16 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         try {
-          this.resolveWaiters(session, {
+          const result: SessionResult = {
             sessionId,
             success: false,
             errors: event.errors,
             cost: event.cost,
             tokens: 0,
             numTurns: 0,
-          });
+          };
+          session.lastResult = result;
+          this.resolveWaiters(session, result);
         } catch (err) {
           logErr("resolveWaiters failed", err);
         }

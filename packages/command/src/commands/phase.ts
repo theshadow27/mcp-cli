@@ -54,6 +54,7 @@ import {
   extractMetadata,
   findGitRoot,
   findWorktreeRoot,
+  findWorktreeRootResult,
   hashFileSync,
   hashImportClosureSync,
   historyTargets,
@@ -77,7 +78,7 @@ import {
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
-import type { ExecFn, ExecResult } from "@mcp-cli/core";
+import type { ExecFn, ExecResult, GitRootResult } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
 
@@ -104,6 +105,13 @@ export interface PhaseInstallDeps {
    * worktree's own copies, not the main checkout's (#2737).
    */
   resolveWorktreeRoot: (cwd: string) => string;
+  /**
+   * Probe the worktree root while distinguishing "not a repo" from "git
+   * unavailable" (timeout / spawn failure). `phase check` uses this to warn
+   * instead of hard-failing with a misleading `no .mcx.lock` when git could
+   * not answer (e.g. under host CPU starvation) — see #2862.
+   */
+  worktreeRootResult: (cwd: string) => GitRootResult;
   log: (msg: string) => void;
   logError: (msg: string) => void;
   exit: (code: number) => never;
@@ -122,6 +130,7 @@ const defaultDeps: PhaseInstallDeps = {
   cwd: () => process.cwd(),
   resolveRoot: (cwd) => findGitRoot(cwd) ?? cwd,
   resolveWorktreeRoot: (cwd) => findWorktreeRoot(cwd) ?? cwd,
+  worktreeRootResult: (cwd) => findWorktreeRootResult(cwd),
   log: (msg) => console.log(msg),
   logError: (msg) => console.error(msg),
   exit: (code) => process.exit(code),
@@ -813,6 +822,18 @@ export async function cmdPhase(
     }
 
     if (sub === "check") {
+      // If git could not resolve the worktree root (timeout / spawn failure —
+      // typically host CPU starvation), do NOT fall through to drift detection.
+      // resolveWorktreeRoot would degrade to a subdirectory cwd, where no
+      // .mcx.lock exists, and emit a misleading `no .mcx.lock` hard failure.
+      // Surface the real cause as a warning and skip the check (non-blocking).
+      // See #2862.
+      const rootResult = d.worktreeRootResult(rawCwd());
+      if (rootResult.kind === "git-unavailable") {
+        d.logError(`phase check: git unavailable (${rootResult.reason}) — ${rootResult.detail}; skipping drift check`);
+        d.log("lockfile check skipped (git unavailable)");
+        return;
+      }
       assertNoDrift(d);
       d.log("lockfile ok");
       return;

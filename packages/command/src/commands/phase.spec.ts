@@ -1271,6 +1271,50 @@ describe("cmdPhase working-tree root resolution from a worktree (#2737)", () => 
   });
 });
 
+describe("phase check treats git-unavailable as a warning, not a hard fail (#2862)", () => {
+  test("warns with the real cause and exits 0 when git is unavailable, not `no .mcx.lock`", async () => {
+    // No .mcx.lock exists at cwd — the pre-fix path would fall back to cwd,
+    // detect no lockfile, and emit a misleading `no .mcx.lock` hard failure.
+    const res = await catchExit(() =>
+      cmdPhase(["check"], {
+        cwd: () => dir,
+        resolveWorktreeRoot: (c) => c,
+        resolveRoot: (c) => c,
+        worktreeRootResult: () => ({
+          kind: "git-unavailable",
+          reason: "timeout",
+          detail: "git rev-parse timed out after 5000ms",
+        }),
+      }),
+    );
+    expect(res.code).toBeUndefined(); // non-blocking: no exit(1)
+    expect(res.err).toContain("git unavailable");
+    expect(res.err).toContain("timeout");
+    expect(res.err).not.toContain("no .mcx.lock");
+    expect(res.out).toContain("skipped");
+  });
+
+  test("still runs drift detection when git resolves the root (not-a-repo falls through)", async () => {
+    // A not-a-repo result must NOT short-circuit — it falls through to drift
+    // detection, which reports `no .mcx.lock` for a dir without one.
+    const bare = mkdtempSync(join(tmpdir(), "mcx-phase-norepo-"));
+    try {
+      const res = await catchExit(() =>
+        cmdPhase(["check"], {
+          cwd: () => bare,
+          resolveWorktreeRoot: (c) => c,
+          resolveRoot: (c) => c,
+          worktreeRootResult: () => ({ kind: "not-a-repo" }),
+        }),
+      );
+      expect(res.code).toBe(1);
+      expect(res.err).toContain("no .mcx.lock");
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("detectDrift", () => {
   async function installFixture(extraPhase?: { name: string; src: string }) {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
