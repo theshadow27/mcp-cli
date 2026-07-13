@@ -542,7 +542,10 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
 
-      // Wait for the session to enter running state before interrupting
+      // Wait for the session to enter running state before interrupting.
+      // 15s budget (file watchdog is setDefaultTimeout(30_000)): the mock reaches
+      // "running" in <1s at idle, but under CI coverage contention the daemon can be
+      // starved past 5s — a too-tight poll deadline fires its own error (#2877).
       await pollUntil(async () => {
         const statusRes = await rpc(daemon.socketPath, "callTool", {
           server: "_mock",
@@ -551,7 +554,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         });
         const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
         return status.state === "running";
-      }, 5000);
+      }, 15_000);
 
       const intRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
@@ -561,7 +564,9 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const intResult = JSON.parse((intRes.result as { content: Array<{ text: string }> }).content[0].text);
       expect(intResult.interrupted).toBe(true);
 
-      // Wait for script to finish (should be fast since interrupted)
+      // Wait for script to finish (should be fast since interrupted).
+      // Same 15s budget as the running-state poll above — the post-interrupt drain
+      // is subject to the same CI-contention starvation (#2877).
       await pollUntil(async () => {
         const statusRes = await rpc(daemon.socketPath, "callTool", {
           server: "_mock",
@@ -570,7 +575,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         });
         const status = JSON.parse((statusRes.result as { content: Array<{ text: string }> }).content[0].text);
         return status.state === "idle";
-      }, 5000);
+      }, 15_000);
 
       // Transcript should NOT have all entries
       const transcriptRes = await rpc(daemon.socketPath, "callTool", {
