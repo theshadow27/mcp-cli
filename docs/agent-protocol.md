@@ -325,7 +325,26 @@ Session unexpectedly disconnected.
 { "type": "db:disconnected", "sessionId": "ses-abc123", "reason": "process exited with code 1" }
 ```
 
-### 4.5 `db:end`
+### 4.5 `db:stderr`
+
+Forward a line of the agent subprocess's stderr for diagnostic capture. Part of `BaseWorkerEvent`; buffered per-server for `mcx logs`.
+
+```typescript
+{
+  type: "db:stderr";
+  sessionId: string;
+  line: string;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```json
+{ "type": "db:stderr", "sessionId": "ses-abc123", "line": "warning: deprecated flag", "timestamp": 1720000000000 }
+```
+
+### 4.6 `db:end`
 
 Session terminated normally.
 
@@ -342,7 +361,7 @@ Session terminated normally.
 { "type": "db:end", "sessionId": "ses-abc123" }
 ```
 
-### 4.6 `metrics:inc`
+### 4.7 `metrics:inc`
 
 Increment a counter metric.
 
@@ -361,7 +380,7 @@ Increment a counter metric.
 { "type": "metrics:inc", "name": "codex_sessions_total", "labels": { "provider": "codex" } }
 ```
 
-### 4.7 `metrics:observe`
+### 4.8 `metrics:observe`
 
 Record a histogram observation.
 
@@ -380,7 +399,7 @@ Record a histogram observation.
 { "type": "metrics:observe", "name": "codex_turn_duration_seconds", "value": 12.34 }
 ```
 
-### 4.8 `monitor:event` (Claude only)
+### 4.9 `monitor:event` (Claude only)
 
 Forward a monitor event from the Claude session's WebSocket server to the daemon's event bus. Not part of `BaseWorkerEvent`; handled by `claude-server.ts` via an extended type guard.
 
@@ -644,10 +663,11 @@ Within a major version:
 | `db:state` | all | §4.2 |
 | `db:cost` | all | §4.3 |
 | `db:disconnected` | all | §4.4 |
-| `db:end` | all | §4.5 |
-| `metrics:inc` | all | §4.6 |
-| `metrics:observe` | all | §4.7 |
-| `monitor:event` | claude | §4.8 |
+| `db:stderr` | all | §4.5 |
+| `db:end` | all | §4.6 |
+| `metrics:inc` | all | §4.7 |
+| `metrics:observe` | all | §4.8 |
+| `monitor:event` | claude | §4.9 |
 
 ### Bidirectional
 
