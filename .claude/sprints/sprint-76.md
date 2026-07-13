@@ -65,3 +65,12 @@ Close the stdio/daemon session-result reliability class opened by sprint 75, and
 ## Context
 
 Sprint 75 shipped "orchestrator reliability — stdio drop/hang class, monitor blind spots, phase-lock". This sprint drains the residual session-result reliability follow-ons it spawned (#2858, #2859, #2879) plus the CI/coverage-gate false-fail bugs that directly cost every worker diagnostic time (#2780, #2759, #2883, #2850, #2877). Recon closed #2881 (fix already on main) and deferred #2860/#2868 (partial/unreachable), which dissolved the ws-server/session-state serialization pinch — the session cluster is now cleanly parallelizable except the two documented edges. #2884 is P1: the memory-audit hang blocks the retro's memory-prune step, so it lands in Batch 1.
+
+## Results
+
+- **Released**: v1.14.6 (tag at retro, after the sprint container PR merges)
+- **PRs merged**: 18/18 (17 planned + amendment #2892) — 100% of plan, including both high-scrutiny items (#2879, #2887)
+- **Issues closed**: 18
+- **Issues dropped**: 0
+- **New issues filed**: 9 — #2890 (retry-rate observability), #2892 (amended into sprint, closed), #2893 (work-items meta-doc drift), #2895 (handshakeTimer clearTimeout leak), #2904 (verdict-key-probe tmp leak), #2913 (rule-pattern gap: provider-drift + protocol-version-spec-sync), #2915 (CI SIGSEGV flake cluster, 4/4 then 2/2-clean rerun data), #2916, #2917 (follow-ups from QA); plus data points on #2690 (host-load convoy) and #2915
+- **Notable run events**: double 5h-quota exhaustion mid-run (extra-usage at 100%, hard pause to reset; all 6 rate-limited sessions revived via send, zero restarts); ~5h monitor blind spot (session.result events 16:33–21:53Z never delivered — recovered by log-reading idle sessions); #2915 SIGSEGV cluster blocked 2 PRs, cleared by rerun (flake confirmed)
