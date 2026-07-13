@@ -4,6 +4,7 @@
 > Amended 2026-07-12 12:54 EDT — added #2887 (git-level squash-merge gc signal) to Batch 3 as filler.
 > Started 2026-07-12 12:55 EDT.
 > Amended 2026-07-12 13:15 EDT — added #2892 (opencode-server.spec.ts global-metrics test-isolation defect; flake-patrol verdict on the #2889 CI red). Hot-file check: touches only packages/daemon/src/opencode-server.spec.ts — no overlap with any batched or in-flight pick.
+> Completed 2026-07-13 18:09 EDT — 18/18 merged. Run spanned a double 5h-quota exhaustion (extra-usage credits at 100%, hard pause to window reset) and a ~5h monitor blind spot (session.result events missed 16:33–21:53Z; recovered by log-reading each idle session). CI SIGSEGV flake cluster filed as #2915.
 
 ## Goal
 
