@@ -83,6 +83,51 @@ describe("AuthHandlers – triggerAuth", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as { code?: number }).code).toBe(IPC_ERROR.INTERNAL_ERROR);
   });
+
+  // Regression: the interactive `mcx auth` flow must NEVER borrow the read-only
+  // Claude Code keychain token. Borrowing it meant a revoked keychain
+  // refresh_token drove the SDK into a failed refresh (invalid_grant) whose
+  // recovery opened a SECOND browser window (and an abandoned callback timed out
+  // into a DCR-retry THIRD). The handler must always pass skipKeychainTokens:true
+  // so exactly one browser opens — independent of --force.
+  describe("always skips the keychain token in the interactive flow", () => {
+    function remotePool() {
+      return mockPool({
+        getServerUrl: () => "https://mcp.example.com/v1/mcp",
+        getDb: () => ({
+          getTokens: () => null,
+          deleteTokens: () => {},
+        }),
+        getServerConfig: () => null,
+        restart: async () => {},
+      });
+    }
+
+    for (const force of [false, true]) {
+      test(`skipKeychainTokens=true when force=${force}`, async () => {
+        let capturedOpts: { skipKeychainTokens?: boolean } | undefined;
+        const spyFlow = (async (
+          _server: string,
+          _url: string,
+          _db: unknown,
+          opts: { skipKeychainTokens?: boolean },
+        ) => {
+          capturedOpts = opts;
+          return "authenticated" as const;
+        }) as unknown as typeof import("../auth/oauth-retry").runOAuthFlowWithDcrRetry;
+
+        const map = new Map<IpcMethod, RequestHandler>();
+        const { AuthHandlers } = await import("./auth");
+        new AuthHandlers(remotePool(), spyFlow).register(map);
+
+        const result = (await invoke(map, "triggerAuth")({ server: "myserver", force }, {} as never)) as {
+          ok: boolean;
+        };
+        expect(result.ok).toBe(true);
+        expect(capturedOpts?.skipKeychainTokens).toBe(true);
+      });
+    }
+  });
 });
 
 describe("AuthHandlers – authStatus", () => {

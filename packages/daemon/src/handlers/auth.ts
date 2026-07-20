@@ -12,7 +12,11 @@ import type { RequestHandler } from "../handler-types";
 import type { ServerPool } from "../server-pool";
 
 export class AuthHandlers {
-  constructor(private pool: ServerPool) {}
+  constructor(
+    private pool: ServerPool,
+    // Injectable for tests (the repo forbids mock.module). Defaults to the real flow.
+    private runOAuthFlow: typeof runOAuthFlowWithDcrRetry = runOAuthFlowWithDcrRetry,
+  ) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("triggerAuth", async (params, _ctx) => {
@@ -59,24 +63,31 @@ export class AuthHandlers {
       // the SQLite row below, so the failure message names the real source.
       const store = poolDb.getTokens(server) ? "mcx (SQLite)" : "the macOS Keychain (Claude Code)";
 
-      // --force: drop the stored credential up front so a stale/revoked token is
-      // not reused, forcing a clean interactive flow without waiting for the
-      // token endpoint to reject it. Deleting the SQLite row alone is not enough:
-      // the keychain is read-only to mcx, so we also pass skipKeychainTokens to
-      // bypass the keychain fallback — otherwise a keychain-stored token (the
-      // #2840 scenario) would still be served and --force would be a no-op.
+      // --force: also drop mcx's own SQLite token up front, so a stale/revoked
+      // mcx-owned token is not silently refreshed — forcing a clean browser flow
+      // instead of the already_authorized fast path.
       if (force) {
         new McpOAuthProvider(server, serverUrl, poolDb).invalidateCredentials("tokens");
       }
 
       let flowResult: Awaited<ReturnType<typeof runOAuthFlowWithDcrRetry>>;
       try {
-        flowResult = await runOAuthFlowWithDcrRetry(server, serverUrl, poolDb, {
+        flowResult = await this.runOAuthFlow(server, serverUrl, poolDb, {
           clientId,
           clientSecret,
           callbackPort,
           scope,
-          skipKeychainTokens: force,
+          // The interactive `mcx auth` flow always mints a fresh mcx-owned token
+          // and NEVER borrows the read-only Claude Code keychain token. Borrowing
+          // it here was the bug (#2840 follow-up): a revoked keychain refresh_token
+          // makes the SDK attempt a refresh that fails invalid_grant, and the
+          // recovery path then opens a SECOND browser window (and the abandoned
+          // callback times out into a DCR-retry THIRD window). Skipping the
+          // keychain collapses this to exactly one browser. The passive connect
+          // path still adopts a valid keychain token silently — only the explicit
+          // interactive mint opts out. `--force` no longer gates this; it only
+          // controls whether the mcx-owned SQLite token above is dropped first.
+          skipKeychainTokens: true,
         });
       } catch (err) {
         // Name the server + credential store + recovery path. The bare SDK
