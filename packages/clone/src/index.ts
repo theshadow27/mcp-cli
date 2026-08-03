@@ -1,4 +1,5 @@
 export * from "./providers/provider";
+export * from "./providers/adaptive-batch";
 export * from "./providers/asana";
 export * from "./providers/confluence";
 export * from "./providers/github-issues";

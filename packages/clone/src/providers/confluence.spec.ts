@@ -320,6 +320,136 @@ describe("list", () => {
   });
 });
 
+describe("list — adaptive batch size", () => {
+  /** Drain list() while recording the `limit` sent on each underlying request. */
+  async function drain(
+    respond: (call: number, args: Record<string, unknown>) => unknown,
+    providerOpts: Partial<Parameters<typeof createConfluenceProvider>[0]> = {},
+  ): Promise<{ limits: number[]; cursors: (string | undefined)[]; entries: unknown[] }> {
+    const limits: number[] = [];
+    const cursors: (string | undefined)[] = [];
+    let call = 0;
+    const provider = createConfluenceProvider({
+      ...providerOpts,
+      callTool: async (_server, tool, args) => {
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        call++;
+        limits.push((args as Record<string, unknown>).limit as number);
+        cursors.push((args as Record<string, unknown>).cursor as string | undefined);
+        return respond(call, args as Record<string, unknown>);
+      },
+    });
+
+    const entries: unknown[] = [];
+    for await (const entry of provider.list(makeScope())) {
+      entries.push(entry);
+    }
+    return { limits, cursors, entries };
+  }
+
+  test("defaults to a 250-item page limit", async () => {
+    const { limits } = await drain(() => wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] }));
+    expect(limits).toEqual([250]);
+  });
+
+  test("honors an explicit batchSize override", async () => {
+    const { limits } = await drain(() => wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] }), {
+      batchSize: 50,
+    });
+    expect(limits).toEqual([50]);
+  });
+
+  test("halves the batch size and retries after a rate-limited request", async () => {
+    const { limits, entries } = await drain(
+      (call) => {
+        if (call === 1) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] });
+      },
+      { retry: { maxRetries: 0 } },
+    );
+    expect(limits).toEqual([250, 125]);
+    expect(entries).toHaveLength(1);
+  });
+
+  test("reuses the cursor when shrinking, so no items are skipped", async () => {
+    const { limits, cursors, entries } = await drain(
+      (call) => {
+        if (call === 1) {
+          return wrapMcpResult({
+            results: [makePageResponse("p1", "Page 1")],
+            _links: { next: "/pages?cursor=abc123&limit=250" },
+          });
+        }
+        if (call === 2) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p2", "Page 2")] });
+      },
+      { retry: { maxRetries: 0 } },
+    );
+    expect(limits).toEqual([250, 250, 125]);
+    expect(cursors).toEqual([undefined, "abc123", "abc123"]);
+    expect(entries).toHaveLength(2);
+  });
+
+  test("propagates the rate-limit error once the floor is reached", async () => {
+    await expect(
+      drain(
+        () => {
+          throw new Error("429 Too Many Requests");
+        },
+        { batchSize: 25, retry: { maxRetries: 0 } },
+      ),
+    ).rejects.toThrow(/429/);
+  });
+
+  test("grows back toward the maximum after a run of fast successes", async () => {
+    const { limits } = await drain(
+      (call) => {
+        if (call === 1) throw new Error("429 Too Many Requests");
+        const last = call >= 6;
+        return wrapMcpResult({
+          results: [makePageResponse(`p${call}`, `Page ${call}`)],
+          ...(last ? {} : { _links: { next: `/pages?cursor=c${call}&limit=250` } }),
+        });
+      },
+      { retry: { maxRetries: 0 } },
+    );
+
+    // 250 rate-limited → 125; three fast successes at 125 grow to ceil(125*1.5)=188.
+    expect(limits.slice(0, 5)).toEqual([250, 125, 125, 125, 188]);
+  });
+
+  test("in-flight backoff retries shrink the next batch", async () => {
+    const retried: number[] = [];
+    const { limits } = await drain(
+      (call) => {
+        if (call === 1) throw new Error("429 Too Many Requests");
+        if (call === 2) {
+          return wrapMcpResult({
+            results: [makePageResponse("p1", "Page 1")],
+            _links: { next: "/pages?cursor=abc123&limit=250" },
+          });
+        }
+        return wrapMcpResult({ results: [makePageResponse("p2", "Page 2")] });
+      },
+      {
+        retry: {
+          maxRetries: 2,
+          baseDelayMs: 1,
+          maxDelayMs: 2,
+          onRetry: (attempt) => {
+            retried.push(attempt);
+          },
+        },
+      },
+    );
+
+    // The resilient caller retried call 1 internally at the same limit; the shrink
+    // it triggered lands on the following page request.
+    expect(retried).toEqual([1]);
+    expect(limits).toEqual([250, 250, 125]);
+  });
+});
+
 describe("fetch", () => {
   test("fetches a single page by ID", async () => {
     const scope = makeScope();
@@ -524,6 +654,26 @@ describe("bulkFetchPages", () => {
     });
 
     expect(progressCalls).toContain(1);
+  });
+
+  test("honors batchSize and halves it after a rate-limited request", async () => {
+    const scope = makeScope();
+    const limits: number[] = [];
+    let call = 0;
+    const opts = {
+      batchSize: 100,
+      callTool: async (_server: string, tool: string, args: Record<string, unknown>) => {
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        call++;
+        limits.push(args.limit as number);
+        if (call === 1) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] });
+      },
+    };
+
+    const { entries } = await bulkFetchPages(opts, scope);
+    expect(limits).toEqual([100, 50]);
+    expect(entries).toHaveLength(1);
   });
 });
 
