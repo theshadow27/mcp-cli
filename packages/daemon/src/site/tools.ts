@@ -204,6 +204,22 @@ export const SITE_TOOLS: SiteToolDef[] = [
     },
   },
   {
+    name: "site_capture",
+    description:
+      "Extract per-account values (declared as captureVars in the site config) from sniffer output into " +
+      "sites/<site>/vars.json, so account-specific ids don't have to be copied out of browser DevTools. " +
+      "For OWA this captures the concrete BaseFolderId and the x-anchormailbox PUID. Requires that the " +
+      "browser session has recorded traffic (captureMode 'filtered' or 'firehose').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        site: { type: "string" },
+        limit: { type: "number", description: "Max capture files to scan, newest first (default 200)" },
+      },
+      required: ["site"],
+    },
+  },
+  {
     name: "site_wiggle",
     description: "Run the site's wiggle.js keep-alive script in the browser page.",
     inputSchema: {

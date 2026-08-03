@@ -6,6 +6,7 @@
  *   sites/<name>/
  *     config.json     — user-authored overrides merged with built-in seed
  *     catalog.json    — named HTTP calls
+ *     vars.json       — per-account values extracted by `mcx site capture`
  *     captures/       — API sniffer output
  *     chromium/<profile>/  — browser user data (one dir per chromeProfile)
  */
@@ -27,6 +28,10 @@ export function siteConfigPath(site: string): string {
 
 export function siteCatalogPath(site: string): string {
   return join(sitePath(site), "catalog.json");
+}
+
+export function siteVarsPath(site: string): string {
+  return join(sitePath(site), "vars.json");
 }
 
 export function siteCapturesDir(site: string): string {

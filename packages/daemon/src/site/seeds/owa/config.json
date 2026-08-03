@@ -6,6 +6,20 @@
     "match": ["owa/service\\.svc", "searchservice"],
     "skip": ["telemetry", "sessiondata", "pimg"]
   },
+  "captureVars": [
+    {
+      "name": "inboxFolderId",
+      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias.",
+      "urlMatch": "action=FindConversation",
+      "jq": ".requestBody | objects | .Body.ParentFolderId.BaseFolderId? | objects | select(.__type != \"DistinguishedFolderId:#Exchange\") | .Id | strings"
+    },
+    {
+      "name": "anchorMailbox",
+      "description": "x-anchormailbox routing header value (PUID or SMTP form) for this mailbox.",
+      "urlMatch": "owa/service\\.svc",
+      "jq": ".requestHeaders[\"x-anchormailbox\"]? | strings"
+    }
+  ],
   "wiggle": "wiggle.js",
   "seed": "owa"
 }

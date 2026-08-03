@@ -4,8 +4,10 @@
  * The resolver is pure (params → ResolvedCall) and the proxy is credential-
  * focused (ResolvedCall → response). The in-between is catalog-declarative:
  *
- *   - `jq_input`    reshape params (plus optional `body_default`) into a body
- *                   when the resolver didn't produce one
+ *   - `jq_input`    reshape params (plus optional `body_default` and captured
+ *                   `vars`) into a body when the resolver didn't produce one
+ *   - `applyVarHeaders` substitute `${name}` in headers from captured vars,
+ *                   dropping headers whose vars were never captured
  *   - `fetchFilter` rewrite the final {url, method, headers, body} tuple
  *                   before it hits the proxy — e.g. OWA's x-owa-urlpostdata
  *   - `jq_output`   reshape the proxy's response body before returning
@@ -35,22 +37,51 @@ export const bunJqRunner: JqRunner = async (expression, inputStr) => {
 
 /**
  * If the call declares `jq_input` and the resolver produced no body, shape a
- * body from `{ params, body_default }` via jq. Otherwise returns unchanged.
+ * body from `{ params, body_default, vars }` via jq. Otherwise returns unchanged.
+ *
+ * `vars` carries per-account values captured by `mcx site capture`, letting a
+ * template prefer a concrete account-specific id and fall back to a generic alias.
  */
 export async function applyJqInput(
   call: NamedCall,
   params: Record<string, unknown>,
   resolved: ResolvedCall,
   jq: JqRunner = bunJqRunner,
+  vars: Record<string, string> = {},
 ): Promise<ResolvedCall> {
   if (resolved.body !== undefined || !call.jq_input) return resolved;
-  const input = JSON.stringify({ params, body_default: call.body_default ?? null });
+  const input = JSON.stringify({ params, body_default: call.body_default ?? null, vars });
   const body = (await jq(call.jq_input, input)).trim();
   const headers = { ...resolved.headers };
   if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
     headers["content-type"] = "application/json";
   }
   return { ...resolved, body, headers };
+}
+
+const VAR_RE = /\$\{(\w+)\}/g;
+
+/**
+ * Substitute `${name}` in header values from captured vars. A header whose
+ * value still references an uncaptured var is dropped rather than sent
+ * literally — a seed can declare an account-specific header unconditionally
+ * and it simply doesn't appear until `mcx site capture` has run.
+ */
+export function applyVarHeaders(resolved: ResolvedCall, vars: Record<string, string>): ResolvedCall {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(resolved.headers)) {
+    let unresolved = false;
+    const substituted = value.replace(VAR_RE, (_m, name: string): string => {
+      const v = vars[name];
+      if (v === undefined || v === "") {
+        unresolved = true;
+        return "";
+      }
+      return v;
+    });
+    if (!unresolved) headers[key] = substituted;
+  }
+  return { ...resolved, headers };
 }
 
 /** Synchronous rewrite of a ResolvedCall. */

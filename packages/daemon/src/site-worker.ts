@@ -32,6 +32,7 @@ import type { ToolResult } from "./site/browser-handlers";
 export { shouldAutoRestart, shouldFallbackToCookie, parseSitesArg } from "./site/browser-handlers";
 export type { LastBrowserSession } from "./site/browser-handlers";
 import type { SiteSpec } from "./site/browser/engine";
+import { DEFAULT_CAPTURE_SCAN_LIMIT, extractVars, loadVars, readCaptureSamples, saveVars } from "./site/capture";
 import {
   type AuthMode,
   removeCall as catalogRemoveCall,
@@ -50,12 +51,12 @@ import {
   writeSiteConfig,
 } from "./site/config";
 import { CredentialVault, summarizeCredential } from "./site/credentials";
-import { siteBrowserProfileDir, sitePath } from "./site/paths";
+import { siteBrowserProfileDir, siteCapturesDir, sitePath, siteVarsPath } from "./site/paths";
 import { type ProxyCallResult, cookieProxyCall, proxyCall } from "./site/proxy";
 import { resolve as resolveCall } from "./site/resolver";
 import { Sniffer } from "./site/sniffer";
 import { SITE_TOOLS, SITE_TOOL_NAMES } from "./site/tools";
-import { applyFetchFilter, applyJqInput, applyJqOutput } from "./site/transforms";
+import { applyFetchFilter, applyJqInput, applyJqOutput, applyVarHeaders, bunJqRunner } from "./site/transforms";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -244,10 +245,13 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
   const params = (args.params as Record<string, unknown>) ?? {};
   const rawBody = args.body as string | undefined;
 
+  const vars = loadVars(site.name);
+
   let resolved: ReturnType<typeof resolveCall>;
   try {
     resolved = resolveCall(call, params, rawBody);
-    resolved = await applyJqInput(call, params, resolved);
+    resolved = await applyJqInput(call, params, resolved, bunJqRunner, vars);
+    resolved = applyVarHeaders(resolved, vars);
     resolved = applyFetchFilter(call, resolved);
   } catch (err) {
     return error(err instanceof Error ? err.message : String(err));
@@ -370,6 +374,37 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
   });
 }
 
+async function handleCapture(args: Record<string, unknown>): Promise<ToolResult> {
+  const site = requireSite(args.site as string);
+  const specs = site.captureVars ?? [];
+  if (specs.length === 0) {
+    return error(
+      `Site '${site.name}' declares no captureVars. Add them to ${sitePath(site.name)}/config.json (each entry: { name, jq, urlMatch? }) so there is something to extract.`,
+    );
+  }
+
+  const limit = (args.limit as number | undefined) ?? DEFAULT_CAPTURE_SCAN_LIMIT;
+  const samples = readCaptureSamples(siteCapturesDir(site.name), limit);
+  if (samples.length === 0) {
+    return error(
+      `No captured traffic on disk for '${site.name}' (captureMode=${site.captureMode ?? "off"}). Run 'mcx site browser ${site.name}', use the app so requests are recorded, then retry. captureMode must be 'filtered' or 'firehose' for captures to be written.`,
+    );
+  }
+
+  const { vars, missing, scanned } = await extractVars(specs, samples, bunJqRunner);
+  const merged = { ...loadVars(site.name), ...vars };
+  saveVars(site.name, merged);
+
+  return ok({
+    site: site.name,
+    captured: vars,
+    missing,
+    scanned,
+    vars: merged,
+    varsFile: siteVarsPath(site.name),
+  });
+}
+
 function handleCredentials(args: Record<string, unknown>): ToolResult {
   const site = requireSite(args.site as string);
   const creds = vault.getAll(site.name);
@@ -409,6 +444,8 @@ async function dispatch(name: string, args: Record<string, unknown>): Promise<To
         return await handleDisconnect();
       case "site_sniff":
         return handleSniff(args);
+      case "site_capture":
+        return await handleCapture(args);
       case "site_wiggle":
         return await handleWiggle(args);
       case "site_eval":

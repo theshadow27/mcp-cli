@@ -185,6 +185,15 @@ describe("cmdSite", () => {
     expect(params.arguments.limit).toBe(5);
   });
 
+  test("capture dispatches to site_capture with the site and limit", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["capture", "owa", "--limit", "10"], deps);
+    const { params } = readLastCall(calls);
+    expect(params.tool).toBe("site_capture");
+    expect(params.arguments.site).toBe("owa");
+    expect(params.arguments.limit).toBe(10);
+  });
+
   test("wiggle without site passes empty args", async () => {
     const { deps, calls } = makeDeps();
     await cmdSite(["wiggle"], deps);
@@ -231,6 +240,7 @@ describe("cmdSite", () => {
       ["eval", "x"],
       ["add"],
       ["sniff"],
+      ["capture"],
     ]) {
       const { deps, stderr } = makeDeps();
       let caught: unknown;
