@@ -4,11 +4,13 @@
  *
  * 401s are retried once, optionally after running the site's wiggle script to
  * refresh tokens. If the caller doesn't pass `onWiggle`, the retry still happens
- * but without a token-refresh hook.
+ * but without a token-refresh hook. A call can declare extra retry signals via
+ * `NamedCall.retryOn` for APIs that answer stale session headers with a 5xx.
  */
 
 import type { BrowserEngine } from "./browser/engine";
-import type { CredentialVault } from "./credentials";
+import type { RetryOn } from "./catalog";
+import type { Credential, CredentialVault } from "./credentials";
 import type { ResolvedCall } from "./resolver";
 
 export interface ProxyCallOptions {
@@ -19,6 +21,33 @@ export interface ProxyCallOptions {
   aud?: string;
   /** Called once before the retry attempt; gives callers a chance to refresh tokens. */
   onWiggle?: () => Promise<void>;
+  /** Catalog-declared extra retry signals (see NamedCall.retryOn). 401 is always retried. */
+  retryOn?: RetryOn;
+}
+
+/**
+ * "bearer" — the token itself was rejected, so the failed bearer is excluded on re-pick.
+ * "session" — session-scoped headers are stale; the same bearer is usually still valid,
+ * so re-pick must be allowed to return it with refreshed headers.
+ */
+export type RetryReason = "bearer" | "session";
+
+export function retryReason(
+  status: number,
+  responseHeaders: Record<string, string>,
+  retryOn?: RetryOn,
+): RetryReason | null {
+  if (status === 401) return "bearer";
+  if (!retryOn?.status && !retryOn?.responseHeaderPresent) return null;
+
+  const wanted = retryOn.responseHeaderPresent?.toLowerCase();
+  const statusMatch = retryOn.status ? retryOn.status.includes(status) : true;
+  const headerMatch = wanted ? Object.keys(responseHeaders).some((k) => k.toLowerCase() === wanted) : true;
+  return statusMatch && headerMatch ? "session" : null;
+}
+
+function credentialChanged(before: Credential, after: Credential): boolean {
+  return before.bearer !== after.bearer || JSON.stringify(before.headers) !== JSON.stringify(after.headers);
 }
 
 export interface ProxyCallResult {
@@ -93,7 +122,7 @@ async function doFetch(
 }
 
 export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions): Promise<ProxyCallResult> {
-  const { site, resolved, audHints = [], aud, onWiggle } = opts;
+  const { site, resolved, audHints = [], aud, onWiggle, retryOn } = opts;
 
   const pick = aud
     ? (vault.getAll(site).find((c) => c.aud === aud) ?? null)
@@ -109,17 +138,20 @@ export async function proxyCall(vault: CredentialVault, opts: ProxyCallOptions):
   let merged = mergeHeaders(pick.headers, pick.bearer, resolved.headers);
   let result = await doFetch(resolved.url, resolved.method, merged, resolved.body);
 
-  if (result.status === 401) {
+  const reason = retryReason(result.status, result.headers, retryOn);
+  if (reason) {
     try {
       await onWiggle?.();
     } catch {
       // Wiggle is advisory — don't fail the retry just because wiggle failed.
     }
-    const failedBearer = pick.bearer;
+    const excludeBearers = reason === "bearer" ? [pick.bearer] : [];
     const fresh = aud
-      ? (vault.getAll(site).find((c) => c.aud === aud && c.bearer !== failedBearer) ?? null)
-      : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site, { excludeBearers: [failedBearer] });
-    if (fresh) {
+      ? (vault.getAll(site).find((c) => c.aud === aud && !excludeBearers.includes(c.bearer)) ?? null)
+      : vault.pickCredentialFor(resolved.url, resolved.method, audHints, site, { excludeBearers });
+    // A session retry can legitimately re-pick the same bearer, but only if wiggle
+    // actually refreshed something — otherwise the refetch is guaranteed to fail again.
+    if (fresh && (reason === "bearer" || credentialChanged(pick, fresh))) {
       usedAud = fresh.aud;
       merged = mergeHeaders(fresh.headers, fresh.bearer, resolved.headers);
       result = await doFetch(resolved.url, resolved.method, merged, resolved.body);

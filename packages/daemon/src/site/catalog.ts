@@ -14,6 +14,16 @@ import { BUILTIN_SEEDS } from "./seeds";
 
 export type AuthMode = "bearer" | "cookie" | "auto";
 
+/**
+ * Extra response signals that mean "credentials are stale, wiggle and retry".
+ * When both fields are set, both must match — APIs that 500 for unrelated
+ * reasons shouldn't trigger a pointless refetch.
+ */
+export interface RetryOn {
+  status?: number[];
+  responseHeaderPresent?: string;
+}
+
 export interface NamedCall {
   name: string;
   url: string;
@@ -42,6 +52,12 @@ export interface NamedCall {
    * first and falls back to cookie when the vault has no credentials.
    */
   authMode?: AuthMode;
+  /**
+   * Response signals beyond 401 that should trigger wiggle + retry. Unset means
+   * 401-only. Used by APIs that validate session-scoped headers and answer with
+   * a 5xx instead of 401 (e.g. OWA's OwaSerializationException).
+   */
+  retryOn?: RetryOn;
 }
 
 export type Catalog = Record<string, NamedCall>;
