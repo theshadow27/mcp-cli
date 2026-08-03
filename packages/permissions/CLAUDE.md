@@ -43,6 +43,17 @@ Only `__*` or a bare `mcp__<server>` pattern trigger prefix matching on tool nam
 
 Deny rules with server wildcards work symmetrically — a server-level deny (`mcp__atlassian__*` or `mcp__atlassian`) combined with a broader allow (`mcp__*`) will block all atlassian tools via the standard first-deny-wins logic.
 
+### Argument patterns are invalid on tool-name wildcards
+
+An argument pattern combined with an MCP tool-name wildcard — `mcp__atlassian__*(query:*)`,
+`mcp__*(foo)`, or the bare form `mcp__atlassian(query:*)` — is **rejected at parse time**.
+MCP tools take JSON input, not a command string, so there is nothing for the argument
+pattern to match and the rule would silently never match.
+
+`assertValidRules()` throws on such a rule, naming it; it runs in `PermissionRouter`'s
+constructor and in each provider's `buildRules()`. JSON-path argument matching for MCP
+input fields is not supported.
+
 ### Evaluation Semantics
 
 1. Deny rules take precedence (first deny wins)

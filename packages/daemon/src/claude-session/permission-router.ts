@@ -9,7 +9,7 @@
  * Rule evaluation is delegated to `@mcp-cli/permissions`.
  */
 
-import { type PermissionDecision, type PermissionRule, evaluate } from "@mcp-cli/permissions";
+import { type PermissionDecision, type PermissionRule, assertValidRules, evaluate } from "@mcp-cli/permissions";
 import type { CanUseTool } from "./ndjson";
 
 // ── Re-exports for backward compatibility ──
@@ -40,6 +40,7 @@ export class PermissionRouter {
 
   constructor(strategy: PermissionStrategy, rules?: PermissionRule[]) {
     this.strategy = strategy;
+    if (rules) assertValidRules(rules);
     this.rules = Object.freeze(rules ? [...rules] : []);
   }
 

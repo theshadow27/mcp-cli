@@ -9,7 +9,13 @@
  */
 
 import type { AgentPermissionRequest } from "@mcp-cli/core";
-import { type PermissionDecision, type PermissionRequest, type PermissionRule, evaluate } from "@mcp-cli/permissions";
+import {
+  type PermissionDecision,
+  type PermissionRequest,
+  type PermissionRule,
+  assertValidRules,
+  evaluate,
+} from "@mcp-cli/permissions";
 import type { PermissionRequestParams } from "./schemas";
 
 export interface AcpAdapterDecision {
@@ -94,6 +100,7 @@ export function buildRules(allowedTools?: readonly string[], disallowedTools?: r
     }
   }
 
+  assertValidRules(rules);
   return rules;
 }
 

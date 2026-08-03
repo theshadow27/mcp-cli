@@ -90,6 +90,36 @@ export function toToolPrefix(tool: string): string {
 }
 
 /**
+ * Validate a single rule pattern, returning an error message or null if valid.
+ *
+ * An argument pattern combined with an MCP tool-name wildcard is unsupported:
+ * MCP tools take JSON input, not a command string, so the argument pattern has
+ * nothing to match against and the rule would silently never match.
+ */
+export function validateRulePattern(pattern: string): string | null {
+  const match = pattern.match(/^([^()]+)\((.+)\)$/);
+  if (!match) return null;
+  const tool = match[1];
+  if (isToolWildcard(tool) || isBareMcpServerPattern(tool)) {
+    return `Invalid permission rule "${pattern}": argument patterns are not supported on MCP tool-name wildcards ("${tool}"). MCP tools take JSON input, not a command string, so this rule would never match. Use an exact tool name, or drop the argument pattern.`;
+  }
+  return null;
+}
+
+/**
+ * Throw if any rule pattern is invalid. Call this where permission config is
+ * parsed, so a bad rule surfaces as an error instead of a silent deny.
+ */
+export function assertValidRules(rules: readonly PermissionRule[]): void {
+  const errors: string[] = [];
+  for (const rule of rules) {
+    const error = validateRulePattern(rule.tool);
+    if (error !== null) errors.push(error);
+  }
+  if (errors.length > 0) throw new Error(errors.join("\n"));
+}
+
+/**
  * Convert a wildcard argument pattern (ending in `:*`) to a prefix for matching.
  *
  * The `:*` suffix is Claude Code's native format meaning "this command prefix
