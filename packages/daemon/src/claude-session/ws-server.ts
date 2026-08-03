@@ -595,6 +595,19 @@ export class ClaudeWsServer {
     return this.tlsConfig !== null;
   }
 
+  /**
+   * Host portion of the `--sdk-url` handed to claude, derived from the actual
+   * bind hostname so an overridden `hostname` can't diverge from the URL.
+   * IPv6 literals are bracketed; wildcard binds map to the matching loopback
+   * address because a wildcard is not a connectable target.
+   */
+  private get sdkUrlHost(): string {
+    const host = this.hostname ?? "localhost";
+    if (host === "0.0.0.0") return "127.0.0.1";
+    if (host === "::") return "[::1]";
+    return host.includes(":") ? `[${host}]` : host;
+  }
+
   /** Current event sequence number (monotonically increasing). */
   get currentSeq(): number {
     return this.eventSeq;
@@ -1178,9 +1191,8 @@ export class ClaudeWsServer {
     if (!useStdio) {
       const port = this.port;
       if (!port) throw new Error("WS server not started");
-      const sdkUrl = this.tlsConfig
-        ? `wss://[::1]:${port}/session/${sessionId}`
-        : `ws://localhost:${port}/session/${sessionId}`;
+      const scheme = this.tlsConfig ? "wss" : "ws";
+      const sdkUrl = `${scheme}://${this.sdkUrlHost}:${port}/session/${sessionId}`;
       cmd.push("--sdk-url", sdkUrl);
       // WS transport needs an empty prompt placeholder; the real prompt
       // is delivered via the first WS message in handleOpen.

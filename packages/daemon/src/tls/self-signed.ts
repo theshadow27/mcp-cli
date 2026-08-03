@@ -91,6 +91,26 @@ export function isCertFresh(certPath: string, renewWithinSeconds: number): boole
   return r.status === 0;
 }
 
+/** True when `openssl x509` can parse the file at `certPath`. */
+export function isCertParseable(certPath: string): boolean {
+  if (!existsSync(certPath)) return false;
+  const r = spawnSync("openssl", ["x509", "-noout", "-in", certPath], {
+    encoding: "utf-8",
+    timeout: OPENSSL_PROBE_TIMEOUT_MS,
+  });
+  return r.status === 0;
+}
+
+/** True when `openssl pkey` can parse the private key at `keyPath`. */
+export function isKeyParseable(keyPath: string): boolean {
+  if (!existsSync(keyPath)) return false;
+  const r = spawnSync("openssl", ["pkey", "-noout", "-in", keyPath], {
+    encoding: "utf-8",
+    timeout: OPENSSL_PROBE_TIMEOUT_MS,
+  });
+  return r.status === 0;
+}
+
 /**
  * Generate a fresh self-signed cert + key into `dir`. Overwrites existing
  * files. Returns the on-disk PEM contents alongside their paths.
@@ -162,7 +182,9 @@ export function ensureSelfSignedCert(opts: EnsureOptions = {}): SelfSignedMateri
   mkdirSync(dir, { recursive: true });
   const { certPath, keyPath } = certPaths(dir);
 
-  if (!opts.force && existsSync(keyPath) && isCertFresh(certPath, renewWithinSeconds)) {
+  // A corrupted key next to a valid cert would otherwise be handed to
+  // Bun.serve as unusable TLS material, so the key is parse-checked too.
+  if (!opts.force && isKeyParseable(keyPath) && isCertFresh(certPath, renewWithinSeconds)) {
     return {
       cert: readFileSync(certPath, "utf-8"),
       key: readFileSync(keyPath, "utf-8"),
@@ -184,6 +206,7 @@ export function readCachedCert(dir?: string): SelfSignedMaterial | null {
   const resolved = dir ?? options.TLS_DIR;
   const { certPath, keyPath } = certPaths(resolved);
   if (!existsSync(certPath) || !existsSync(keyPath)) return null;
+  if (!isCertParseable(certPath) || !isKeyParseable(keyPath)) return null;
   try {
     return {
       cert: readFileSync(certPath, "utf-8"),

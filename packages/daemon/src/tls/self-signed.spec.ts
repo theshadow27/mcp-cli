@@ -3,7 +3,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { certPaths, ensureSelfSignedCert, generateSelfSignedCert, isCertFresh, readCachedCert } from "./self-signed";
+import {
+  certPaths,
+  ensureSelfSignedCert,
+  generateSelfSignedCert,
+  isCertFresh,
+  isCertParseable,
+  isKeyParseable,
+  readCachedCert,
+} from "./self-signed";
 
 const POLL_MS = 20;
 
@@ -77,6 +85,35 @@ describe("isCertFresh", () => {
   });
 });
 
+describe("isCertParseable / isKeyParseable", () => {
+  test("both true for freshly generated material", () => {
+    const dir = freshDir();
+    const { certPath, keyPath } = generateSelfSignedCert(dir, { commonName: "localhost", validityDays: 30 });
+    expect(isCertParseable(certPath)).toBe(true);
+    expect(isKeyParseable(keyPath)).toBe(true);
+  });
+
+  test("false for missing files", () => {
+    expect(isCertParseable("/nonexistent/cert.pem")).toBe(false);
+    expect(isKeyParseable("/nonexistent/key.pem")).toBe(false);
+  });
+
+  test("false for garbage contents", () => {
+    const dir = freshDir();
+    const { certPath, keyPath } = certPaths(dir);
+    writeFileSync(certPath, "not a cert", { mode: 0o644 });
+    writeFileSync(keyPath, "not a key", { mode: 0o600 });
+    expect(isCertParseable(certPath)).toBe(false);
+    expect(isKeyParseable(keyPath)).toBe(false);
+  });
+
+  test("cert is not accepted as a private key", () => {
+    const dir = freshDir();
+    const { certPath } = generateSelfSignedCert(dir, { commonName: "localhost", validityDays: 30 });
+    expect(isKeyParseable(certPath)).toBe(false);
+  });
+});
+
 describe("ensureSelfSignedCert", () => {
   test("generates on first call when dir is empty", () => {
     const dir = freshDir();
@@ -122,6 +159,16 @@ describe("ensureSelfSignedCert", () => {
     expect(m.cert).toContain("-----BEGIN CERTIFICATE-----");
   });
 
+  test("regenerates when the cached key is corrupted but the cert is valid", () => {
+    const dir = freshDir();
+    const first = ensureSelfSignedCert({ dir, validityDays: 30 });
+    writeFileSync(first.keyPath, "corrupted", { mode: 0o600 });
+    const second = ensureSelfSignedCert({ dir, validityDays: 30 });
+    expect(second.key).toMatch(/-----BEGIN (RSA )?PRIVATE KEY-----/);
+    expect(second.cert).not.toBe(first.cert);
+    expect(isKeyParseable(second.keyPath)).toBe(true);
+  });
+
   test("rejects renewWithinSeconds <= 0", () => {
     const dir = freshDir();
     expect(() => ensureSelfSignedCert({ dir, renewWithinSeconds: 0 })).toThrow();
@@ -140,6 +187,22 @@ describe("readCachedCert", () => {
     const { certPath } = certPaths(dir);
     mkdirSync(dir, { recursive: true });
     writeFileSync(certPath, "stub", { mode: 0o644 });
+    expect(readCachedCert(dir)).toBeNull();
+  });
+
+  test("returns null when the cached cert is unparseable", () => {
+    const dir = freshDir();
+    const { certPath, keyPath } = certPaths(dir);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(certPath, "garbage", { mode: 0o644 });
+    writeFileSync(keyPath, "garbage", { mode: 0o600 });
+    expect(readCachedCert(dir)).toBeNull();
+  });
+
+  test("returns null when the cached key is unparseable", () => {
+    const dir = freshDir();
+    const generated = ensureSelfSignedCert({ dir, validityDays: 30 });
+    writeFileSync(generated.keyPath, "garbage", { mode: 0o600 });
     expect(readCachedCert(dir)).toBeNull();
   });
 
