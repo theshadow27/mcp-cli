@@ -1,5 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent } from "./monitor-event";
+import * as monitorEventModule from "./monitor-event";
+import {
+  CI_FINISHED,
+  MONITOR_SEVERITIES,
+  MONITOR_SEVERITY_RANK,
+  PR_MERGE_STATE_CHANGED,
+  PR_OPENED,
+  PR_REVIEW_COMMENT_POSTED,
+  QUOTA_UTILIZATION_THRESHOLD,
+  SESSION_IDLE,
+  SESSION_PERMISSION_REQUEST,
+  enrichMonitorEvent,
+  severityForMonitorEvent,
+  summarizeMonitorEvent,
+} from "./monitor-event";
 import {
   DAEMON_CONFIG_RELOADED,
   DAEMON_RESTARTED,
@@ -13,6 +28,11 @@ import {
   WORKER_RATELIMITED,
   formatMonitorEvent,
 } from "./monitor-event";
+
+/** Every exported event-name constant, so new event types are covered automatically. */
+const KNOWN_EVENTS: string[] = Object.values(monitorEventModule as Record<string, unknown>).filter(
+  (v): v is string => typeof v === "string",
+);
 
 function event(overrides: Partial<MonitorEvent> & { event: string }): MonitorEvent {
   return {
@@ -248,5 +268,118 @@ describe("formatMonitorEvent — lifecycle events", () => {
     expect(line).toContain("session.spawn_override");
     expect(line).toContain("/canary/claude");
     expect(line).toContain("bypassed: version gate: upgrade required");
+  });
+
+  test("uses producer summary as the detail for unknown event types", () => {
+    const line = formatMonitorEvent(event({ event: "future.event", summary: "something happened" }));
+    expect(line).toContain("future.event");
+    expect(line).toContain("something happened");
+  });
+});
+
+describe("summarizeMonitorEvent", () => {
+  test("renders the same detail the formatter uses", () => {
+    const e = event({ event: PR_MERGE_STATE_CHANGED, prNumber: 42, from: "CLEAN", to: "BEHIND", cascadeHead: 41 });
+    expect(summarizeMonitorEvent(e)).toBe("PR#42  CLEAN → BEHIND  cascade:#41");
+  });
+
+  test("works without seq/ts (emit time, before the bus stamps them)", () => {
+    const summary = summarizeMonitorEvent({
+      src: "test",
+      category: "ci",
+      event: CI_FINISHED,
+      prNumber: 7,
+      allGreen: true,
+    });
+    expect(summary).toContain("PR#7");
+    expect(summary).toContain("all green");
+  });
+
+  test("falls back to the event name when there are no contextual fields", () => {
+    expect(summarizeMonitorEvent({ src: "t", category: "session", event: "session.cleared" })).toBe("session.cleared");
+  });
+
+  test("collapses newlines and caps at 120 chars", () => {
+    const summary = summarizeMonitorEvent(
+      event({ event: "unknown.event", detail: `line1\n  line2${"x".repeat(400)}` }),
+    );
+    expect(summary.length).toBeLessThanOrEqual(120);
+    expect(summary).not.toContain("\n");
+    expect(summary).toBe(summary.trimStart());
+  });
+});
+
+describe("severityForMonitorEvent", () => {
+  test("maps known tiers", () => {
+    expect(severityForMonitorEvent(event({ event: SESSION_PERMISSION_REQUEST }))).toBe("urgent");
+    expect(severityForMonitorEvent(event({ event: SESSION_IDLE }))).toBe("actionable");
+    expect(severityForMonitorEvent(event({ event: PR_OPENED }))).toBe("notable");
+    expect(severityForMonitorEvent(event({ event: HEARTBEAT }))).toBe("info");
+  });
+
+  test("defaults unmapped event types to info", () => {
+    expect(severityForMonitorEvent(event({ event: "brand.new.event" }))).toBe("info");
+  });
+
+  test("pr.merge_state_changed is actionable only with a cascade head", () => {
+    expect(severityForMonitorEvent(event({ event: PR_MERGE_STATE_CHANGED, from: "CLEAN", to: "DIRTY" }))).toBe(
+      "notable",
+    );
+    expect(
+      severityForMonitorEvent(event({ event: PR_MERGE_STATE_CHANGED, from: "CLEAN", to: "BEHIND", cascadeHead: 12 })),
+    ).toBe("actionable");
+  });
+
+  test("quota threshold escalates to urgent at 95%", () => {
+    expect(severityForMonitorEvent(event({ event: QUOTA_UTILIZATION_THRESHOLD, utilization: 80 }))).toBe("notable");
+    expect(severityForMonitorEvent(event({ event: QUOTA_UTILIZATION_THRESHOLD, utilization: 95 }))).toBe("urgent");
+  });
+
+  test("review comments are actionable only when new ones landed", () => {
+    expect(severityForMonitorEvent(event({ event: PR_REVIEW_COMMENT_POSTED, newCount: 0 }))).toBe("notable");
+    expect(severityForMonitorEvent(event({ event: PR_REVIEW_COMMENT_POSTED, newCount: 3 }))).toBe("actionable");
+  });
+
+  test("ranks are ordered so consumers can threshold", () => {
+    expect(MONITOR_SEVERITY_RANK.urgent).toBeGreaterThan(MONITOR_SEVERITY_RANK.actionable);
+    expect(MONITOR_SEVERITY_RANK.actionable).toBeGreaterThan(MONITOR_SEVERITY_RANK.notable);
+    expect(MONITOR_SEVERITY_RANK.notable).toBeGreaterThan(MONITOR_SEVERITY_RANK.info);
+  });
+});
+
+describe("enrichMonitorEvent", () => {
+  test("stamps a non-empty summary and a valid severity", () => {
+    const e = enrichMonitorEvent({ src: "test", category: "session", event: SESSION_IDLE, sessionId: "abcdef1234" });
+    expect(e.summary).toBeTruthy();
+    expect(MONITOR_SEVERITIES).toContain(e.severity);
+    expect(e.severity).toBe("actionable");
+  });
+
+  test("preserves producer-supplied summary and severity", () => {
+    const e = enrichMonitorEvent({
+      src: "test",
+      category: "session",
+      event: SESSION_IDLE,
+      summary: "hand-written",
+      severity: "urgent",
+    });
+    expect(e.summary).toBe("hand-written");
+    expect(e.severity).toBe("urgent");
+  });
+
+  test("never carries a nested payload — the envelope is flat", () => {
+    // The type forbids `payload`; this guards the runtime contract for events
+    // crossing an untyped boundary (JSON replay, worker postMessage).
+    const e = enrichMonitorEvent({ src: "test", category: "ci", event: CI_FINISHED, prNumber: 1, allGreen: false });
+    expect(Object.hasOwn(e, "payload")).toBe(false);
+    expect(e.summary).not.toContain("payload");
+  });
+
+  test("every known event type produces a non-empty summary and a valid severity", () => {
+    for (const name of KNOWN_EVENTS) {
+      const e = enrichMonitorEvent({ src: "test", category: "session", event: name });
+      expect(e.summary, `summary for ${name}`).toBeTruthy();
+      expect(MONITOR_SEVERITIES, `severity for ${name}`).toContain(e.severity);
+    }
   });
 });

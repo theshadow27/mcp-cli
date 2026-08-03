@@ -11,7 +11,7 @@
  * #1512 #1557
  */
 
-import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
+import { type MonitorEvent, type MonitorEventInput, enrichMonitorEvent } from "@mcp-cli/core";
 import type { CoalescerOptions, SubmitOptions } from "./coalesce";
 import { CoalescingPublisher } from "./coalesce";
 import type { EventLog } from "./event-log";
@@ -45,7 +45,10 @@ export class EventBus {
     }
   }
 
-  publish(input: MonitorEventInput): MonitorEvent {
+  publish(rawInput: MonitorEventInput): MonitorEvent {
+    // summary/severity are stamped once, here, so every consumer (live stream,
+    // replay, TUI) sees them regardless of which producer emitted the event.
+    const input = enrichMonitorEvent(rawInput);
     const ts = new Date().toISOString();
     let seq: number;
 

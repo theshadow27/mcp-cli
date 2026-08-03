@@ -313,6 +313,20 @@ Event types include `session.idle`, `session.result`, `session.permission_reques
 
 Payloads come pre-enriched — `cost`, `turns`, `lastTool`, `resultPreview`, `allGreen`, etc. — so orchestrators react push-shaped without a 5-lookup hydration loop. This is the load-bearing primitive for the `/sprint` skill; see [.claude/skills/sprint/README.md](.claude/skills/sprint/README.md).
 
+#### Event envelope contract
+
+Every event is a **flat** JSON object — category-specific fields live at the top level, never under a nested `payload`. Two fields are stamped by the producer side of the bus and are always present:
+
+- **`summary`** — one-line description (≤120 chars), rendered from the same per-type formatters the human-readable output uses.
+- **`severity`** — actionability tier: `info` (heartbeats, `session.tool_use`, metrics) → `notable` (`pr.opened`, `ci.started`, reviews) → `actionable` (`session.idle`, `session.result`, `ci.finished`, `pr.merged`, `phase.changed`) → `urgent` (`session.permission_request`, `cost.*_over_budget`, `worker.ratelimited`, `daemon.restarted`). A few types are value-dependent: `pr.merge_state_changed` is `actionable` only with a `cascadeHead`, `quota.utilization_threshold` is `urgent` at ≥95%, `pr.review_comment_posted` is `actionable` only when `newCount > 0`. Unmapped event types default to `info`.
+
+So the orchestrator's filter is a severity threshold rather than a hand-maintained event whitelist:
+
+```bash
+mcx monitor --subscribe session,work_item,ci --json \
+  | jq 'select(.severity == "actionable" or .severity == "urgent") | "\(.event)  \(.summary)"'
+```
+
 ### Phases & Automation
 
 `mcx` ships a declarative phase engine for work items. Declare a state machine in `.mcx.yaml` at the repo root, write each phase as a `defineAlias` script under `.claude/phases/`, and the daemon drives transitions per work item:
