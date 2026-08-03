@@ -1671,7 +1671,20 @@ describe("agent codex send --wait", () => {
 // ── Bye with cwd ──
 
 describe("agent bye with worktree", () => {
-  test("calls cleanupWorktree when cwd is returned", async () => {
+  test("--clean calls cleanupWorktree when cwd is returned", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: "my-wt", cwd: "/repo/.claude/worktrees/my-wt", repoRoot: "/repo" });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["codex", "bye", "abc12345", "--clean"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_bye", { sessionId: SESSION_LIST[0].sessionId });
+    expect(deps.exec).toHaveBeenCalled();
+  });
+
+  test("keeps the worktree by default", async () => {
     const deps = makeDeps({
       callTool: mock(async (tool: string) => {
         if (tool === "codex_session_list") return toolResult(SESSION_LIST);
@@ -1680,7 +1693,21 @@ describe("agent bye with worktree", () => {
       exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     });
     await cmdAgent(["codex", "bye", "abc12345"], deps);
+    expect(deps.exec).not.toHaveBeenCalled();
+    expect(deps.printInfo).toHaveBeenCalledWith(expect.stringContaining("Worktree preserved"));
+  });
+
+  test("--clean before session id is not treated as session prefix", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "codex_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: "my-wt", cwd: "/repo/.claude/worktrees/my-wt", repoRoot: "/repo" });
+      }),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["codex", "bye", "--clean", "abc12345"], deps);
     expect(deps.callTool).toHaveBeenCalledWith("codex_bye", { sessionId: SESSION_LIST[0].sessionId });
+    expect(deps.exec).toHaveBeenCalled();
   });
 
   test("bye missing session prefix errors", async () => {
@@ -2142,7 +2169,7 @@ describe("agent claude bye with worktree and no cwd", () => {
       getCwd: mock(() => "/fake/repo"),
       exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
     });
-    await cmdAgent(["claude", "bye", "abc12345"], deps);
+    await cmdAgent(["claude", "bye", "abc12345", "--clean"], deps);
     // cleanupWorktree is called (exec runs git worktree remove)
     expect(deps.callTool).toHaveBeenCalledWith("claude_bye", { sessionId: SESSION_LIST[0].sessionId });
   });

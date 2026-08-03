@@ -194,7 +194,8 @@ mcx claude wait [session]                      # block until session event
 mcx claude wait --any                          # race: session idle or work item event
 mcx claude log <session> [--last N]            # view session transcript
 mcx claude interrupt <session>                 # interrupt current turn
-mcx claude bye <session>                       # end session (alias: quit)
+mcx claude bye <session>                       # end session, keep worktree (alias: quit)
+mcx claude bye <session> --clean               # end session + remove worktree + delete branch
 mcx claude resume <worktree-or-branch>         # reattach to orphaned worktree session
 mcx claude resume --all                        # resume all orphaned worktree sessions
 mcx claude worktrees                           # list mcx-created worktrees (alias: wt)
@@ -353,7 +354,7 @@ mcx pr merge <pr> --auto --wait              # arm auto-merge + block until MERG
 mcx pr merge <pr> --auto --wait --timeout <ms>
 ```
 
-`mcx pr merge` never deletes local branches — use `mcx claude bye` or `mcx gc` for worktree/branch cleanup once a PR is merged.
+`mcx pr merge` never deletes local branches — use `mcx claude bye --clean` or `mcx gc` for worktree/branch cleanup once a PR is merged. A plain `mcx claude bye` ends the session only and leaves the worktree and branch in place for inspection.
 
 ### Virtual Filesystem
 

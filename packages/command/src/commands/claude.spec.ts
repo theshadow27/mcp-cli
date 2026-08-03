@@ -2180,7 +2180,62 @@ describe("mcx claude bye", () => {
     await expect(cmdClaude(["bye"], deps)).rejects.toThrow(ExitError);
   });
 
-  test("--keep skips worktree cleanup and prints preserved path", async () => {
+  test("keeps the worktree by default and points at the reclaim paths", async () => {
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+      if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+      return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
+    });
+    const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const printInfo = mock(() => {});
+    const deps = makeDeps({ callTool, exec, printInfo });
+
+    const origLog = console.log;
+    console.log = mock(() => {});
+    try {
+      await cmdClaude(["bye", "def", "no flags"], deps);
+      expect(exec).not.toHaveBeenCalled();
+      const infoOutput = printInfo.mock.calls.map((c: unknown[]) => c[0]).join("\n");
+      expect(infoOutput).toContain("Worktree preserved:");
+      expect(infoOutput).toContain("/repo");
+      expect(infoOutput).toContain("--clean");
+      expect(infoOutput).toContain("mcx gc");
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("--all keeps worktrees by default and removes them with --clean", async () => {
+    const makeByeAllDeps = () => {
+      const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult([SESSION_LIST[0]]);
+        return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
+      });
+      const exec: ClaudeDeps["exec"] = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+      return { callTool, exec, deps: makeDeps({ callTool, exec }) };
+    };
+
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = mock(() => {});
+    console.error = mock(() => {});
+    try {
+      const kept = makeByeAllDeps();
+      await cmdClaude(["bye", "--all"], kept.deps);
+      expect(kept.exec).not.toHaveBeenCalled();
+
+      const cleaned = makeByeAllDeps();
+      await cmdClaude(["bye", "--all", "--clean"], cleaned.deps);
+      const removeCalls = (cleaned.exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
+        (c[0] as string[]).includes("remove"),
+      );
+      expect(removeCalls.length).toBe(1);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+  });
+
+  test("--keep is a no-op alias now that keeping is the default", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
@@ -2209,7 +2264,7 @@ describe("mcx claude bye", () => {
     }
   });
 
-  test("--keep-worktree is an alias for --keep", async () => {
+  test("--keep-worktree is still accepted", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
@@ -2235,7 +2290,7 @@ describe("mcx claude bye", () => {
     }
   });
 
-  test("removes clean worktree after bye", async () => {
+  test("--clean removes clean worktree after bye", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
@@ -2251,7 +2306,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Should call git worktree remove
       const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
         (c[0] as string[]).includes("remove"),
@@ -2283,7 +2338,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Should still attempt cleanup by resolving cwd from process.cwd()
       const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
         (c[0] as string[]).includes("remove"),
@@ -2298,7 +2353,7 @@ describe("mcx claude bye", () => {
     }
   });
 
-  test("warns about dirty worktree after bye", async () => {
+  test("--clean refuses to remove a dirty worktree and warns", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {
       if (tool === "claude_session_list") return toolResult(SESSION_LIST);
       return toolResult({ ended: true, worktree: "claude-abc123", cwd: "/repo" });
@@ -2313,7 +2368,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Should NOT call git worktree remove
       const removeCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
         (c[0] as string[]).includes("remove"),
@@ -2359,7 +2414,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def", "worktree gone test"], deps);
+      await cmdClaude(["bye", "def", "worktree gone test", "--clean"], deps);
       // Should call git status but not git worktree remove
       expect(exec).toHaveBeenCalledTimes(1);
       expect((exec as ReturnType<typeof mock>).mock.calls[0][0]).toContain("status");
@@ -2389,7 +2444,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Directory doesn't exist on disk → verified removed regardless of exit code
       const infoOutput = printInfo.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(infoOutput).toContain("Removed worktree:");
@@ -2409,7 +2464,7 @@ describe("mcx claude bye", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // exec should never be called — path traversal blocked
       expect(exec).not.toHaveBeenCalled();
     } finally {
@@ -3992,7 +4047,7 @@ describe("mcx claude bye branch cleanup", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Should have called branch -d
       const branchCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
         (c[0] as string[]).includes("-d"),
@@ -4025,7 +4080,7 @@ describe("mcx claude bye branch cleanup", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       const infoOutput = printInfo.mock.calls.map((c: unknown[]) => c[0]).join("\n");
       expect(infoOutput).toContain("Removed worktree:");
       expect(infoOutput).not.toContain("Deleted branch:");
@@ -4051,7 +4106,7 @@ describe("mcx claude bye branch cleanup", () => {
     const origLog = console.log;
     console.log = mock(() => {});
     try {
-      await cmdClaude(["bye", "def"], deps);
+      await cmdClaude(["bye", "def", "--clean"], deps);
       // Should NOT call git branch -d
       const branchCalls = (exec as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
         (c[0] as string[]).includes("-d"),

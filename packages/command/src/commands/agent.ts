@@ -896,12 +896,12 @@ async function agentSend(args: string[], provider: AgentProvider, d: AgentDeps):
 
 async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): Promise<void> {
   const P = provider.toolPrefix;
-  const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
+  const clean = args.includes("--clean");
   const positional = args.filter((a) => !a.startsWith("-"));
   const sessionPrefix = positional[0];
 
   if (!sessionPrefix) {
-    d.printError(`Usage: mcx agent ${provider.name} bye <session-id> [--keep|--keep-worktree]`);
+    d.printError(`Usage: mcx agent ${provider.name} bye <session-id> [--clean]`);
     d.exit(1);
   }
 
@@ -912,10 +912,11 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
   d.log(formatToolResult(result));
 
   if (byeResult.worktree) {
-    if (keepWorktree) {
+    if (!clean) {
       const wtPath =
         byeResult.cwd ?? resolveWorktreePath(d.getCwd(), byeResult.worktree, readWorktreeConfig(d.getCwd()));
       d.printInfo(`Worktree preserved: ${wtPath}`);
+      d.printInfo(`Reclaim with 'mcx agent ${provider.name} bye --clean' next time, or sweep later with 'mcx gc'.`);
     } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else if (hasFeature(provider, "resume")) {
