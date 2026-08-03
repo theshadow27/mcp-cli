@@ -124,6 +124,39 @@ Interim stopgap in force for the rest of this sprint: orchestrator broadcast a `
 host-wide lock directive to all sessions, serializing the gate to one run at a time. Load
 average fell 27 → 14 within minutes of the broadcast.
 
+### SPAWN FREEZE — 2026-08-03 13:52Z (09:52 EDT), operator-ordered
+
+Usage critical. **No new spawns of any kind (impl / review / QA / repair) until 14:00 EDT
+(18:00Z).** Five-hour window resets 18:20Z. In-flight sessions run to completion — already-paid
+work; killing them would waste the spend without recovering quota. Only zero-LLM actions
+continue: merges of PRs that already hold their verdicts, label flips, CI reruns, triage
+(script, not an LLM call), and bookkeeping.
+
+**The usage meter was not the signal — the operator was.** `_metrics quota_status` reported
+`fiveHour.utilization: 8` / `sevenDay: 3` while usage was in fact critical, because the
+upstream quota endpoint was itself returning 429 and the daemon served cached figures with
+`available: true` and no staleness marker. The orchestrator read `8%` as authoritative and
+told the operator "quota is fine" three times while continuing to spawn. Contradicting
+evidence was visible and under-weighted: every session showed `[RATE LIMITED]` in
+`mcx claude ls`, and `lastError` held the 429. Bug filed. Until it is fixed, the operative
+rule is **`lastError != null` invalidates the utilization reading — fail safe (freeze), not
+open (spawn)**, and a fleet-wide `[RATE LIMITED]` overrides a low utilization number.
+
+**Queued at freeze time (spawn in this order on resume):**
+1. `#1590` → review (high; 286 churn, 7 files, command+core+daemon) — PR 2941
+2. `#1750` → QA (low; 27 churn) — PR 2942
+3. `#1702` → QA once the reviewer's self-repair lands (currently `review:changes`) — PR 2927
+
+**Running at freeze time (do not respawn):** `#2659` QA (PR 2929, `review:pass`, CLEAN),
+`#1540` review (PR 2934), `#1924` review (PR 2931), `#1459` QA (PR 2930), `#1702` reviewer
+self-repair (PR 2927), `#1328` impl, `#1245` impl, `#2690` impl.
+
+**Never launched, and must not be during the freeze:** `#935` (blocked on #2659 merge),
+`#1939` (blocked on #1924), `#1510` (blocked on #935), `#1829` (blocked on #1510), `#1249`
+(blocked on #1245), `#1964` (parked capacity valve). Given the freeze plus the CPU ceiling,
+`#1964` should be formally dropped at wind-down rather than launched late — it is the
+designated pressure valve and it keeps.
+
 ### Amendments to Excluded
 - **#207 — exclusion reasoning was wrong; promote next sprint.** Excluded at plan time as
   "flags already exist". Half-right: `--full` exists and works, but `mcx claude log --json`
