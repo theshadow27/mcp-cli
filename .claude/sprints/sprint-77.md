@@ -1,6 +1,7 @@
 # Sprint 77
 
 > Planned 2026-07-13 (during sprint-76 wind-down, per plan.md Step 7). Target: 16 PRs (14 firm + 2 capacity-dependent).
+> Started 2026-08-03. Container PR #2923.
 
 ## Goal
 
