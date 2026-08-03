@@ -97,6 +97,33 @@ describe("ClaudeWsServer (TLS mode, #1808)", () => {
     expect(env.NODE_TLS_REJECT_UNAUTHORIZED).toBe("0");
   });
 
+  test("sdk-url follows an overridden hostname instead of the hardcoded default", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, hostname: "127.0.0.1" });
+    const port = await server.start();
+    server.prepareSession("host-session", { prompt: "hi" });
+    server.spawnClaude("host-session");
+    expect(ms.lastCmd).toContain(`ws://127.0.0.1:${port}/session/host-session`);
+  });
+
+  test("sdk-url brackets an IPv6 hostname override", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, hostname: "::1" });
+    const port = await server.start();
+    server.prepareSession("v6-session", { prompt: "hi" });
+    server.spawnClaude("v6-session");
+    expect(ms.lastCmd).toContain(`ws://[::1]:${port}/session/v6-session`);
+  });
+
+  test("sdk-url maps wildcard binds to the matching loopback address", async () => {
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, hostname: "0.0.0.0" });
+    const port = await server.start();
+    server.prepareSession("wild-session", { prompt: "hi" });
+    server.spawnClaude("wild-session");
+    expect(ms.lastCmd).toContain(`ws://127.0.0.1:${port}/session/wild-session`);
+  });
+
   test("TLS mode binds on [::1] and accepts a wss:// upgrade", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ws-tls-"));
     const { cert, key } = ensureSelfSignedCert({ dir, validityDays: 7 });
