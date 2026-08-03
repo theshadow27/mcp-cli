@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { acquireGateLease, withGateLease } from "./gate-lease";
+import { type GateLeaseOptions, acquireGateLease, withGateLease } from "./gate-lease";
 
 const dirs: string[] = [];
 function freshDir(): string {
@@ -12,21 +12,33 @@ function freshDir(): string {
   return d;
 }
 
-const savedSlotsEnv = process.env.MCX_GATE_LEASE_SLOTS;
+const TUNING_VARS = ["MCX_GATE_LEASE_SLOTS", "MCX_GATE_LEASE_MAX_LOAD", "MCX_GATE_LEASE_LOAD_WAIT_MS"] as const;
+const savedEnv = new Map(TUNING_VARS.map((k) => [k, process.env[k]]));
+
+/** Clear the tuning vars so an ambient value can't steer a defaults test. */
+function clearTuningEnv(): void {
+  for (const k of TUNING_VARS) {
+    delete process.env[k];
+  }
+}
+
 afterEach(() => {
   while (dirs.length) {
     const d = dirs.pop();
     if (d) rmSync(d, { recursive: true, force: true });
   }
-  if (savedSlotsEnv === undefined) {
-    // biome-ignore lint/performance/noDelete: env var must be absent, not "undefined"
-    delete process.env.MCX_GATE_LEASE_SLOTS;
-  } else {
-    process.env.MCX_GATE_LEASE_SLOTS = savedSlotsEnv;
+  for (const [k, v] of savedEnv) {
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
   }
 });
 
-const noWait = { sleep: () => Promise.resolve(), random: () => 0 };
+// maxLoad: 0 disables the load-headroom stage — these cases exercise slot
+// admission only, and the real host load would otherwise steer them.
+const noWait = { sleep: () => Promise.resolve(), random: () => 0, maxLoad: 0 };
 
 describe("acquireGateLease", () => {
   it("acquires a slot when one is free", async () => {
@@ -170,6 +182,242 @@ describe("MCX_GATE_LEASE_SLOTS validation", () => {
     expect(lease.held).toBe(false);
     expect(lease.slot).toBeNull();
     expect(warnings.some((w) => w.includes("disables the gate"))).toBe(true);
+  });
+});
+
+// A lease whose slot wait fails open immediately: drives the injected clock past
+// the deadline on the first poll.
+function failFastSlotWait(lockDir: string, extra: GateLeaseOptions = {}) {
+  let ticks = 0;
+  return acquireGateLease({
+    lockDir,
+    timeoutMs: 500,
+    now: () => ticks,
+    sleep: async () => {
+      ticks += 1000;
+    },
+    random: () => 0,
+    maxLoad: 0,
+    ...extra,
+  });
+}
+
+describe("default slot count derived from core count (#2690)", () => {
+  it("allows 1 concurrent run on an 8-core host", async () => {
+    clearTuningEnv();
+    const lockDir = freshDir();
+    const a = await acquireGateLease({ lockDir, cpuCount: () => 8, ...noWait });
+    expect(a.held).toBe(true);
+
+    const b = await failFastSlotWait(lockDir, { cpuCount: () => 8 });
+    expect(b.held).toBe(false);
+    a.release();
+  });
+
+  it("allows 2 — not the issue's cores/4 = 4 — on a 16-core host", async () => {
+    clearTuningEnv();
+    const lockDir = freshDir();
+    const cpuCount = () => 16;
+    const a = await acquireGateLease({ lockDir, cpuCount, ...noWait });
+    const b = await acquireGateLease({ lockDir, cpuCount, ...noWait });
+    expect([a.held, b.held]).toEqual([true, true]);
+
+    // The third must be refused. cores/4 would have admitted a third and fourth,
+    // which is the regime the field data shows failing.
+    const c = await failFastSlotWait(lockDir, { cpuCount });
+    expect(c.held).toBe(false);
+    a.release();
+    b.release();
+  });
+
+  it("never derives 0 slots on a single-core host", async () => {
+    clearTuningEnv();
+    const lockDir = freshDir();
+    const a = await acquireGateLease({ lockDir, cpuCount: () => 1, ...noWait });
+    expect(a.held).toBe(true);
+    a.release();
+  });
+});
+
+describe("load-headroom admission (#2690)", () => {
+  it("holds the slot while load is too high, then admits when it falls", async () => {
+    const lockDir = freshDir();
+    const loads = [20, 20, 5];
+    let i = 0;
+    let ticks = 0;
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      maxLoad: 10,
+      loadWaitMs: 60_000,
+      now: () => ticks,
+      sleep: async () => {
+        ticks += 100;
+      },
+      random: () => 0,
+      loadAvg: () => loads[Math.min(i++, loads.length - 1)] as number,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+
+    expect(lease.held).toBe(true);
+    expect(lease.slot).toBe(0);
+    expect(warnings.some((w) => w.includes("holding slot 0, waiting for host load"))).toBe(true);
+    expect(warnings.some((w) => w.includes("admitted after waiting"))).toBe(true);
+    lease.release();
+  });
+
+  it("keeps the slot held while waiting, so a peer cannot start meanwhile", async () => {
+    const lockDir = freshDir();
+    const probes: boolean[] = [];
+    let ticks = 0;
+    let load = 50;
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      maxLoad: 10,
+      loadWaitMs: 60_000,
+      now: () => ticks,
+      sleep: async () => {
+        ticks += 100;
+        // Mid-load-wait: a peer must find the only slot already taken. This is
+        // what prevents the convoy — the waiter owns the slot while it waits.
+        if (probes.length === 0) {
+          probes.push((await failFastSlotWait(lockDir, { slots: 1 })).held);
+          load = 1; // let the original proceed on the next poll
+        }
+      },
+      random: () => 0,
+      loadAvg: () => load,
+    });
+
+    expect(probes).toEqual([false]);
+    expect(lease.held).toBe(true);
+    lease.release();
+  });
+
+  it("fails open after the load-wait deadline and still holds the slot", async () => {
+    const lockDir = freshDir();
+    let ticks = 0;
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      maxLoad: 10,
+      loadWaitMs: 500,
+      now: () => ticks,
+      sleep: async () => {
+        ticks += 1000; // blow past the load deadline on the first poll
+      },
+      random: () => 0,
+      loadAvg: () => 99,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("still above") && w.includes("fail-open"))).toBe(true);
+    lease.release();
+  });
+
+  it("defaults the ceiling to 0.75 x cores", async () => {
+    clearTuningEnv();
+    const cpuCount = () => 16; // ceiling = 12
+
+    const belowDir = freshDir();
+    const belowWarnings: string[] = [];
+    const below = await acquireGateLease({
+      lockDir: belowDir,
+      slots: 1,
+      cpuCount,
+      loadAvg: () => 11.9,
+      sleep: () => Promise.resolve(),
+      random: () => 0,
+      logger: { warn: (m) => belowWarnings.push(m) },
+    });
+    expect(below.held).toBe(true);
+    expect(belowWarnings.some((w) => w.includes("waiting for host load"))).toBe(false);
+    below.release();
+
+    const aboveDir = freshDir();
+    const aboveWarnings: string[] = [];
+    let ticks = 0;
+    const above = await acquireGateLease({
+      lockDir: aboveDir,
+      slots: 1,
+      cpuCount,
+      loadAvg: () => 12.1,
+      loadWaitMs: 500,
+      now: () => ticks,
+      sleep: async () => {
+        ticks += 1000;
+      },
+      random: () => 0,
+      logger: { warn: (m) => aboveWarnings.push(m) },
+    });
+    expect(aboveWarnings.some((w) => w.includes("waiting for host load"))).toBe(true);
+    above.release();
+  });
+});
+
+describe("load-wait env overrides (#2690)", () => {
+  it("skips the load wait entirely when MCX_GATE_LEASE_MAX_LOAD is 0", async () => {
+    clearTuningEnv();
+    process.env.MCX_GATE_LEASE_MAX_LOAD = "0";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      loadAvg: () => 999,
+      sleep: () => Promise.resolve(),
+      random: () => 0,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("disables the load wait"))).toBe(true);
+    lease.release();
+  });
+
+  it("warns and falls back to the default for a non-numeric MCX_GATE_LEASE_MAX_LOAD", async () => {
+    clearTuningEnv();
+    process.env.MCX_GATE_LEASE_MAX_LOAD = "high";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      cpuCount: () => 16,
+      loadAvg: () => 1,
+      sleep: () => Promise.resolve(),
+      random: () => 0,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("is not a number"))).toBe(true);
+    lease.release();
+  });
+
+  it("honours MCX_GATE_LEASE_LOAD_WAIT_MS as the fail-open bound", async () => {
+    clearTuningEnv();
+    process.env.MCX_GATE_LEASE_LOAD_WAIT_MS = "1";
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    let ticks = 0;
+    const lease = await acquireGateLease({
+      lockDir,
+      slots: 1,
+      maxLoad: 10,
+      now: () => ticks,
+      sleep: async () => {
+        ticks += 5; // trips the 1ms bound, far short of the 5min default
+      },
+      random: () => 0,
+      loadAvg: () => 99,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    expect(lease.held).toBe(true);
+    expect(warnings.some((w) => w.includes("after 1ms") && w.includes("fail-open"))).toBe(true);
+    lease.release();
   });
 });
 
