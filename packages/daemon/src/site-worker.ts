@@ -274,6 +274,7 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
           site: site.name,
           resolved,
           audHints: call.audHints,
+          retryOn: call.retryOn,
           onWiggle: browserSnapshot
             ? async () => {
                 const current = await snapshotBrowser();
@@ -302,6 +303,7 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
         site: site.name,
         resolved,
         audHints: call.audHints,
+        retryOn: call.retryOn,
         onWiggle: browserSnapshot
           ? async () => {
               const current = await snapshotBrowser();

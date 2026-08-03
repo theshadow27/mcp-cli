@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { BrowserEngine, CapturedRequest, CookieEntry } from "./browser/engine";
 import { CredentialVault } from "./credentials";
-import { cookieProxyCall, proxyCall } from "./proxy";
+import { cookieProxyCall, proxyCall, retryReason } from "./proxy";
 import type { ResolvedCall } from "./resolver";
 
 function makeJwt(claims: Record<string, unknown>): string {
@@ -22,6 +22,34 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+});
+
+describe("retryReason", () => {
+  test("401 is always a bearer retry, with or without retryOn", () => {
+    expect(retryReason(401, {})).toBe("bearer");
+    expect(retryReason(401, {}, { status: [500] })).toBe("bearer");
+  });
+
+  test("no retryOn means no retry beyond 401", () => {
+    expect(retryReason(500, { "x-owa-error": "1" })).toBeNull();
+    expect(retryReason(200, {})).toBeNull();
+  });
+
+  test("status + responseHeaderPresent must both match", () => {
+    const on = { status: [500], responseHeaderPresent: "x-owa-error" };
+    expect(retryReason(500, { "X-OWA-Error": "1" }, on)).toBe("session");
+    expect(retryReason(500, {}, on)).toBeNull();
+    expect(retryReason(503, { "x-owa-error": "1" }, on)).toBeNull();
+  });
+
+  test("either field alone is sufficient when it is the only one declared", () => {
+    expect(retryReason(500, {}, { status: [500] })).toBe("session");
+    expect(retryReason(418, { "x-stale": "1" }, { responseHeaderPresent: "x-stale" })).toBe("session");
+  });
+
+  test("empty retryOn never triggers a retry", () => {
+    expect(retryReason(500, { anything: "1" }, {})).toBeNull();
+  });
 });
 
 describe("proxyCall", () => {
@@ -136,6 +164,106 @@ describe("proxyCall", () => {
     expect(result.status).toBe(200);
     expect(result.usedAud).toBe("https://other.example/");
     expect(call).toBe(2);
+  });
+
+  test("retryOn 500 wiggles and retries with the same bearer once session headers are refreshed", async () => {
+    const vault = new CredentialVault();
+    const token = makeJwt({ aud: "https://owa.example/", iat: 100 });
+    // Captured from a non-service.svc request: no session headers, so the first call 500s.
+    vault.noteRequest("demo", authReq("https://owa.example/owa/", token));
+
+    let call = 0;
+    const sentSessionIds: (string | undefined)[] = [];
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      call += 1;
+      sentSessionIds.push((init?.headers as Record<string, string>)["x-owa-sessionid"]);
+      if (call === 1) {
+        return new Response("OwaSerializationException", { status: 500, headers: { "x-owa-error": "1" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const onWiggle = async (): Promise<void> => {
+      // Same bearer, but now observed on a service.svc POST carrying session headers.
+      vault.noteRequest("demo", {
+        url: "https://owa.example/owa/service.svc",
+        method: "POST",
+        resourceType: "xhr",
+        headers: { authorization: `Bearer ${token}`, "x-owa-sessionid": "sess-1" },
+        postData: null,
+      });
+    };
+
+    const resolved: ResolvedCall = {
+      url: "https://owa.example/owa/service.svc",
+      method: "POST",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    const result = await proxyCall(vault, {
+      site: "demo",
+      resolved,
+      onWiggle,
+      retryOn: { status: [500], responseHeaderPresent: "x-owa-error" },
+    });
+
+    expect(call).toBe(2);
+    expect(result.status).toBe(200);
+    expect(sentSessionIds).toEqual([undefined, "sess-1"]);
+  });
+
+  test("500 is not retried when the call declares no retryOn", async () => {
+    const vault = new CredentialVault();
+    vault.noteRequest("demo", authReq("https://a.example/v1", makeJwt({ aud: "https://a.example/", iat: 100 })));
+
+    let call = 0;
+    globalThis.fetch = mock(async () => {
+      call += 1;
+      return new Response("boom", { status: 500, headers: { "x-owa-error": "1" } });
+    }) as unknown as typeof fetch;
+
+    const resolved: ResolvedCall = {
+      url: "https://a.example/v1/thing",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    const result = await proxyCall(vault, { site: "demo", resolved });
+    expect(result.status).toBe(500);
+    expect(call).toBe(1);
+  });
+
+  test("session retry does not refetch when wiggle refreshed nothing", async () => {
+    const vault = new CredentialVault();
+    vault.noteRequest("demo", authReq("https://a.example/v1", makeJwt({ aud: "https://a.example/", iat: 100 })));
+
+    let call = 0;
+    globalThis.fetch = mock(async () => {
+      call += 1;
+      return new Response("stale", { status: 500, headers: { "x-owa-error": "1" } });
+    }) as unknown as typeof fetch;
+
+    const resolved: ResolvedCall = {
+      url: "https://a.example/v1/thing",
+      method: "GET",
+      headers: {},
+      consumedParams: [],
+      residualParams: [],
+    };
+
+    const result = await proxyCall(vault, {
+      site: "demo",
+      resolved,
+      onWiggle: async () => {},
+      retryOn: { status: [500] },
+    });
+
+    expect(result.status).toBe(500);
+    expect(call).toBe(1);
   });
 
   test("throws when no credentials exist", async () => {

@@ -75,6 +75,13 @@ describe("built-in owa seed", () => {
       expect(call.jq_output).toBeTruthy();
     }
   });
+
+  test("all owa calls opt into session-staleness retry on 500 + x-owa-error", () => {
+    const catalog = loadCatalog("owa", "owa");
+    for (const call of Object.values(catalog)) {
+      expect(call.retryOn).toEqual({ status: [500], responseHeaderPresent: "x-owa-error" });
+    }
+  });
 });
 
 describe("embedded seed data (compiled-binary support)", () => {
