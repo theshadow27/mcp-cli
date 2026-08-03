@@ -75,6 +75,72 @@ Throwback: clear the surviving pre-#2000 gems — Bedrock spawn profiles, transi
 - #1397 — merge-queue service; belongs to the sprint-operator arc (#2577/#1942) with its own design pass, and its surface includes `.claude/skills/` (mergemaster).
 - #1453, #1970 — spikes, not implementable picks.
 
+## Run-phase findings (orchestrator, 2026-08-03)
+
+- **Stale model map was live-degrading every worker.** `MODEL_SHORTNAMES.opus` resolved to
+  `claude-opus-4-8` while Opus 5 was current, so `--model opus` silently span workers a tier
+  behind — every sprint since the Opus 5 release. First 8 sessions came up on 4.8; killed and
+  respawned on the full ID `claude-opus-5` (pass-through branch bypasses the map). All
+  phase-script spawns (`impl.ts` opus, `qa.ts` sonnet) hit the same bug, so the orchestrator
+  overrode every spawn to full IDs for the remainder of the sprint. Evidence posted to #2659.
+- **#1702 was mis-sized by the plan.** Scheduled as a low-scrutiny filler; triage escalated it
+  to high (6 files / 5 packages) because the validation change fans out across the acp, codex,
+  opencode and daemon permission adapters. Plan's scrutiny column was wrong; triage's
+  file-fan-out heuristic caught it.
+- **Host CPU contention, not API quota, was the throughput bottleneck.** With 12 concurrent
+  sessions on a 16-core host, simultaneous `am-i-done` runs pushed load average to ~19 and
+  produced spurious mass failures (112 failures + worker SIGTERMs at ~6s on #2659; #1924 hit
+  the same and self-throttled). Same trees passed clean on CI runners. Matches the known
+  `false-segfault-orphaned-load` signature. Orchestrator capped concurrency rather than
+  spawning further. New issue filed proposing admission control for `am-i-done` (NOT a
+  killer/reaper — see #2637 / the sprint 69-70 collapse).
+- **#1459 ships dormant.** `loadCatalog` seeds `catalog.json` only when absent and never
+  reconciles, so the new `retryOn` field reaches no existing installation (#2926, filed by the
+  worker). Deliberately NOT expanded mid-sprint; PR body required to state the limitation
+  rather than imply the 500-retry problem is solved.
+
+### Mid-sprint amendment: +#2690 (added 2026-08-03, run phase)
+
+**#2690 — concurrent `am-i-done` runs oversubscribe host → mass SIGTERM storm.** Added to
+scope at user request after the problem stalled two workers in this sprint. Open, unassigned,
+labeled bug/testing/ci, with 5 prior data-point comments spanning multiple sprints (including
+sprint 76, where workers independently invented ad-hoc load-gating). The fix is already
+specified on the issue: flock-based admission control.
+
+Amendment gate (#2768) — hot-file overlap check run before launch. Predicted surface is
+`scripts/` (am-i-done runner) + `packages/core/src/flock.ts`. Diffed against every batched and
+in-flight issue: #2659 (core/model, command, daemon session-worker), #1702 (permissions +
+provider adapters), #1459/#1540 (daemon/site), #1328 (core/phase-transition), #1924
+(core/monitor-event + daemon/event-bus), #1590 (daemon), #1750 (command/claude +
+worktree-commands), #1245 (clone/confluence + command/vfs). **No overlap → no `blockedBy`
+edge.** Caveat passed to the worker: #1328 is concurrently removing the transition log's
+lockfile usage, so #2690 must *consume* `flock.ts` without reshaping its API.
+
+Hard constraint restated for the worker: admission control / queueing on entry ONLY. No
+killer, reaper, orphan-sweep, watchdog, or host-wide `ps`-and-kill — that approach caused the
+sprint 69-70 collapse and was reverted in #2637.
+
+Interim stopgap in force for the rest of this sprint: orchestrator broadcast a `mkdir`-based
+host-wide lock directive to all sessions, serializing the gate to one run at a time. Load
+average fell 27 → 14 within minutes of the broadcast.
+
+### Amendments to Excluded
+- **#207 — exclusion reasoning was wrong; promote next sprint.** Excluded at plan time as
+  "flags already exist". Half-right: `--full` exists and works, but `mcx claude log --json`
+  emits invalid JSON (unterminated string, `JSONDecodeError` at char 68524), so there is no
+  reliable machine-readable way to read a worker's full result. Hard repro posted to #207;
+  `needs-clarification` should come off.
+- **#2926 (new, filed by #1459's worker) — seed reconciliation.** Blocks #1459 from reaching
+  users. Needs its own design pass on customization-vs-upstream merge. Next-sprint candidate;
+  would be `blockedBy` #1459 on file overlap (`packages/daemon/src/site/`).
+- **#2928 (new) — ~48 stale worktrees** never reclaimed by `mcx gc`, spanning ~30 sprints.
+  Also pollutes repo-wide greps (a 3-file search returned 125KB across duplicate checkouts).
+  Interacts with #1750, which flips `bye` to keep-by-default and will accelerate accumulation.
+
+### Orchestrator follow-up owed at retro
+- `.claude/memory/project_bedrock_spawns_935.md:14` documents the `resolveModelName` caveat
+  removed by #2659. Meta-file, orchestrator-owned — update at retro, not by a worker.
+
 ## Context
 
 Planned while sprint 76 winds down (6 idle sessions draining; per plan.md Step 7 no spawns until 76 closes). dist/mcx was stale vs origin/main at plan time — run-phase pre-flight must rebuild + restart the daemon before spawning. Scrutiny mix is heavier than the standard 60/25/15 (6 of 16 high) because throwback survivors are disproportionately the meaty ones; the two capacity-dependent picks (#1964, #1829) are the pressure valve. #935/#2659 also unblock Bedrock routing for future sprints — relevant while Anthropic extra-usage remains company-capped (sprint 76 stalled on quota 3×).
