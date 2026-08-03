@@ -22,7 +22,6 @@ import {
   type SessionInfo,
   type WorkItemEvent,
   resolveEffectiveTools,
-  resolveModelName,
   silentLogger,
   startSpan,
 } from "@mcp-cli/core";
@@ -255,7 +254,7 @@ export async function handlePrompt(
         permissionRules: rules,
         allowedTools: effectiveTools,
         worktree: args.worktree as string | undefined,
-        model: args.model ? resolveModelName(args.model as string) : undefined,
+        model: (args.model as string | undefined) || undefined,
         resumeSessionId: args.resumeSessionId as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
         transport: transportOverride,
