@@ -20,10 +20,18 @@ import type {
   ResolvedConfig,
   ResolvedServer,
   ServerConfig,
+  ServerRateLimitStatus,
   ServerStatus,
   ToolInfo,
 } from "@mcp-cli/core";
-import { IPC_ERROR, consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import {
+  IPC_ERROR,
+  RateLimiter,
+  consoleLogger,
+  formatToolSignature,
+  parseRateLimit,
+  rateLimitSource,
+} from "@mcp-cli/core";
 import {
   CONNECT_INITIAL_DELAY_MS,
   CONNECT_MAX_DELAY_MS,
@@ -38,6 +46,7 @@ import {
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import type { StateDb } from "./db/state";
+import { metrics } from "./metrics";
 import { getProcessStartTime } from "./process-identity";
 import { killPid } from "./process-util";
 import { safeSetTimeout } from "./safe-timers";
@@ -96,6 +105,8 @@ export class ServerPool {
   private config: ResolvedConfig;
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
+  /** Per-server tool-call limiters, keyed by name and invalidated when the spec string changes. */
+  private rateLimiters = new Map<string, { source: string; limiter: RateLimiter | null; error?: Error }>();
   private connectFn: ConnectFn;
   private connectTimeoutMs: number;
   private logger: Logger;
@@ -505,6 +516,26 @@ export class ServerPool {
     return this.stderrBuffer.subscribe(fn);
   }
 
+  /**
+   * Rate-limit status for the status report. A malformed spec is reported as
+   * absent rather than thrown — `mcx status` must never fail on bad config,
+   * and callTool already surfaces (and logs) the parse error.
+   */
+  private rateLimitStatus(serverName: string): ServerRateLimitStatus | undefined {
+    let limiter: RateLimiter | null;
+    try {
+      limiter = this.rateLimiter(serverName);
+    } catch {
+      return undefined;
+    }
+    if (!limiter) return undefined;
+    return {
+      limit: limiter.spec.source,
+      utilization: limiter.utilization(),
+      queueDepth: limiter.queueDepth,
+    };
+  }
+
   /** List all configured servers with status */
   listServers(): ServerStatus[] {
     const servers: ServerStatus[] = [...this.connections.values()].map((conn) => {
@@ -520,6 +551,7 @@ export class ServerPool {
         source: conn.resolved.source.file,
         recentStderr,
         planCapabilities: conn.planCapabilities,
+        rateLimit: this.rateLimitStatus(conn.name),
       };
     });
 
@@ -598,15 +630,66 @@ export class ServerPool {
     return tool;
   }
 
+  /**
+   * Limiter enforcing this server's configured tool-call rate, or null when
+   * unlimited. Throws when the configured spec is malformed — a typo should be
+   * loud rather than silently unthrottled.
+   */
+  private rateLimiter(serverName: string): RateLimiter | null {
+    const configured = this.connections.get(serverName)?.resolved.config.rateLimit;
+    const source = rateLimitSource(serverName, configured);
+    const cached = this.rateLimiters.get(serverName);
+    if (cached && cached.source === source) {
+      if (cached.error) throw cached.error;
+      return cached.limiter;
+    }
+
+    if (source === "") {
+      this.rateLimiters.set(serverName, { source, limiter: null });
+      return null;
+    }
+
+    try {
+      const limiter = new RateLimiter(parseRateLimit(source), { label: `"${serverName}"` });
+      this.rateLimiters.set(serverName, { source, limiter });
+      return limiter;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error(`[pool] server "${serverName}": ${error.message}`);
+      this.rateLimiters.set(serverName, { source, limiter: null, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Wait for this server's rate-limit slot, if one is configured. A retried
+   * call does not re-acquire: one slot is spent per logical callTool.
+   */
+  private async awaitRateLimit(serverName: string, onWait?: (waitedMs: number) => void): Promise<void> {
+    const limiter = this.rateLimiter(serverName);
+    if (!limiter) return;
+
+    const waitedMs = await limiter.acquire();
+    if (waitedMs <= 0) return;
+
+    const labels = { server: serverName };
+    metrics.counter("mcpd_rate_limit_throttled_total", labels).inc();
+    metrics.histogram("mcpd_rate_limit_wait_ms", labels).observe(waitedMs);
+    onWait?.(waitedMs);
+  }
+
   /** Call a tool on a server. Auto-retries once on transient errors (connection lost, timeout). */
   async callTool(
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
     timeoutMs: number = MCP_TOOL_TIMEOUT_MS,
+    options: { onRateLimitWait?: (waitedMs: number) => void } = {},
   ): Promise<unknown> {
     const conn = await this.ensureConnected(serverName);
     if (!conn.client) throw new Error(`Not connected to "${serverName}"`);
+
+    await this.awaitRateLimit(serverName, options.onRateLimitWait);
 
     try {
       const result = await conn.client.callTool({ name: toolName, arguments: args }, undefined, { timeout: timeoutMs });

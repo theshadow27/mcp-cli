@@ -12,6 +12,7 @@ export * from "./cache";
 export * from "./ipc";
 export * from "./ipc-client";
 export * from "./config";
+export * from "./rate-limit";
 export * from "./cli-config";
 export * from "./constants";
 export * from "./env";

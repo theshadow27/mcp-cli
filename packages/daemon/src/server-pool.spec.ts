@@ -1,5 +1,5 @@
 import { describe, expect, mock, setDefaultTimeout, test } from "bun:test";
-import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
+import { MCP_TOOL_TIMEOUT_MS, rateLimitEnvVar, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -1832,5 +1832,118 @@ describe("disconnect kills stdio child processes (#940)", () => {
     } finally {
       forceKill(pid);
     }
+  });
+});
+
+describe("ServerPool rate limiting", () => {
+  test("no rate-limit status when the server is unthrottled", () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    expect(pool.listServers()[0].rateLimit).toBeUndefined();
+  });
+
+  test("reports the configured limit and its utilization", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "4/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "4/m", utilization: 0, queueDepth: 0 });
+
+    await pool.callTool("test", "my-tool", {});
+    await pool.callTool("test", "my-tool", {});
+
+    expect(pool.listServers()[0].rateLimit?.utilization).toBe(0.5);
+  });
+
+  test("throttles a burst beyond the window budget", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "2/200ms" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    // Fired in parallel so all three enter the limiter in the same tick — the
+    // third is deterministically over budget regardless of machine speed.
+    const waits: number[] = [];
+    const onRateLimitWait = (ms: number) => waits.push(ms);
+    await Promise.all(
+      [0, 1, 2].map(() => pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { onRateLimitWait })),
+    );
+
+    // Two calls fit the window; the third had to wait for a slot to free.
+    expect(waits.length).toBe(1);
+    expect(waits[0]).toBeGreaterThan(0);
+  });
+
+  test("falls back to MCX_RATE_LIMIT_<SERVER> when config omits the limit", () => {
+    const envVar = rateLimitEnvVar("my-server");
+    const previous = process.env[envVar];
+    process.env[envVar] = "7/m";
+    try {
+      const { connectFn } = mockConnectFn();
+      const pool = new ServerPool(makeConfig({ "my-server": { command: "echo" } }), undefined, connectFn, silentLogger);
+
+      expect(pool.listServers()[0].rateLimit?.limit).toBe("7/m");
+    } finally {
+      if (previous === undefined) delete process.env[envVar];
+      else process.env[envVar] = previous;
+    }
+  });
+
+  test("config wins over the env fallback", () => {
+    const envVar = rateLimitEnvVar("test");
+    const previous = process.env[envVar];
+    process.env[envVar] = "99/s";
+    try {
+      const { connectFn } = mockConnectFn();
+      const pool = new ServerPool(
+        makeConfig({ test: { command: "echo", rateLimit: "3/s" } }),
+        undefined,
+        connectFn,
+        silentLogger,
+      );
+
+      expect(pool.listServers()[0].rateLimit?.limit).toBe("3/s");
+    } finally {
+      if (previous === undefined) delete process.env[envVar];
+      else process.env[envVar] = previous;
+    }
+  });
+
+  test("a malformed limit fails the call loudly and is omitted from status", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "very fast" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow(/Invalid rate limit "very fast"/);
+    expect(pool.listServers()[0].rateLimit).toBeUndefined();
+  });
+
+  test("rebuilds the limiter when the configured spec changes", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "2/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("test", "my-tool", {});
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "2/m", utilization: 0.5, queueDepth: 0 });
+
+    pool.updateConfig(makeConfig({ test: { command: "echo", rateLimit: "10/m" } }));
+
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "10/m", utilization: 0, queueDepth: 0 });
   });
 });
