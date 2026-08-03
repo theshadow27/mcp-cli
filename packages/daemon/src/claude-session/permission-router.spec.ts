@@ -125,6 +125,10 @@ describe("PermissionRouter — rules", () => {
     );
   });
 
+  test("accepts a bare-server rule carrying an argument pattern", () => {
+    expect(() => new PermissionRouter("rules", [{ tool: "mcp__echo(:*)", action: "allow" }])).not.toThrow();
+  });
+
   test("multiple allow rules — first match wins", async () => {
     const rules: PermissionRule[] = [
       { tool: "Read", action: "allow" },

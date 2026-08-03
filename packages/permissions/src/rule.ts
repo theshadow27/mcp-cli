@@ -92,16 +92,22 @@ export function toToolPrefix(tool: string): string {
 /**
  * Validate a single rule pattern, returning an error message or null if valid.
  *
- * An argument pattern combined with an MCP tool-name wildcard is unsupported:
- * MCP tools take JSON input, not a command string, so the argument pattern has
- * nothing to match against and the rule would silently never match.
+ * An argument pattern combined with a `__*` tool-name wildcard is dead: the tool
+ * segment contains `*`, which `parsePattern()`'s tool regex cannot represent, so
+ * the whole string is kept as a literal tool name and compared for equality
+ * against the incoming tool name — which never matches.
+ *
+ * Note this deliberately does NOT reject the bare-server form
+ * (`mcp__atlassian(query:*)`). That form parses, and it matches whenever the
+ * tool input carries a `command` / `cmd` / `script` field via the unknown-tool
+ * fallback in the evaluator, so rejecting it would break working rules.
  */
 export function validateRulePattern(pattern: string): string | null {
   const match = pattern.match(/^([^()]+)\((.+)\)$/);
   if (!match) return null;
   const tool = match[1];
-  if (isToolWildcard(tool) || isBareMcpServerPattern(tool)) {
-    return `Invalid permission rule "${pattern}": argument patterns are not supported on MCP tool-name wildcards ("${tool}"). MCP tools take JSON input, not a command string, so this rule would never match. Use an exact tool name, or drop the argument pattern.`;
+  if (isToolWildcard(tool)) {
+    return `Invalid permission rule "${pattern}": argument patterns are not supported on MCP tool-name wildcards ("${tool}"). A wildcard tool segment cannot be combined with an argument pattern, so the whole string is treated as a literal tool name and matches nothing. Use an exact tool name, or drop the argument pattern.`;
   }
   return null;
 }
