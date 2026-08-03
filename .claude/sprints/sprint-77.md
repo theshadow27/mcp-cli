@@ -142,10 +142,30 @@ evidence was visible and under-weighted: every session showed `[RATE LIMITED]` i
 rule is **`lastError != null` invalidates the utilization reading — fail safe (freeze), not
 open (spawn)**, and a fleet-wide `[RATE LIMITED]` overrides a low utilization number.
 
-**Queued at freeze time (spawn in this order on resume):**
-1. `#1590` → review (high; 286 churn, 7 files, command+core+daemon) — PR 2941
-2. `#1750` → QA (low; 27 churn) — PR 2942
-3. `#1702` → QA once the reviewer's self-repair lands (currently `review:changes`) — PR 2927
+**Queued at freeze time (act in this order on resume, 14:00 EDT):**
+1. `#1540` — **self-repair + rebase in one pass** (PR 2934). Review found an empirical blocker:
+   `inboxFolderId` captures **Sent Items**, not the inbox, and persists it. Systematic, not
+   chance — OWA sends `DistinguishedFolderId:inbox` for the inbox, so the seed's
+   `select(.__type != "DistinguishedFolderId")` filters *to* non-inbox folders; every
+   concrete-id `FindConversation` request in the validation sample confirms. Capture reports
+   `missing: []` while `mcx site call owa inbox` silently returns the wrong folder. Reviewer
+   already located a verified replacement spec from `GetOwaUserConfiguration`'s authoritative
+   name→id table. Second blocker: vars are sticky with no invalidation (`{...loadVars(), ...vars}`
+   only adds; no `--clear`), so the wrong value is unremovable without hand-editing JSON.
+   PR went `DIRTY` when #1459 merged — the predicted `daemon/site/` hot-file collision, arriving
+   via merge order rather than the serialization edge. Rebase and repair together, not piecemeal.
+2. `#1924` — self-repair (PR 2931). All three documented envelope invariants are violable;
+   `enrichMonitorEvent` (`monitor-event.ts:630-640`) never strips `payload` and never validates
+   `severity`. Note #1939 is blocked on this and consumes the severity tag, so the invariant has
+   to actually hold before #1939 can be launched.
+3. `#1590` → review (high; 286 churn, 7 files, command+core+daemon) — PR 2941
+4. `#1750` → QA (low; 27 churn) — PR 2942
+5. `#1702` → QA (PR 2927, CI green). Carries `review:changes` from its own self-repair; the
+   verifying QA session owns the label swap. **Must not merge carrying `review:changes`.**
+
+Self-repairs above go to the session that wrote the review (context still loaded, sessions
+persist across the freeze) — but none of them may approve their own repair. A fresh QA session
+owns every pass/fail.
 
 **Running at freeze time (do not respawn):** `#2659` QA (PR 2929, `review:pass`, CLEAN),
 `#1540` review (PR 2934), `#1924` review (PR 2931), `#1459` QA (PR 2930), `#1702` reviewer
