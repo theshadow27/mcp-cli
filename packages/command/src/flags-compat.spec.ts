@@ -206,7 +206,7 @@ describe("flags-compat: parseResumeArgs --model (no flag-as-value check)", () =>
   it("accepts any non-empty value including flag-looking strings (current bug)", () => {
     // claude.ts parseResumeArgs: `if (!val)` — only checks emptiness, not startsWith("-")
     // When --model is followed by another flag like --wait, val = "--wait" which is truthy
-    // so it gets passed to resolveModelName. But ++i already consumed it.
+    // so it is stored as the model value. But ++i already consumed it.
     const r = parseResumeArgs(["wt", "--model", "sonnet"]);
     expect(r.model).toContain("sonnet");
     expect(r.error).toBeUndefined();
@@ -278,8 +278,7 @@ describe("flags-compat: parseAgentResumeArgs --model", () => {
     expect(r.error).toBe("--model requires a value");
   });
 
-  it("accepts a valid model string without resolveModelName (passes raw)", () => {
-    // agent.ts parseAgentResumeArgs does NOT call resolveModelName — stores raw
+  it("accepts a valid model string and stores it raw", () => {
     const r = parseAgentResumeArgs(["wt", "--model", "opus"]);
     expect(r.model).toBe("opus");
   });
@@ -327,14 +326,12 @@ describe("flags-compat: behavioral divergences between parsers", () => {
     expect(sharedResult.allow).toEqual(["Read"]);
   });
 
-  it("--model resolution: claude.ts calls resolveModelName, agent.ts passes raw", () => {
+  it("--model: both claude.ts and agent.ts store the raw value (#2659)", () => {
     const claudeResult = parseResumeArgs(["wt", "--model", "sonnet"]);
     const agentResult = parseAgentResumeArgs(["wt", "--model", "sonnet"]);
 
-    // claude.ts resolves shortname to full model ID
-    expect(claudeResult.model).toContain("sonnet");
-    expect(claudeResult.model?.length).toBeGreaterThan("sonnet".length);
-    // agent.ts stores raw value
+    // No local shortname→ID resolution on either path; the provider resolves the tier
+    expect(claudeResult.model).toBe("sonnet");
     expect(agentResult.model).toBe("sonnet");
   });
 
@@ -350,7 +347,6 @@ describe("flags-compat: behavioral divergences between parsers", () => {
     // But since ++i consumed "--wait", the --wait boolean is NOT set
     const claudeResult = parseResumeArgs(["wt", "--model", "--wait"]);
     // "--wait" is truthy, so no error — it's accepted as a model name
-    // resolveModelName("--wait") likely returns "--wait" as-is (unknown pass-through)
     expect(claudeResult.error).toBeUndefined();
     expect(claudeResult.wait).toBe(false); // --wait was consumed as model value
   });

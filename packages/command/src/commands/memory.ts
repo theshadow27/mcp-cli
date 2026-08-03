@@ -18,7 +18,6 @@ import {
   isLookupFailure,
   lookupFailure,
   resolveGitRootOrCwd,
-  resolveModelName,
   resolveSourceClaudePath,
   spawnCaptureSync,
 } from "@mcp-cli/core";
@@ -75,7 +74,8 @@ export interface MemoryDeps {
   exit: (code: number) => never;
 }
 
-const HAIKU_MODEL = resolveModelName("haiku");
+/** Tier alias passed verbatim to `claude --model`; the CLI resolves it (#2659). */
+const HAIKU_MODEL = "haiku";
 
 /** Upper bound on the Haiku audit call. A hung `claude --print` must fail loud, not hang forever (#2884). */
 const HAIKU_TIMEOUT_MS = 120_000;

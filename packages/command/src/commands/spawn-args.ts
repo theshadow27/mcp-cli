@@ -6,7 +6,7 @@
  */
 
 import { resolve } from "node:path";
-import { looksLikeToolName, resolveModelName, validateAllowPatterns } from "@mcp-cli/core";
+import { looksLikeToolName, validateAllowPatterns } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 
 export { looksLikeToolName } from "@mcp-cli/core";
@@ -109,7 +109,7 @@ export function parseSharedSpawnArgs(
     if (Number.isNaN(timeout)) error ??= "--timeout must be a number";
   }
 
-  // Model: custom validation (startsWith("-") check + null/none/undefined guard)
+  // Model: passed through verbatim — the claude CLI resolves tier aliases (#2659)
   let model: string | undefined;
   if (flags.model !== undefined) {
     const val = flags.model as string;
@@ -118,7 +118,7 @@ export function parseSharedSpawnArgs(
     } else if (val.toLowerCase() === "null" || val.toLowerCase() === "none" || val.toLowerCase() === "undefined") {
       error ??= `--model "${val}" is not a valid model name (use: fable, opus, sonnet, haiku, or a full model ID)`;
     } else {
-      model = resolveModelName(val);
+      model = val;
     }
   }
 

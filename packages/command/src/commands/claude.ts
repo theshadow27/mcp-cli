@@ -26,7 +26,6 @@ import {
   parseWorktreeList,
   readWorktreeConfig,
   resolveEffectiveTools,
-  resolveModelName,
   resolveWorktreePath,
   spawnCaptureSync,
   updatePatchedClaude,
@@ -275,7 +274,7 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
 // ── Subcommands ──
 
 // Re-export for tests
-export { MODEL_SHORTNAMES, resolveModelName } from "@mcp-cli/core";
+export { MODEL_SHORTNAMES } from "@mcp-cli/core";
 
 export interface SpawnArgs extends SharedSpawnArgs {
   worktree: string | undefined;
@@ -681,7 +680,7 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
       if (!val) {
         modelError = "--model requires a value";
       } else {
-        model = resolveModelName(val);
+        model = val; // verbatim — the claude CLI resolves tier aliases (#2659)
       }
     } else {
       remaining.push(arg);

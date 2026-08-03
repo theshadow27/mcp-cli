@@ -27,7 +27,6 @@ import {
   parseSpawnArgs,
   parseWaitArgs,
   parseWorktreeList,
-  resolveModelName,
   resolveSessionId,
   resolveWorktree,
 } from "./claude";
@@ -277,14 +276,14 @@ describe("parseSpawnArgs", () => {
     expect(result.wait).toBe(false);
   });
 
-  test("parses --model with shortname", () => {
+  test("passes tier shortname through verbatim — no local ID resolution (#2659)", () => {
     const result = parseSpawnArgs(["--model", "sonnet", "--task", "x"]);
-    expect(result.model).toBe("claude-sonnet-4-6");
+    expect(result.model).toBe("sonnet");
   });
 
-  test("parses -m shorthand", () => {
+  test("parses -m shorthand verbatim", () => {
     const result = parseSpawnArgs(["-m", "haiku", "-t", "x"]);
-    expect(result.model).toBe("claude-haiku-4-5");
+    expect(result.model).toBe("haiku");
   });
 
   test("passes through full model ID", () => {
@@ -361,33 +360,17 @@ describe("parseSpawnArgs", () => {
   });
 });
 
-// ── resolveModelName ──
+// ── MODEL_SHORTNAMES ──
 
-describe("resolveModelName", () => {
-  test("resolves opus shortname", () => {
-    expect(resolveModelName("opus")).toBe("claude-opus-4-8");
+describe("MODEL_SHORTNAMES", () => {
+  test("is a shortname vocabulary, not a map to concrete model IDs (#2659)", () => {
+    expect([...MODEL_SHORTNAMES].sort()).toEqual(["fable", "haiku", "opus", "sonnet"]);
   });
 
-  test("resolves sonnet shortname", () => {
-    expect(resolveModelName("sonnet")).toBe("claude-sonnet-4-6");
-  });
-
-  test("resolves haiku shortname", () => {
-    expect(resolveModelName("haiku")).toBe("claude-haiku-4-5");
-  });
-
-  test("resolves fable shortname", () => {
-    expect(resolveModelName("fable")).toBe("claude-fable-5");
-  });
-
-  test("is case-insensitive", () => {
-    expect(resolveModelName("Opus")).toBe("claude-opus-4-8");
-    expect(resolveModelName("SONNET")).toBe("claude-sonnet-4-6");
-  });
-
-  test("passes through unknown model IDs", () => {
-    expect(resolveModelName("claude-opus-4-8")).toBe("claude-opus-4-8");
-    expect(resolveModelName("some-custom-model")).toBe("some-custom-model");
+  test("every --model value reaches the CLI unresolved", () => {
+    for (const tier of MODEL_SHORTNAMES) {
+      expect(parseSpawnArgs(["--model", tier, "--task", "x"]).model).toBe(tier);
+    }
   });
 });
 
@@ -873,7 +856,7 @@ describe("mcx claude spawn", () => {
       await cmdClaude(["spawn", "--task", "fix", "--model", "sonnet"], deps);
       expect(callTool).toHaveBeenCalledWith("claude_prompt", {
         prompt: "fix",
-        model: "claude-sonnet-4-6",
+        model: "sonnet",
         cwd: process.cwd(),
       });
     } finally {
@@ -1142,7 +1125,7 @@ describe("buildHeadedCommand", () => {
 
   test("includes model flag", () => {
     const result = buildHeadedCommand(parseSpawnArgs(["--task", "x", "--model", "sonnet"]));
-    expect(result).toBe("claude -p x --model claude-sonnet-4-6");
+    expect(result).toBe("claude -p x --model sonnet");
   });
 
   test("includes resolved allowedTools (additive with defaults)", () => {

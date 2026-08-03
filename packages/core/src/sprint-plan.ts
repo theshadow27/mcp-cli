@@ -20,7 +20,7 @@ import { MODEL_SHORTNAMES } from "./model";
  * forwarding a bad `--model` value.
  */
 function isRecognizedModel(value: string): boolean {
-  if (value in MODEL_SHORTNAMES) return true;
+  if (MODEL_SHORTNAMES.has(value)) return true;
   return /^claude-[a-z0-9.-]+$/.test(value);
 }
 
