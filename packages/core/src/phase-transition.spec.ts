@@ -1,24 +1,30 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Manifest } from "./manifest";
 import {
   DisallowedTransitionError,
   RegressionError,
+  TransitionLockBusyError,
   UnknownPhaseError,
+  appendAttempt,
   appendTransitionLog,
-  atomicWriteFileSync,
   commitTransition,
   historyTargets,
+  isCommitted,
   levenshtein,
   pruneStaleHistory,
   readAllTransitions,
   readTransitionHistory,
   suggestPhases,
+  transitionDbPath,
   validateTransition,
-  withTransitionLock,
+  withTransitionWriter,
 } from "./phase-transition";
+
+/** Short deadline for the deliberately-contended nested-lock test. */
+const NESTED_LOCK_TIMEOUT_MS = 50;
 
 const manifest: Manifest = {
   version: 1,
@@ -225,8 +231,10 @@ describe("transition log I/O", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("read on missing file returns empty", () => {
+  test("read on missing log returns empty without creating a database", () => {
     expect(readTransitionHistory(join(dir, "nope.jsonl"), "#1")).toEqual([]);
+    // A read must not materialise storage as a side effect.
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   test("append then read", () => {
@@ -240,29 +248,25 @@ describe("transition log I/O", () => {
     expect(historyTargets(entries)).toEqual(["impl", "qa"]);
   });
 
-  test("filters by workItemId", () => {
+  test("append creates the database beside the log path", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+    expect(transitionDbPath(log)).toBe(join(dir, "transitions.db"));
+    // No jsonl is written any more, and the rollback journal is gone post-commit.
+    expect(readdirSync(dir)).toEqual(["transitions.db"]);
+  });
+
+  test("filters by workItemId, including the null work item", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, { ts: "t1", workItemId: null, from: null, to: "impl" });
     appendTransitionLog(log, { ts: "t2", workItemId: "#99", from: null, to: "qa" });
     expect(readTransitionHistory(log, null).length).toBe(1);
+    expect(readTransitionHistory(log, null)[0].to).toBe("impl");
     expect(readTransitionHistory(log, "#99").length).toBe(1);
+    expect(readTransitionHistory(log, "#99")[0].to).toBe("qa");
   });
 
-  test("skips malformed lines and reports them via onCorrupt", () => {
-    const log = join(dir, "transitions.jsonl");
-    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
-    // Corrupt the file with a bad line
-    require("node:fs").appendFileSync(log, "not-json\n", "utf-8");
-    appendTransitionLog(log, { ts: "t2", workItemId: "#1", from: "impl", to: "qa" });
-    const corrupt: Array<{ line: number; text: string }> = [];
-    const entries = readTransitionHistory(log, "#1", (lineNumber, line) => {
-      corrupt.push({ line: lineNumber, text: line });
-    });
-    expect(historyTargets(entries)).toEqual(["impl", "qa"]);
-    expect(corrupt).toEqual([{ line: 2, text: "not-json" }]);
-  });
-
-  test("readAllTransitions returns every entry regardless of workItemId", () => {
+  test("readAllTransitions returns every entry in insertion order", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
     appendTransitionLog(log, { ts: "t2", workItemId: "#2", from: null, to: "impl" });
@@ -272,11 +276,11 @@ describe("transition log I/O", () => {
     expect(all.map((e) => e.ts)).toEqual(["t1", "t2", "t3"]);
   });
 
-  test("readAllTransitions on missing file returns empty", () => {
+  test("readAllTransitions on missing log returns empty", () => {
     expect(readAllTransitions(join(dir, "nope.jsonl"))).toEqual([]);
   });
 
-  test("records force message", () => {
+  test("records force message and status", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, {
       ts: "t1",
@@ -284,13 +288,253 @@ describe("transition log I/O", () => {
       from: "adversarial-review",
       to: "impl",
       forceMessage: "rewriting from scratch",
+      status: "committed",
     });
+    appendTransitionLog(log, { ts: "t2", workItemId: "#1", from: "impl", to: "qa", status: "attempted" });
     const entries = readTransitionHistory(log, "#1");
     expect(entries[0].forceMessage).toBe("rewriting from scratch");
+    expect(entries[0].status).toBe("committed");
+    expect(entries[1].status).toBe("attempted");
+    // An entry written without a status stays status-less (legacy semantics).
+    expect(entries[1].forceMessage).toBeUndefined();
+    expect(isCommitted(entries[0])).toBe(true);
+    expect(isCommitted(entries[1])).toBe(false);
   });
 });
 
-describe("commitTransition / withTransitionLock (issue #1328)", () => {
+describe("bounded reads and filter pushdown (#1375)", () => {
+  let dir: string;
+  let log: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-tail-"));
+    log = join(dir, "transitions.jsonl");
+    for (let i = 0; i < 10; i++) {
+      appendTransitionLog(log, {
+        ts: `t${i}`,
+        workItemId: i % 2 === 0 ? "#even" : "#odd",
+        from: null,
+        to: `step-${i}`,
+        ...(i === 7 ? { forceMessage: "forced seven" } : {}),
+      });
+    }
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("tail returns the newest N entries, still oldest-first", () => {
+    const tailed = readAllTransitions(log, { tail: 3 });
+    expect(tailed.map((e) => e.to)).toEqual(["step-7", "step-8", "step-9"]);
+  });
+
+  test("tail larger than the table returns everything", () => {
+    expect(readAllTransitions(log, { tail: 500 })).toHaveLength(10);
+  });
+
+  test("tail of zero or negative returns empty", () => {
+    expect(readAllTransitions(log, { tail: 0 })).toEqual([]);
+    expect(readAllTransitions(log, { tail: -5 })).toEqual([]);
+  });
+
+  test("omitting tail preserves the unbounded default", () => {
+    expect(readAllTransitions(log)).toHaveLength(10);
+  });
+
+  test("workItemId filter is applied before the tail, not after", () => {
+    // Filtering after a tail would yield fewer than 3 rows; pushdown yields 3.
+    const tailed = readAllTransitions(log, { workItemId: "#odd", tail: 3 });
+    expect(tailed.map((e) => e.to)).toEqual(["step-5", "step-7", "step-9"]);
+  });
+
+  test("null workItemId means no filter (matches filterTransitionLog semantics)", () => {
+    expect(readAllTransitions(log, { workItemId: null })).toHaveLength(10);
+  });
+
+  test("forcedOnly filters to entries carrying a forceMessage", () => {
+    const forced = readAllTransitions(log, { forcedOnly: true });
+    expect(forced).toHaveLength(1);
+    expect(forced[0].forceMessage).toBe("forced seven");
+  });
+
+  test("forcedOnly composes with workItemId", () => {
+    expect(readAllTransitions(log, { forcedOnly: true, workItemId: "#odd" })).toHaveLength(1);
+    expect(readAllTransitions(log, { forcedOnly: true, workItemId: "#even" })).toHaveLength(0);
+  });
+
+  test("readTransitionHistory accepts a tail", () => {
+    const tailed = readTransitionHistory(log, "#even", undefined, { tail: 2 });
+    expect(tailed.map((e) => e.to)).toEqual(["step-6", "step-8"]);
+  });
+});
+
+describe("legacy jsonl migration (#1328)", () => {
+  let dir: string;
+  let log: string;
+
+  const jsonlLine = (e: Record<string, unknown>) => `${JSON.stringify(e)}\n`;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-migrate-"));
+    log = join(dir, "transitions.jsonl");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("imports an existing jsonl on first open, preserving order and fields", () => {
+    writeFileSync(
+      log,
+      jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl", status: "committed" }) +
+        jsonlLine({ ts: "t2", workItemId: "#7", from: "impl", to: "qa", status: "attempted" }) +
+        jsonlLine({ ts: "t3", workItemId: "#8", from: null, to: "impl", forceMessage: "why not" }),
+      "utf-8",
+    );
+
+    const all = readAllTransitions(log);
+    expect(all).toHaveLength(3);
+    expect(all.map((e) => e.ts)).toEqual(["t1", "t2", "t3"]);
+    expect(all[0]).toEqual({ ts: "t1", workItemId: "#7", from: null, to: "impl", status: "committed" });
+    expect(all[1].status).toBe("attempted");
+    expect(all[2]).toEqual({ ts: "t3", workItemId: "#8", from: null, to: "impl", forceMessage: "why not" });
+  });
+
+  test("legacy entry without status round-trips as status-less, and still gates", () => {
+    writeFileSync(log, jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl" }), "utf-8");
+    const entries = readTransitionHistory(log, "#7");
+    expect(entries[0].status).toBeUndefined();
+    expect(isCommitted(entries[0])).toBe(true);
+  });
+
+  test("jsonl is parked as .migrated, never deleted", () => {
+    writeFileSync(log, jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl" }), "utf-8");
+    readAllTransitions(log);
+
+    expect(existsSync(log)).toBe(false);
+    expect(existsSync(`${log}.migrated`)).toBe(true);
+    expect(readFileSync(`${log}.migrated`, "utf-8")).toContain('"to":"impl"');
+    expect(readdirSync(dir).sort()).toEqual(["transitions.db", "transitions.jsonl.migrated"]);
+  });
+
+  test("a second migration does not overwrite an existing .migrated file", () => {
+    writeFileSync(log, jsonlLine({ ts: "first", workItemId: "#7", from: null, to: "impl" }), "utf-8");
+    readAllTransitions(log);
+    // A stale binary writes a fresh jsonl after the first migration.
+    writeFileSync(log, jsonlLine({ ts: "second", workItemId: "#7", from: "impl", to: "qa" }), "utf-8");
+    readAllTransitions(log);
+
+    expect(readFileSync(`${log}.migrated`, "utf-8")).toContain('"ts":"first"');
+    const parked = readdirSync(dir).filter((n) => n.includes(".migrated"));
+    expect(parked).toHaveLength(2);
+    // Both generations of entries are in the store.
+    expect(readAllTransitions(log).map((e) => e.ts)).toEqual(["first", "second"]);
+  });
+
+  test("reopening does not re-import (no duplicate rows)", () => {
+    writeFileSync(
+      log,
+      jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl" }) +
+        jsonlLine({ ts: "t2", workItemId: "#7", from: "impl", to: "qa" }),
+      "utf-8",
+    );
+
+    expect(readAllTransitions(log)).toHaveLength(2);
+    expect(readAllTransitions(log)).toHaveLength(2);
+    expect(readTransitionHistory(log, "#7")).toHaveLength(2);
+  });
+
+  test("entries appended after migration follow the imported history", () => {
+    writeFileSync(log, jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl" }), "utf-8");
+    appendTransitionLog(log, { ts: "t2", workItemId: "#7", from: "impl", to: "qa" });
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "qa"]);
+  });
+
+  test("corrupt lines are reported with line numbers and good lines still import", () => {
+    writeFileSync(
+      log,
+      `${jsonlLine({ ts: "t1", workItemId: "#1", from: null, to: "impl" })}not-json\n${jsonlLine({
+        ts: "t2",
+        workItemId: "#1",
+        from: "impl",
+        to: "qa",
+      })}`,
+      "utf-8",
+    );
+
+    const corrupt: Array<{ line: number; text: string }> = [];
+    const entries = readTransitionHistory(log, "#1", (lineNumber, line) => {
+      corrupt.push({ line: lineNumber, text: line });
+    });
+
+    expect(historyTargets(entries)).toEqual(["impl", "qa"]);
+    expect(corrupt).toEqual([{ line: 2, text: "not-json" }]);
+  });
+
+  test("a truncated final line does not lose the preceding entries", () => {
+    // The crash-mid-append case from #1328: last line is a partial JSON object.
+    writeFileSync(
+      log,
+      `${jsonlLine({ ts: "t1", workItemId: "#1", from: null, to: "impl" })}{"ts":"t2","workItemId":"#1","fr`,
+      "utf-8",
+    );
+    const corrupt: number[] = [];
+    const entries = readTransitionHistory(log, "#1", (lineNumber) => corrupt.push(lineNumber));
+    expect(historyTargets(entries)).toEqual(["impl"]);
+    expect(corrupt).toEqual([2]);
+  });
+
+  test("an empty jsonl migrates to an empty store", () => {
+    writeFileSync(log, "", "utf-8");
+    expect(readAllTransitions(log)).toEqual([]);
+    expect(existsSync(`${log}.migrated`)).toBe(true);
+  });
+
+  test("a staging file abandoned by a crashed import is recovered on next open", () => {
+    // Simulates a crash after the atomic rename-claim but before COMMIT: the
+    // data lives only in the staging file, and must not be stranded there.
+    writeFileSync(
+      join(dir, `transitions.jsonl.importing.${Date.now()}-abcd1234`),
+      jsonlLine({ ts: "t1", workItemId: "#7", from: null, to: "impl" }),
+      "utf-8",
+    );
+
+    expect(readAllTransitions(log).map((e) => e.ts)).toEqual(["t1"]);
+    expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
+  });
+
+  test("concurrent first-open imports the jsonl exactly once", async () => {
+    // Every worker races to migrate the same jsonl and then appends one entry.
+    // A double import would inflate the count; a lost import would deflate it.
+    const workerPath = join(import.meta.dir, "phase-lock-test-worker.ts");
+    writeFileSync(
+      log,
+      jsonlLine({ ts: "seed-1", workItemId: "#race", from: null, to: "seed-a" }) +
+        jsonlLine({ ts: "seed-2", workItemId: "#race", from: "seed-a", to: "seed-b" }),
+      "utf-8",
+    );
+
+    const procs = Array.from({ length: 8 }, (_, i) =>
+      Bun.spawn(["bun", "run", workerPath, log, String(i)], { stderr: "pipe" }),
+    );
+    const results = await Promise.all(
+      procs.map(async (p) => ({ code: await p.exited, stderr: await new Response(p.stderr).text() })),
+    );
+    const failed = results.filter((r) => r.code !== 0);
+    expect(failed.map((r) => r.stderr).join("\n")).toBe("");
+
+    // The imported history must precede every concurrently-appended entry:
+    // a worker that raced past a half-finished import would both reorder the
+    // log and validate its own transition against an empty history.
+    const entries = readTransitionHistory(log, "#race");
+    expect(entries).toHaveLength(10);
+    expect(entries.slice(0, 2).map((e) => e.ts)).toEqual(["seed-1", "seed-2"]);
+
+    // Exactly one park, and no staging file left behind.
+    expect(readdirSync(dir).sort()).toEqual(["transitions.db", "transitions.jsonl.migrated"]);
+  }, 30_000);
+});
+
+describe("commitTransition / withTransitionWriter (issue #1328)", () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "mcx-phase-commit-"));
@@ -318,22 +562,43 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
     expect(() => commitTransition(log, { manifest, from: null, target: "done", workItemId: "#1" })).toThrow(
       DisallowedTransitionError,
     );
-    // log must not have the bad append
+    // The failed transaction must roll back, leaving no partial append.
     expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl"]);
   });
 
-  test("withTransitionLock serializes concurrent writers; no history is lost", async () => {
+  test("commitTransition ignores attempted entries when inferring from", () => {
+    const log = join(dir, "transitions.jsonl");
+    commitTransition(log, { manifest, from: null, target: "impl", workItemId: "#1" });
+    appendAttempt(log, { workItemId: "#1", from: "impl", target: "needs-attention" });
+    // The attempt must not become the inferred `from`.
+    const r = commitTransition(log, { manifest, from: null, target: "qa", workItemId: "#1" });
+    expect(r.from).toBe("impl");
+  });
+
+  test("commitTransition records the force message", () => {
+    const log = join(dir, "transitions.jsonl");
+    const r = commitTransition(log, {
+      manifest,
+      from: null,
+      target: "done",
+      workItemId: "#1",
+      force: { message: "skipping ahead" },
+    });
+    expect(r.forced).toBe(true);
+    expect(readTransitionHistory(log, "#1")[0].forceMessage).toBe("skipping ahead");
+  });
+
+  test("concurrent writers are serialised; no history is lost or torn", async () => {
     const log = join(dir, "transitions.jsonl");
     const workerPath = join(import.meta.dir, "phase-lock-test-worker.ts");
 
-    // Spawn 10 concurrent child processes. Each process independently
-    // reads the tail and appends under withTransitionLock. This is actual
-    // OS-level concurrency — Promise.all of synchronous fn() cannot stress
-    // O_EXCL contention since JS is single-threaded.
+    // Spawn 10 concurrent child processes. Each independently reads the tail
+    // and appends inside one write transaction. This is actual OS-level
+    // concurrency — Promise.all of synchronous calls cannot stress it, since
+    // JS is single-threaded.
     //
-    // Without the lock, concurrent reads produce stale history snapshots:
+    // Without serialisation, concurrent reads produce stale history snapshots:
     // multiple writers see the same tail and append conflicting `from` values.
-    // With the lock, each writer commits before the next reads.
     const procs = Array.from({ length: 10 }, (_, i) => Bun.spawn(["bun", "run", workerPath, log, String(i)]));
     const exitCodes = await Promise.all(procs.map((p) => p.exited));
     expect(exitCodes.every((c) => c === 0)).toBe(true);
@@ -341,7 +606,7 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
     const entries = readTransitionHistory(log, "#race");
     expect(entries.length).toBe(10);
     // Every entry's `from` must equal the previous entry's `to` — the
-    // invariant broken by an unlocked read/append race.
+    // invariant broken by an unserialised read/append race.
     for (let i = 0; i < entries.length; i++) {
       if (i === 0) {
         expect(entries[i].from).toBeNull();
@@ -352,47 +617,47 @@ describe("commitTransition / withTransitionLock (issue #1328)", () => {
     // Every `to` is unique — no double-write.
     const tos = entries.map((e) => e.to);
     expect(new Set(tos).size).toBe(tos.length);
-  }, 20_000); // serialized under lock; 10 subprocess spawns worst-case ~10s
+  }, 30_000);
 
-  test("withTransitionLock rejects async fn to prevent early lock release", () => {
+  test("withTransitionWriter rejects async fn to prevent an early commit", () => {
     const log = join(dir, "transitions.jsonl");
-    expect(() => withTransitionLock(log, () => Promise.resolve() as unknown as undefined)).toThrow(
-      /withTransitionLock: fn must be synchronous/,
+    expect(() => withTransitionWriter(log, () => Promise.resolve() as unknown as undefined)).toThrow(
+      /withTransitionWriter: fn must be synchronous/,
     );
   });
 
-  test("withTransitionLock times out when lock is held", () => {
+  test("withTransitionWriter rolls back when fn throws", () => {
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+
+    expect(() =>
+      withTransitionWriter(log, (writer) => {
+        writer.insert({ ts: "t2", workItemId: "#1", from: "impl", to: "qa" });
+        throw new Error("handler blew up");
+      }),
+    ).toThrow("handler blew up");
+
+    expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl"]);
+  });
+
+  test("writer.history sees uncommitted inserts from the same transaction", () => {
+    const log = join(dir, "transitions.jsonl");
+    withTransitionWriter(log, (writer) => {
+      writer.insert({ ts: "t1", workItemId: "#1", from: null, to: "impl" });
+      expect(historyTargets(writer.history("#1"))).toEqual(["impl"]);
+    });
+    expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl"]);
+  });
+
+  test("a held write lock surfaces TransitionLockBusyError, not a silent skip", () => {
     const log = join(dir, "transitions.jsonl");
     expect(() =>
-      withTransitionLock(
-        log,
-        () => {
-          // Inner attempt with short timeout should fail — lock is held.
-          withTransitionLock(log, () => undefined, { timeoutMs: 50 });
-        },
-        { timeoutMs: 1000 },
-      ),
-    ).toThrow(/could not acquire transition lock/);
-  });
-
-  test("withTransitionLock reaps stale lockfile", () => {
-    const log = join(dir, "transitions.jsonl");
-    const lockPath = `${log}.lock`;
-    require("node:fs").mkdirSync(dir, { recursive: true });
-    require("node:fs").writeFileSync(lockPath, "", "utf-8");
-    // Backdate lock mtime to be "stale"
-    const past = new Date(Date.now() - 60_000);
-    require("node:fs").utimesSync(lockPath, past, past);
-
-    let ran = false;
-    withTransitionLock(
-      log,
-      () => {
-        ran = true;
-      },
-      { staleMs: 1000, timeoutMs: 500 },
-    );
-    expect(ran).toBe(true);
+      withTransitionWriter(log, () => {
+        // Nested call is a second connection contending for the same write
+        // lock; with a short timeout it must fail loudly.
+        withTransitionWriter(log, () => undefined, { timeoutMs: NESTED_LOCK_TIMEOUT_MS });
+      }),
+    ).toThrow(TransitionLockBusyError);
   });
 });
 
@@ -449,7 +714,7 @@ describe("pruneStaleHistory (#2463)", () => {
     expect(remaining[1].ts).toBe("2026-06-01T00:00:00Z");
   });
 
-  test("returns 0 and does not rewrite when no entries match", () => {
+  test("returns 0 and changes nothing when no entries match", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, {
       ts: "2026-06-01T00:00:00Z",
@@ -466,16 +731,15 @@ describe("pruneStaleHistory (#2463)", () => {
     expect(readAllTransitions(log)).toHaveLength(1);
   });
 
-  test("returns 0 when log file does not exist (ENOENT)", () => {
+  test("returns 0 when no log exists", () => {
     const log = join(dir, "nonexistent", "transitions.jsonl");
     const pruned = pruneStaleHistory(log, "#42", new Date());
     expect(pruned).toBe(0);
   });
 
-  test("returns 0 when log is empty", () => {
+  test("returns 0 when the store is empty", () => {
     const log = join(dir, "transitions.jsonl");
-    require("node:fs").mkdirSync(dir, { recursive: true });
-    require("node:fs").writeFileSync(log, "", "utf-8");
+    writeFileSync(log, "", "utf-8");
 
     const pruned = pruneStaleHistory(log, "#42", new Date());
     expect(pruned).toBe(0);
@@ -503,7 +767,7 @@ describe("pruneStaleHistory (#2463)", () => {
     expect(readAllTransitions(log)).toHaveLength(0);
   });
 
-  test("preserves attempted entries older than cutoff for other work items", () => {
+  test("prunes attempted entries too, and only for the named work item", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, {
       ts: "2026-01-01T00:00:00Z",
@@ -527,7 +791,18 @@ describe("pruneStaleHistory (#2463)", () => {
     expect(remaining[0].workItemId).toBe("#50");
   });
 
-  test("rewrite leaves no temp files behind (#2685)", () => {
+  test("keeps entries whose ts is unparseable rather than pruning them", () => {
+    // `ts` is caller-supplied; an unparseable value must not be silently
+    // treated as "infinitely old" and deleted.
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "not-a-date", workItemId: "#42", from: null, to: "impl", status: "committed" });
+
+    const pruned = pruneStaleHistory(log, "#42", new Date("2026-06-01T00:00:00Z"));
+    expect(pruned).toBe(0);
+    expect(readAllTransitions(log)).toHaveLength(1);
+  });
+
+  test("prune leaves no journal or temp files behind (#2685)", () => {
     const log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, {
       ts: "2026-01-01T00:00:00Z",
@@ -539,64 +814,6 @@ describe("pruneStaleHistory (#2463)", () => {
 
     const pruned = pruneStaleHistory(log, "#42", new Date("2026-06-01T00:00:00Z"));
     expect(pruned).toBe(1);
-    expect(readdirSync(dir).sort()).toEqual(["transitions.jsonl"]);
-  });
-});
-
-describe("atomicWriteFileSync (#2685)", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("replaces target content and removes the temp file", () => {
-    const target = join(dir, "log.jsonl");
-    writeFileSync(target, "old\n", "utf-8");
-
-    atomicWriteFileSync(target, "new\n");
-
-    expect(readFileSync(target, "utf-8")).toBe("new\n");
-    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
-  });
-
-  test("creates parent directories when missing", () => {
-    const target = join(dir, "nested", "deep", "log.jsonl");
-    atomicWriteFileSync(target, "content\n");
-    expect(readFileSync(target, "utf-8")).toBe("content\n");
-  });
-
-  test("crash mid-write: target keeps old content, partial file never observed", () => {
-    const target = join(dir, "log.jsonl");
-    writeFileSync(target, "old-line-1\nold-line-2\n", "utf-8");
-
-    const crashingWrite = (path: string, content: string, encoding: "utf-8") => {
-      writeFileSync(path, content.slice(0, 5), encoding);
-      throw new Error("simulated crash mid-write");
-    };
-
-    expect(() => atomicWriteFileSync(target, "new-line-1\nnew-line-2\n", crashingWrite)).toThrow(
-      "simulated crash mid-write",
-    );
-
-    expect(readFileSync(target, "utf-8")).toBe("old-line-1\nold-line-2\n");
-    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
-  });
-
-  test("crash before any bytes written: target untouched, no temp leftovers", () => {
-    const target = join(dir, "log.jsonl");
-    writeFileSync(target, "old\n", "utf-8");
-
-    const failingWrite = () => {
-      throw new Error("ENOSPC: no space left on device");
-    };
-
-    expect(() => atomicWriteFileSync(target, "new\n", failingWrite)).toThrow("ENOSPC");
-    expect(readFileSync(target, "utf-8")).toBe("old\n");
-    expect(readdirSync(dir).sort()).toEqual(["log.jsonl"]);
+    expect(readdirSync(dir).sort()).toEqual(["transitions.db"]);
   });
 });

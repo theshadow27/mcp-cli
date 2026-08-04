@@ -5,7 +5,7 @@
  *   - `install` (#1291): resolves sources in the manifest, hashes them,
  *     extracts phase metadata, writes `.mcx.lock`.
  *   - `run <target>` (#1293): validates the transition against the manifest
- *     graph, appends it to `.mcx/transitions.jsonl`, prints "approved".
+ *     graph, appends it to `.mcx/transitions.db`, prints "approved".
  *   - `check` (#1292): detects drift between `.mcx.lock` and on-disk sources.
  *   - `list`: prints all declared phases from the manifest.
  *
@@ -362,6 +362,8 @@ export interface PhaseLogOptions {
   workItemId: string | null;
   forcedOnly: boolean;
   json: boolean;
+  /** Show only the newest N transitions; null = unbounded. */
+  tail: number | null;
 }
 
 export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
@@ -369,6 +371,7 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
     "work-item": { type: "string" },
     "forced-only": { type: "boolean" },
     json: { type: "boolean" },
+    tail: { type: "string" },
   });
 
   if (errors.length > 0) {
@@ -381,14 +384,28 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
   const workItemId = (flags["work-item"] as string | undefined) ?? null;
   if (workItemId !== null && workItemId === "") throw new Error("--work-item requires a non-empty id");
 
+  const rawTail = flags.tail as string | undefined;
+  let tail: number | null = null;
+  if (rawTail !== undefined) {
+    if (!/^\d+$/.test(rawTail)) throw new Error("--tail requires a non-negative integer");
+    tail = Number(rawTail);
+  }
+
   return {
     workItemId,
     forcedOnly: (flags["forced-only"] as boolean | undefined) ?? false,
     json: (flags.json as boolean | undefined) ?? false,
+    tail,
   };
 }
 
-/** Apply filters from options; return newest-first. */
+/**
+ * Present transition entries newest-first.
+ *
+ * The filters are pushed into SQL by `readAllTransitions` (#1375), so this is
+ * the display-order step; the predicates are kept here so the function is
+ * correct for any caller that hands it an unfiltered list.
+ */
 export function filterTransitionLog(
   entries: readonly TransitionLogEntry[],
   opts: { workItemId?: string | null; forcedOnly?: boolean },
@@ -429,6 +446,14 @@ export function formatTransitionLog(entries: readonly TransitionLogEntry[]): str
   return out;
 }
 
+/**
+ * Locator for a repo's transition log.
+ *
+ * Still the historical `.mcx/transitions.jsonl` path: the store is SQLite now
+ * (`.mcx/transitions.db`, see `transitionDbPath`), but every API takes the
+ * jsonl path as the key so existing callers and any leftover jsonl awaiting
+ * migration resolve to the same store.
+ */
 export function transitionLogPath(repoDir: string): string {
   return join(repoDir, ".mcx", "transitions.jsonl");
 }
@@ -912,7 +937,13 @@ export async function cmdPhase(
 
     if (sub === "log") {
       const opts = parsePhaseLogArgs(args.slice(1));
-      const entries = filterTransitionLog(readAllTransitions(transitionLogPath(stateCwd())), opts);
+      // Filters and --tail are pushed into SQL rather than read-then-filter.
+      const rows = readAllTransitions(transitionLogPath(stateCwd()), {
+        workItemId: opts.workItemId,
+        forcedOnly: opts.forcedOnly,
+        ...(opts.tail !== null ? { tail: opts.tail } : {}),
+      });
+      const entries = filterTransitionLog(rows, opts);
       if (opts.json) {
         for (const e of entries) d.log(JSON.stringify(e));
       } else if (entries.length === 0) {
@@ -1239,7 +1270,7 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
  *      the transition log is empty (#1522). Early-exit on missing id.
  *   3. Pre-validate the transition against committed history so bogus
  *      moves fail fast before we bundle or dispatch anything.
- *   4. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *   4. Append an `"attempted"` entry to `.mcx/transitions.db`. This
  *      captures attempt evidence from ANY branch, including cases that
  *      branch-guard rejects or handlers crash. Attempted entries are
  *      ignored by graph-walk / regression checks (#1407). Note: early
@@ -1901,9 +1932,10 @@ Subcommands:
       5-step orchestrator sequence of phase run + update + spawn + state_set.
       Exits 0 on wait/in-flight/spawn; exits 2 on cycle cap (8 iterations).
 
-  mcx phase log [--work-item <id>] [--forced-only] [--json]
-      Print transitions from .mcx/transitions.jsonl, newest first.
+  mcx phase log [--work-item <id>] [--forced-only] [--tail <n>] [--json]
+      Print transitions from .mcx/transitions.db, newest first.
       --forced-only shows only entries with a --force justification.
+      --tail <n> shows only the newest n transitions after filtering.
       --json emits one JSON object per line for piping.`);
 }
 

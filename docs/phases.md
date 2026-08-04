@@ -428,8 +428,10 @@ mcx phase run <target> \           # validate + log a transition
 mcx phase run <name> --dry-run     # execute the handler with a logging proxy
 ```
 
-Transitions are logged to `.mcx/transitions.jsonl`. Disallowed or regressive
-transitions fail unless `--force "<message>"` is supplied.
+Transitions are logged to `.mcx/transitions.db` (SQLite). A pre-existing
+`.mcx/transitions.jsonl` is imported on first open and parked as
+`.mcx/transitions.jsonl.migrated`. Disallowed or regressive transitions fail
+unless `--force "<message>"` is supplied.
 
 ### Dry-run limitations
 
