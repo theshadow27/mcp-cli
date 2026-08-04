@@ -6,6 +6,8 @@
  * worker has booted) import this list.
  */
 
+import { DEFAULT_CAPTURE_SCAN_LIMIT, MAX_CAPTURE_SCAN_LIMIT } from "./capture";
+
 export interface SiteToolDef {
   name: string;
   description: string;
@@ -208,13 +210,21 @@ export const SITE_TOOLS: SiteToolDef[] = [
     description:
       "Extract per-account values (declared as captureVars in the site config) from sniffer output into " +
       "sites/<site>/vars.json, so account-specific ids don't have to be copied out of browser DevTools. " +
-      "For OWA this captures the concrete BaseFolderId and the x-anchormailbox PUID. Requires that the " +
-      "browser session has recorded traffic (captureMode 'filtered' or 'firehose').",
+      "For OWA this captures the concrete inbox BaseFolderId and the x-anchormailbox routing value. Requires " +
+      "that the browser session has recorded traffic (captureMode 'filtered' or 'firehose'). Each declared " +
+      "name is re-derived from scratch, so a stale value never survives a re-capture; pass clear to drop all of them.",
     inputSchema: {
       type: "object",
       properties: {
         site: { type: "string" },
-        limit: { type: "number", description: "Max capture files to scan, newest first (default 200)" },
+        limit: {
+          type: "number",
+          description: `Max capture files to scan, newest first (default ${DEFAULT_CAPTURE_SCAN_LIMIT}, clamped to ${MAX_CAPTURE_SCAN_LIMIT})`,
+        },
+        clear: {
+          type: "boolean",
+          description: "Delete the site's captured vars instead of capturing, so a wrong value can be invalidated",
+        },
       },
       required: ["site"],
     },

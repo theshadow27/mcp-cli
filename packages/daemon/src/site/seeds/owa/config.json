@@ -9,9 +9,9 @@
   "captureVars": [
     {
       "name": "inboxFolderId",
-      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias.",
-      "urlMatch": "action=FindConversation",
-      "jq": ".requestBody | objects | .Body.ParentFolderId.BaseFolderId? | objects | select(.__type != \"DistinguishedFolderId:#Exchange\") | .Id | strings"
+      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias. Read from the authoritative DefaultFolderNames/DefaultFolderIds table in the session config response — the folder a request happens to target is whichever folder was last browsed, so request traffic cannot identify the inbox.",
+      "urlMatch": "action=GetOwaUserConfiguration",
+      "jq": ".responseBody | objects | .SessionSettings | objects | (.DefaultFolderNames // []) as $names | (.DefaultFolderIds // []) as $ids | ($names | index(\"inbox\")) as $ix | select($ix != null) | $ids[$ix] | objects | .Id | strings"
     },
     {
       "name": "anchorMailbox",

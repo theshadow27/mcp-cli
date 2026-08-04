@@ -9,7 +9,11 @@ import {
   applyJqInput,
   applyJqOutput,
   applyVarHeaders,
+  isSafeHeaderValue,
 } from "./transforms";
+
+const NUL = String.fromCharCode(0);
+const DEL = String.fromCharCode(0x7f);
 
 const BASE_CALL: NamedCall = { name: "t", url: "https://e.example/x", method: "POST" };
 const BASE_RESOLVED: ResolvedCall = {
@@ -125,6 +129,34 @@ describe("applyVarHeaders", () => {
     const resolved = { ...BASE_RESOLVED, headers: { a: "plain", b: "also plain" } };
     expect(applyVarHeaders(resolved, {}).headers).toEqual({ a: "plain", b: "also plain" });
     expect(applyVarHeaders(resolved, {}).headers).toEqual({ a: "plain", b: "also plain" });
+  });
+
+  test("drops a header rather than letting a captured CRLF forge another header", () => {
+    const resolved = { ...BASE_RESOLVED, headers: { "x-anchormailbox": "${anchorMailbox}", keep: "plain" } };
+    const out = applyVarHeaders(resolved, { anchorMailbox: "id\r\nx-injected: 1" });
+    expect(out.headers).toEqual({ keep: "plain" });
+  });
+
+  test("drops a header whose captured var carries any other control character", () => {
+    const resolved = { ...BASE_RESOLVED, headers: { h: "${v}" } };
+    expect(applyVarHeaders(resolved, { v: `a${NUL}b` }).headers).toEqual({});
+    expect(applyVarHeaders(resolved, { v: `a${DEL}b` }).headers).toEqual({});
+  });
+});
+
+describe("isSafeHeaderValue", () => {
+  test("accepts the shapes a captured identity or folder value actually takes", () => {
+    expect(isSafeHeaderValue("user@example.com")).toBe(true);
+    expect(isSafeHeaderValue("PUID:0123ABCD@example.com")).toBe(true);
+    expect(isSafeHeaderValue("AAMkAGZvbGRlcgAuAAAAAAEMAAA=")).toBe(true);
+  });
+
+  test("rejects CR, LF, tab, NUL, and DEL", () => {
+    expect(isSafeHeaderValue("a\rb")).toBe(false);
+    expect(isSafeHeaderValue("a\nb")).toBe(false);
+    expect(isSafeHeaderValue("a\tb")).toBe(false);
+    expect(isSafeHeaderValue(`a${NUL}b`)).toBe(false);
+    expect(isSafeHeaderValue(`a${DEL}b`)).toBe(false);
   });
 });
 

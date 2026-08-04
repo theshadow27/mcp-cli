@@ -194,6 +194,14 @@ describe("cmdSite", () => {
     expect(params.arguments.limit).toBe(10);
   });
 
+  test("capture --clear forwards a boolean so a wrong var can be invalidated", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["capture", "owa", "--clear"], deps);
+    const { params } = readLastCall(calls);
+    expect(params.tool).toBe("site_capture");
+    expect(params.arguments).toEqual({ site: "owa", clear: true });
+  });
+
   test("wiggle without site passes empty args", async () => {
     const { deps, calls } = makeDeps();
     await cmdSite(["wiggle"], deps);

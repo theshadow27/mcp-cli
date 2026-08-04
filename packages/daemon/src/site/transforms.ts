@@ -62,10 +62,28 @@ export async function applyJqInput(
 const VAR_RE = /\$\{(\w+)\}/g;
 
 /**
- * Substitute `${name}` in header values from captured vars. A header whose
- * value still references an uncaptured var is dropped rather than sent
- * literally — a seed can declare an account-specific header unconditionally
- * and it simply doesn't appear until `mcx site capture` has run.
+ * A captured var is scraped from whatever the site's traffic happened to
+ * contain, so it is untrusted input on the way to a header value. CR/LF would
+ * let it forge additional headers, and other control characters are rejected by
+ * fetch() anyway — better to drop the header than to fail the whole call.
+ */
+const CONTROL_CHAR_MAX = 0x1f;
+const DELETE_CHAR = 0x7f;
+
+export function isSafeHeaderValue(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= CONTROL_CHAR_MAX || code === DELETE_CHAR) return false;
+  }
+  return true;
+}
+
+/**
+ * Substitute `${name}` in header values from captured vars. A header is dropped
+ * rather than sent when its value still references an uncaptured var, or when a
+ * substituted var would make the value unsafe — a seed can declare an
+ * account-specific header unconditionally and it simply doesn't appear until
+ * `mcx site capture` has produced a usable value.
  */
 export function applyVarHeaders(resolved: ResolvedCall, vars: Record<string, string>): ResolvedCall {
   const headers: Record<string, string> = {};
@@ -73,7 +91,7 @@ export function applyVarHeaders(resolved: ResolvedCall, vars: Record<string, str
     let unresolved = false;
     const substituted = value.replace(VAR_RE, (_m, name: string): string => {
       const v = vars[name];
-      if (v === undefined || v === "") {
+      if (v === undefined || v === "" || !isSafeHeaderValue(v)) {
         unresolved = true;
         return "";
       }

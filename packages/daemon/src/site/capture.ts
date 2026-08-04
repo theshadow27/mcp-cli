@@ -14,7 +14,7 @@
  * seed-JSON edit, not a code change.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CaptureVarSpec } from "./config";
 import { siteVarsPath } from "./paths";
@@ -42,8 +42,29 @@ export interface CaptureResult {
   scanned: number;
 }
 
-/** Default number of capture files to scan, newest first. */
-export const DEFAULT_CAPTURE_SCAN_LIMIT = 200;
+/**
+ * Default number of capture files to scan, newest first.
+ *
+ * Authoritative values often ride a session-bootstrap response that is issued
+ * once per sign-in, so it sits far behind the steady-state request chatter. The
+ * default has to be deep enough to reach it; the `urlPrefilter` below is what
+ * keeps that depth cheap.
+ */
+export const DEFAULT_CAPTURE_SCAN_LIMIT = 1000;
+
+/** Hard ceiling on the scan, so a caller-supplied limit can't turn into a full-corpus walk. */
+export const MAX_CAPTURE_SCAN_LIMIT = 5000;
+
+/**
+ * Coerce a caller-supplied scan limit into `1..MAX_CAPTURE_SCAN_LIMIT`.
+ *
+ * The site worker is single-threaded: an unbounded limit lets one capture call
+ * stall every other call on the site for the duration of a corpus walk.
+ */
+export function clampScanLimit(limit: unknown): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return DEFAULT_CAPTURE_SCAN_LIMIT;
+  return Math.min(MAX_CAPTURE_SCAN_LIMIT, Math.max(1, Math.floor(limit)));
+}
 
 interface RawCaptureFile {
   _meta?: { url?: string; method?: string; status?: number };
@@ -104,10 +125,42 @@ export function buildSample(file: string, raw: unknown): CaptureSample | null {
 }
 
 /**
+ * Union of the specs' `urlMatch` patterns, for use as a raw-text prefilter.
+ *
+ * A capture file whose text doesn't contain any spec's URL pattern cannot
+ * satisfy any spec, so it can be skipped before `JSON.parse` — which matters
+ * because a capture corpus is mostly large script and telemetry bodies. This is
+ * sound only because a URL that matches a pattern implies the file text does
+ * too; that implication breaks for anchored patterns, and for a spec with no
+ * `urlMatch` at all, so both cases disable the prefilter.
+ */
+export function captureUrlPrefilter(specs: CaptureVarSpec[]): RegExp | null {
+  const patterns: string[] = [];
+  for (const spec of specs) {
+    if (!spec?.urlMatch) return null;
+    if (/[$^]/.test(spec.urlMatch)) return null;
+    patterns.push(spec.urlMatch);
+  }
+  if (patterns.length === 0) return null;
+  try {
+    return new RegExp(patterns.map((p) => `(?:${p})`).join("|"), "i");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read capture files newest-first. Sniffer filenames are prefixed with an
  * ISO timestamp token, so a descending lexicographic sort is chronological.
+ *
+ * `urlPrefilter` only skips work — it never changes which sample satisfies a
+ * spec, because `extractVars` re-checks each spec's own `urlMatch`.
  */
-export function readCaptureSamples(dir: string, limit = DEFAULT_CAPTURE_SCAN_LIMIT): CaptureSample[] {
+export function readCaptureSamples(
+  dir: string,
+  limit = DEFAULT_CAPTURE_SCAN_LIMIT,
+  urlPrefilter: RegExp | null = null,
+): CaptureSample[] {
   if (!existsSync(dir)) return [];
   const names = readdirSync(dir)
     .filter((n) => n.endsWith(".json"))
@@ -119,7 +172,9 @@ export function readCaptureSamples(dir: string, limit = DEFAULT_CAPTURE_SCAN_LIM
   for (const name of names) {
     let sample: CaptureSample | null = null;
     try {
-      sample = buildSample(name, JSON.parse(readFileSync(join(dir, name), "utf-8")));
+      const text = readFileSync(join(dir, name), "utf-8");
+      if (urlPrefilter && !urlPrefilter.test(text)) continue;
+      sample = buildSample(name, JSON.parse(text));
     } catch {
       // A partially-written or non-JSON capture file must not abort the scan.
       sample = null;
@@ -210,4 +265,38 @@ export function saveVars(site: string, vars: Record<string, string>): void {
   const file = siteVarsPath(site);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(vars, null, 2));
+}
+
+/** Drop every captured var for a site. Returns the names removed. */
+export function clearVars(site: string): string[] {
+  const existing = loadVars(site);
+  const names = Object.keys(existing);
+  const file = siteVarsPath(site);
+  if (existsSync(file)) rmSync(file);
+  return names;
+}
+
+/**
+ * Fold a capture result into the stored vars.
+ *
+ * A capture run is *authoritative for the names it declares*: each declared
+ * name is dropped first and only re-added if this run actually extracted it. A
+ * merge that only ever adds keys makes a wrong value permanent — re-capturing
+ * after fixing the spec would leave the bad value in place, since the fixed
+ * spec's output would be written under the same name only if it succeeded and
+ * the stale one would survive if it didn't. Names not declared by any spec are
+ * left untouched, because those are operator-authored.
+ */
+export function mergeCapturedVars(
+  existing: Record<string, string>,
+  specs: CaptureVarSpec[],
+  captured: Record<string, string>,
+): Record<string, string> {
+  const out = { ...existing };
+  for (const spec of specs) {
+    if (!spec?.name) continue;
+    delete out[spec.name];
+  }
+  for (const [k, v] of Object.entries(captured)) out[k] = v;
+  return out;
 }

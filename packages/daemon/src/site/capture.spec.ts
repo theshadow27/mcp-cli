@@ -6,9 +6,15 @@ import { _restoreOptions, options } from "@mcp-cli/core";
 import {
   type CaptureJq,
   type CaptureSample,
+  DEFAULT_CAPTURE_SCAN_LIMIT,
+  MAX_CAPTURE_SCAN_LIMIT,
   buildSample,
+  captureUrlPrefilter,
+  clampScanLimit,
+  clearVars,
   extractVars,
   loadVars,
+  mergeCapturedVars,
   readCaptureSamples,
   saveVars,
 } from "./capture";
@@ -129,6 +135,19 @@ describe("readCaptureSamples", () => {
     }
     expect(readCaptureSamples(dir, 2)).toHaveLength(2);
   });
+
+  test("a url prefilter skips non-candidate files without changing which remain", () => {
+    const dir = siteCapturesDir("owa");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "2026-01-01-POST-a.json"),
+      JSON.stringify(captureFile("https://e/owa/service.svc?action=X")),
+    );
+    writeFileSync(join(dir, "2026-01-02-POST-b.json"), JSON.stringify(captureFile("https://cdn/bundle.js")));
+
+    const samples = readCaptureSamples(dir, 100, /service\.svc/i);
+    expect(samples.map((s) => s.url)).toEqual(["https://e/owa/service.svc?action=X"]);
+  });
 });
 
 function sample(url: string, over: Partial<CaptureSample> = {}): CaptureSample {
@@ -226,8 +245,42 @@ describe("extractVars", () => {
 describe.skipIf(!Bun.which("jq"))("owa seed captureVars", () => {
   const specs = OWA_SEED.config.captureVars ?? [];
   const findConversation = "https://outlook.cloud.microsoft/owa/service.svc?action=FindConversation&app=Mail";
+  const userConfiguration = "https://outlook.cloud.microsoft/owa/service.svc?action=GetOwaUserConfiguration&app=Mail";
 
-  function owaSample(baseFolderId: Record<string, string>, headers: Record<string, string> = {}): CaptureSample {
+  // Distinct ids per folder, so an assertion can tell the inbox from any other
+  // folder. A fixture where every folder shares one id would pass against a
+  // spec that picked the wrong folder, which is how the inversion shipped green.
+  const INBOX_ID = "AAMkAGZvbGRlcgAuAAAAAAEMAAA=";
+  const SENT_ITEMS_ID = "AAMkAGZvbGRlcgAuAAAAAAEJAAA=";
+  const DELETED_ITEMS_ID = "AAMkAGZvbGRlcgAuAAAAAAEDAAA=";
+
+  /**
+   * A session-config response carrying the authoritative folder table. The
+   * name→id mapping is positional across two parallel arrays, and the real
+   * payload has a `None` entry first plus null holes, so the fixture keeps both
+   * — an implementation that assumed dense, aligned arrays would mis-index.
+   */
+  function userConfigurationSample(): CaptureSample {
+    return sample(userConfiguration, {
+      responseBody: {
+        SessionSettings: {
+          DefaultFolderNames: ["None", "calendar", null, "sentitems", "deleteditems", "inbox", "drafts"],
+          DefaultFolderIds: [
+            null,
+            { __type: "FolderId:#Exchange", Id: "AAMkAGZvbGRlcgAuAAAAAAEBAAA=" },
+            null,
+            { __type: "FolderId:#Exchange", Id: SENT_ITEMS_ID },
+            { __type: "FolderId:#Exchange", Id: DELETED_ITEMS_ID },
+            { __type: "FolderId:#Exchange", Id: INBOX_ID },
+            { __type: "FolderId:#Exchange", Id: "AAMkAGZvbGRlcgAuAAAAAAEPAAA=" },
+          ],
+        },
+      },
+    });
+  }
+
+  /** A FindConversation request, i.e. the traffic the folder id used to be inferred from. */
+  function findConversationSample(baseFolderId: Record<string, string>, headers: Record<string, string> = {}) {
     const body = { Body: { ParentFolderId: { BaseFolderId: baseFolderId } } };
     return sample(findConversation, {
       requestHeaders: { "x-owa-urlpostdata": encodeURIComponent(JSON.stringify(body)), ...headers },
@@ -239,28 +292,77 @@ describe.skipIf(!Bun.which("jq"))("owa seed captureVars", () => {
     expect(specs.map((s) => s.name).sort()).toEqual(["anchorMailbox", "inboxFolderId"]);
   });
 
-  test("captures a concrete BaseFolderId and the x-anchormailbox value", async () => {
-    const out = await extractVars(
-      specs,
-      [owaSample({ __type: "FolderId:#Exchange", Id: "AAMkAGI2ABC=" }, { "x-anchormailbox": "PUID:1003BFFD@tenant" })],
-      bunJqRunner,
-    );
-    expect(out.vars).toEqual({ inboxFolderId: "AAMkAGI2ABC=", anchorMailbox: "PUID:1003BFFD@tenant" });
-    expect(out.missing).toEqual([]);
+  test("captures the inbox folder id, not merely some concrete folder id", async () => {
+    const out = await extractVars(specs, [userConfigurationSample()], bunJqRunner);
+
+    expect(out.vars.inboxFolderId).toBe(INBOX_ID);
+    // The distinguishing assertions: any other folder in the same table is wrong.
+    expect(out.vars.inboxFolderId).not.toBe(SENT_ITEMS_ID);
+    expect(out.vars.inboxFolderId).not.toBe(DELETED_ITEMS_ID);
   });
 
-  test("never captures the DistinguishedFolderId alias as a folder id", async () => {
+  test("ignores the folder a request happened to target, which is whatever was last browsed", async () => {
+    // Newest-first order that reproduces the original defect: the most recent
+    // concrete-id request is for Sent Items, so inferring from traffic captured
+    // Sent Items and stored it as the inbox.
     const out = await extractVars(
       specs,
-      [owaSample({ __type: "DistinguishedFolderId:#Exchange", Id: "inbox" })],
+      [
+        findConversationSample({ __type: "FolderId:#Exchange", Id: SENT_ITEMS_ID }),
+        findConversationSample({ __type: "FolderId:#Exchange", Id: DELETED_ITEMS_ID }),
+        userConfigurationSample(),
+        findConversationSample({ __type: "FolderId:#Exchange", Id: INBOX_ID }),
+      ],
+      bunJqRunner,
+    );
+
+    expect(out.vars.inboxFolderId).toBe(INBOX_ID);
+  });
+
+  test("captures the x-anchormailbox value from request traffic", async () => {
+    const out = await extractVars(
+      specs,
+      [findConversationSample({ __type: "DistinguishedFolderId:#Exchange", Id: "inbox" }, { "x-anchormailbox": "id" })],
+      bunJqRunner,
+    );
+    expect(out.vars.anchorMailbox).toBe("id");
+  });
+
+  test("reports the folder id missing rather than guessing when the folder table is absent", async () => {
+    const out = await extractVars(
+      specs,
+      [sample(userConfiguration, { responseBody: { SessionSettings: {} } })],
       bunJqRunner,
     );
     expect(out.vars.inboxFolderId).toBeUndefined();
     expect(out.missing).toContain("inboxFolderId");
   });
 
-  test("tolerates a non-JSON request body without erroring", async () => {
-    const out = await extractVars(specs, [sample(findConversation, { requestBody: "not-json" })], bunJqRunner);
+  test("reports the folder id missing when the table has no inbox entry", async () => {
+    const out = await extractVars(
+      specs,
+      [
+        sample(userConfiguration, {
+          responseBody: {
+            SessionSettings: {
+              DefaultFolderNames: ["sentitems"],
+              DefaultFolderIds: [{ __type: "FolderId:#Exchange", Id: SENT_ITEMS_ID }],
+            },
+          },
+        }),
+      ],
+      bunJqRunner,
+    );
+    expect(out.vars.inboxFolderId).toBeUndefined();
+    expect(out.missing).toContain("inboxFolderId");
+  });
+
+  test("tolerates a non-JSON body without erroring", async () => {
+    const out = await extractVars(
+      specs,
+      [sample(findConversation, { requestBody: "not-json" }), sample(userConfiguration, { responseBody: "not-json" })],
+      bunJqRunner,
+    );
     expect(out.missing.sort()).toEqual(["anchorMailbox", "inboxFolderId"]);
   });
 });
@@ -279,5 +381,86 @@ describe("vars persistence", () => {
 
     writeFileSync(join(options.SITES_DIR, "owa", "vars.json"), "not json");
     expect(loadVars("owa")).toEqual({});
+  });
+
+  test("clearVars removes every captured value and reports the names dropped", () => {
+    saveVars("owa", { inboxFolderId: "wrong", anchorMailbox: "id" });
+    expect(clearVars("owa").sort()).toEqual(["anchorMailbox", "inboxFolderId"]);
+    expect(loadVars("owa")).toEqual({});
+  });
+
+  test("clearVars on a site that was never captured is a no-op", () => {
+    expect(clearVars("owa")).toEqual([]);
+    expect(loadVars("owa")).toEqual({});
+  });
+});
+
+describe("mergeCapturedVars", () => {
+  const specs: CaptureVarSpec[] = [
+    { name: "inboxFolderId", jq: "x" },
+    { name: "anchorMailbox", jq: "y" },
+  ];
+
+  test("a re-capture replaces a previously stored value", () => {
+    const merged = mergeCapturedVars({ inboxFolderId: "wrong" }, specs, { inboxFolderId: "right" });
+    expect(merged.inboxFolderId).toBe("right");
+  });
+
+  test("a declared name that this run could not extract is dropped, not left stale", () => {
+    // The whole point of the invalidation: fixing a spec and re-capturing must
+    // not leave the previous wrong value in place when the new spec finds nothing.
+    const merged = mergeCapturedVars({ inboxFolderId: "wrong", anchorMailbox: "id" }, specs, { anchorMailbox: "id" });
+    expect(merged).toEqual({ anchorMailbox: "id" });
+  });
+
+  test("names no spec declares are operator-authored and survive", () => {
+    const merged = mergeCapturedVars({ handEdited: "keep", inboxFolderId: "wrong" }, specs, {});
+    expect(merged).toEqual({ handEdited: "keep" });
+  });
+});
+
+describe("clampScanLimit", () => {
+  test("defaults when the limit is absent or not a finite number", () => {
+    expect(clampScanLimit(undefined)).toBe(DEFAULT_CAPTURE_SCAN_LIMIT);
+    expect(clampScanLimit("200")).toBe(DEFAULT_CAPTURE_SCAN_LIMIT);
+    expect(clampScanLimit(Number.NaN)).toBe(DEFAULT_CAPTURE_SCAN_LIMIT);
+    expect(clampScanLimit(Number.POSITIVE_INFINITY)).toBe(DEFAULT_CAPTURE_SCAN_LIMIT);
+  });
+
+  test("caps the scan so one call cannot walk an entire corpus on the single-threaded worker", () => {
+    expect(clampScanLimit(10_000_000)).toBe(MAX_CAPTURE_SCAN_LIMIT);
+  });
+
+  test("floors at one, so zero or negative cannot mean unbounded", () => {
+    expect(clampScanLimit(0)).toBe(1);
+    expect(clampScanLimit(-5)).toBe(1);
+  });
+
+  test("passes an in-range limit through, truncating fractions", () => {
+    expect(clampScanLimit(42)).toBe(42);
+    expect(clampScanLimit(42.9)).toBe(42);
+  });
+});
+
+describe("captureUrlPrefilter", () => {
+  test("matches a file whose text contains any spec's url pattern", () => {
+    const re = captureUrlPrefilter([
+      { name: "a", jq: "x", urlMatch: "action=GetOwaUserConfiguration" },
+      { name: "b", jq: "y", urlMatch: "owa/service\\.svc" },
+    ]);
+    expect(re?.test('{"url":"https://e/owa/service.svc?action=FindConversation"}')).toBe(true);
+    expect(re?.test('{"url":"https://cdn/script.js"}')).toBe(false);
+  });
+
+  test("disables itself when a spec has no urlMatch, so no sample is skipped", () => {
+    expect(captureUrlPrefilter([{ name: "a", jq: "x" }])).toBeNull();
+  });
+
+  test("disables itself for an anchored pattern, which cannot be tested against whole-file text", () => {
+    expect(captureUrlPrefilter([{ name: "a", jq: "x", urlMatch: "^https://e/" }])).toBeNull();
+  });
+
+  test("disables itself for an unparseable pattern rather than throwing", () => {
+    expect(captureUrlPrefilter([{ name: "a", jq: "x", urlMatch: "([" }])).toBeNull();
   });
 });

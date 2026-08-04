@@ -32,7 +32,16 @@ import type { ToolResult } from "./site/browser-handlers";
 export { shouldAutoRestart, shouldFallbackToCookie, parseSitesArg } from "./site/browser-handlers";
 export type { LastBrowserSession } from "./site/browser-handlers";
 import type { SiteSpec } from "./site/browser/engine";
-import { DEFAULT_CAPTURE_SCAN_LIMIT, extractVars, loadVars, readCaptureSamples, saveVars } from "./site/capture";
+import {
+  captureUrlPrefilter,
+  clampScanLimit,
+  clearVars,
+  extractVars,
+  loadVars,
+  mergeCapturedVars,
+  readCaptureSamples,
+  saveVars,
+} from "./site/capture";
 import {
   type AuthMode,
   removeCall as catalogRemoveCall,
@@ -376,6 +385,12 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
 
 async function handleCapture(args: Record<string, unknown>): Promise<ToolResult> {
   const site = requireSite(args.site as string);
+
+  if (args.clear === true) {
+    const cleared = clearVars(site.name);
+    return ok({ site: site.name, cleared, vars: {}, varsFile: siteVarsPath(site.name) });
+  }
+
   const specs = site.captureVars ?? [];
   if (specs.length === 0) {
     return error(
@@ -383,8 +398,8 @@ async function handleCapture(args: Record<string, unknown>): Promise<ToolResult>
     );
   }
 
-  const limit = (args.limit as number | undefined) ?? DEFAULT_CAPTURE_SCAN_LIMIT;
-  const samples = readCaptureSamples(siteCapturesDir(site.name), limit);
+  const limit = clampScanLimit(args.limit);
+  const samples = readCaptureSamples(siteCapturesDir(site.name), limit, captureUrlPrefilter(specs));
   if (samples.length === 0) {
     return error(
       `No captured traffic on disk for '${site.name}' (captureMode=${site.captureMode ?? "off"}). Run 'mcx site browser ${site.name}', use the app so requests are recorded, then retry. captureMode must be 'filtered' or 'firehose' for captures to be written.`,
@@ -392,7 +407,7 @@ async function handleCapture(args: Record<string, unknown>): Promise<ToolResult>
   }
 
   const { vars, missing, scanned } = await extractVars(specs, samples, bunJqRunner);
-  const merged = { ...loadVars(site.name), ...vars };
+  const merged = mergeCapturedVars(loadVars(site.name), specs, vars);
   saveVars(site.name, merged);
 
   return ok({
@@ -400,6 +415,7 @@ async function handleCapture(args: Record<string, unknown>): Promise<ToolResult>
     captured: vars,
     missing,
     scanned,
+    limit,
     vars: merged,
     varsFile: siteVarsPath(site.name),
   });
