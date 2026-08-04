@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pollUntil } from "../../../test/harness";
 import type { Manifest } from "./manifest";
 import {
   DisallowedTransitionError,
@@ -26,6 +27,9 @@ import {
 
 /** Short deadline for the deliberately-contended nested-lock test. */
 const NESTED_LOCK_TIMEOUT_MS = 50;
+
+/** Helper process that holds a read or write lock so contention is observable. */
+const holdWorkerPath = join(import.meta.dir, "phase-lock-hold-worker.ts");
 
 const manifest: Manifest = {
   version: 1,
@@ -465,6 +469,34 @@ describe("legacy jsonl migration (#1328)", () => {
     expect(readAllTransitions(log).map((e) => e.ts)).toEqual(["first", "second"]);
   });
 
+  test("rapid successive parks never clobber an older parked generation", () => {
+    // Regression: the park name was `${log}.migrated.${Date.now()}`, so two
+    // parks inside one millisecond computed the same name and renameSync
+    // silently destroyed the older one. The parked jsonl is the artifact
+    // recovery reads from when the DB is what went wrong, so every generation
+    // must survive. 40 parks in a tight loop reliably collides on a ms clock.
+    const generations = 40;
+    for (let i = 0; i < generations; i++) {
+      writeFileSync(log, jsonlLine({ ts: `gen${i}`, workItemId: "#7", from: null, to: "impl" }), "utf-8");
+      readAllTransitions(log);
+    }
+
+    // Asserted over the whole directory, so a leftover staging file or an
+    // unmigrated jsonl fails here too: one park per generation and nothing else.
+    const files = readdirSync(dir).sort();
+    expect(files).toHaveLength(generations + 1);
+    expect(files[0]).toBe("transitions.db");
+    const parked = files.slice(1);
+    for (const name of parked) expect(name.startsWith("transitions.jsonl.migrated")).toBe(true);
+    // Every generation is recoverable from its own parked file.
+    const parkedContents = parked.map((n) => readFileSync(join(dir, n), "utf-8")).join("");
+    for (let i = 0; i < generations; i++) {
+      expect(parkedContents).toContain(`"ts":"gen${i}"`);
+    }
+    // The DB holds every generation too.
+    expect(readAllTransitions(log)).toHaveLength(generations);
+  });
+
   test("reopening does not re-import (no duplicate rows)", () => {
     writeFileSync(
       log,
@@ -682,6 +714,103 @@ describe("commitTransition / withTransitionWriter (issue #1328)", () => {
       expect(historyTargets(writer.history("#1"))).toEqual(["impl"]);
     });
     expect(historyTargets(readTransitionHistory(log, "#1"))).toEqual(["impl"]);
+  });
+
+  test("a contended writer waits for the lock and still commits", async () => {
+    // The 10-way fan-out above proves the transaction boundary matters, but its
+    // transactions are sub-millisecond, so it never shows a contended writer
+    // *waiting*. Here a child process holds the write lock for HOLD_MS while
+    // this writer, given a generous timeout, must block at BEGIN IMMEDIATE and
+    // then succeed rather than raising TransitionLockBusyError.
+    const HOLD_MS = 400;
+    const log = join(dir, "transitions.jsonl");
+    const ready = join(dir, "held");
+    const child = Bun.spawn(["bun", "run", holdWorkerPath, "write", log, ready, String(HOLD_MS)]);
+
+    await pollUntil(() => existsSync(ready));
+    const startedAt = Date.now();
+    appendTransitionLog(log, { ts: "contender", workItemId: "#hold", from: "impl", to: "qa" }, { timeoutMs: 30_000 });
+    const waitedMs = Date.now() - startedAt;
+
+    expect(await child.exited).toBe(0);
+    // Blocked for a meaningful fraction of the hold rather than erroring out.
+    expect(waitedMs).toBeGreaterThan(HOLD_MS / 4);
+    // Both writes are present, in lock order.
+    expect(historyTargets(readTransitionHistory(log, "#hold"))).toEqual(["impl", "qa"]);
+  });
+
+  test("a busy COMMIT retries instead of discarding the validated entry", async () => {
+    // A reader holding SHARED across the commit point blocks COMMIT's
+    // RESERVED -> EXCLUSIVE upgrade, so COMMIT itself returns SQLITE_BUSY and
+    // SQLite leaves the transaction ACTIVE. Rolling back there threw away an
+    // already-validated entry and misreported it as another run's contention.
+    //
+    // The reader has to arrive *after* BEGIN IMMEDIATE — a reader already
+    // holding SHARED beforehand blocks the schema bootstrap instead, which is
+    // the separate case covered by the next test. Hence the spawn-and-wait
+    // inside `fn`, polled synchronously because `fn` must not return a Promise.
+    // HOLD_MS > timeoutMs makes the first COMMIT attempt fail; HOLD_MS is well
+    // inside the retry budget (3 attempts x timeoutMs) so a retry succeeds.
+    const COMMIT_TIMEOUT_MS = 400;
+    const HOLD_MS = 600;
+    const log = join(dir, "transitions.jsonl");
+    const ready = join(dir, "reader-held");
+    // Materialise the store so the reader has a db file to open.
+    appendTransitionLog(log, { ts: "t0", workItemId: "#busy", from: null, to: "impl" });
+
+    let child: ReturnType<typeof Bun.spawn> | undefined;
+    withTransitionWriter(
+      log,
+      (writer) => {
+        writer.insert({ ts: "t1", workItemId: "#busy", from: "impl", to: "qa" });
+        child = Bun.spawn(["bun", "run", holdWorkerPath, "read", log, ready, String(HOLD_MS)]);
+        const deadline = Date.now() + 10_000;
+        while (!existsSync(ready) && Date.now() < deadline) Bun.sleepSync(5);
+        expect(existsSync(ready)).toBe(true);
+      },
+      { timeoutMs: COMMIT_TIMEOUT_MS },
+    );
+
+    expect(await child?.exited).toBe(0);
+    // The entry survived the busy COMMIT rather than being silently dropped.
+    expect(historyTargets(readTransitionHistory(log, "#busy"))).toEqual(["impl", "qa"]);
+  });
+
+  test("a reader blocking the schema bootstrap surfaces as lock contention", async () => {
+    // `openForWrite` -> `applySchema` writes before BEGIN IMMEDIATE, so a reader
+    // holding SHARED makes it fail. That happens outside the transaction, and
+    // used to escape as a raw unclassified SQLiteError instead of the typed
+    // error every caller of this store knows how to interpret.
+    const HOLD_MS = 400;
+    const log = join(dir, "transitions.jsonl");
+    const ready = join(dir, "bootstrap-reader-held");
+    appendTransitionLog(log, { ts: "t0", workItemId: "#boot", from: null, to: "impl" });
+
+    const child = Bun.spawn(["bun", "run", holdWorkerPath, "read", log, ready, String(HOLD_MS)]);
+    await pollUntil(() => existsSync(ready));
+
+    expect(() =>
+      appendTransitionLog(
+        log,
+        { ts: "t1", workItemId: "#boot", from: "impl", to: "qa" },
+        { timeoutMs: NESTED_LOCK_TIMEOUT_MS },
+      ),
+    ).toThrow(TransitionLockBusyError);
+
+    expect(await child.exited).toBe(0);
+  });
+
+  test("a rollback-journal locking failure is classified as lock contention", () => {
+    // SQLITE_PROTOCOL is the rollback journal's locking-protocol failure — the
+    // flaky shared-mount case the NOT-WAL decision exists to serve — so it must
+    // surface as the typed retryable error, not a raw SQLiteError. (The WAL-only
+    // SQLITE_BUSY_SNAPSHOT it replaced was unreachable in this journal mode.)
+    const log = join(dir, "transitions.jsonl");
+    expect(() =>
+      withTransitionWriter(log, () => {
+        throw Object.assign(new Error("locking protocol"), { code: "SQLITE_PROTOCOL" });
+      }),
+    ).toThrow(TransitionLockBusyError);
   });
 
   test("a held write lock surfaces TransitionLockBusyError, not a silent skip", () => {
