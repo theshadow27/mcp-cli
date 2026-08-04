@@ -28,6 +28,7 @@
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
 - [Meta-issue planning guard](feedback_meta_issue_planning_guard.md) — exclude issues whose surface is .claude/phases/**, .mcx.yaml, or .claude/skills/** at plan time (meta; sprint-74 note: #2804 merged with a reload-after-merge protocol but cost 3 lock rounds via #2737)
 - [Never bypass gates (--no-verify banned)](feedback_never_bypass_gate.md) — push blocked by a flake → retry (never --no-verify); same tracked signature → wait + retry once more; NEW signature → stop and report. CI on clean runners is the arbiter
+- [Rate-limited sessions: send first, restart never](feedback_rate_limited_send_first.md) — after quota reset, log-read each idle session (some finished, just lost bookkeeping — backfill branch/prNumber), then send a resume nudge; sprint 76 revived 6/6 with zero restarts
 
 ## Infra / Known Issues
 - [Bedrock for spawns (#935)](project_bedrock_spawns_935.md) — quota-stall escape hatch: restart daemon from Bedrock-env shell; model-ID caveat with `--model opus`
