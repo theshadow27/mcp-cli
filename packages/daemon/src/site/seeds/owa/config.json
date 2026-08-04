@@ -9,9 +9,9 @@
   "captureVars": [
     {
       "name": "inboxFolderId",
-      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias. Read from the authoritative DefaultFolderNames/DefaultFolderIds table in the session config response — the folder a request happens to target is whichever folder was last browsed, so request traffic cannot identify the inbox.",
+      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias. Read from the DefaultFolderNames/DefaultFolderIds table in the session config response — the folder a request happens to target is whichever folder was last browsed, so request traffic cannot identify the inbox. The two arrays index each other positionally; the length-equality guard makes a compacted or otherwise unaligned pair a miss (falling back to the alias) instead of a plausible id for the wrong folder.",
       "urlMatch": "action=GetOwaUserConfiguration",
-      "jq": ".responseBody | objects | .SessionSettings | objects | (.DefaultFolderNames // []) as $names | (.DefaultFolderIds // []) as $ids | ($names | index(\"inbox\")) as $ix | select($ix != null) | $ids[$ix] | objects | .Id | strings"
+      "jq": ".responseBody | objects | .SessionSettings | objects | (.DefaultFolderNames // []) as $names | (.DefaultFolderIds // []) as $ids | select(($names | length) == ($ids | length)) | ($names | index(\"inbox\")) as $ix | select($ix != null) | $ids[$ix] | objects | .Id | strings"
     },
     {
       "name": "anchorMailbox",

@@ -255,10 +255,10 @@ describe.skipIf(!Bun.which("jq"))("owa seed captureVars", () => {
   const DELETED_ITEMS_ID = "AAMkAGZvbGRlcgAuAAAAAAEDAAA=";
 
   /**
-   * A session-config response carrying the authoritative folder table. The
-   * name→id mapping is positional across two parallel arrays, and the real
-   * payload has a `None` entry first plus null holes, so the fixture keeps both
-   * — an implementation that assumed dense, aligned arrays would mis-index.
+   * A session-config response carrying the folder table. The name→id mapping is
+   * positional across two parallel arrays, and the real payload has a `None`
+   * entry first plus null holes, so the fixture keeps both — an implementation
+   * that assumed dense, aligned arrays would mis-index.
    */
   function userConfigurationSample(): CaptureSample {
     return sample(userConfiguration, {
@@ -353,6 +353,41 @@ describe.skipIf(!Bun.which("jq"))("owa seed captureVars", () => {
       ],
       bunJqRunner,
     );
+    expect(out.vars.inboxFolderId).toBeUndefined();
+    expect(out.missing).toContain("inboxFolderId");
+  });
+
+  test("reports the folder id missing when the two arrays are not index-aligned", async () => {
+    // The only failure direction that could reproduce the original defect: two
+    // arrays of plausible content whose indices no longer correspond, which
+    // yields a structurally valid id for the wrong folder with nothing reported
+    // missing. Here one hole is compacted out of the ids while the names keep
+    // theirs, so the name index for "inbox" is still in range but lands on the
+    // next folder along. Must be a miss, not that folder's id.
+    const DRAFTS_ID = "AAMkAGZvbGRlcgAuAAAAAAEPAAA=";
+    const out = await extractVars(
+      specs,
+      [
+        sample(userConfiguration, {
+          responseBody: {
+            SessionSettings: {
+              DefaultFolderNames: ["None", "calendar", null, "sentitems", "deleteditems", "inbox", "drafts"],
+              DefaultFolderIds: [
+                null,
+                { __type: "FolderId:#Exchange", Id: "AAMkAGZvbGRlcgAuAAAAAAEBAAA=" },
+                { __type: "FolderId:#Exchange", Id: SENT_ITEMS_ID },
+                { __type: "FolderId:#Exchange", Id: DELETED_ITEMS_ID },
+                { __type: "FolderId:#Exchange", Id: INBOX_ID },
+                { __type: "FolderId:#Exchange", Id: DRAFTS_ID },
+              ],
+            },
+          },
+        }),
+      ],
+      bunJqRunner,
+    );
+    expect(out.vars.inboxFolderId).not.toBe(DRAFTS_ID);
+
     expect(out.vars.inboxFolderId).toBeUndefined();
     expect(out.missing).toContain("inboxFolderId");
   });
