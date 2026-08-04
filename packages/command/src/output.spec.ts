@@ -6,6 +6,7 @@ import {
   isToolError,
   printAliasDebug,
   printAliasList,
+  printServerList,
   printToolList,
 } from "./output";
 
@@ -335,5 +336,45 @@ describe("isToolError", () => {
     expect(isToolError(null)).toBe(false);
     expect(isToolError(undefined)).toBe(false);
     expect(isToolError("isError")).toBe(false);
+  });
+});
+
+describe("printServerList rate limit line", () => {
+  function captureStdout(fn: () => void): string {
+    const original = console.log;
+    const lines: string[] = [];
+    console.log = mock((...args: unknown[]) => lines.push(args.join(" ")));
+    try {
+      fn();
+      return lines.join("\n");
+    } finally {
+      console.log = original;
+    }
+  }
+
+  const base = { name: "atlassian", transport: "http", state: "connected", toolCount: 3, source: "user" };
+
+  test("renders the limit, utilization and queue depth", () => {
+    const output = captureStdout(() =>
+      printServerList([{ ...base, rateLimit: { limit: "3/s", utilization: 0.5, queueDepth: 2, maxQueue: 100 } }]),
+    );
+    expect(output).toContain("rate limit: 3/s (50% used, 2/100 queued)");
+  });
+
+  // A misconfigured spec fails every call closed — rendering it the same as an
+  // unthrottled server hides the outage from the surface humans inspect.
+  test("renders a malformed spec as an error, not as absent", () => {
+    const output = captureStdout(() =>
+      printServerList([
+        { ...base, rateLimit: { limit: "very fast", utilization: 0, queueDepth: 0, error: "Invalid rate limit" } },
+      ]),
+    );
+    expect(output).toContain("very fast INVALID");
+    expect(output).toContain("Invalid rate limit");
+  });
+
+  test("omits the line entirely when the server is unthrottled", () => {
+    const output = captureStdout(() => printServerList([base]));
+    expect(output).not.toContain("rate limit");
   });
 });

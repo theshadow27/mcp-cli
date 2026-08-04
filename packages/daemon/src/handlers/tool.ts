@@ -93,7 +93,10 @@ export class ToolHandlers {
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
             ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
-            : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs);
+            : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs, {
+                onRateLimitWait: (waitedMs) => toolSpan.setAttribute("ratelimit.waitMs", waitedMs),
+                signal: ctx.signal,
+              });
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();
         // Dual-write: usage_stats (Phase 1 compat) + spans table

@@ -520,6 +520,46 @@ describe("IpcServer HTTP transport", () => {
     expect(callbackTime).toBeGreaterThan(0);
   });
 
+  // The daemon must be able to tell that a caller has gone away: a tool call
+  // that keeps waiting (for a rate-limit slot, say) and then executes anyway
+  // duplicates whatever the caller's retry already did.
+  test("callTool receives an abort signal that fires when the caller disconnects", async () => {
+    socketPath = tmpSocket();
+    let seenSignal: AbortSignal | undefined;
+    let handlerEntered: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    });
+    const signalPool = {
+      ...mockPool(),
+      callTool: async (_s: string, _t: string, _a: unknown, _timeout: number, options: { signal?: AbortSignal }) => {
+        seenSignal = options.signal;
+        handlerEntered();
+        await pollUntil(() => options.signal?.aborted === true);
+        return { content: [] };
+      },
+    };
+    server = new IpcServer(signalPool as never, mockConfig(), mockDb(), null, opts());
+    server.start(socketPath);
+
+    const controller = new AbortController();
+    const inflight = fetch("http://localhost/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "sig1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } }),
+      unix: socketPath,
+      signal: controller.signal,
+    } as RequestInit).catch(() => undefined);
+
+    await handlerStarted;
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(seenSignal?.aborted).toBe(false);
+
+    controller.abort();
+    await pollUntil(() => seenSignal?.aborted === true);
+    await inflight;
+  });
+
   test("shutdown rejects new requests while draining", async () => {
     socketPath = tmpSocket();
     let shutdownCalled = false;

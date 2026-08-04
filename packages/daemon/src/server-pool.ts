@@ -20,10 +20,18 @@ import type {
   ResolvedConfig,
   ResolvedServer,
   ServerConfig,
+  ServerRateLimitStatus,
   ServerStatus,
   ToolInfo,
 } from "@mcp-cli/core";
-import { IPC_ERROR, consoleLogger, formatToolSignature } from "@mcp-cli/core";
+import {
+  IPC_ERROR,
+  RateLimiter,
+  consoleLogger,
+  formatToolSignature,
+  parseRateLimit,
+  rateLimitSource,
+} from "@mcp-cli/core";
 import {
   CONNECT_INITIAL_DELAY_MS,
   CONNECT_MAX_DELAY_MS,
@@ -38,6 +46,7 @@ import {
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import type { StateDb } from "./db/state";
+import { metrics } from "./metrics";
 import { getProcessStartTime } from "./process-identity";
 import { killPid } from "./process-util";
 import { safeSetTimeout } from "./safe-timers";
@@ -53,6 +62,8 @@ interface ServerConnection {
   tools: Map<string, ToolInfo>;
   state: ConnectionState;
   lastUsed: number;
+  /** Calls in flight, including ones still queued for a rate-limit slot. */
+  inflight: number;
   lastError?: string;
   connectingPromise?: Promise<ServerConnection>;
   stderrCleanup?: () => void;
@@ -96,6 +107,8 @@ export class ServerPool {
   private config: ResolvedConfig;
   private db: StateDb | null;
   private stderrBuffer = new StderrRingBuffer();
+  /** Per-server tool-call limiters, keyed by name and invalidated when the spec string changes. */
+  private rateLimiters = new Map<string, { source: string; limiter: RateLimiter | null; error?: Error }>();
   private connectFn: ConnectFn;
   private connectTimeoutMs: number;
   private logger: Logger;
@@ -124,6 +137,7 @@ export class ServerPool {
         tools: cachedTools,
         state: "disconnected",
         lastUsed: 0,
+        inflight: 0,
       });
     }
   }
@@ -155,6 +169,7 @@ export class ServerPool {
       tools: toolMap,
       state: "connected",
       lastUsed: Date.now(),
+      inflight: 0,
       virtual: true,
       planCapabilities: detectPlanCapabilities(toolMap),
     });
@@ -200,6 +215,7 @@ export class ServerPool {
           tools: new Map(),
           state: "error",
           lastUsed: 0,
+          inflight: 0,
           lastError: err instanceof Error ? err.message : String(err),
           virtual: true,
         });
@@ -243,6 +259,7 @@ export class ServerPool {
           tools: new Map(),
           state: "disconnected",
           lastUsed: 0,
+          inflight: 0,
         });
       } else if (!Bun.deepEquals(existing.resolved.config, resolved.config)) {
         changed.push(name);
@@ -505,6 +522,33 @@ export class ServerPool {
     return this.stderrBuffer.subscribe(fn);
   }
 
+  /**
+   * Rate-limit status for the status report. A malformed spec is reported as an
+   * error rather than thrown — `mcx status` must never fail on bad config, but
+   * it must not render a server whose every call is failing as unthrottled.
+   */
+  private rateLimitStatus(serverName: string): ServerRateLimitStatus | undefined {
+    let limiter: RateLimiter | null;
+    try {
+      limiter = this.rateLimiter(serverName);
+    } catch (err) {
+      const configured = this.connections.get(serverName)?.resolved.config.rateLimit;
+      return {
+        limit: rateLimitSource(serverName, configured),
+        utilization: 0,
+        queueDepth: 0,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (!limiter) return undefined;
+    return {
+      limit: limiter.spec.source,
+      utilization: limiter.utilization(),
+      queueDepth: limiter.queueDepth,
+      maxQueue: limiter.maxQueue,
+    };
+  }
+
   /** List all configured servers with status */
   listServers(): ServerStatus[] {
     const servers: ServerStatus[] = [...this.connections.values()].map((conn) => {
@@ -520,6 +564,7 @@ export class ServerPool {
         source: conn.resolved.source.file,
         recentStderr,
         planCapabilities: conn.planCapabilities,
+        rateLimit: this.rateLimitStatus(conn.name),
       };
     });
 
@@ -598,38 +643,127 @@ export class ServerPool {
     return tool;
   }
 
+  /**
+   * Limiter enforcing this server's configured tool-call rate, or null when
+   * unlimited. Throws when the configured spec is malformed — a typo should be
+   * loud rather than silently unthrottled.
+   */
+  private rateLimiter(serverName: string): RateLimiter | null {
+    const configured = this.connections.get(serverName)?.resolved.config.rateLimit;
+    const source = rateLimitSource(serverName, configured);
+    const cached = this.rateLimiters.get(serverName);
+    if (cached && cached.source === source) {
+      if (cached.error) throw cached.error;
+      return cached.limiter;
+    }
+
+    if (source === "") {
+      this.rateLimiters.set(serverName, { source, limiter: null });
+      return null;
+    }
+
+    try {
+      const limiter = new RateLimiter(parseRateLimit(source), { label: `"${serverName}"` });
+      this.rateLimiters.set(serverName, { source, limiter });
+      return limiter;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error(`[pool] server "${serverName}": ${error.message}`);
+      this.rateLimiters.set(serverName, { source, limiter: null, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Wait for this server's rate-limit slot, if one is configured. One slot is
+   * spent per logical callTool: the reconnect retry deliberately does not
+   * re-acquire, since it is a resend of a call already accounted for. That is
+   * also why a queued waiter's connection must not be reaped underneath it —
+   * the resulting reconnect would be a second transmission on one slot.
+   *
+   * The wait lives inside the caller's deadline and is abortable, so a call the
+   * caller has already given up on is never performed — a late write to an
+   * external system silently duplicates whatever the caller's retry did.
+   */
+  private async awaitRateLimit(
+    serverName: string,
+    options: { deadlineMs: number; signal?: AbortSignal; onWait?: (waitedMs: number) => void },
+  ): Promise<void> {
+    const limiter = this.rateLimiter(serverName);
+    if (!limiter) return;
+
+    const waitedMs = await limiter.acquire({ deadlineMs: options.deadlineMs, signal: options.signal });
+    if (waitedMs <= 0) return;
+
+    const labels = { server: serverName };
+    metrics.counter("mcpd_rate_limit_throttled_total", labels).inc();
+    metrics.histogram("mcpd_rate_limit_wait_ms", labels).observe(waitedMs);
+    options.onWait?.(waitedMs);
+  }
+
   /** Call a tool on a server. Auto-retries once on transient errors (connection lost, timeout). */
   async callTool(
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
     timeoutMs: number = MCP_TOOL_TIMEOUT_MS,
+    options: { onRateLimitWait?: (waitedMs: number) => void; signal?: AbortSignal } = {},
   ): Promise<unknown> {
+    // One deadline spans the queued rate-limit wait *and* the call itself, so
+    // a timeout bounds the whole operation the caller is blocked on.
+    const deadlineMs = Date.now() + timeoutMs;
     const conn = await this.ensureConnected(serverName);
     if (!conn.client) throw new Error(`Not connected to "${serverName}"`);
+    // Connect is inside the deadline on purpose — the caller is blocked for the
+    // whole operation, so a cold stdio server that burns the budget must make
+    // the call fail, not dispatch late. Checked here (rather than only at the
+    // dispatch below) so the error names connect as what consumed it.
+    callBudgetMs(deadlineMs, serverName, toolName, "connecting to the server");
 
+    // Marks the server busy for the whole operation including the queued wait,
+    // so an idle sweep cannot reap the connection out from under a waiter: the
+    // reconnect path would then run without a slot of its own.
+    conn.inflight++;
     try {
-      const result = await conn.client.callTool({ name: toolName, arguments: args }, undefined, { timeout: timeoutMs });
-      conn.lastUsed = Date.now();
-      return result;
-    } catch (err) {
-      // Surface non-transient errors immediately (auth, config, etc.)
-      if (!isTransientCallError(err)) throw err;
-
-      this.logger.error(
-        `[mcpd] callTool "${toolName}" on "${serverName}" failed with transient error, reconnecting: ${err instanceof Error ? err.message : String(err)}`,
-      );
-
-      // Attempt one reconnect + retry
-      await this.disconnect(serverName);
-      const reconnected = await this.ensureConnected(serverName);
-      if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
-
-      const result = await reconnected.client.callTool({ name: toolName, arguments: args }, undefined, {
-        timeout: timeoutMs,
+      await this.awaitRateLimit(serverName, {
+        deadlineMs,
+        signal: options.signal,
+        onWait: options.onRateLimitWait,
       });
-      reconnected.lastUsed = Date.now();
-      return result;
+
+      // The signal is never handed to the SDK, so this is the last point at
+      // which an abort that landed during the queued wait is still observable.
+      if (options.signal?.aborted) {
+        throw new Error(`Caller aborted before "${toolName}" was sent to "${serverName}" — call not made`);
+      }
+      // Re-read the client: a config reload can disconnect the server during a
+      // wait that now lasts as long as the caller's budget.
+      const client = conn.client;
+      if (!client) throw new Error(`Not connected to "${serverName}" — disconnected while queued`);
+      const budgetMs = callBudgetMs(deadlineMs, serverName, toolName, "queued for a rate-limit slot");
+
+      try {
+        return await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: budgetMs });
+      } catch (err) {
+        // Surface non-transient errors immediately (auth, config, etc.)
+        if (!isTransientCallError(err)) throw err;
+
+        this.logger.error(
+          `[mcpd] callTool "${toolName}" on "${serverName}" failed with transient error, reconnecting: ${err instanceof Error ? err.message : String(err)}`,
+        );
+
+        // Attempt one reconnect + retry
+        await this.disconnect(serverName);
+        const reconnected = await this.ensureConnected(serverName);
+        if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
+
+        return await reconnected.client.callTool({ name: toolName, arguments: args }, undefined, {
+          timeout: callBudgetMs(deadlineMs, serverName, toolName, "reconnecting after a transient failure"),
+        });
+      }
+    } finally {
+      conn.inflight--;
+      conn.lastUsed = Date.now();
     }
   }
 
@@ -754,13 +888,59 @@ export class ServerPool {
     return this.connections.get(name)?.resolved.config;
   }
 
-  /** Get names of servers idle longer than the threshold */
+  /**
+   * Get names of servers idle longer than the threshold. A server with calls in
+   * flight is never idle, even when `lastUsed` is stale — `lastUsed` only
+   * advances when a call finishes, so a long call (or a long rate-limit wait)
+   * would otherwise look idle and get its connection reaped mid-flight.
+   */
   getIdleServers(thresholdMs: number): string[] {
     const now = Date.now();
     return [...this.connections.entries()]
-      .filter(([, c]) => c.state === "connected" && c.lastUsed > 0 && now - c.lastUsed > thresholdMs)
+      .filter(
+        ([, c]) => c.state === "connected" && c.inflight === 0 && c.lastUsed > 0 && now - c.lastUsed > thresholdMs,
+      )
       .map(([name]) => name);
   }
+}
+
+/** Smallest budget worth dispatching an MCP call with. */
+const MIN_CALL_BUDGET_MS = 1;
+
+/**
+ * Thrown when the caller's deadline is gone before the call could be sent. The
+ * caller has already timed out, so dispatching would write to the upstream
+ * server after a retry had been issued.
+ */
+export class CallDeadlineExceededError extends Error {
+  constructor(
+    readonly serverName: string,
+    readonly toolName: string,
+    readonly overshootMs: number,
+    spentOn: string,
+  ) {
+    super(
+      `Deadline for "${toolName}" on "${serverName}" was exhausted ${Math.round(overshootMs)}ms ago while ${spentOn} — call not made`,
+    );
+    this.name = "CallDeadlineExceededError";
+  }
+}
+
+/**
+ * Milliseconds left before an absolute deadline, for use as an MCP call timeout.
+ *
+ * Refuses rather than floors. Flooring at a positive value ("just give it 1ms")
+ * inverts the intent: the SDK arms its timer *before* writing to the transport,
+ * so a 1ms timeout still delivers the request upstream and only then reports a
+ * timeout to the caller — the exact duplicate-write this deadline exists to
+ * prevent. An exhausted budget is an error, not a very short call.
+ */
+function callBudgetMs(deadlineMs: number, serverName: string, toolName: string, spentOn: string): number {
+  const remaining = deadlineMs - Date.now();
+  if (remaining < MIN_CALL_BUDGET_MS) {
+    throw new CallDeadlineExceededError(serverName, toolName, -remaining, spentOn);
+  }
+  return remaining;
 }
 
 // -- Stderr safety --

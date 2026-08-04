@@ -18,6 +18,13 @@ export interface BaseServerConfig {
   callbackPort?: number;
   /** Optional: OAuth scope to request (e.g. "openid email profile" for OIDC providers) */
   scope?: string;
+  /**
+   * Optional: max tool calls per window, e.g. "3/s", "30/m", "1000/h".
+   * Falls back to the MCX_RATE_LIMIT_<SERVER> env var when unset. The window
+   * may not exceed 24h. A call is rejected rather than queued when its slot
+   * cannot be granted inside the caller's timeout.
+   */
+  rateLimit?: string;
 }
 
 /** Stdio transport: spawn a local process */

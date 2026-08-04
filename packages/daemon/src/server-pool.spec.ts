@@ -1,5 +1,5 @@
 import { describe, expect, mock, setDefaultTimeout, test } from "bun:test";
-import { MCP_TOOL_TIMEOUT_MS, silentLogger } from "@mcp-cli/core";
+import { MCP_TOOL_TIMEOUT_MS, rateLimitEnvVar, silentLogger } from "@mcp-cli/core";
 import type { HttpServerConfig, SseServerConfig, StdioServerConfig } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -10,6 +10,7 @@ const POLL_MS = 1;
 
 import {
   BASE_ENV_ALLOWLIST,
+  CallDeadlineExceededError,
   type ConnectFn,
   ServerPool,
   buildChildEnv,
@@ -871,9 +872,11 @@ describe("ServerPool.callTool auto-retry", () => {
 
     await pool.callTool("test", "my-tool", {});
 
-    // Third argument to callTool should contain { timeout: MCP_TOOL_TIMEOUT_MS }
+    // The timeout is what remains of the caller's budget after connect/queueing,
+    // so assert a tight band below the nominal value rather than equality.
     const opts = callToolMock.mock.calls[0][2] as { timeout?: number };
-    expect(opts).toEqual({ timeout: MCP_TOOL_TIMEOUT_MS });
+    expect(opts.timeout).toBeLessThanOrEqual(MCP_TOOL_TIMEOUT_MS);
+    expect(opts.timeout).toBeGreaterThan(MCP_TOOL_TIMEOUT_MS - 5_000);
   });
 
   test("forwards custom timeoutMs to client.callTool options", async () => {
@@ -884,7 +887,8 @@ describe("ServerPool.callTool auto-retry", () => {
     await pool.callTool("test", "my-tool", {}, 30_000);
 
     const opts = callToolMock.mock.calls[0][2] as { timeout?: number };
-    expect(opts).toEqual({ timeout: 30_000 });
+    expect(opts.timeout).toBeLessThanOrEqual(30_000);
+    expect(opts.timeout).toBeGreaterThan(25_000);
   });
 
   test("non-transient error surfaces immediately without retry", async () => {
@@ -1832,5 +1836,251 @@ describe("disconnect kills stdio child processes (#940)", () => {
     } finally {
       forceKill(pid);
     }
+  });
+});
+
+describe("ServerPool rate limiting", () => {
+  test("no rate-limit status when the server is unthrottled", () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    expect(pool.listServers()[0].rateLimit).toBeUndefined();
+  });
+
+  test("reports the configured limit and its utilization", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "4/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "4/m", utilization: 0, queueDepth: 0, maxQueue: 100 });
+
+    await pool.callTool("test", "my-tool", {});
+    await pool.callTool("test", "my-tool", {});
+
+    expect(pool.listServers()[0].rateLimit?.utilization).toBe(0.5);
+  });
+
+  test("throttles a burst beyond the window budget", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "2/200ms" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    // Fired in parallel so all three enter the limiter in the same tick — the
+    // third is deterministically over budget regardless of machine speed.
+    const waits: number[] = [];
+    const onRateLimitWait = (ms: number) => waits.push(ms);
+    await Promise.all(
+      [0, 1, 2].map(() => pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { onRateLimitWait })),
+    );
+
+    // Two calls fit the window; the third had to wait for a slot to free.
+    expect(waits.length).toBe(1);
+    expect(waits[0]).toBeGreaterThan(0);
+  });
+
+  test("falls back to MCX_RATE_LIMIT_<SERVER> when config omits the limit", () => {
+    const envVar = rateLimitEnvVar("my-server");
+    const previous = process.env[envVar];
+    process.env[envVar] = "7/m";
+    try {
+      const { connectFn } = mockConnectFn();
+      const pool = new ServerPool(makeConfig({ "my-server": { command: "echo" } }), undefined, connectFn, silentLogger);
+
+      expect(pool.listServers()[0].rateLimit?.limit).toBe("7/m");
+    } finally {
+      if (previous === undefined) delete process.env[envVar];
+      else process.env[envVar] = previous;
+    }
+  });
+
+  test("config wins over the env fallback", () => {
+    const envVar = rateLimitEnvVar("test");
+    const previous = process.env[envVar];
+    process.env[envVar] = "99/s";
+    try {
+      const { connectFn } = mockConnectFn();
+      const pool = new ServerPool(
+        makeConfig({ test: { command: "echo", rateLimit: "3/s" } }),
+        undefined,
+        connectFn,
+        silentLogger,
+      );
+
+      expect(pool.listServers()[0].rateLimit?.limit).toBe("3/s");
+    } finally {
+      if (previous === undefined) delete process.env[envVar];
+      else process.env[envVar] = previous;
+    }
+  });
+
+  test("a malformed limit fails the call loudly and is reported as an error in status", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "very fast" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await expect(pool.callTool("test", "my-tool", {})).rejects.toThrow(/Invalid rate limit "very fast"/);
+    // Status must distinguish "misconfigured, every call failing" from "unthrottled".
+    const status = pool.listServers()[0].rateLimit;
+    expect(status?.limit).toBe("very fast");
+    expect(status?.error).toMatch(/Invalid rate limit "very fast"/);
+  });
+
+  test("rebuilds the limiter when the configured spec changes", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "2/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("test", "my-tool", {});
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "2/m", utilization: 0.5, queueDepth: 0, maxQueue: 100 });
+
+    pool.updateConfig(makeConfig({ test: { command: "echo", rateLimit: "10/m" } }));
+
+    expect(pool.listServers()[0].rateLimit).toEqual({ limit: "10/m", utilization: 0, queueDepth: 0, maxQueue: 100 });
+  });
+
+  // The blocker this feature had to fix: a wait that outlived the caller's
+  // deadline let the daemon perform a write the caller had already retried.
+  test("refuses a call whose rate-limit wait would outlast the caller's timeout", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "1/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("test", "my-tool", {});
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+
+    // The next slot is a minute out; this caller only allows 200ms.
+    await expect(pool.callTool("test", "my-tool", {}, 200)).rejects.toThrow(/call not made/);
+    // Crucially the tool was NOT invoked late — no duplicate write.
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Flooring the remaining budget at 1ms converted "no budget left" into
+  // "dispatch anyway": the SDK arms its timeout timer *before* writing to the
+  // transport, so a 1ms call still reaches the upstream server and the caller —
+  // already timed out — has already retried. Refuse instead.
+  test("refuses rather than dispatching a call whose budget is exhausted", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.callTool("test", "my-tool", {}, 0)).rejects.toBeInstanceOf(CallDeadlineExceededError);
+    expect(callToolMock).not.toHaveBeenCalled();
+  });
+
+  // The wider trigger: the deadline spans connect, so a cold stdio server can
+  // burn the whole budget. That must fail the call on ANY server, throttled or
+  // not — it used to dispatch with timeout: 1.
+  test("a budget consumed before the call is sent is attributed to connect, not dispatched", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    // Unthrottled: this path has nothing to do with rate limiting.
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.callTool("test", "my-tool", {}, 0)).rejects.toThrow(
+      /exhausted .*ms ago while connecting to the server — call not made/,
+    );
+    expect(callToolMock).not.toHaveBeenCalled();
+    expect(pool.listServers()[0].rateLimit).toBeUndefined();
+  });
+
+  // "aborted" matches isTransientCallError, so this throw must sit outside the
+  // reconnect-retry try block or a refusal would turn into a second dispatch.
+  test("an abort landing between the grant and the dispatch prevents the call", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    // Unthrottled, so no limiter ever inspects the signal: the re-check before
+    // dispatch is the only thing standing between the abort and a real write.
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+    const controller = new AbortController();
+
+    const pending = pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/Caller aborted before "my-tool" was sent to "test" — call not made/);
+    expect(callToolMock).not.toHaveBeenCalled();
+  });
+
+  test("the caller's timeout covers the queued wait, not just the call", async () => {
+    const callToolMock = mock((..._args: unknown[]) => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "1/300ms" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("test", "my-tool", {}, 10_000);
+    await pool.callTool("test", "my-tool", {}, 10_000);
+
+    const waited = (callToolMock.mock.calls[1][2] as { timeout: number }).timeout;
+    const first = (callToolMock.mock.calls[0][2] as { timeout: number }).timeout;
+    // The second call queued for ~300ms, so its remaining budget is smaller.
+    expect(waited).toBeLessThan(first - 200);
+  });
+
+  test("a caller that goes away while queued never has its call performed", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "1/m" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+    const controller = new AbortController();
+
+    await pool.callTool("test", "my-tool", {});
+    const queued = pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { signal: controller.signal });
+    controller.abort();
+
+    await expect(queued).rejects.toThrow(/Caller aborted/);
+    expect(callToolMock).toHaveBeenCalledTimes(1);
+    expect(pool.listServers()[0].rateLimit?.queueDepth).toBe(0);
+  });
+
+  // The idle sweep filters on lastUsed, which only advances when a call ends.
+  // Reaping a queued waiter's connection sends it down the reconnect path, and
+  // that path does not re-acquire a slot — the retry would burst the limit.
+  test("a server with a call queued for a slot is never reported idle", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ test: { command: "echo", rateLimit: "1/500ms" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("test", "my-tool", {});
+    // Queued for ~500ms, comfortably inside its 10s deadline.
+    const queued = pool.callTool("test", "my-tool", {}, 10_000);
+    // Wait for the call to reach the limiter rather than assuming a tick count.
+    await pollUntil(() => (pool.listServers()[0].rateLimit?.queueDepth ?? 0) > 0);
+
+    expect(pool.getIdleServers(-1)).toEqual([]);
+
+    await queued;
+    expect(pool.getIdleServers(-1)).toEqual(["test"]);
   });
 });
