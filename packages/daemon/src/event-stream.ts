@@ -8,6 +8,7 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
+import { HEARTBEAT, enrichMonitorEvent } from "@mcp-cli/core";
 import { getDaemonLogLines, subscribeDaemonLogs } from "./daemon-log";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
@@ -640,7 +641,17 @@ export class EventStreamServer {
         const heartbeatPollMs = Math.ceil(this.heartbeatIntervalMs / 6);
         heartbeatTimer = safeSetInterval(() => {
           if (Date.now() - lastWriteTime >= this.heartbeatIntervalMs) {
-            const hb = `${JSON.stringify({ category: "heartbeat", event: "heartbeat", seq: this.eventSeq, src: "daemon", ts: new Date().toISOString() })}\n`;
+            // Enriched like any other event — the heartbeat is the highest-frequency
+            // thing on the stream, so it must satisfy the envelope contract too.
+            const hb = `${JSON.stringify(
+              enrichMonitorEvent({
+                category: "heartbeat" as const,
+                event: HEARTBEAT,
+                seq: this.eventSeq,
+                src: "daemon",
+                ts: new Date().toISOString(),
+              }),
+            )}\n`;
             try {
               controller.enqueue(encoder.encode(hb));
               lastWriteTime = Date.now();

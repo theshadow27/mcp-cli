@@ -10,21 +10,31 @@
  *
  * ## Envelope contract (#1924)
  *
- * - **Flat.** Category-specific fields live at the top level of the envelope.
- *   A nested `payload` object is forbidden (`payload?: never` on
- *   `MonitorEventBase`) — consumers must never need `.payload.x` fallbacks.
- * - **`summary`** — a producer-rendered one-line description (≤120 chars, no
- *   leading whitespace, never empty). Set by `enrichMonitorEvent` at publish
- *   time from the shared per-type formatters, so consumers get a usable preview
- *   without reimplementing the formatter switch.
- * - **`severity`** — actionability tier (`info` | `notable` | `actionable` |
- *   `urgent`), also set at publish time. Consumers filter with
- *   `select(.severity == "actionable" or .severity == "urgent")` instead of
- *   maintaining their own event-name whitelist.
+ * `enrichMonitorEvent` is the single enforcement point. It runs on every event
+ * published through `EventBus.publish`, on every event replayed from the event
+ * log, and on the synthesized NDJSON heartbeat. It does not trust producer
+ * input: the type-level guards below only bind on typed call sites, and two
+ * ingress paths (the `publishEvent` IPC `extra` record and automation
+ * `emit-event`) spread caller-supplied keys the compiler cannot see.
  *
- * Both fields are typed optional for one release of bake-in, but every event
- * published through the bus (and every event replayed from the event log) has
- * them — consumers can rely on their presence.
+ * - **Flat.** Category-specific fields live at the top level of the envelope.
+ *   A nested `payload` object is forbidden — `payload?: never` on
+ *   `MonitorEventBase` rejects it at typed call sites, and `enrichMonitorEvent`
+ *   deletes it at runtime for everything else. Consumers never need `.payload.x`.
+ * - **`summary`** — a one-line description rendered from the shared per-type
+ *   formatters, so consumers get a usable preview without reimplementing the
+ *   formatter switch. Newlines are collapsed, the string is trimmed and capped
+ *   at 120 chars, and it is never empty. A producer-supplied `summary` is
+ *   preferred but is normalized the same way.
+ * - **`severity`** — actionability tier (`info` | `notable` | `actionable` |
+ *   `urgent`). A producer-supplied value is used only if it is one of those
+ *   four; anything else falls back to the classification table. Consumers
+ *   filter with `select(.severity == "actionable" or .severity == "urgent")`
+ *   instead of maintaining their own event-name whitelist.
+ *
+ * Both fields are typed optional for one release of bake-in, so that a consumer
+ * talking to a pre-#1924 daemon still typechecks. Every event emitted by a
+ * daemon at this version has them.
  */
 
 // ── Event categories ──
@@ -138,6 +148,10 @@ export const AUTOMATION_FIRED = "automation.fired" as const;
 export const AUTOMATION_SKIPPED = "automation.skipped" as const;
 export const AUTOMATION_ERRORED = "automation.errored" as const;
 export const AUTOMATION_ESCALATED = "automation.escalated" as const;
+
+// ── Alias supervisor event names (#1924) ──
+
+export const ALIAS_CRASHED = "alias.crashed" as const;
 
 // ── Heartbeat ──
 
@@ -543,8 +557,8 @@ const MAX_SUMMARY = 120;
 export function summarizeMonitorEvent(e: FormatterInput): string {
   if (e.event === HEARTBEAT) return typeof e.seq === "number" ? `heartbeat seq:${e.seq}` : "heartbeat";
   const formatter = FORMATTERS[e.event];
-  const detail = (formatter ? formatter(e) : fallback(e)).replace(/\s*[\r\n]+\s*/g, " ").trim();
-  return cap(detail || e.event, MAX_SUMMARY);
+  const detail = normalizeSummary(formatter ? formatter(e) : fallback(e));
+  return detail || normalizeSummary(e.event) || e.event || "(unnamed event)";
 }
 
 /**
@@ -570,6 +584,7 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [SESSION_ENDED]: "actionable",
   [SESSION_RATE_LIMITED]: "actionable",
   [SESSION_CONTAINMENT_DENIED]: "actionable",
+  [ALIAS_CRASHED]: "actionable",
   [PR_MERGED]: "actionable",
   [PR_CLOSED]: "actionable",
   [CI_FINISHED]: "actionable",
@@ -627,15 +642,53 @@ export function severityForMonitorEvent(e: MonitorEventBase): MonitorSeverity {
   return SEVERITY_BY_EVENT[e.event] ?? "info";
 }
 
+const SEVERITY_SET: ReadonlySet<string> = new Set(MONITOR_SEVERITIES);
+
+/** True when `event` has an explicit tier rather than falling through to the `info` default. */
+export function hasExplicitSeverity(event: string): boolean {
+  return event in SEVERITY_BY_EVENT || event in SEVERITY_OVERRIDES;
+}
+
 /**
- * Stamp `summary` and `severity` onto an event, preserving anything the
- * producer set explicitly. Called at every publish and replay boundary so
- * consumers can rely on both fields being present.
+ * Normalize an event onto the envelope contract. This is the single enforcement
+ * point for all three invariants, because the two untyped ingress paths
+ * (`publishEvent` IPC `extra`, automation `emit-event`) spread caller-supplied
+ * keys straight into `publish` and the compiler cannot see them:
+ *
+ * - **`payload` is dropped.** The envelope is flat; a nested payload never
+ *   reaches a consumer even if a caller supplies one.
+ * - **`severity` is validated** against `MONITOR_SEVERITIES`. A missing or
+ *   out-of-set value falls back to the classification table, so the field is
+ *   always one of the four tiers.
+ * - **`summary` is re-normalized** — newlines collapsed, trimmed, capped at 120
+ *   chars — whether it came from a producer or from the formatters. Never empty.
  */
 export function enrichMonitorEvent<T extends FormatterInput>(e: T): T & { summary: string; severity: MonitorSeverity } {
-  const summary = typeof e.summary === "string" && e.summary ? e.summary : summarizeMonitorEvent(e);
-  const severity = e.severity ?? severityForMonitorEvent(e);
-  return { ...e, summary, severity };
+  const { payload: _payload, ...rest } = e;
+  try {
+    const producerSummary = typeof e.summary === "string" ? normalizeSummary(e.summary) : "";
+    const summary = producerSummary || summarizeMonitorEvent(e);
+    const severity =
+      typeof e.severity === "string" && SEVERITY_SET.has(e.severity)
+        ? (e.severity as MonitorSeverity)
+        : severityForMonitorEvent(e);
+    return { ...rest, summary, severity } as T & { summary: string; severity: MonitorSeverity };
+  } catch (err) {
+    // Never throw: `publish` calls this before its own error containment, and
+    // some callers (derived-events) publish after committing their cursor, so a
+    // throw here would drop the event permanently. Degrade to the event name
+    // plus the static tier — rendering is best-effort, delivery is not.
+    console.error(`[monitor-event] enrich failed for "${e.event}", degrading:`, err);
+    return {
+      ...rest,
+      summary: typeof e.event === "string" && e.event ? cap(e.event, MAX_SUMMARY) : "(unnamed event)",
+      severity: SEVERITY_BY_EVENT[e.event] ?? "info",
+    } as T & { summary: string; severity: MonitorSeverity };
+  }
+}
+
+function normalizeSummary(s: string): string {
+  return cap(s.replace(/\s*[\r\n]+\s*/g, " ").trim(), MAX_SUMMARY);
 }
 
 function fallback(e: FormatterInput): string {

@@ -3765,6 +3765,11 @@ describe("IpcServer HTTP transport", () => {
       expect(hb.src).toBe("daemon");
       expect(typeof hb.ts).toBe("string");
       expect(typeof hb.seq).toBe("number");
+      // #1924: the heartbeat is synthesized outside EventBus.publish, so it has
+      // its own route to the envelope contract. Assert on the actual wire bytes.
+      expect(hb.summary).toBe(`heartbeat seq:${hb.seq as number}`);
+      expect(hb.severity).toBe("info");
+      expect(Object.hasOwn(hb, "payload")).toBe(false);
     } finally {
       Object.defineProperty(IpcServer, "HEARTBEAT_INTERVAL_MS", {
         value: origInterval ?? 30_000,

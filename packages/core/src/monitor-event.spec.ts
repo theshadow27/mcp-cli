@@ -12,6 +12,7 @@ import {
   SESSION_IDLE,
   SESSION_PERMISSION_REQUEST,
   enrichMonitorEvent,
+  hasExplicitSeverity,
   severityForMonitorEvent,
   summarizeMonitorEvent,
 } from "./monitor-event";
@@ -367,12 +368,71 @@ describe("enrichMonitorEvent", () => {
     expect(e.severity).toBe("urgent");
   });
 
-  test("never carries a nested payload — the envelope is flat", () => {
-    // The type forbids `payload`; this guards the runtime contract for events
-    // crossing an untyped boundary (JSON replay, worker postMessage).
-    const e = enrichMonitorEvent({ src: "test", category: "ci", event: CI_FINISHED, prNumber: 1, allGreen: false });
+  test("strips a nested payload that arrived over an untyped boundary", () => {
+    // The type forbids `payload`, but IPC `extra` and automation `emit-event`
+    // spread caller-supplied keys the compiler never sees. Feed one in.
+    const hostile = {
+      src: "test",
+      category: "ci",
+      event: CI_FINISHED,
+      prNumber: 1,
+      allGreen: false,
+      payload: { state: "BEHIND" },
+    } as unknown as Parameters<typeof enrichMonitorEvent>[0];
+    const e = enrichMonitorEvent(hostile);
     expect(Object.hasOwn(e, "payload")).toBe(false);
-    expect(e.summary).not.toContain("payload");
+    expect(JSON.stringify(e)).not.toContain("BEHIND");
+  });
+
+  test("rejects an out-of-set severity in favour of the table", () => {
+    const hostile = {
+      src: "test",
+      category: "session",
+      event: SESSION_PERMISSION_REQUEST,
+      severity: "banana",
+    } as unknown as Parameters<typeof enrichMonitorEvent>[0];
+    const e = enrichMonitorEvent(hostile);
+    expect(MONITOR_SEVERITIES).toContain(e.severity);
+    expect(e.severity).toBe("urgent");
+  });
+
+  test("re-caps a producer-supplied summary that blows the budget", () => {
+    const e = enrichMonitorEvent({
+      src: "test",
+      category: "session",
+      event: SESSION_IDLE,
+      summary: "z".repeat(500),
+    });
+    expect(e.summary.length).toBe(120);
+    expect(e.summary.endsWith("…")).toBe(true);
+  });
+
+  test("degrades instead of throwing when rendering blows up", () => {
+    // `fallback` stringifies arbitrary producer values; a throwing toString is
+    // the cheapest realistic way to make rendering fail. Delivery must survive,
+    // and the static tier must be preserved.
+    const poison = {
+      src: "test",
+      category: "session",
+      event: SESSION_PERMISSION_REQUEST,
+      bad: {
+        toString() {
+          throw new Error("boom");
+        },
+      },
+    } as unknown as Parameters<typeof enrichMonitorEvent>[0];
+    const e = enrichMonitorEvent(poison);
+    expect(e.summary).toBe(SESSION_PERMISSION_REQUEST);
+    expect(e.severity).toBe("urgent");
+  });
+
+  test("every exported event-name constant has an explicit severity classification", () => {
+    // Not a tautology: `severityForMonitorEvent` defaults to `info`, so a new
+    // event constant with no table entry would otherwise sit silently below the
+    // documented actionability filter. This fails until the table is updated.
+    for (const name of KNOWN_EVENTS) {
+      expect(hasExplicitSeverity(name), `no explicit severity tier for "${name}"`).toBe(true);
+    }
   });
 
   test("every known event type produces a non-empty summary and a valid severity", () => {
