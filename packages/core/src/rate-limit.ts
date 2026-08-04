@@ -10,6 +10,25 @@
 /** Max calls allowed to wait for a slot before further calls are rejected. */
 export const DEFAULT_RATE_LIMIT_MAX_QUEUE = 100;
 
+/**
+ * setTimeout's 32-bit delay ceiling. A larger delay does not wait longer — it
+ * silently clamps to 1ms, so an unclamped wait becomes a hot spin.
+ */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
+/**
+ * Longest window a spec may express. Well inside MAX_TIMER_DELAY_MS so no
+ * arithmetic on windowMs can reach the timer ceiling, and long enough that no
+ * plausible upstream limit is unexpressible.
+ */
+export const MAX_RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Clamp a delay into the range setTimeout actually honors. */
+export function clampTimerDelay(ms: number): number {
+  if (Number.isNaN(ms) || ms <= 0) return 0;
+  return Math.min(Math.trunc(ms), MAX_TIMER_DELAY_MS);
+}
+
 /** A parsed rate limit: `count` calls permitted per `windowMs`. */
 export interface RateLimitSpec {
   count: number;
@@ -43,7 +62,12 @@ export function parseRateLimit(value: string): RateLimitSpec {
   if (count <= 0) throw invalid(value, "count must be greater than zero");
   if (windows <= 0) throw invalid(value, "window must be greater than zero");
 
-  return { count, windowMs: windows * UNIT_MS[unit], source };
+  const windowMs = windows * UNIT_MS[unit];
+  if (windowMs > MAX_RATE_LIMIT_WINDOW_MS) {
+    throw invalid(value, `window ${windowMs}ms exceeds the ${MAX_RATE_LIMIT_WINDOW_MS}ms (24h) maximum`);
+  }
+
+  return { count, windowMs, source };
 }
 
 /** Env var that throttles a server without editing a shared `.mcp.json`. */
@@ -87,6 +111,47 @@ export class RateLimitQueueFullError extends Error {
   }
 }
 
+/**
+ * Thrown when a slot cannot be granted before the caller's deadline. Rejecting
+ * up front is the only safe answer: waiting past the deadline means the caller
+ * has already timed out and retried, so performing the call would double-write.
+ */
+export class RateLimitDeadlineError extends Error {
+  constructor(
+    readonly spec: RateLimitSpec,
+    readonly waitMs: number,
+    readonly remainingMs: number,
+    label?: string,
+  ) {
+    super(
+      `Rate limit wait for ${label ?? "server"} (${spec.source}) needs ~${Math.round(waitMs)}ms but only ${Math.round(remainingMs)}ms of the caller's deadline remains — call not made`,
+    );
+    this.name = "RateLimitDeadlineError";
+  }
+}
+
+/** Thrown when the caller went away while its call was queued for a slot. */
+export class RateLimitAbortedError extends Error {
+  constructor(
+    readonly spec: RateLimitSpec,
+    label?: string,
+  ) {
+    super(`Caller aborted while queued for a rate-limit slot on ${label ?? "server"} (${spec.source}) — call not made`);
+    this.name = "RateLimitAbortedError";
+  }
+}
+
+/** Bounds on how long a caller is willing to be queued. */
+export interface AcquireOptions {
+  /**
+   * Absolute epoch-ms ceiling for admission. A wait that cannot finish by then
+   * is rejected instead of performed late.
+   */
+  deadlineMs?: number;
+  /** Aborts the wait when the caller disconnects; the call is never admitted. */
+  signal?: AbortSignal;
+}
+
 export interface RateLimiterOptions {
   maxQueue?: number;
   /** Included in queue-overflow errors — typically the server name. */
@@ -98,7 +163,11 @@ export interface RateLimiterOptions {
 }
 
 function realSleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, clampTimerDelay(ms));
+    // A limiter wait must never hold the daemon's event loop open at teardown.
+    timer.unref?.();
+  });
 }
 
 /**
@@ -110,7 +179,8 @@ export class RateLimiter {
   private readonly grants: number[] = [];
   private chain: Promise<void> = Promise.resolve();
   private pending = 0;
-  private readonly maxQueue: number;
+  /** Waiters allowed before further calls are rejected outright. */
+  readonly maxQueue: number;
   private readonly label?: string;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -136,8 +206,25 @@ export class RateLimiter {
     return this.grants.length / this.spec.count;
   }
 
-  /** Wait for a slot. Resolves with the milliseconds spent waiting. */
-  async acquire(): Promise<number> {
+  /**
+   * Wait for a slot. Resolves with the milliseconds spent waiting.
+   *
+   * With `deadlineMs`, a call that cannot be admitted in time is rejected
+   * *before* it takes a queue slot: an abandoned waiter would otherwise hold a
+   * slot toward `maxQueue` and push live calls into RateLimitQueueFullError.
+   */
+  async acquire(options: AcquireOptions = {}): Promise<number> {
+    const { deadlineMs, signal } = options;
+    if (signal?.aborted) throw new RateLimitAbortedError(this.spec, this.label);
+
+    if (deadlineMs !== undefined) {
+      const projectedWaitMs = this.projectWaitMs(this.pending);
+      const remainingMs = deadlineMs - this.now();
+      if (projectedWaitMs > remainingMs) {
+        throw new RateLimitDeadlineError(this.spec, projectedWaitMs, remainingMs, this.label);
+      }
+    }
+
     if (this.pending >= this.maxQueue) {
       throw new RateLimitQueueFullError(this.spec, this.maxQueue, this.label);
     }
@@ -151,18 +238,64 @@ export class RateLimiter {
     try {
       await predecessor;
       for (;;) {
+        if (signal?.aborted) throw new RateLimitAbortedError(this.spec, this.label);
         this.prune();
         if (this.grants.length < this.spec.count) {
           this.grants.push(this.now());
           return this.now() - start;
         }
-        const waitMs = this.grants[0] + this.spec.windowMs - this.now();
-        await this.sleep(waitMs > 0 ? waitMs : 1);
+        const waitMs = Math.max(this.grants[0] + this.spec.windowMs - this.now(), 1);
+        if (deadlineMs !== undefined && waitMs > deadlineMs - this.now()) {
+          throw new RateLimitDeadlineError(this.spec, waitMs, deadlineMs - this.now(), this.label);
+        }
+        // Clamp independently of the parser: the sleep must stay honorable even
+        // if a spec ever reaches here with an out-of-range window.
+        await this.sleepOrAbort(clampTimerDelay(waitMs), signal);
       }
     } finally {
       this.pending--;
       release();
     }
+  }
+
+  /** Sleep, rejecting early if the caller disconnects mid-wait. */
+  private async sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) return this.sleep(ms);
+    let onAbort: () => void = () => {};
+    try {
+      await Promise.race([
+        this.sleep(ms),
+        new Promise<void>((_resolve, reject) => {
+          onAbort = () => reject(new RateLimitAbortedError(this.spec, this.label));
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * How long a caller arriving behind `waitersAhead` others would wait, by
+   * replaying the sliding window forward. Used for admission fail-fast.
+   */
+  private projectWaitMs(waitersAhead: number): number {
+    this.prune();
+    const now = this.now();
+    const expiries = this.grants.map((g) => g + this.spec.windowMs);
+    let free = this.spec.count - expiries.length;
+    let admittedAt = now;
+    for (let i = 0; i <= waitersAhead; i++) {
+      if (free > 0) {
+        free--;
+        admittedAt = now;
+      } else {
+        // Timestamps only move forward, so shifting keeps `expiries` sorted.
+        admittedAt = Math.max(admittedAt, expiries.shift() ?? now);
+      }
+      expiries.push(admittedAt + this.spec.windowMs);
+    }
+    return Math.max(admittedAt - now, 0);
   }
 
   private prune(): void {

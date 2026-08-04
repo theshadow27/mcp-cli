@@ -95,6 +95,7 @@ export class ToolHandlers {
             ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
             : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs, {
                 onRateLimitWait: (waitedMs) => toolSpan.setAttribute("ratelimit.waitMs", waitedMs),
+                signal: ctx.signal,
               });
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();

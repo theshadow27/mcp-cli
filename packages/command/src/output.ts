@@ -82,7 +82,7 @@ export function printServerList(
     toolCount: number;
     source: string;
     recentStderr?: string[];
-    rateLimit?: { limit: string; utilization: number; queueDepth: number };
+    rateLimit?: { limit: string; utilization: number; queueDepth: number; maxQueue?: number; error?: string };
   }>,
 ): void {
   if (servers.length === 0) {
@@ -98,11 +98,16 @@ export function printServerList(
       `  ${c.cyan}${s.name.padEnd(maxName)}${c.reset}  ${stateColor}${s.state.padEnd(12)}${c.reset}  ${c.dim}${s.transport}${c.reset}  ${s.toolCount > 0 ? `${s.toolCount} tools` : ""}`,
     );
     if (s.rateLimit) {
-      const { limit, utilization, queueDepth } = s.rateLimit;
-      const queued = queueDepth > 0 ? `, ${queueDepth} queued` : "";
-      console.log(
-        `  ${"".padEnd(maxName)}  ${c.dim}rate limit: ${limit} (${Math.round(utilization * 100)}% used${queued})${c.reset}`,
-      );
+      const { limit, utilization, queueDepth, maxQueue, error } = s.rateLimit;
+      if (error) {
+        // Every call to this server is failing closed — never render it as unthrottled.
+        console.log(`  ${"".padEnd(maxName)}  ${c.red}rate limit: ${limit} INVALID — ${error}${c.reset}`);
+      } else {
+        const queued = queueDepth > 0 ? `, ${queueDepth}${maxQueue ? `/${maxQueue}` : ""} queued` : "";
+        console.log(
+          `  ${"".padEnd(maxName)}  ${c.dim}rate limit: ${limit} (${Math.round(utilization * 100)}% used${queued})${c.reset}`,
+        );
+      }
     }
     // Show last stderr line for error-state servers
     if (s.state === "error" && s.recentStderr?.length) {

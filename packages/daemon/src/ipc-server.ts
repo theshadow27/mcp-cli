@@ -245,7 +245,7 @@ export class IpcServer {
         }
 
         try {
-          const result = await dispatch(request);
+          const result = await dispatch(request, req.signal);
           const response: IpcResponse = { id: request.id, result };
           return Response.json(response);
         } catch (err) {
@@ -341,7 +341,7 @@ export class IpcServer {
 
   // -- Dispatch --
 
-  private async dispatch(request: IpcRequest): Promise<unknown> {
+  private async dispatch(request: IpcRequest, signal?: AbortSignal): Promise<unknown> {
     const handler = this.handlers.get(request.method);
     if (!handler) {
       throw Object.assign(new Error(`Unknown method: ${request.method}`), {
@@ -354,7 +354,7 @@ export class IpcServer {
       onFallback: () => metrics.counter("mcpd_trace_fallback_root_total").inc(),
     });
     span.setAttribute("ipc.method", request.method);
-    const ctx: RequestContext = { span };
+    const ctx: RequestContext = { span, signal };
 
     const labels = { method: request.method };
     metrics.counter("mcpd_ipc_requests_total", labels).inc();

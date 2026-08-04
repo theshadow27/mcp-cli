@@ -281,6 +281,10 @@ export interface ServerRateLimitStatus {
   utilization: number;
   /** Calls currently waiting for a slot. */
   queueDepth: number;
+  /** Waiters allowed before further calls are rejected outright. */
+  maxQueue?: number;
+  /** Set when the configured spec is malformed — every call to this server fails. */
+  error?: string;
 }
 
 export interface ToolInfo {
