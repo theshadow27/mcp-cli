@@ -5,7 +5,7 @@
  *   - `install` (#1291): resolves sources in the manifest, hashes them,
  *     extracts phase metadata, writes `.mcx.lock`.
  *   - `run <target>` (#1293): validates the transition against the manifest
- *     graph, appends it to `.mcx/transitions.jsonl`, prints "approved".
+ *     graph, appends it to `.mcx/transitions.db`, prints "approved".
  *   - `check` (#1292): detects drift between `.mcx.lock` and on-disk sources.
  *   - `list`: prints all declared phases from the manifest.
  *
@@ -35,6 +35,7 @@ import {
   type ManifestState,
   NO_REPO_ROOT,
   RegressionError,
+  TransitionLockBusyError,
   type TransitionLogEntry,
   UnknownPhaseError,
   type WorkItem,
@@ -362,6 +363,8 @@ export interface PhaseLogOptions {
   workItemId: string | null;
   forcedOnly: boolean;
   json: boolean;
+  /** Show only the newest N transitions; null = unbounded. */
+  tail: number | null;
 }
 
 export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
@@ -369,6 +372,7 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
     "work-item": { type: "string" },
     "forced-only": { type: "boolean" },
     json: { type: "boolean" },
+    tail: { type: "string" },
   });
 
   if (errors.length > 0) {
@@ -381,14 +385,28 @@ export function parsePhaseLogArgs(args: string[]): PhaseLogOptions {
   const workItemId = (flags["work-item"] as string | undefined) ?? null;
   if (workItemId !== null && workItemId === "") throw new Error("--work-item requires a non-empty id");
 
+  const rawTail = flags.tail as string | undefined;
+  let tail: number | null = null;
+  if (rawTail !== undefined) {
+    if (!/^\d+$/.test(rawTail)) throw new Error("--tail requires a non-negative integer");
+    tail = Number(rawTail);
+  }
+
   return {
     workItemId,
     forcedOnly: (flags["forced-only"] as boolean | undefined) ?? false,
     json: (flags.json as boolean | undefined) ?? false,
+    tail,
   };
 }
 
-/** Apply filters from options; return newest-first. */
+/**
+ * Present transition entries newest-first.
+ *
+ * The filters are pushed into SQL by `readAllTransitions` (#1375), so this is
+ * the display-order step; the predicates are kept here so the function is
+ * correct for any caller that hands it an unfiltered list.
+ */
 export function filterTransitionLog(
   entries: readonly TransitionLogEntry[],
   opts: { workItemId?: string | null; forcedOnly?: boolean },
@@ -429,6 +447,14 @@ export function formatTransitionLog(entries: readonly TransitionLogEntry[]): str
   return out;
 }
 
+/**
+ * Locator for a repo's transition log.
+ *
+ * Still the historical `.mcx/transitions.jsonl` path: the store is SQLite now
+ * (`.mcx/transitions.db`, see `transitionDbPath`), but every API takes the
+ * jsonl path as the key so existing callers and any leftover jsonl awaiting
+ * migration resolve to the same store.
+ */
 export function transitionLogPath(repoDir: string): string {
   return join(repoDir, ".mcx", "transitions.jsonl");
 }
@@ -455,6 +481,42 @@ export function phaseRun(
   });
 
   return { manifest, forced: decision.forced, from: decision.from };
+}
+
+/**
+ * Backoff schedule for the post-handler commit. Bounded: the handler has
+ * already run, so waiting forever is not an option either.
+ */
+export const COMMIT_LOCK_RETRY_DELAYS_MS = [50, 150, 400, 1000] as const;
+
+/**
+ * Run the post-handler transition commit, retrying while the write lock is
+ * contended.
+ *
+ * `TransitionLockBusyError` was handled nowhere at all, and this is the one call
+ * site where losing the lock is genuinely expensive: the commit happens *after*
+ * `executeAliasBundled` returns, so the handler has already pushed the branch,
+ * opened the PR and set labels. Throwing there leaves a stuck work item whose
+ * side effects happened but whose transition was never recorded — db/log
+ * divergence, with nothing to distinguish it from a handler that never ran.
+ *
+ * Jittered so that N phase runs that collided once do not re-collide in lockstep
+ * on every subsequent attempt.
+ */
+export async function commitWithLockRetry<T>(
+  commit: () => T,
+  deps: { sleep: (ms: number) => Promise<void>; random?: () => number },
+): Promise<T> {
+  const random = deps.random ?? Math.random;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return commit();
+    } catch (err) {
+      const delay = COMMIT_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !(err instanceof TransitionLockBusyError)) throw err;
+      await deps.sleep(delay / 2 + random() * (delay / 2));
+    }
+  }
 }
 
 export type DriftKind =
@@ -912,7 +974,13 @@ export async function cmdPhase(
 
     if (sub === "log") {
       const opts = parsePhaseLogArgs(args.slice(1));
-      const entries = filterTransitionLog(readAllTransitions(transitionLogPath(stateCwd())), opts);
+      // Filters and --tail are pushed into SQL rather than read-then-filter.
+      const rows = readAllTransitions(transitionLogPath(stateCwd()), {
+        workItemId: opts.workItemId,
+        forcedOnly: opts.forcedOnly,
+        ...(opts.tail !== null ? { tail: opts.tail } : {}),
+      });
+      const entries = filterTransitionLog(rows, opts);
       if (opts.json) {
         for (const e of entries) d.log(JSON.stringify(e));
       } else if (entries.length === 0) {
@@ -1141,6 +1209,8 @@ export interface PhaseExecuteDeps {
   findGitRoot: (cwd: string) => string | null;
   now: () => Date;
   readCliConfig: () => CliConfig;
+  /** Backoff delay for the post-handler commit retry; injected so tests need no real time. */
+  sleep: (ms: number) => Promise<void>;
 }
 
 export function spawnExec(cmd: string[]): ExecResult {
@@ -1160,6 +1230,7 @@ const defaultExecuteDeps: PhaseExecuteDeps = {
   findGitRoot,
   now: () => new Date(),
   readCliConfig,
+  sleep: (ms) => Bun.sleep(ms),
 };
 
 export interface PhaseExecuteArgs {
@@ -1239,7 +1310,7 @@ function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
  *      the transition log is empty (#1522). Early-exit on missing id.
  *   3. Pre-validate the transition against committed history so bogus
  *      moves fail fast before we bundle or dispatch anything.
- *   4. Append an `"attempted"` entry to `.mcx/transitions.jsonl`. This
+ *   4. Append an `"attempted"` entry to `.mcx/transitions.db`. This
  *      captures attempt evidence from ANY branch, including cases that
  *      branch-guard rejects or handlers crash. Attempted entries are
  *      ignored by graph-walk / regression checks (#1407). Note: early
@@ -1538,15 +1609,35 @@ export async function executePhase(
   // (`from === target && tail === target`) is accepted by
   // validateTransition so successive `phase run <X>` calls don't
   // trip RegressionError.
-  const txResult = phaseRun(
-    {
-      target: parsed.target,
-      from: resolvedFrom,
-      workItemId: parsed.workItemId,
-      forceMessage: parsed.forceMessage,
-    },
-    { cwd, stateCwd: stateRoot, now: ex.now },
-  );
+  let txResult: { manifest: Manifest; forced: boolean; from: string | null };
+  try {
+    txResult = await commitWithLockRetry(
+      () =>
+        phaseRun(
+          {
+            target: parsed.target,
+            from: resolvedFrom,
+            workItemId: parsed.workItemId,
+            forceMessage: parsed.forceMessage,
+          },
+          { cwd, stateCwd: stateRoot, now: ex.now },
+        ),
+      { sleep: ex.sleep },
+    );
+  } catch (err) {
+    if (!(err instanceof TransitionLockBusyError)) throw err;
+    // Never silent: the handler's side effects are already on GitHub, so this is
+    // db/log divergence, not a no-op. Say so, and say that re-running is safe.
+    d.logError(
+      [
+        `phase "${parsed.target}" COMPLETED but its transition could not be recorded: ${err.message}.`,
+        "The handler's side effects (branch, PR, labels) have already happened, so the work item's phase",
+        `and its transition log now disagree. Re-run \`mcx phase run ${parsed.target}\` once the other run`,
+        "finishes — handlers self-check and the idempotent self-loop is accepted.",
+      ].join(" "),
+    );
+    d.exit(1);
+  }
   const source = phase.source ?? "(unknown)";
   const tag = txResult.forced ? " [FORCED]" : "";
   const trail = txResult.from ?? "(initial)";
@@ -1901,9 +1992,10 @@ Subcommands:
       5-step orchestrator sequence of phase run + update + spawn + state_set.
       Exits 0 on wait/in-flight/spawn; exits 2 on cycle cap (8 iterations).
 
-  mcx phase log [--work-item <id>] [--forced-only] [--json]
-      Print transitions from .mcx/transitions.jsonl, newest first.
+  mcx phase log [--work-item <id>] [--forced-only] [--tail <n>] [--json]
+      Print transitions from .mcx/transitions.db, newest first.
       --forced-only shows only entries with a --force justification.
+      --tail <n> shows only the newest n transitions after filtering.
       --json emits one JSON object per line for piping.`);
 }
 

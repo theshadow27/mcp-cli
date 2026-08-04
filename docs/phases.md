@@ -428,8 +428,33 @@ mcx phase run <target> \           # validate + log a transition
 mcx phase run <name> --dry-run     # execute the handler with a logging proxy
 ```
 
-Transitions are logged to `.mcx/transitions.jsonl`. Disallowed or regressive
-transitions fail unless `--force "<message>"` is supplied.
+Transitions are logged to `.mcx/transitions.db` (SQLite). A pre-existing
+`.mcx/transitions.jsonl` is imported on first open and parked as
+`.mcx/transitions.jsonl.migrated`. Disallowed or regressive transitions fail
+unless `--force "<message>"` is supplied.
+
+The import never deletes or consumes log data, and is announced on stderr —
+including where the original was parked, since that is what recovery reads from:
+
+```
+migrated 1919 entries from .mcx/transitions.jsonl → .mcx/transitions.db; original parked at .mcx/transitions.jsonl.migrated
+```
+
+Recovery affordances, all of which are safe to use more than once:
+
+- **Restoring a parked file** (`cp transitions.jsonl.migrated transitions.jsonl`)
+  re-imports it, and is idempotent: dedupe is keyed on a content hash of the
+  file plus a row-level check, so entries already in the store are skipped
+  rather than duplicated. Only genuinely new records are added — which is also
+  what makes a mixed-binary rollout safe, where an older binary regenerates a
+  jsonl the new one then imports.
+- **Records that are valid JSON but not valid entries** are reported as corrupt
+  lines and skipped. They cannot abort the import, and the original bytes remain
+  in the parked file.
+- **A claimed file that cannot be imported at all** is moved to
+  `.mcx/transitions.jsonl.unimportable.<nonce>` and reported, so one bad file
+  costs a single error instead of failing every subsequent read and write. It is
+  left on disk because it may be the only copy.
 
 ### Dry-run limitations
 
