@@ -1,5 +1,5 @@
 /**
- * Cooperative gate-run lease — a host-global counting semaphore over flock(2).
+ * Cooperative gate-run lease — host-global admission control for `am-i-done`.
  *
  * Problem (#2690): N `mcx claude` worker sessions each run `bun run am-i-done`
  * concurrently. Each `bun test --parallel` fans out ~cpu-count worker threads,
@@ -8,81 +8,126 @@
  * spec files that reads like a flaky suite but is pure resource arithmetic.
  *
  * The fix is to QUEUE heavy test phases, never to cap/kill/reap workers (the
- * banned sprint 69/70 pattern, #2637). This semaphore lets at most K test
- * phases run at once across ALL worktrees on the host; a phase that can't get a
- * slot waits cooperatively until one frees.
+ * banned sprint 69/70 pattern, #2637). Everything here happens on the way *in*;
+ * nothing is ever signalled, killed or reaped (the banned #2597/#2632 pattern).
  *
- * Mechanism: K slot files in a host-shared directory, each guarded by an
- * exclusive flock. Acquiring = winning the exclusive lock on any one slot.
- * flock locks are kernel-managed and released automatically on process death
- * (even SIGKILL) or fd close — so a crashed holder never strands a slot and
- * there is no stale-lock reaper to write.
+ * ## Admission, and what is actually guaranteed
  *
- * Admission has two stages, both on the way *in* — nothing is ever signalled,
- * killed or reaped (the banned #2597/#2632 pattern):
+ * Two host-shared flock-guarded resources:
  *
- *   1. Win a slot (bounds the number of concurrent gate runs).
- *   2. Wait for load headroom (bounds total host pressure, including load this
- *      process did not create — N agent sessions, editors, other builds).
+ *   - `admit.lock` — a single mutex held for the duration of one *admission
+ *     decision*. Exactly one process host-wide is ever deciding whether to
+ *     start, so decisions are strictly serialized: runs enter one at a time.
+ *   - `slot-<i>.lock` — K counting slots, held for the duration of the run.
+ *     Bounds how many gate runs *execute* concurrently.
  *
- * Stage 2 exists because a slot count alone is blind to non-gate load: one
- * admitted gate run plus ~12 agent sessions measured load 18.9 on a 16-core
- * host, so admitting a second full fan-out on top reaches the ~27 regime where
- * the OS starts killing test workers.
+ * A run is admitted when it holds the admission token, a slot is free, and the
+ * host has CPU headroom. Guarantees, all of which hold at the default K:
  *
- * Fail-open at both stages: if every slot stays busy past a generous deadline,
- * acquire returns an un-held handle and the caller proceeds anyway; if load
- * never drops, the load wait gives up and the run proceeds holding its slot.
- * Oversubscribing slightly is strictly better than hanging the gate forever
- * behind a wedged holder or a permanently-busy host. Waits and fail-opens are
- * logged so contention is observable.
+ *   1. At most K gate runs execute concurrently.
+ *   2. Admission decisions are totally ordered — no two runs evaluate headroom
+ *      at the same time, so they cannot both clear the same stale reading.
+ *   3. Each decision observes the previously admitted run's fan-out, because
+ *      the signal is instantaneous (see below) and a decision that follows an
+ *      occupied slot waits `settleMs` before sampling.
+ *
+ * A slot is held only by a run that is *working*: a run waiting for headroom
+ * releases its slot and waits on the admission token instead. So a queued run
+ * never waits behind a peer that is itself only waiting.
+ *
+ * ## Why CPU-busy, not loadavg
+ *
+ * The signal is the instantaneous busy fraction of all cores, sampled from
+ * `os.cpus()` cumulative tick deltas over `sampleMs`. The previous version used
+ * `os.loadavg()[0]`, which is wrong here twice over. Measured on the 16-core
+ * reference host during a sprint (#2949 review):
+ *
+ *     loadavg = 26.53 / 25.21 / 23.02      busy = 25.6%   (≈4.1 of 16 cores)
+ *
+ * i.e. loadavg reported 166% of core count while 74% of the CPU sat idle — it
+ * counts D-state I/O waiters and is inflated by ~50 mostly-API-blocked agent
+ * sessions. Any ceiling expressed as a fraction of cores is unreachable on that
+ * host, so every admission burned its whole budget and then ran anyway. It also
+ * lags: a 1-minute EWMA reaches ~40% of a peer's steady-state fan-out after 30s,
+ * so guarantee 3 above would have needed a ~60s settle instead of ~2s.
+ *
+ * ## Bounded, whole-run budget
+ *
+ * `waitMs` is a single budget covering the *entire* admission (token + slot +
+ * headroom), charged once per run, not once per step. On expiry the run proceeds
+ * anyway — with a slot if one is free, unleased otherwise. Two hard constraints
+ * set the default: workers run `am-i-done` under a 600s foreground timeout, and
+ * a green run takes ~100-200s, so the admission budget must be well under 400s
+ * or the gate manufactures the very phantom failures it exists to prevent.
+ * Oversubscribing slightly is strictly better than hanging the gate behind a
+ * wedged holder or a permanently-busy host. Waits and fail-opens are logged so
+ * contention stays observable.
  */
 
 import { closeSync, mkdirSync, openSync } from "node:fs";
-import { cpus, loadavg } from "node:os";
+import { cpus } from "node:os";
 import { join } from "node:path";
 
 import { options } from "./constants";
 import { flockUnlock, tryFlockExclusive } from "./flock";
 
 /**
- * Cores per allowed concurrent gate run, used to derive the default slot count.
+ * Concurrent gate runs allowed by default.
  *
- * #2690 asked for `max(1, floor(cores/4))`. That is not implemented, because it
- * contradicts the field measurements it was meant to fix: on the 16-core macOS
- * host in the report, `cores/4` yields 4 slots — *more* permissive than the
- * fixed 2 that was already in place and that produced the failures. Measured on
- * that host: one admitted gate run plus ~12 agent sessions = load 18.9 on 16
- * cores, and two concurrent runs reached ~27, the regime where the OS SIGTERMs
- * bun test workers. Dividing by 8 keeps 16 cores at 2 (matching the value the
- * host tolerates when load headroom is also respected — see MAX_LOAD_FACTOR)
- * while correctly dropping 4- and 8-core hosts to 1, which the old hardcoded 2
- * got wrong.
+ * #2690 asked for a core-derived count, `max(1, floor(cores/4))`. There is no
+ * defensible derivation, because a gate run's fan-out is *already* sized to the
+ * host: `bun test --parallel` starts ~cpu-count workers, so one run wants the
+ * whole machine whatever the machine is. Measured on the 16-core reference host,
+ * sampling CPU busy every second through a real `am-i-done` (#2949):
+ *
+ *     baseline (agent sessions only)   25-33%
+ *     during test-parallel             44 → 88% peak, 76-83% sustained ~20s
+ *
+ * One fan-out therefore consumes ~75-85% of the box on top of a 25% baseline, so
+ * a second concurrent fan-out does not fit at any core count a fan-out scales to.
+ * The issue's `cores/4` would have admitted *four*.
+ *
+ * So the default is 1, and the K > 1 machinery exists only for
+ * MCX_GATE_LEASE_SLOTS. This is deliberately the same effective concurrency as
+ * the `/tmp/mcx-am-i-done.lock` stopgap it is meant to replace — which measured
+ * load 27 → 14 — but host-wide, crash-safe via flock, with a CPU-headroom check
+ * on top, and with no lock directory to strand when a run dies.
  */
-const CORES_PER_SLOT = 8;
+const DEFAULT_SLOTS = 1;
 /** Upper bound on slots — a huge value would exhaust the fd table per poll. */
 const MAX_SLOTS = 64;
 /**
- * Default load ceiling as a fraction of core count.
+ * Default admission ceiling, as a busy fraction of total CPU capacity.
  *
- * Deliberately below 1.0: a gate run's own `bun test --parallel` fan-out adds
- * roughly a core's worth of load per worker, so admitting at exactly `cores`
- * would start a full fan-out on an already-saturated box and land in the
- * failure regime. 0.75 leaves the admitted run somewhere to grow into — on the
- * 16-core reference host that admits at the observed ~8-10 idle baseline and
- * blocks at the ~19 one-run-active reading.
+ * Chosen so that (a) a host loaded only by idle-ish agent sessions admits — the
+ * reference host measured 25.6% busy while loadavg claimed 26.5 — and (b) a host
+ * already running one gate fan-out does not. `bun test --parallel` saturates
+ * most cores, so a run in progress reads well above this and the next decision
+ * correctly waits for it. Expressed as a fraction, so a 1- or 2-core host gets a
+ * meaningful ceiling instead of the unsatisfiable `max(1, cores * 0.75)` the
+ * loadavg version produced.
  */
-const DEFAULT_MAX_LOAD_FACTOR = 0.75;
-/** Generous fail-open deadline — proceed unleased rather than hang the gate. */
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_MAX_BUSY = 0.6;
 /**
- * Fail-open deadline for the load-headroom wait. Shorter than the slot deadline:
- * a slot frees when a peer finishes, but load on a permanently-busy host may
- * never drop, so degrade to "just run it" sooner.
+ * Whole-run admission budget before fail-open. See the file header: bounded well
+ * below the 600s worker timeout that wraps the gate run this admits.
  */
-const DEFAULT_LOAD_WAIT_MS = 5 * 60 * 1000;
+const DEFAULT_WAIT_MS = 120 * 1000;
 /** Base poll interval; jitter is added on top to avoid lockstep retries. */
 const DEFAULT_POLL_MS = 250;
+/** CPU sampling window. Long enough to be stable, short enough to be free. */
+const DEFAULT_SAMPLE_MS = 250;
+/**
+ * Delay before the first CPU sample when a peer already holds a slot, so a run
+ * admitted moments ago is visible in the sample rather than being decided
+ * against a pre-fan-out reading. Paid only when a slot is occupied, so the solo
+ * case — the common one — pays nothing.
+ */
+const DEFAULT_SETTLE_MS = 2000;
+/** Re-announce an ongoing wait on this interval so it never reads as a wedge. */
+const REWARN_MS = 30 * 1000;
+/** The single admission mutex, serializing decisions across all gate runs. */
+const ADMIT_LOCK = "admit.lock";
 
 /** Minimal logger surface — kept local so core doesn't depend on the runner's. */
 export interface LeaseLogger {
@@ -92,26 +137,28 @@ export interface LeaseLogger {
 
 export interface GateLeaseOptions {
   /**
-   * Concurrent slots. Defaults to MCX_GATE_LEASE_SLOTS, else derived from the
-   * core count as `max(1, floor(cores/8))`. `<= 0` disables the gate entirely.
+   * Concurrent slots. Defaults to MCX_GATE_LEASE_SLOTS, else 1 (see
+   * DEFAULT_SLOTS). `<= 0` disables the gate entirely.
    */
   slots?: number;
   /** Host-shared lock directory. Defaults to ~/.mcp-cli/gate-locks. */
   lockDir?: string;
-  /** Fail-open deadline (ms). Defaults to MCX_GATE_LEASE_TIMEOUT_MS or 15min. */
-  timeoutMs?: number;
   /**
-   * 1-minute load-average ceiling for admission. Defaults to
-   * MCX_GATE_LEASE_MAX_LOAD, else `cores * 0.75`. `<= 0` skips the load wait.
+   * Whole-run admission budget (ms) covering token + slot + headroom waits.
+   * Defaults to MCX_GATE_LEASE_WAIT_MS or 120s.
    */
-  maxLoad?: number;
+  waitMs?: number;
   /**
-   * Fail-open deadline for the load wait (ms). Defaults to
-   * MCX_GATE_LEASE_LOAD_WAIT_MS or 5min.
+   * CPU busy-fraction ceiling for admission (0-1). Defaults to
+   * MCX_GATE_LEASE_MAX_BUSY, else 0.6. `<= 0` skips the headroom wait.
    */
-  loadWaitMs?: number;
-  /** Base poll interval (ms) while waiting for a free slot. */
+  maxBusy?: number;
+  /** Base poll interval (ms) while waiting for admission. */
   pollIntervalMs?: number;
+  /** CPU sampling window (ms). */
+  sampleMs?: number;
+  /** Settle delay (ms) before sampling when a peer already holds a slot. */
+  settleMs?: number;
   logger?: LeaseLogger;
   /** DI seam: sleep implementation (injected in tests). */
   sleep?: (ms: number) => Promise<void>;
@@ -119,10 +166,8 @@ export interface GateLeaseOptions {
   now?: () => number;
   /** DI seam: jitter source (injected in tests). */
   random?: () => number;
-  /** DI seam: 1-minute load average (defaults to os.loadavg()[0]). */
-  loadAvg?: () => number;
-  /** DI seam: logical core count (defaults to os.cpus().length). */
-  cpuCount?: () => number;
+  /** DI seam: CPU busy fraction 0-1 (defaults to an os.cpus() tick sample). */
+  cpuBusy?: () => number | Promise<number>;
 }
 
 export interface GateLease {
@@ -136,8 +181,8 @@ export interface GateLease {
 
 const UNHELD_LEASE: GateLease = { held: false, slot: null, release: () => {} };
 
-function readSlotsFromEnv(cores: number, logger?: LeaseLogger): number {
-  const fallback = Math.max(1, Math.floor(cores / CORES_PER_SLOT));
+function readSlotsFromEnv(logger?: LeaseLogger): number {
+  const fallback = DEFAULT_SLOTS;
   const raw = process.env.MCX_GATE_LEASE_SLOTS;
   if (raw === undefined || raw === "") return fallback;
   // parseInt silently truncates trailing garbage ("2abc" -> 2), which hides a
@@ -158,33 +203,29 @@ function readSlotsFromEnv(cores: number, logger?: LeaseLogger): number {
   return n;
 }
 
-function readTimeoutFromEnv(): number {
-  const raw = process.env.MCX_GATE_LEASE_TIMEOUT_MS;
-  if (raw === undefined || raw === "") return DEFAULT_TIMEOUT_MS;
+function readWaitFromEnv(): number {
+  const raw = process.env.MCX_GATE_LEASE_WAIT_MS;
+  if (raw === undefined || raw === "") return DEFAULT_WAIT_MS;
   const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WAIT_MS;
 }
 
-function readMaxLoadFromEnv(cores: number, logger?: LeaseLogger): number {
-  const fallback = Math.max(1, cores * DEFAULT_MAX_LOAD_FACTOR);
-  const raw = process.env.MCX_GATE_LEASE_MAX_LOAD;
-  if (raw === undefined || raw === "") return fallback;
+function readMaxBusyFromEnv(logger?: LeaseLogger): number {
+  const raw = process.env.MCX_GATE_LEASE_MAX_BUSY;
+  if (raw === undefined || raw === "") return DEFAULT_MAX_BUSY;
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n)) {
-    logger?.warn?.(`gate-lease: MCX_GATE_LEASE_MAX_LOAD="${raw}" is not a number — using default ${fallback} (#2690)`);
-    return fallback;
+    logger?.warn?.(
+      `gate-lease: MCX_GATE_LEASE_MAX_BUSY="${raw}" is not a number — using default ${DEFAULT_MAX_BUSY} (#2690)`,
+    );
+    return DEFAULT_MAX_BUSY;
   }
   if (n <= 0) {
-    logger?.warn?.(`gate-lease: MCX_GATE_LEASE_MAX_LOAD=${n} disables the load wait — admitting immediately (#2690)`);
+    logger?.warn?.(
+      `gate-lease: MCX_GATE_LEASE_MAX_BUSY=${n} disables the headroom wait — admitting immediately (#2690)`,
+    );
   }
   return n;
-}
-
-function readLoadWaitFromEnv(): number {
-  const raw = process.env.MCX_GATE_LEASE_LOAD_WAIT_MS;
-  if (raw === undefined || raw === "") return DEFAULT_LOAD_WAIT_MS;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_LOAD_WAIT_MS;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -195,22 +236,61 @@ function jitteredDelay(base: number, random: () => number): number {
   return base + Math.floor(random() * base);
 }
 
+/** Aggregate (idle, total) CPU ticks across all cores. */
+function cpuTicks(): { idle: number; total: number } {
+  let idle = 0;
+  let total = 0;
+  for (const c of cpus()) {
+    idle += c.times.idle;
+    total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
+  }
+  return { idle, total };
+}
+
+/**
+ * Instantaneous busy fraction of all cores over `windowMs`.
+ *
+ * Unlike loadavg this reflects a peer's fan-out within a second of it starting,
+ * and ignores non-CPU waiters (disk, `mds`, network) that cannot contend for the
+ * resource the gate protects.
+ */
+async function sampleCpuBusy(windowMs: number, sleep: (ms: number) => Promise<void>): Promise<number> {
+  const a = cpuTicks();
+  await sleep(windowMs);
+  const b = cpuTicks();
+  const total = b.total - a.total;
+  if (total <= 0) return 0;
+  const busy = 1 - (b.idle - a.idle) / total;
+  return Math.min(1, Math.max(0, busy));
+}
+
 interface HeldSlot {
   index: number;
   fd: number;
 }
 
-/** Try each slot file once; return the first whose exclusive flock we win. */
-function tryAcquireAnySlot(lockDir: string, slots: number): HeldSlot | null {
+/** Open a lock file, or null on a transient fs error (treated as unusable). */
+function openLockFile(lockDir: string, name: string): number | null {
+  try {
+    return openSync(join(lockDir, name), "w");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe every slot, retaining the first free one.
+ *
+ * Safe to lock-then-unlock the slots we don't keep, because this only ever runs
+ * while holding the admission token: no peer can be acquiring a slot
+ * concurrently, so a momentarily-taken-then-released slot is unobservable.
+ */
+function probeSlots(lockDir: string, slots: number): { mine: HeldSlot | null; occupied: number } {
+  let mine: HeldSlot | null = null;
+  let occupied = 0;
   for (let i = 0; i < slots; i++) {
-    const path = join(lockDir, `slot-${i}.lock`);
-    let fd: number;
-    try {
-      fd = openSync(path, "w");
-    } catch {
-      // Slot file could not be opened (transient fs error) — skip it.
-      continue;
-    }
+    const fd = openLockFile(lockDir, `slot-${i}.lock`);
+    if (fd === null) continue;
     let locked = false;
     try {
       locked = tryFlockExclusive(fd);
@@ -219,10 +299,24 @@ function tryAcquireAnySlot(lockDir: string, slots: number): HeldSlot | null {
       closeSync(fd);
       continue;
     }
-    if (locked) return { index: i, fd };
-    closeSync(fd);
+    if (!locked) {
+      occupied++;
+      closeSync(fd);
+      continue;
+    }
+    if (mine === null) {
+      mine = { index: i, fd };
+    } else {
+      flockUnlock(fd);
+      closeSync(fd);
+    }
   }
-  return null;
+  return { mine, occupied };
+}
+
+function releaseSlot(slot: HeldSlot): void {
+  flockUnlock(slot.fd);
+  closeSync(slot.fd);
 }
 
 function makeHeldLease(slot: HeldSlot): GateLease {
@@ -233,97 +327,139 @@ function makeHeldLease(slot: HeldSlot): GateLease {
     release() {
       if (released) return;
       released = true;
-      flockUnlock(slot.fd);
-      closeSync(slot.fd);
+      releaseSlot(slot);
     },
   };
 }
 
-interface LoadWaitParams {
-  maxLoad: number;
-  loadWaitMs: number;
+interface AdmitContext {
+  lockDir: string;
+  slots: number;
+  maxBusy: number;
   basePoll: number;
-  slotIndex: number;
+  settleMs: number;
+  deadline: number;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   random: () => number;
-  loadAvg: () => number;
+  cpuBusy: () => number | Promise<number>;
   logger?: LeaseLogger;
 }
 
 /**
- * Stage 2 of admission: hold the slot until the host has load headroom.
+ * Announce a wait once, then re-announce every REWARN_MS with elapsed/remaining.
  *
- * Waiting *while holding the slot* is the load-bearing part of this design, not
- * an implementation detail — do not "optimise" it into a wait-then-acquire. The
- * slot makes the load wait mutually exclusive, so at most K runs are ever
- * watching the load average and they enter one at a time. Waiting before
- * acquiring reproduces the convoy this replaces: in sprint 76 three sessions
- * independently polled for load < 6 / < 3 / < 4, all cleared their private
- * thresholds within the same instant, and fired their suites simultaneously —
- * exactly the oversubscription the gate exists to prevent.
- *
- * Bounded fail-open: a permanently-busy host must degrade to "just run it",
- * never hang. The run proceeds still holding its slot.
+ * warn (not info) because the am-i-done AI file logger mirrors only warn/error
+ * to stderr; "why am I not running yet" has to reach the worker or a queued run
+ * is indistinguishable from a hung one, and agent sessions intervene on silence.
  */
-async function waitForLoadHeadroom(p: LoadWaitParams): Promise<void> {
-  if (p.maxLoad <= 0) return;
+function makeWaitAnnouncer(ctx: AdmitContext, start: number) {
+  let lastAnnounced = Number.NEGATIVE_INFINITY;
+  const announce = (what: string): void => {
+    announce.waited = true;
+    const elapsed = ctx.now() - start;
+    if (elapsed - lastAnnounced < REWARN_MS && lastAnnounced !== Number.NEGATIVE_INFINITY) return;
+    lastAnnounced = elapsed;
+    const remaining = Math.max(0, Math.round(ctx.deadline - ctx.now()));
+    const cfg = `slots=${ctx.slots} maxBusy=${ctx.maxBusy.toFixed(2)}`;
+    ctx.logger?.warn?.(
+      `gate-lease: waiting ${what} — ${Math.round(elapsed)}ms elapsed, ${remaining}ms before fail-open (${cfg}, #2690)`,
+    );
+  };
+  /** Set once any wait has been announced — see the admission log level below. */
+  announce.waited = false;
+  return announce;
+}
 
-  const start = p.now();
-  const deadline = start + p.loadWaitMs;
-  let announced = false;
-
+/** Hold the single admission mutex, so exactly one run decides at a time. */
+async function acquireAdmitToken(ctx: AdmitContext): Promise<{ fd: number; waited: boolean } | null> {
+  const start = ctx.now();
+  const announce = makeWaitAnnouncer(ctx, start);
   for (;;) {
-    const load = p.loadAvg();
-    if (load < p.maxLoad) {
-      if (announced) {
-        p.logger?.warn?.(
-          `gate-lease: slot ${p.slotIndex} admitted after waiting ${Math.round(p.now() - start)}ms for load ${load.toFixed(2)} < ${p.maxLoad.toFixed(2)} (#2690)`,
-        );
+    const fd = openLockFile(ctx.lockDir, ADMIT_LOCK);
+    if (fd !== null) {
+      let locked = false;
+      try {
+        locked = tryFlockExclusive(fd);
+      } catch {
+        closeSync(fd);
+        return null;
       }
-      return;
+      if (locked) return { fd, waited: announce.waited };
+      closeSync(fd);
     }
-    if (p.now() >= deadline) {
-      p.logger?.warn?.(
-        `gate-lease: load ${load.toFixed(2)} still above ${p.maxLoad.toFixed(2)} after ${p.loadWaitMs}ms — proceeding anyway (fail-open, #2690)`,
-      );
-      return;
-    }
-    if (!announced) {
-      announced = true;
-      // warn (not info) for the same reason as the slot wait: the am-i-done AI
-      // file logger only mirrors warn/error, and "why am I not running yet" has
-      // to reach the worker or the run looks hung.
-      p.logger?.warn?.(
-        `gate-lease: holding slot ${p.slotIndex}, waiting for host load ${load.toFixed(2)} to fall below ${p.maxLoad.toFixed(2)} (#2690)`,
-      );
-    }
-    await p.sleep(jitteredDelay(p.basePoll, p.random));
+    if (ctx.now() >= ctx.deadline) return null;
+    announce("for the admission token (a peer is deciding)");
+    await ctx.sleep(jitteredDelay(ctx.basePoll, ctx.random));
   }
 }
 
 /**
- * Acquire one of K cooperative gate slots, waiting for a free slot if all are
- * busy and then for host load headroom. Returns immediately with an unheld
- * lease when disabled (`slots <= 0`) or when the slot fail-open deadline
- * elapses. Never throws on contention.
+ * Decide, while holding the admission token: wait for a free slot AND host CPU
+ * headroom, then take the slot. Returns null if the budget ran out.
+ *
+ * A slot found free but rejected on headroom is released again before waiting —
+ * slots are held only by runs that are actually working, so a queued peer never
+ * blocks behind a waiter.
+ */
+async function decideAdmission(ctx: AdmitContext, waitedForToken: boolean): Promise<HeldSlot | null> {
+  const start = ctx.now();
+  const announce = makeWaitAnnouncer(ctx, start);
+  announce.waited = waitedForToken;
+  let settled = ctx.maxBusy <= 0;
+
+  for (;;) {
+    const { mine, occupied } = probeSlots(ctx.lockDir, ctx.slots);
+    if (mine) {
+      if (ctx.maxBusy <= 0) return mine;
+      if (!settled && occupied > 0) {
+        // A peer may have been admitted moments ago; give its fan-out time to
+        // reach the CPU sample before deciding against a pre-fan-out reading.
+        settled = true;
+        releaseSlot(mine);
+        await ctx.sleep(ctx.settleMs);
+        continue;
+      }
+      const busy = await ctx.cpuBusy();
+      if (busy < ctx.maxBusy) {
+        const waited = Math.round(ctx.now() - start);
+        // A run that queued reports its admission at warn, so the wait and its
+        // resolution both survive the am-i-done AI file logger (which mirrors
+        // only warn/error and discards the info log on success). An instant
+        // admission stays at info — the common case shouldn't cost context.
+        const log = announce.waited ? ctx.logger?.warn : ctx.logger?.info;
+        log?.(
+          `gate-lease: admitted on slot ${mine.index} after ${waited}ms — cpu ${(busy * 100).toFixed(0)}% < ${(ctx.maxBusy * 100).toFixed(0)}%, slots=${ctx.slots} (#2690)`,
+        );
+        return mine;
+      }
+      releaseSlot(mine);
+      announce(`for cpu headroom (${(busy * 100).toFixed(0)}% busy, need < ${(ctx.maxBusy * 100).toFixed(0)}%)`);
+    } else {
+      announce(`for a free slot (all ${ctx.slots} busy)`);
+    }
+    if (ctx.now() >= ctx.deadline) return null;
+    await ctx.sleep(jitteredDelay(ctx.basePoll, ctx.random));
+  }
+}
+
+/**
+ * Acquire host-global admission for one gate run: a slot plus CPU headroom.
+ *
+ * Call once per run, not once per step — the budget is whole-run. Returns an
+ * unheld lease when the gate is disabled (`slots <= 0`), when the lock dir is
+ * unusable, or when the budget elapses without a slot. Never throws on
+ * contention.
  */
 export async function acquireGateLease(opts: GateLeaseOptions = {}): Promise<GateLease> {
   const logger = opts.logger;
-  const cpuCount = opts.cpuCount ?? (() => cpus().length);
-  const cores = Math.max(1, cpuCount());
-  const slots = opts.slots ?? readSlotsFromEnv(cores, logger);
+  const slots = opts.slots ?? readSlotsFromEnv(logger);
   if (slots <= 0) return UNHELD_LEASE;
 
   const lockDir = opts.lockDir ?? join(options.MCP_CLI_DIR, "gate-locks");
-  const timeoutMs = opts.timeoutMs ?? readTimeoutFromEnv();
-  const maxLoad = opts.maxLoad ?? readMaxLoadFromEnv(cores, logger);
-  const loadWaitMs = opts.loadWaitMs ?? readLoadWaitFromEnv();
-  const basePoll = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
   const sleep = opts.sleep ?? defaultSleep;
   const now = opts.now ?? (() => performance.now());
-  const random = opts.random ?? Math.random;
-  const loadAvg = opts.loadAvg ?? (() => loadavg()[0] ?? 0);
+  const sampleMs = opts.sampleMs ?? DEFAULT_SAMPLE_MS;
 
   // Fail-open on any fs error creating the lock dir (read-only HOME, disk full,
   // bad permissions) — the lease must never fail the run it wraps (#2690).
@@ -336,57 +472,40 @@ export async function acquireGateLease(opts: GateLeaseOptions = {}): Promise<Gat
     return UNHELD_LEASE;
   }
 
-  const deadline = now() + timeoutMs;
-  let announcedWait = false;
+  const waitMs = opts.waitMs ?? readWaitFromEnv();
+  const ctx: AdmitContext = {
+    lockDir,
+    slots,
+    maxBusy: opts.maxBusy ?? readMaxBusyFromEnv(logger),
+    basePoll: opts.pollIntervalMs ?? DEFAULT_POLL_MS,
+    settleMs: opts.settleMs ?? DEFAULT_SETTLE_MS,
+    deadline: now() + waitMs,
+    sleep,
+    now,
+    random: opts.random ?? Math.random,
+    cpuBusy: opts.cpuBusy ?? (() => sampleCpuBusy(sampleMs, sleep)),
+    logger,
+  };
 
-  const start = now();
-
-  for (;;) {
-    const slot = tryAcquireAnySlot(lockDir, slots);
-    if (slot) {
-      // warn (not info) so the message survives the am-i-done AI file logger,
-      // which mirrors only warn/error to stderr and deletes the info-only log
-      // on success — the worker context is exactly where #2690 contention needs
-      // to stay observable.
-      if (announcedWait) {
-        logger?.warn?.(`gate-lease: acquired slot ${slot.index} after waiting ${now() - start}ms (#2690)`);
-      }
-      const lease = makeHeldLease(slot);
-      await waitForLoadHeadroom({
-        maxLoad,
-        loadWaitMs,
-        basePoll,
-        slotIndex: slot.index,
-        sleep,
-        now,
-        random,
-        loadAvg,
-        logger,
-      });
-      return lease;
-    }
-    if (now() >= deadline) {
-      logger?.warn?.(
-        `gate-lease: all ${slots} slots busy past ${timeoutMs}ms — proceeding unleased (fail-open, #2690)`,
-      );
-      return UNHELD_LEASE;
-    }
-    if (!announcedWait) {
-      announcedWait = true;
-      logger?.warn?.(`gate-lease: all ${slots} slots busy — queueing for a free slot (#2690)`);
-    }
-    await sleep(jitteredDelay(basePoll, random));
+  const token = await acquireAdmitToken(ctx);
+  if (token === null) {
+    logger?.warn?.(`gate-lease: no admission token within ${waitMs}ms — proceeding unleased (fail-open, #2690)`);
+    return UNHELD_LEASE;
   }
-}
 
-/**
- * Run `fn` while holding a gate slot, releasing it afterwards even on throw.
- */
-export async function withGateLease<T>(fn: () => Promise<T>, opts: GateLeaseOptions = {}): Promise<T> {
-  const lease = await acquireGateLease(opts);
   try {
-    return await fn();
+    const slot = await decideAdmission(ctx, token.waited);
+    if (slot) return makeHeldLease(slot);
+
+    // Budget spent. Running with a slot is still better than running unleased,
+    // so take one if it happens to be free; otherwise proceed uncounted.
+    const { mine } = probeSlots(lockDir, slots);
+    logger?.warn?.(
+      `gate-lease: no admission within ${waitMs}ms — proceeding ${mine ? `on slot ${mine.index}` : "unleased"} (fail-open, #2690)`,
+    );
+    return mine ? makeHeldLease(mine) : UNHELD_LEASE;
   } finally {
-    lease.release();
+    flockUnlock(token.fd);
+    closeSync(token.fd);
   }
 }

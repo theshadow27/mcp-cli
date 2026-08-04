@@ -24,7 +24,7 @@
 
 import { spawn } from "node:child_process";
 
-import { withGateLease } from "@mcp-cli/core";
+import { type GateLease, acquireGateLease } from "@mcp-cli/core";
 
 import { createCaptureLogger } from "./logger";
 import type { Logger, ScriptFunction, Step, StepResult } from "./types";
@@ -39,6 +39,8 @@ export interface RunnerOptions {
   logger: Logger;
   /** Optional override for process.env (used in tests). */
   env?: Record<string, string | undefined>;
+  /** DI seam: gate-lease acquisition (injected in tests). */
+  acquireLease?: typeof acquireGateLease;
 }
 
 export interface RunReport {
@@ -67,37 +69,47 @@ export class StepRunner {
     const t0 = Date.now();
     const failures: RunReport["failures"] = [];
 
-    for (const [i, step] of slice.entries()) {
-      const idx = startIdx + i;
-      if (skip && matchesAny(step.name, skip)) {
-        logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — skipped (--skip)`);
-        continue;
-      }
-      const stepStart = Date.now();
-      logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — ${step.description}`);
+    // Heavy test phases run under a host-global gate lease so N concurrent gate
+    // runs across worktrees don't oversubscribe the host (#2690). Admission is
+    // acquired ONCE PER RUN — lazily, at the first leased step, and held until
+    // the run ends. Acquiring per step multiplied the admission budget by the
+    // number of leased steps (three in the default list) and made a run wait on
+    // the load its own previous step had just created. The lease logs waits /
+    // fail-open to the real logger so contention stays visible even when the
+    // step's own output is suppressed.
+    let lease: GateLease | null = null;
+    try {
+      for (const [i, step] of slice.entries()) {
+        const idx = startIdx + i;
+        if (skip && matchesAny(step.name, skip)) {
+          logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — skipped (--skip)`);
+          continue;
+        }
+        logger.info(`[${idx + 1}/${this.steps.length}] ${step.name} — ${step.description}`);
+        if (step.lease && !lease) lease = await (this.opts.acquireLease ?? acquireGateLease)({ logger });
 
-      // Heavy test phases run under a host-global gate lease so N concurrent
-      // gate runs across worktrees don't oversubscribe the host (#2690). The
-      // lease logs waits / fail-open to the real logger so contention is
-      // visible even when the step's own output is suppressed.
-      const result = step.lease ? await withGateLease(() => this.runStep(step), { logger }) : await this.runStep(step);
-      const ms = Date.now() - stepStart;
+        const stepStart = Date.now();
+        const result = await this.runStep(step);
+        const ms = Date.now() - stepStart;
 
-      if (result.success) {
-        logger.info(`  ✓ ${step.name} (${formatMs(ms)})`);
-        continue;
-      }
-      const failure = { step, index: idx, durationMs: ms, error: result.error };
-      failures.push(failure);
-      if (step.critical === false) {
-        logger.warn(`  ⚠ ${step.name} failed (${formatMs(ms)}) — non-critical, continuing`);
+        if (result.success) {
+          logger.info(`  ✓ ${step.name} (${formatMs(ms)})`);
+          continue;
+        }
+        const failure = { step, index: idx, durationMs: ms, error: result.error };
+        failures.push(failure);
+        if (step.critical === false) {
+          logger.warn(`  ⚠ ${step.name} failed (${formatMs(ms)}) — non-critical, continuing`);
+          emitOnFailure(logger, step);
+          continue;
+        }
+        logger.error(`  ✗ ${step.name} failed (${formatMs(ms)})`);
         emitOnFailure(logger, step);
-        continue;
+        logger.info(`  ↻ rerun: bun run am-i-done --from ${idx + 1}`);
+        if (failFast) break;
       }
-      logger.error(`  ✗ ${step.name} failed (${formatMs(ms)})`);
-      emitOnFailure(logger, step);
-      logger.info(`  ↻ rerun: bun run am-i-done --from ${idx + 1}`);
-      if (failFast) break;
+    } finally {
+      lease?.release();
     }
 
     const totalMs = Date.now() - t0;

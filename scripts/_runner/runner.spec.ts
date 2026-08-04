@@ -464,3 +464,54 @@ exit 0
     expect(report.success).toBe(true);
   });
 });
+
+describe("StepRunner gate-lease admission (#2690)", () => {
+  function leaseSpy() {
+    const calls: number[] = [];
+    let releases = 0;
+    const acquireLease = async () => {
+      calls.push(calls.length);
+      return { held: true, slot: 0, release: () => void releases++ };
+    };
+    return { acquireLease, calls, released: () => releases };
+  }
+
+  const leased = (name: string): Step => ({ ...ok(name), lease: true });
+
+  it("acquires admission ONCE PER RUN, not once per leased step", async () => {
+    // The #2949 blocker: three leased steps meant three acquisitions, so a run
+    // could pay the admission budget three times over and wait on the load its
+    // own previous step had just created.
+    const { logger } = makeLog();
+    const spy = leaseSpy();
+    const report = await new StepRunner({ logger, acquireLease: spy.acquireLease })
+      .add(ok("typecheck"), leased("test-parallel"), leased("test-control"), leased("coverage"))
+      .run();
+
+    expect(report.success).toBe(true);
+    expect(spy.calls.length).toBe(1);
+    expect(spy.released()).toBe(1);
+  });
+
+  it("does not take admission at all when no step in range is leased", async () => {
+    const { logger } = makeLog();
+    const spy = leaseSpy();
+    await new StepRunner({ logger, acquireLease: spy.acquireLease }).add(ok("typecheck"), ok("lint")).run();
+    expect(spy.calls.length).toBe(0);
+  });
+
+  it("releases admission when a leased step fails and the run stops early", async () => {
+    const { logger } = makeLog();
+    const spy = leaseSpy();
+    const boom: Step = {
+      name: "test-parallel",
+      description: "x",
+      command: async () => ({ success: false }),
+      lease: true,
+    };
+    const report = await new StepRunner({ logger, acquireLease: spy.acquireLease }).add(boom, leased("coverage")).run();
+    expect(report.success).toBe(false);
+    expect(spy.calls.length).toBe(1);
+    expect(spy.released()).toBe(1);
+  });
+});

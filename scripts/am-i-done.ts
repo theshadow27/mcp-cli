@@ -113,13 +113,13 @@ const RULES: Step = {
   ],
 };
 
-// lease: true on the heavy test phases caps the host-wide concurrent test-
-// worker fan-out under N simultaneous gate runs across worktrees (#2690).
-// Admission is two-stage: win one of K slots, then wait for host load headroom
-// (K alone is blind to load this process didn't create — see gate-lease.ts).
-// Both stages queue and fail open; neither ever signals a process. CI steps
-// stay unleased — each CI runner is its own host, so the per-container
-// semaphore would never block and we don't want to perturb CI timing.
+// lease: true marks the heavy test phases as needing host-wide admission, which
+// caps the concurrent test-worker fan-out under N simultaneous gate runs across
+// worktrees (#2690). The runner acquires admission ONCE PER RUN at the first
+// leased step, not per step — see runner.ts and gate-lease.ts. Admission queues
+// and fails open; it never signals a process. CI steps stay unleased — each CI
+// runner is its own host, so the per-container semaphore would never block and
+// we don't want to perturb CI timing.
 const TEST_PARALLEL: Step = {
   name: "test-parallel",
   description: "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362)",
@@ -415,12 +415,15 @@ workflow — one definition of done (#2345).
 The default (no flag) runs the developer-friendly comprehensive list:
 parallel tests, \`biome --write\` for auto-fix, naive coverage step.
 
-Heavy test phases queue behind a host-wide admission gate so N concurrent gate
-runs across worktrees don't oversubscribe the machine (#2690). A run that logs
-"queueing for a free slot" or "waiting for host load" is waiting, not hung —
-both waits are bounded and fail open. Tune with MCX_GATE_LEASE_SLOTS (default
-max(1, cores/8)), MCX_GATE_LEASE_MAX_LOAD (default 0.75 x cores; 0 disables the
-load wait) and MCX_GATE_LEASE_LOAD_WAIT_MS (default 5min).
+A run containing heavy test phases takes host-wide admission ONCE, before its
+first leased step, so N concurrent gate runs across worktrees don't oversubscribe
+the machine (#2690). A run that logs "gate-lease: waiting ..." is queued, not
+hung — the message repeats every 30s with elapsed/remaining, and admission is
+bounded by a single whole-run budget that fails open. Tune with
+MCX_GATE_LEASE_SLOTS (default 1 — one fan-out already sizes itself to the whole
+host, so a second does not fit; 0 disables), MCX_GATE_LEASE_MAX_BUSY (CPU busy
+fraction, default 0.6; 0 disables the headroom wait) and MCX_GATE_LEASE_WAIT_MS
+(default 120s — deliberately well inside the 600s timeout workers wrap this in).
 
 In a Claude / AI context (CLAUDECODE / AGENT / MCP_CLI_AI env var set),
 step output is captured to build/am-i-done-<timestamp>.txt and only the
