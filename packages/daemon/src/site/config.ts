@@ -53,6 +53,21 @@ export interface CaptureFilters {
   skip: string[];
 }
 
+/**
+ * Declaration of a per-account value that `mcx site capture` extracts from
+ * sniffer output (see site/capture.ts). Kept declarative so that adjusting
+ * where a value lives on the wire is a config edit, not a code change.
+ */
+export interface CaptureVarSpec {
+  /** Variable name — referenced as `${name}` in call headers and `$vars.name` in jq_input. */
+  name: string;
+  /** jq expression over a CaptureSample; must yield a non-empty scalar. */
+  jq: string;
+  /** Optional regex restricting which captured request URLs are considered. */
+  urlMatch?: string;
+  description?: string;
+}
+
 export interface SiteConfig {
   name: string;
   enabled: boolean;
@@ -63,6 +78,8 @@ export interface SiteConfig {
   blockProtocols?: string[];
   captureMode?: "off" | "filtered" | "firehose";
   captureFilters?: CaptureFilters;
+  /** Per-account values `mcx site capture` extracts from sniffer output into vars.json. */
+  captureVars?: CaptureVarSpec[];
   /** Path (relative to the site dir or built-in seed) to a JS keep-alive script. */
   wiggle?: string;
   /** Built-in seed name to fall back to if local files are missing. Defaults to the site name. */
@@ -107,6 +124,7 @@ function mergeConfig(name: string, seed: PartialSiteConfig, user: PartialSiteCon
     blockProtocols: merged.blockProtocols,
     captureMode: merged.captureMode,
     captureFilters: merged.captureFilters,
+    captureVars: merged.captureVars,
     wiggle: merged.wiggle,
     seed: merged.seed ?? name,
     browser: {

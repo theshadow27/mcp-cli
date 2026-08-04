@@ -6,6 +6,20 @@
     "match": ["owa/service\\.svc", "searchservice"],
     "skip": ["telemetry", "sessiondata", "pimg"]
   },
+  "captureVars": [
+    {
+      "name": "inboxFolderId",
+      "description": "Concrete Exchange BaseFolderId for the inbox, replacing the DistinguishedFolderId alias. Read from the DefaultFolderNames/DefaultFolderIds table in the session config response — the folder a request happens to target is whichever folder was last browsed, so request traffic cannot identify the inbox. The two arrays index each other positionally; the length-equality guard makes a compacted or otherwise unaligned pair a miss (falling back to the alias) instead of a plausible id for the wrong folder.",
+      "urlMatch": "action=GetOwaUserConfiguration",
+      "jq": ".responseBody | objects | .SessionSettings | objects | (.DefaultFolderNames // []) as $names | (.DefaultFolderIds // []) as $ids | select(($names | length) == ($ids | length)) | ($names | index(\"inbox\")) as $ix | select($ix != null) | $ids[$ix] | objects | .Id | strings"
+    },
+    {
+      "name": "anchorMailbox",
+      "description": "x-anchormailbox routing header value (PUID or SMTP form) for this mailbox.",
+      "urlMatch": "owa/service\\.svc",
+      "jq": ".requestHeaders[\"x-anchormailbox\"]? | strings"
+    }
+  ],
   "wiggle": "wiggle.js",
   "seed": "owa"
 }

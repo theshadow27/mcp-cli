@@ -42,6 +42,9 @@ Usage:
   mcx site browser [sites...]             Launch browser and open tabs (auth)
   mcx site disconnect                     Stop the browser
   mcx site sniff <site> [--mode M] [--filter RE] [--limit N]
+  mcx site capture <site> [--limit N] [--clear]
+                                          Extract per-account vars from captured
+                                          traffic (--clear discards them instead)
   mcx site wiggle [site]                  Run the site's keep-alive script
   mcx site eval <site> <code>             Evaluate JS in the site's page
   mcx site credentials [site]             Show captured credentials for a site
@@ -221,6 +224,14 @@ export async function cmdSite(args: string[], depsOverride?: Partial<SiteDeps>):
       if (!site) return fail(deps, "usage: mcx site sniff <site> [--mode M] [--filter RE] [--limit N]");
       const { kv } = parseKv(subArgs.slice(1));
       emit(deps, await callSiteTool(deps, "site_sniff", { site, ...kv }), json);
+      return;
+    }
+
+    case "capture": {
+      const site = subArgs[0];
+      if (!site) return fail(deps, "usage: mcx site capture <site> [--limit N] [--clear]");
+      const { kv } = parseKv(subArgs.slice(1));
+      emit(deps, await callSiteTool(deps, "site_capture", { site, ...kv }), json);
       return;
     }
 
