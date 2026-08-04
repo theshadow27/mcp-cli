@@ -11,7 +11,11 @@
 export interface AdaptiveBatchOptions {
   /** Starting and maximum batch size (default: 250). */
   max?: number;
-  /** Floor below which the batch is never shrunk (default: 25). */
+  /**
+   * Floor below which the batch is never shrunk (default: 25). Capped at half
+   * the ceiling so that at least one halving is always possible — otherwise a
+   * small `max` would silently produce `min === max` and disable adaptation.
+   */
   min?: number;
   /** A success at or below this latency counts as "fast" (default: 5000ms). */
   fastLatencyMs?: number;
@@ -32,7 +36,9 @@ export class AdaptiveBatchSizer {
 
   constructor(opts: AdaptiveBatchOptions = {}) {
     this.max = Math.max(1, Math.floor(opts.max ?? 250));
-    this.min = Math.max(1, Math.min(Math.floor(opts.min ?? 25), this.max));
+    // Cap the floor at half the ceiling: a floor equal to the ceiling would make
+    // shrink() fail on the first rate limit, turning adaptation off without a word.
+    this.min = Math.max(1, Math.min(Math.floor(opts.min ?? 25), Math.floor(this.max / 2) || 1));
     this.fastLatencyMs = opts.fastLatencyMs ?? 5000;
     this.growAfter = Math.max(1, opts.growAfter ?? 3);
     this.growFactor = opts.growFactor ?? 1.5;

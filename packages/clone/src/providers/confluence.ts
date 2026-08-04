@@ -13,11 +13,14 @@ import type {
   Scope,
 } from "./provider";
 import {
+  RETRY_DEFAULTS,
   type RetryOptions,
   VfsError as VfsErrorClass,
   classifyError,
+  computeBackoff,
   createResilientCaller,
   friendlyMessage,
+  sleep,
 } from "./resilient-caller";
 
 /** Default page size for paginated Confluence listings. */
@@ -148,33 +151,59 @@ function nextCursor(resp: PagesResponse): string | undefined {
 }
 
 /**
- * Fetch one page of results at the sizer's current batch size, retrying at a
- * halved size while the request is rate-limited and the size can still shrink.
+ * Fetch one page of results at the sizer's current batch size.
  *
- * The cursor is reused across shrink-retries — it encodes position, not span,
- * so a smaller re-request resumes from the same place without skipping items.
+ * This loop owns the entire rate-limit response for paginated reads: on a 429 it
+ * shrinks the sizer, sleeps the exponential backoff, then re-issues the request
+ * at the *new, smaller* limit. That ordering is the whole point — a retry that
+ * replays the identical `limit` cannot succeed, because the 429 is a property of
+ * the batch size. The caller must therefore hand in a non-retrying `call`; if an
+ * inner retrier also retried the 429 it would spend this budget on identical
+ * requests and reach the floor before a single smaller request went out (#2950).
+ *
+ * The cursor is reused across shrink-retries. Confluence v2 cursors encode a
+ * position, not a span (the `limit` in `_links.next` is an echo of the request,
+ * not part of the cursor), so re-requesting the same cursor with a smaller limit
+ * resumes from the same item and returns a prefix of the larger window — no gap,
+ * no overlap. Per Atlassian's v2 pagination contract, the client must treat the
+ * cursor as opaque and may vary `limit` between requests:
+ * https://developer.atlassian.com/cloud/confluence/rest/v2/intro/#pagination
+ * Verified end-to-end by the round-trip corpus test in `confluence.spec.ts`
+ * ("no items are skipped or duplicated when the batch shrinks mid-listing"),
+ * which drives a mock that honors `limit` and asserts exact corpus equality.
  */
 async function fetchPageBatch(
   call: (args: Record<string, unknown>) => Promise<PagesResponse>,
   baseArgs: Record<string, unknown>,
   cursor: string | undefined,
   sizer: AdaptiveBatchSizer,
-  now: () => number = Date.now,
+  retry?: RetryOptions,
 ): Promise<PagesResponse> {
-  for (;;) {
+  const maxRetries = retry?.maxRetries ?? RETRY_DEFAULTS.maxRetries;
+  const baseDelayMs = retry?.baseDelayMs ?? RETRY_DEFAULTS.baseDelayMs;
+  const maxDelayMs = retry?.maxDelayMs ?? RETRY_DEFAULTS.maxDelayMs;
+
+  for (let attempt = 0; ; attempt++) {
     const args: Record<string, unknown> = { ...baseArgs, limit: sizer.size };
     if (cursor) args.cursor = cursor;
 
-    const started = now();
+    const started = Date.now();
     try {
       const resp = await call(args);
-      sizer.onSuccess(now() - started);
+      sizer.onSuccess(Date.now() - started);
       return resp;
     } catch (err) {
-      const kind =
-        err instanceof VfsErrorClass ? err.kind : classifyError(err instanceof Error ? err.message : String(err));
-      if (kind === "rate_limit" && sizer.shrink()) continue;
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      const kind = err instanceof VfsErrorClass ? err.kind : classifyError(message);
+      if (kind !== "rate_limit" || attempt >= maxRetries) throw err;
+
+      const delay = computeBackoff(attempt, baseDelayMs, maxDelayMs);
+      retry?.onRetry?.(attempt + 1, delay, message);
+      // Shrink before sleeping so the post-backoff request is the smaller one.
+      // At the floor shrink() reports false and we retry unchanged — the backoff
+      // is still worth spending, since the floor may simply be over quota.
+      sizer.shrink();
+      await sleep(delay, retry?.signal);
     }
   }
 }
@@ -182,23 +211,35 @@ async function fetchPageBatch(
 export function createConfluenceProvider(opts: ConfluenceProviderOptions): RemoteProvider {
   const SERVER = "atlassian";
 
+  // Sizer state is owned by the pagination loop alone: only `fetchPageBatch`
+  // shrinks and grows it. Letting unrelated calls (single-page fetch, CQL search,
+  // create/update) shrink it would pin the listing batch near the floor with no
+  // path back, since none of them ever reports a success.
   const sizer = new AdaptiveBatchSizer({ max: opts.batchSize ?? DEFAULT_BATCH_SIZE });
 
-  // Wrap the base caller with retry + tool discovery. The onRetry hook doubles as
-  // the rate-limit signal: the resilient caller retries a 429 with identical args,
-  // so shrinking here is what makes the *next* batch smaller.
+  // Wrap the base caller with retry + tool discovery for every non-paginated call.
   const resilientCallTool = createResilientCaller({
     callTool: opts.callTool,
     toolDiscovery: !opts.disableToolDiscovery,
     ...opts.retry,
-    onRetry: (attempt, delayMs, error) => {
-      sizer.shrink();
-      opts.retry?.onRetry?.(attempt, delayMs, error);
-    },
+  });
+
+  // Paginated reads get tool discovery but *no* inner retry: `fetchPageBatch`
+  // owns the 429 loop so that each retry goes out at a smaller limit.
+  const pagingCallTool = createResilientCaller({
+    callTool: opts.callTool,
+    toolDiscovery: !opts.disableToolDiscovery,
+    ...opts.retry,
+    maxRetries: 0,
   });
 
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await resilientCallTool(SERVER, tool, args, 30_000);
+    return unwrapToolResultJson<unknown>(raw);
+  }
+
+  async function callAtlassianPaged(tool: string, args: Record<string, unknown>): Promise<unknown> {
+    const raw = await pagingCallTool(SERVER, tool, args, 30_000);
     return unwrapToolResultJson<unknown>(raw);
   }
 
@@ -259,10 +300,11 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
       do {
         const resp = await fetchPageBatch(
-          (args) => callAtlassian("getPagesInConfluenceSpace", args) as Promise<PagesResponse>,
+          (args) => callAtlassianPaged("getPagesInConfluenceSpace", args) as Promise<PagesResponse>,
           baseArgs,
           cursor,
           sizer,
+          opts.retry,
         );
 
         for (const page of resp.results) {
@@ -525,6 +567,7 @@ export async function bulkFetchPages(
       baseArgs,
       cursor,
       sizer,
+      opts.retry,
     );
 
     for (const page of resp.results) {

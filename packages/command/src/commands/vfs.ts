@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   CloneCache,
+  DEFAULT_BATCH_SIZE,
   VfsError,
   clone,
   createAsanaProvider,
@@ -31,8 +32,8 @@ export interface ProviderTuning {
   batchSize?: number;
 }
 
-/** Largest page size the Confluence v2 API accepts. */
-export const MAX_BATCH_SIZE = 250;
+/** Largest page size the Confluence v2 API accepts — single source is the provider. */
+export const MAX_BATCH_SIZE = DEFAULT_BATCH_SIZE;
 
 export interface VfsDeps {
   clone: typeof clone;
@@ -362,8 +363,9 @@ Options:
   --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
   --depth <n>         Max hierarchy depth to clone (1 = root only, 2 = root + children)
   --limit <n>         Max items to fetch (for testing)
-  --batch-size <n>    Max items per page request (1-250, default 250; shrinks
-                      automatically when the remote rate-limits)
+  --batch-size <n>    Max items per page request (clone only; 1-250, default 250;
+                      shrinks automatically when the remote rate-limits, and is
+                      not persisted — later pulls start from the default again)
   --full              Force full sync instead of incremental
   --create            Create new remote items from local files (push only)
 

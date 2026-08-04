@@ -24,10 +24,21 @@ describe("AdaptiveBatchSizer", () => {
     expect(sizer.size).toBe(25);
   });
 
-  test("min is clamped to max when larger", () => {
+  test("a floor at or above the ceiling is capped so adaptation still works", () => {
+    // A floor equal to the ceiling would make the first 429 fatal, silently
+    // turning the feature off for small --batch-size values.
     const sizer = new AdaptiveBatchSizer({ max: 10, min: 50 });
     expect(sizer.size).toBe(10);
+    expect(sizer.min).toBe(5);
+    expect(sizer.shrink()).toBe(true);
+    expect(sizer.size).toBe(5);
     expect(sizer.shrink()).toBe(false);
+  });
+
+  test("the default floor is capped at half a small ceiling", () => {
+    expect(new AdaptiveBatchSizer({ max: 250 }).min).toBe(25);
+    expect(new AdaptiveBatchSizer({ max: 30 }).min).toBe(15);
+    expect(new AdaptiveBatchSizer({ max: 1 }).min).toBe(1);
   });
 
   test("grows after a run of fast successes", () => {
