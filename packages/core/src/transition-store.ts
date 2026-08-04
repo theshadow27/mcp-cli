@@ -39,7 +39,7 @@
 
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /** Default wait for a contended write lock before surfacing a busy error. */
@@ -125,11 +125,28 @@ export class TransitionLockBusyError extends Error {
   }
 }
 
-/** True when `err` is a SQLite busy/locked error, by code (never by message). */
+/**
+ * True when `err` is a SQLite lock-contention error, by code (never by message).
+ *
+ * The set is calibrated for the rollback journal this store deliberately uses
+ * (see the journal-mode note above), which is why `SQLITE_PROTOCOL` is in it and
+ * `SQLITE_BUSY_SNAPSHOT` is not:
+ *
+ * - `SQLITE_PROTOCOL` is what SQLite returns when the rollback journal's
+ *   locking protocol fails to make progress — the flaky-`lockd` shared-mount
+ *   case that justifies not using WAL in the first place. Omitting it meant the
+ *   one environment the journal choice exists to serve surfaced a raw
+ *   unclassified error instead of the typed, retryable one.
+ * - `SQLITE_BUSY_SNAPSHOT` can only arise in WAL mode, so matching it here was
+ *   dead code.
+ *
+ * `SQLITE_LOCKED` is retained: it is table-level contention and is reachable
+ * under any journal mode.
+ */
 function isBusyError(err: unknown): boolean {
   if (typeof err !== "object" || err === null || !("code" in err)) return false;
   const code = (err as { code: unknown }).code;
-  return code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT" || code === "SQLITE_LOCKED";
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED" || code === "SQLITE_PROTOCOL";
 }
 
 function errnoCode(err: unknown): string | undefined {
@@ -241,11 +258,11 @@ function insertEntries(db: Database, entries: readonly TransitionLogEntry[]): vo
   }
 }
 
-/** Unique destination for a fully-imported jsonl, never overwriting an older one. */
+/** Candidate park name: the plain `.migrated`, else a nonce-suffixed sibling. */
 function migratedPath(logPath: string): string {
   const first = `${logPath}.migrated`;
   if (!existsSync(first)) return first;
-  return `${first}.${Date.now()}`;
+  return `${first}.${Date.now()}-${randomBytes(4).toString("hex")}`;
 }
 
 /**
@@ -268,14 +285,36 @@ function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLi
   db.run("INSERT INTO imported_files (name, imported_at) VALUES (?, ?)", [name, new Date().toISOString()]);
 }
 
-/** Park a fully-committed staging file as `.migrated`. Never deletes it. */
+/**
+ * Park a fully-committed staging file beside the log, never deleting log data
+ * and never overwriting an older park.
+ *
+ * `link(2)` + `unlink(2)` rather than `rename(2)`, because rename silently
+ * replaces an existing destination: two parks landing in the same millisecond
+ * computed the same `.migrated.<Date.now()>` name and the older parked
+ * generation was destroyed. That file is precisely the artifact recovery reads
+ * from when the DB is the thing that went wrong (#2962), so a nonce alone is not
+ * enough — `link` fails `EEXIST` atomically, which closes the check-then-rename
+ * window that no amount of name entropy can.
+ *
+ * Unlinking the staging path after a successful link removes a *name*, not data:
+ * the content is already reachable under the parked name at that point.
+ */
 function parkStagingFile(staging: string, logPath: string): void {
-  try {
-    renameSync(staging, migratedPath(logPath));
-  } catch (err) {
-    // ENOENT: a concurrent process already parked it. Both processes agree the
-    // import committed, so there is nothing left to do.
-    if (errnoCode(err) !== "ENOENT") throw err;
+  for (;;) {
+    try {
+      linkSync(staging, migratedPath(logPath));
+    } catch (err) {
+      const code = errnoCode(err);
+      // ENOENT: a concurrent process already parked it. Both processes agree the
+      // import committed, so there is nothing left to do.
+      if (code === "ENOENT") return;
+      // EEXIST: lost the race for that name; migratedPath picks a fresh nonce.
+      if (code === "EEXIST") continue;
+      throw err;
+    }
+    unlinkSync(staging);
+    return;
   }
 }
 
@@ -343,6 +382,43 @@ function configure(db: Database, busyTimeoutMs: number): void {
   // Rollback journal (the default) is retained deliberately — see the
   // "Journal mode: deliberately NOT WAL" note at the top of this file.
   db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(busyTimeoutMs))}`);
+}
+
+/**
+ * Extra COMMIT attempts before a contended commit is finally given up on. Each
+ * attempt independently waits up to `busy_timeout`, so this only has to cover a
+ * reader that reappears between attempts, not the wait itself.
+ */
+const COMMIT_RETRY_ATTEMPTS = 2;
+
+/**
+ * COMMIT, retrying while SQLite reports lock contention.
+ *
+ * A busy COMMIT is **not** a failed transaction. In rollback-journal mode COMMIT
+ * must upgrade RESERVED → EXCLUSIVE, which any concurrent reader holding SHARED
+ * blocks; when that wait expires SQLite returns SQLITE_BUSY and leaves the
+ * transaction **active**. Treating it as a failure would roll back an entry that
+ * had already passed validation and then misreport it as somebody else's
+ * contention ("another phase run is in progress") — a silent lost write.
+ *
+ * Reproduced with a second process holding a read transaction open across the
+ * commit point: COMMIT raised SQLITE_BUSY after the busy_timeout, `BEGIN
+ * IMMEDIATE` then failed with "cannot start a transaction within a transaction"
+ * (proving the transaction was still live), and retrying COMMIT once the reader
+ * released committed the same entry successfully.
+ *
+ * If the retries are exhausted the entry genuinely cannot be committed, so the
+ * caller's rollback and `TransitionLockBusyError` are accurate at that point.
+ */
+function commitWithRetry(db: Database): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      db.exec("COMMIT");
+      return;
+    } catch (err) {
+      if (attempt >= COMMIT_RETRY_ATTEMPTS || !isBusyError(err)) throw err;
+    }
+  }
 }
 
 function rollbackQuietly(db: Database): void {
@@ -417,13 +493,25 @@ function openForRead(logPath: string, opts: StoreOptions = {}): Database | null 
  */
 function withDbTx<T>(logPath: string, fn: (db: Database) => T, opts: StoreOptions = {}): T {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
-  const db = openForWrite(logPath, { ...opts, timeoutMs });
+  const dbPath = transitionDbPath(logPath);
+  const asLockError = (err: unknown): unknown =>
+    isBusyError(err) ? new TransitionLockBusyError(dbPath, timeoutMs, { cause: err }) : err;
+
+  // `applySchema` writes (`CREATE TABLE IF NOT EXISTS` + an `INSERT OR IGNORE`
+  // into `meta`), so opening for write can itself lose the lock race to a
+  // concurrent reader or writer. Classify it here or it escapes as a raw
+  // SQLiteError that no caller knows to treat as contention.
+  let db: Database;
+  try {
+    db = openForWrite(logPath, { ...opts, timeoutMs });
+  } catch (err) {
+    throw asLockError(err);
+  }
   try {
     try {
       db.exec("BEGIN IMMEDIATE");
     } catch (err) {
-      if (isBusyError(err)) throw new TransitionLockBusyError(transitionDbPath(logPath), timeoutMs, { cause: err });
-      throw err;
+      throw asLockError(err);
     }
     try {
       // Inside the lock: the imported history is guaranteed to precede anything
@@ -435,15 +523,19 @@ function withDbTx<T>(logPath: string, fn: (db: Database) => T, opts: StoreOption
         // "atomic read-validate-append" guarantee would silently not hold.
         throw new Error("withTransitionWriter: fn must be synchronous (returned a Promise)");
       }
-      db.exec("COMMIT");
+      commitWithRetry(db);
       for (const staging of staged) parkStagingFile(staging, logPath);
       return result;
     } catch (err) {
       rollbackQuietly(db);
-      if (isBusyError(err)) throw new TransitionLockBusyError(transitionDbPath(logPath), timeoutMs, { cause: err });
-      throw err;
+      throw asLockError(err);
     }
   } finally {
+    // Load-bearing beyond releasing the fd: `bun:sqlite` closes the handle when
+    // the `Database` is garbage-collected, and closing mid-transaction rolls it
+    // back. This `finally` is what keeps `db` reachable for the whole
+    // transaction. Do not "simplify" it into a bare `using`/drop — a `db` whose
+    // last reference dies before COMMIT loses the write silently.
     db.close();
   }
 }
