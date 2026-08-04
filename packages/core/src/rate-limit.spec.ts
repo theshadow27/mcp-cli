@@ -17,15 +17,21 @@ import {
 /**
  * Virtual clock so throttling tests assert the CONDITION (ordering, wait
  * amounts) instead of waiting on wall time.
+ *
+ * `overshootMs` models real timer semantics: `setTimeout` fires *at or after*
+ * its delay, never exactly at it. An exact-advance clock (`now += ms`) cannot
+ * express a late timer, which makes a whole class of deadline bugs invisible —
+ * a wait that starts inside the budget and returns outside it. Deadline-
+ * sensitive tests must be run with overshoot, not just the exact case.
  */
-function fakeClock(start = 1_000) {
+function fakeClock(start = 1_000, overshootMs = 0) {
   let now = start;
   const sleeps: number[] = [];
   return {
     now: () => now,
     sleep: async (ms: number) => {
       sleeps.push(ms);
-      now += ms;
+      now += ms + overshootMs;
     },
     advance(ms: number) {
       now += ms;
@@ -215,15 +221,27 @@ describe("RateLimiter", () => {
     expect(new RateLimiter(parseRateLimit("1/s")).maxQueue).toBe(DEFAULT_RATE_LIMIT_MAX_QUEUE);
   });
 
-  test("never sleeps longer than setTimeout honors", async () => {
+  // A window past setTimeout's ceiling made the wait a hot spin. The parser
+  // rejects it, and so does the constructor — a hand-made spec cannot brick a
+  // server by making every deadline-bearing call refuse.
+  test("refuses to construct a limiter whose window exceeds the 24h ceiling", () => {
+    expect(() => new RateLimiter({ count: 1, windowMs: 3_600_000_000, source: "1/1000h" })).toThrow(
+      /exceeds the .* maximum/,
+    );
+    expect(() => new RateLimiter({ count: 0, windowMs: 1_000, source: "0/s" })).toThrow(/count must be greater/);
+    expect(() => new RateLimiter({ count: 1, windowMs: 0, source: "1/0s" })).toThrow(/window must be greater/);
+  });
+
+  test("sleeps once for the longest legal window rather than spinning", async () => {
     const clock = fakeClock();
-    const limiter = new RateLimiter({ count: 1, windowMs: 3_600_000_000, source: "1/1000h" }, clock);
+    const limiter = new RateLimiter(parseRateLimit("1/24h"), clock);
 
     await limiter.acquire();
     const queued = limiter.acquire();
-    // One clamped sleep, not a spin: the loop must not run again until it elapses.
+    // One sleep, not a spin: the loop must not run again until it elapses.
     await Promise.resolve();
-    expect(clock.sleeps).toEqual([MAX_TIMER_DELAY_MS]);
+    expect(clock.sleeps).toEqual([MAX_RATE_LIMIT_WINDOW_MS]);
+    expect(MAX_RATE_LIMIT_WINDOW_MS).toBeLessThanOrEqual(MAX_TIMER_DELAY_MS);
     await queued;
   });
 });
@@ -288,6 +306,60 @@ describe("RateLimiter deadlines", () => {
     await expect(limiter.acquire({ deadlineMs: clock.now() + 2_500 })).rejects.toBeInstanceOf(RateLimitDeadlineError);
     await expect(limiter.acquire({ deadlineMs: clock.now() + 3_500 })).resolves.toBeGreaterThan(0);
     await Promise.all(inflight);
+  });
+
+  // The blocker a virtual clock with exact advance could not express: the loop
+  // only guaranteed a sleep *started* inside the budget. Because a timer fires
+  // at-or-after its delay, the waiter could be admitted past the deadline and
+  // the call dispatched with a negative budget — the duplicate write again.
+  describe("a timer that fires late", () => {
+    // Same spec, same deadline, same projected wait in both cases; the only
+    // difference is whether the timer overshoots.
+    const spec = "1/s";
+    const deadlineOffsetMs = 1_200;
+
+    test("is admitted when the timer is punctual and headroom remains", async () => {
+      const clock = fakeClock(1_000, 0);
+      const limiter = new RateLimiter(parseRateLimit(spec), clock);
+
+      await limiter.acquire();
+      // Slot frees at t=2000, deadline is t=2200 — 200ms of budget left.
+      await expect(limiter.acquire({ deadlineMs: clock.now() + deadlineOffsetMs })).resolves.toBe(1_000);
+      expect(clock.sleeps).toEqual([1_000]);
+    });
+
+    test("is refused when the overshoot consumes the remaining budget", async () => {
+      const clock = fakeClock(1_000, 300);
+      const limiter = new RateLimiter(parseRateLimit(spec), { ...clock, label: '"atlassian"' });
+
+      await limiter.acquire();
+      // The sleep starts inside the budget but returns at t=2300, past the
+      // t=2200 deadline. The grant must not be taken.
+      const late = limiter.acquire({ deadlineMs: clock.now() + deadlineOffsetMs });
+      await expect(late).rejects.toBeInstanceOf(RateLimitDeadlineError);
+      await expect(late).rejects.toThrow(/expired 100ms before a slot came free/);
+      await expect(late).rejects.toThrow(/call not made/);
+      // No grant was taken: by t=2300 the only grant (t=1000) has aged out of
+      // the 1s window, so a fresh grant would have shown up as utilization > 0.
+      expect(limiter.utilization()).toBe(0);
+      expect(limiter.queueDepth).toBe(0);
+    });
+
+    test("does not consume a grant that a live caller then needs", async () => {
+      const clock = fakeClock(1_000, 300);
+      const limiter = new RateLimiter(parseRateLimit(spec), clock);
+
+      await limiter.acquire();
+      await expect(limiter.acquire({ deadlineMs: clock.now() + deadlineOffsetMs })).rejects.toBeInstanceOf(
+        RateLimitDeadlineError,
+      );
+
+      // Only the first call ever took a slot: the expired waiter pushed the
+      // window forward, it did not consume it.
+      clock.advance(1_000);
+      expect(limiter.utilization()).toBe(0);
+      await expect(limiter.acquire({ deadlineMs: clock.now() + 10_000 })).resolves.toBe(0);
+    });
   });
 
   test("refuses a caller that is already aborted", async () => {

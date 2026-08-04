@@ -10,6 +10,7 @@ const POLL_MS = 1;
 
 import {
   BASE_ENV_ALLOWLIST,
+  CallDeadlineExceededError,
   type ConnectFn,
   ServerPool,
   buildChildEnv,
@@ -1972,6 +1973,52 @@ describe("ServerPool rate limiting", () => {
     await expect(pool.callTool("test", "my-tool", {}, 200)).rejects.toThrow(/call not made/);
     // Crucially the tool was NOT invoked late — no duplicate write.
     expect(callToolMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Flooring the remaining budget at 1ms converted "no budget left" into
+  // "dispatch anyway": the SDK arms its timeout timer *before* writing to the
+  // transport, so a 1ms call still reaches the upstream server and the caller —
+  // already timed out — has already retried. Refuse instead.
+  test("refuses rather than dispatching a call whose budget is exhausted", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.callTool("test", "my-tool", {}, 0)).rejects.toBeInstanceOf(CallDeadlineExceededError);
+    expect(callToolMock).not.toHaveBeenCalled();
+  });
+
+  // The wider trigger: the deadline spans connect, so a cold stdio server can
+  // burn the whole budget. That must fail the call on ANY server, throttled or
+  // not — it used to dispatch with timeout: 1.
+  test("a budget consumed before the call is sent is attributed to connect, not dispatched", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    // Unthrottled: this path has nothing to do with rate limiting.
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    await expect(pool.callTool("test", "my-tool", {}, 0)).rejects.toThrow(
+      /exhausted .*ms ago while connecting to the server — call not made/,
+    );
+    expect(callToolMock).not.toHaveBeenCalled();
+    expect(pool.listServers()[0].rateLimit).toBeUndefined();
+  });
+
+  // "aborted" matches isTransientCallError, so this throw must sit outside the
+  // reconnect-retry try block or a refusal would turn into a second dispatch.
+  test("an abort landing between the grant and the dispatch prevents the call", async () => {
+    const callToolMock = mock(() => Promise.resolve({ content: [] }));
+    const { connectFn } = mockConnectFn({ callTool: callToolMock });
+    // Unthrottled, so no limiter ever inspects the signal: the re-check before
+    // dispatch is the only thing standing between the abort and a real write.
+    const pool = new ServerPool(makeConfig({ test: { command: "echo" } }), undefined, connectFn, silentLogger);
+    const controller = new AbortController();
+
+    const pending = pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/Caller aborted before "my-tool" was sent to "test" — call not made/);
+    expect(callToolMock).not.toHaveBeenCalled();
   });
 
   test("the caller's timeout covers the queued wait, not just the call", async () => {

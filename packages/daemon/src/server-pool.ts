@@ -675,8 +675,11 @@ export class ServerPool {
   }
 
   /**
-   * Wait for this server's rate-limit slot, if one is configured. A retried
-   * call does not re-acquire: one slot is spent per logical callTool.
+   * Wait for this server's rate-limit slot, if one is configured. One slot is
+   * spent per logical callTool: the reconnect retry deliberately does not
+   * re-acquire, since it is a resend of a call already accounted for. That is
+   * also why a queued waiter's connection must not be reaped underneath it —
+   * the resulting reconnect would be a second transmission on one slot.
    *
    * The wait lives inside the caller's deadline and is abortable, so a call the
    * caller has already given up on is never performed — a late write to an
@@ -711,10 +714,15 @@ export class ServerPool {
     const deadlineMs = Date.now() + timeoutMs;
     const conn = await this.ensureConnected(serverName);
     if (!conn.client) throw new Error(`Not connected to "${serverName}"`);
+    // Connect is inside the deadline on purpose — the caller is blocked for the
+    // whole operation, so a cold stdio server that burns the budget must make
+    // the call fail, not dispatch late. Checked here (rather than only at the
+    // dispatch below) so the error names connect as what consumed it.
+    callBudgetMs(deadlineMs, serverName, toolName, "connecting to the server");
 
     // Marks the server busy for the whole operation including the queued wait,
-    // so an idle sweep cannot reap the connection out from under a waiter (the
-    // reconnect path does not re-acquire a slot, which would burst the limit).
+    // so an idle sweep cannot reap the connection out from under a waiter: the
+    // reconnect path would then run without a slot of its own.
     conn.inflight++;
     try {
       await this.awaitRateLimit(serverName, {
@@ -723,10 +731,19 @@ export class ServerPool {
         onWait: options.onRateLimitWait,
       });
 
+      // The signal is never handed to the SDK, so this is the last point at
+      // which an abort that landed during the queued wait is still observable.
+      if (options.signal?.aborted) {
+        throw new Error(`Caller aborted before "${toolName}" was sent to "${serverName}" — call not made`);
+      }
+      // Re-read the client: a config reload can disconnect the server during a
+      // wait that now lasts as long as the caller's budget.
+      const client = conn.client;
+      if (!client) throw new Error(`Not connected to "${serverName}" — disconnected while queued`);
+      const budgetMs = callBudgetMs(deadlineMs, serverName, toolName, "queued for a rate-limit slot");
+
       try {
-        return await conn.client.callTool({ name: toolName, arguments: args }, undefined, {
-          timeout: remainingMs(deadlineMs),
-        });
+        return await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: budgetMs });
       } catch (err) {
         // Surface non-transient errors immediately (auth, config, etc.)
         if (!isTransientCallError(err)) throw err;
@@ -741,7 +758,7 @@ export class ServerPool {
         if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
 
         return await reconnected.client.callTool({ name: toolName, arguments: args }, undefined, {
-          timeout: remainingMs(deadlineMs),
+          timeout: callBudgetMs(deadlineMs, serverName, toolName, "reconnecting after a transient failure"),
         });
       }
     } finally {
@@ -887,9 +904,43 @@ export class ServerPool {
   }
 }
 
-/** Milliseconds left before an absolute deadline, floored at 1ms. */
-function remainingMs(deadlineMs: number): number {
-  return Math.max(deadlineMs - Date.now(), 1);
+/** Smallest budget worth dispatching an MCP call with. */
+const MIN_CALL_BUDGET_MS = 1;
+
+/**
+ * Thrown when the caller's deadline is gone before the call could be sent. The
+ * caller has already timed out, so dispatching would write to the upstream
+ * server after a retry had been issued.
+ */
+export class CallDeadlineExceededError extends Error {
+  constructor(
+    readonly serverName: string,
+    readonly toolName: string,
+    readonly overshootMs: number,
+    spentOn: string,
+  ) {
+    super(
+      `Deadline for "${toolName}" on "${serverName}" was exhausted ${Math.round(overshootMs)}ms ago while ${spentOn} — call not made`,
+    );
+    this.name = "CallDeadlineExceededError";
+  }
+}
+
+/**
+ * Milliseconds left before an absolute deadline, for use as an MCP call timeout.
+ *
+ * Refuses rather than floors. Flooring at a positive value ("just give it 1ms")
+ * inverts the intent: the SDK arms its timer *before* writing to the transport,
+ * so a 1ms timeout still delivers the request upstream and only then reports a
+ * timeout to the caller — the exact duplicate-write this deadline exists to
+ * prevent. An exhausted budget is an error, not a very short call.
+ */
+function callBudgetMs(deadlineMs: number, serverName: string, toolName: string, spentOn: string): number {
+  const remaining = deadlineMs - Date.now();
+  if (remaining < MIN_CALL_BUDGET_MS) {
+    throw new CallDeadlineExceededError(serverName, toolName, -remaining, spentOn);
+  }
+  return remaining;
 }
 
 // -- Stderr safety --

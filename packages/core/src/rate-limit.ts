@@ -124,7 +124,9 @@ export class RateLimitDeadlineError extends Error {
     label?: string,
   ) {
     super(
-      `Rate limit wait for ${label ?? "server"} (${spec.source}) needs ~${Math.round(waitMs)}ms but only ${Math.round(remainingMs)}ms of the caller's deadline remains — call not made`,
+      remainingMs <= 0
+        ? `Rate limit deadline for ${label ?? "server"} (${spec.source}) expired ${Math.round(-remainingMs)}ms before a slot came free (waited ~${Math.round(waitMs)}ms) — call not made`
+        : `Rate limit wait for ${label ?? "server"} (${spec.source}) needs ~${Math.round(waitMs)}ms but only ${Math.round(remainingMs)}ms of the caller's deadline remains — call not made`,
     );
     this.name = "RateLimitDeadlineError";
   }
@@ -189,6 +191,16 @@ export class RateLimiter {
     readonly spec: RateLimitSpec,
     options: RateLimiterOptions = {},
   ) {
+    // The parser enforces this too, but a limiter built from a hand-made spec
+    // must not be constructable in a state where every deadline-bearing call is
+    // refused — that bricks the server instead of throttling it.
+    if (!(spec.count > 0)) throw new Error(`Rate limit count must be greater than zero, got ${spec.count}`);
+    if (!(spec.windowMs > 0)) throw new Error(`Rate limit window must be greater than zero, got ${spec.windowMs}ms`);
+    if (spec.windowMs > MAX_RATE_LIMIT_WINDOW_MS) {
+      throw new Error(
+        `Rate limit window ${spec.windowMs}ms exceeds the ${MAX_RATE_LIMIT_WINDOW_MS}ms (24h) maximum for ${JSON.stringify(spec.source)}`,
+      );
+    }
     this.maxQueue = options.maxQueue ?? DEFAULT_RATE_LIMIT_MAX_QUEUE;
     this.label = options.label;
     this.now = options.now ?? Date.now;
@@ -239,6 +251,13 @@ export class RateLimiter {
       await predecessor;
       for (;;) {
         if (signal?.aborted) throw new RateLimitAbortedError(this.spec, this.label);
+        // A timer fires at-or-after its delay, so a sleep that *started* inside
+        // the budget can still return outside it. Re-check before taking the
+        // grant: admitting an expired waiter dispatches a call the caller has
+        // already timed out on and retried, which double-writes upstream.
+        if (deadlineMs !== undefined && this.now() >= deadlineMs) {
+          throw new RateLimitDeadlineError(this.spec, this.now() - start, deadlineMs - this.now(), this.label);
+        }
         this.prune();
         if (this.grants.length < this.spec.count) {
           this.grants.push(this.now());
