@@ -150,47 +150,97 @@ describe("acquireGateLease at the default configuration (#2690)", () => {
     );
 
     expect(a.held).toBe(true);
-    expect(peerHeld).toEqual([false]);
+    // The peer never got to evaluate headroom — A held the decision mutex for the
+    // whole of the peer's budget, which is the ordering property under test.
     expect(peerWarnings.some((w) => w.includes("no admission token"))).toBe(true);
-
-    // Proof that slot 1 was free all along: it is acquirable now.
-    const b = track(await acquireGateLease({ lockDir, ...defaults({ slots: 2 }) }));
-    expect(b.slot).toBe(1);
+    // Having lost the token it still fails open onto the free slot 1 rather than
+    // running uncounted: the run that waited longest must not get the worse deal
+    // of the two fail-open paths (#2949 review, finding C).
+    expect(peerHeld).toEqual([true]);
+    expect(peerWarnings.some((w) => w.includes("proceeding on slot 1"))).toBe(true);
   });
 
-  it("settles before sampling when a peer holds a slot, and not when solo", async () => {
+  it("admits a solo run without sleeping on anything but the CPU sample", async () => {
     const soloDir = freshDir();
     const soloSleeps: number[] = [];
-    track(
+    const solo = track(
       await acquireGateLease({
         lockDir: soloDir,
-        ...defaults({ settleMs: 2000, sleep: async (ms) => void soloSleeps.push(ms) }),
+        ...defaults({ sleep: async (ms) => void soloSleeps.push(ms) }),
       }),
     );
-    expect(soloSleeps).toEqual([]); // default config, common case: pays nothing
+    expect(solo.held).toBe(true);
+    // The common case pays no settle, no poll and no queue.
+    expect(soloSleeps).toEqual([]);
+  });
 
-    // `slots: 2` again non-default: the peer must hold a slot while this run is
-    // still able to be admitted, which K=1 cannot express.
-    const busyDir = freshDir();
-    track(await acquireGateLease({ lockDir: busyDir, ...defaults({ slots: 2 }) }));
-    const peerSleeps: number[] = [];
-    let ticks = 0;
-    const second = track(
+  it("jitters each process's fail-open deadline downward so losers don't release in lockstep", async () => {
+    // Same waitMs, a different jitter draw per process => a different effective
+    // budget each, so N co-launched losers scatter instead of all failing open
+    // within one poll of each other.
+    const budgets: number[] = [];
+    for (const draw of [0, 0.5, 1]) {
+      const lockDir = freshDir();
+      let ticks = 0;
+      const warnings: string[] = [];
+      track(
+        await acquireGateLease({
+          lockDir,
+          ...defaults({
+            waitMs: 100_000,
+            random: () => draw,
+            cpuBusy: () => 0.99, // never clears, so the budget is always spent
+            now: () => ticks,
+            sleep: async (ms) => {
+              ticks += ms;
+            },
+            logger: { warn: (m) => warnings.push(m) },
+          }),
+        }),
+      );
+      const m = warnings.join("\n").match(/no admission within (\d+)ms/);
+      expect(m).not.toBeNull();
+      budgets.push(Number(m?.[1]));
+    }
+
+    // Downward only: never above the configured budget (the 600s worker-timeout
+    // arithmetic depends on that), never below 75% of it.
+    for (const b of budgets) {
+      expect(b).toBeLessThanOrEqual(100_000);
+      expect(b).toBeGreaterThanOrEqual(75_000);
+    }
+    // And genuinely spread, so the fail-opens don't convoy.
+    expect(new Set(budgets).size).toBe(3);
+    expect(Math.max(...budgets) - Math.min(...budgets)).toBeGreaterThan(20_000);
+  });
+
+  it("never fails the run it wraps, even when the CPU signal throws mid-decision", async () => {
+    const lockDir = freshDir();
+    const warnings: string[] = [];
+    const lease = track(
       await acquireGateLease({
-        lockDir: busyDir,
+        lockDir,
         ...defaults({
-          slots: 2,
-          settleMs: 2000,
-          now: () => ticks,
-          sleep: async (ms) => {
-            ticks += ms;
-            peerSleeps.push(ms);
+          cpuBusy: () => {
+            throw new Error("sampler exploded");
           },
+          logger: { warn: (m) => warnings.push(m) },
         }),
       }),
     );
-    expect(second.held).toBe(true);
-    expect(peerSleeps).toEqual([2000]); // settled once, then admitted
+
+    // Fail-open, not a throw: an admission bug must never become a phantom gate
+    // failure (#2690).
+    expect(lease.held).toBe(false);
+    expect(warnings.some((w) => w.includes("admission failed unexpectedly") && w.includes("sampler exploded"))).toBe(
+      true,
+    );
+
+    // And the slot it held when the sampler threw was not stranded — there is no
+    // reaper to clean that up, so the throwing frame has to release it.
+    const next = track(await acquireGateLease({ lockDir, ...defaults() }));
+    expect(next.held).toBe(true);
+    expect(next.slot).toBe(0);
   });
 
   it("charges one whole-run budget, and fails open onto a free slot when it expires", async () => {
@@ -355,5 +405,59 @@ describe("gate-lease env tuning", () => {
     const lease = await acquireGateLease({ lockDir, ...opts, logger: { warn: (m) => warnings.push(m) } });
     expect(lease.held).toBe(false);
     expect(warnings.some((w) => w.includes("no admission within 700ms"))).toBe(true);
+  });
+
+  it("rejects a MCX_GATE_LEASE_WAIT_MS with units instead of reading it as milliseconds", async () => {
+    // "120s" through a bare parseInt is 120 — a 120ms budget, i.e. the gate
+    // silently off. It has to be refused loudly, like the slots reader does.
+    const lockDir = freshDir();
+    const blocker = track(await acquireGateLease({ lockDir, ...defaults() }));
+    expect(blocker.held).toBe(true);
+
+    const opts = defaults();
+    process.env.MCX_GATE_LEASE_WAIT_MS = "120s";
+    const warnings: string[] = [];
+    let ticks = 0;
+    const lease = await acquireGateLease({
+      lockDir,
+      ...opts,
+      now: () => ticks,
+      sleep: async (ms) => {
+        ticks += ms;
+      },
+      logger: { warn: (m) => warnings.push(m) },
+    });
+
+    expect(warnings.some((w) => w.includes('MCX_GATE_LEASE_WAIT_MS="120s"') && w.includes("not an integer"))).toBe(
+      true,
+    );
+    // Fell back to the 300s default rather than a 120ms non-wait.
+    expect(lease.held).toBe(false);
+    expect(ticks).toBeGreaterThan(200_000);
+  });
+
+  it("caps MCX_GATE_LEASE_WAIT_MS so the wait plus the run it admits cannot breach the 600s worker timeout", async () => {
+    const lockDir = freshDir();
+    const blocker = track(await acquireGateLease({ lockDir, ...defaults() }));
+    expect(blocker.held).toBe(true);
+
+    const opts = defaults();
+    process.env.MCX_GATE_LEASE_WAIT_MS = String(15 * 60 * 1000);
+    const warnings: string[] = [];
+    let ticks = 0;
+    const lease = await acquireGateLease({
+      lockDir,
+      ...opts,
+      now: () => ticks,
+      sleep: async (ms) => {
+        ticks += ms;
+      },
+      logger: { warn: (m) => warnings.push(m) },
+    });
+
+    expect(warnings.some((w) => w.includes("exceeds max 400000ms") && w.includes("600s worker timeout"))).toBe(true);
+    expect(lease.held).toBe(false);
+    // Capped: it waited the 400s max, not the 15 minutes requested.
+    expect(ticks).toBeLessThanOrEqual(400_000 + 1000);
   });
 });

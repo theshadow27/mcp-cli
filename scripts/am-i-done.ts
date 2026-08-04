@@ -419,11 +419,15 @@ A run containing heavy test phases takes host-wide admission ONCE, before its
 first leased step, so N concurrent gate runs across worktrees don't oversubscribe
 the machine (#2690). A run that logs "gate-lease: waiting ..." is queued, not
 hung — the message repeats every 30s with elapsed/remaining, and admission is
-bounded by a single whole-run budget that fails open. Tune with
+bounded by a single whole-run budget that fails open. The budget outlasts a
+normal run's hold (~200s), so co-launched runs serialize; behind an abnormally
+long holder it staggers them instead, deliberately, rather than hanging. Tune with
 MCX_GATE_LEASE_SLOTS (default 1 — one fan-out already sizes itself to the whole
 host, so a second does not fit; 0 disables), MCX_GATE_LEASE_MAX_BUSY (CPU busy
 fraction, default 0.6; 0 disables the headroom wait) and MCX_GATE_LEASE_WAIT_MS
-(default 120s — deliberately well inside the 600s timeout workers wrap this in).
+(default 300s, capped at 400s so the wait plus the run it admits stays inside the
+600s timeout workers wrap this in; each process jitters its own deadline down by
+up to 25% so losers don't all give up at once).
 
 In a Claude / AI context (CLAUDECODE / AGENT / MCP_CLI_AI env var set),
 step output is captured to build/am-i-done-<timestamp>.txt and only the
