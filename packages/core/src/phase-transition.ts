@@ -28,7 +28,9 @@ import {
 } from "./transition-store";
 
 export {
+  type MigrationReport,
   type OnCorruptLine,
+  type OnMigrate,
   type ReadAllOptions,
   type ReadHistoryOptions,
   type StoreOptions,
@@ -38,6 +40,7 @@ export {
   TransitionLockBusyError,
   appendTransitionLog,
   defaultOnCorruptLine,
+  defaultOnMigrate,
   isCommitted,
   pruneStaleHistory,
   readAllTransitions,

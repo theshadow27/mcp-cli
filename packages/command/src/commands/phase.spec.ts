@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   DisallowedTransitionError,
   RegressionError,
+  TransitionLockBusyError,
   UnknownPhaseError,
   appendTransitionLog,
   historyTargets,
@@ -24,12 +25,14 @@ import {
 import {
   type AdvanceChainEntry,
   type AdvanceResult,
+  COMMIT_LOCK_RETRY_DELAYS_MS,
   type PhaseInstallDeps,
   buildPhaseList,
   buildPhaseShow,
   checkStateSubset,
   cmdPhase,
   cmdPhaseAdvance,
+  commitWithLockRetry,
   detectDrift,
   executePhase,
   explainTransition,
@@ -3787,5 +3790,70 @@ phases:
     const { err: e, exitCode } = await runAdvance("#42", cycleOutputs, { workItemPhase: "impl" });
     expect(exitCode).toBe(2);
     expect(e.some((l) => l.includes("stranded"))).toBe(true);
+  });
+});
+
+describe("commitWithLockRetry (post-handler commit contention)", () => {
+  const busy = () => new TransitionLockBusyError("/x/.mcx/transitions.db", 5000);
+
+  test("retries a contended commit and returns the eventual result", async () => {
+    // The commit runs AFTER the handler, so the branch/PR/labels already exist.
+    // Throwing on the first busy error leaves db/log divergence that looks
+    // identical to a handler that never ran.
+    let calls = 0;
+    const slept: number[] = [];
+    const result = await commitWithLockRetry(
+      () => {
+        calls++;
+        if (calls < 3) throw busy();
+        return "committed";
+      },
+      { sleep: async (ms) => void slept.push(ms), random: () => 0.5 },
+    );
+
+    expect(result).toBe("committed");
+    expect(calls).toBe(3);
+    // Jittered within the lower half of each step, and increasing.
+    expect(slept).toEqual([37.5, 112.5]);
+  });
+
+  test("a commit that succeeds first time never sleeps", async () => {
+    const slept: number[] = [];
+    expect(await commitWithLockRetry(() => "ok", { sleep: async (ms) => void slept.push(ms) })).toBe("ok");
+    expect(slept).toEqual([]);
+  });
+
+  test("retries are bounded and the busy error is surfaced, not swallowed", async () => {
+    let calls = 0;
+    const slept: number[] = [];
+    await expect(
+      commitWithLockRetry(
+        () => {
+          calls++;
+          throw busy();
+        },
+        { sleep: async (ms) => void slept.push(ms), random: () => 0 },
+      ),
+    ).rejects.toThrow(TransitionLockBusyError);
+
+    expect(calls).toBe(COMMIT_LOCK_RETRY_DELAYS_MS.length + 1);
+    expect(slept).toHaveLength(COMMIT_LOCK_RETRY_DELAYS_MS.length);
+  });
+
+  test("a non-contention error is rethrown immediately without retrying", async () => {
+    let calls = 0;
+    const slept: number[] = [];
+    await expect(
+      commitWithLockRetry(
+        () => {
+          calls++;
+          throw new RegressionError("qa", "impl", "#1", ["impl", "qa"]);
+        },
+        { sleep: async (ms) => void slept.push(ms) },
+      ),
+    ).rejects.toThrow(RegressionError);
+
+    expect(calls).toBe(1);
+    expect(slept).toEqual([]);
   });
 });

@@ -38,18 +38,29 @@
  */
 
 import { Database } from "bun:sqlite";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 /** Default wait for a contended write lock before surfacing a busy error. */
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 
-/** Current schema revision, recorded in `meta` for future migrations. */
-const SCHEMA_VERSION = 1;
+/**
+ * Current schema revision, recorded in `meta` for future migrations.
+ *
+ * v2 replaced the name-keyed `imported_files` with content-hashed
+ * `imported_content` (see `applySchema`).
+ */
+const SCHEMA_VERSION = 2;
 
 /** Suffix for a legacy jsonl claimed by an in-flight import. */
 const IMPORTING_SUFFIX = ".importing.";
+
+/**
+ * Suffix for a claimed jsonl whose import failed for a non-contention reason.
+ * Must NOT start with `IMPORTING_SUFFIX`, so a quarantined file is never replayed.
+ */
+const UNIMPORTABLE_SUFFIX = ".unimportable.";
 
 /**
  * Lifecycle status of a transition log entry.
@@ -221,32 +232,98 @@ function applySchema(db: Database): void {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS imported_files (
-      name        TEXT PRIMARY KEY,
-      imported_at TEXT NOT NULL
+    -- Keyed on a SHA-256 of the file's bytes, NOT its name. The name embeds a
+    -- fresh import nonce, so a name key could only ever match a crash-retry of
+    -- the same claim and deduped nothing an operator or a peer binary did (see
+    -- importStagingFile).
+    CREATE TABLE IF NOT EXISTS imported_content (
+      content_hash TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      imported_at  TEXT NOT NULL
     );
+    -- v1's name-keyed predecessor. Dropping it cannot resurrect an import:
+    -- insertImportedEntries dedupes at row level, so a staging file whose v1
+    -- marker is gone re-imports to zero new rows and is simply parked.
+    DROP TABLE IF EXISTS imported_files;
   `);
-  db.run("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", ["schema_version", String(SCHEMA_VERSION)]);
+  db.run("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", ["schema_version", String(SCHEMA_VERSION)]);
 }
 
 // ── Legacy jsonl import ────────────────────────────────────────────────
 
-function parseJsonlEntries(text: string, onCorrupt: OnCorruptLine): TransitionLogEntry[] {
-  const out: TransitionLogEntry[] = [];
+/** Optional field that must be a string when present (and not null). */
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new TypeError(`${field} must be a string, got ${typeof value}`);
+  return value;
+}
+
+/** Nullable field that must be a string or null. */
+function nullableString(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new TypeError(`${field} must be a string or null, got ${typeof value}`);
+  return value;
+}
+
+/**
+ * Validate and normalise one parsed jsonl record into a `TransitionLogEntry`,
+ * throwing a descriptive `TypeError` for anything that isn't one.
+ *
+ * The importer previously passed **any** parsed JSON object straight through as
+ * a `TransitionLogEntry` with no shape check, so a record that was valid JSON
+ * but not a valid entry — `{"foo":1}` — reached the INSERT and threw from
+ * SQLite (`NOT NULL constraint failed`, or `Binding expected string...` for a
+ * wrong-typed field). Because `rename(2)` is not transactional, that throw
+ * rolled back the import but left the claimed jsonl as `.importing.<nonce>`,
+ * which was then replayed on every subsequent open — permanently wedging every
+ * read and every write, with the only copy of the log hidden under a name
+ * nobody looks for.
+ *
+ * A malformed record is log rot, exactly like a torn line, so it belongs in the
+ * `onCorrupt` sink the importer already has rather than in an exception. The
+ * design refuses to trust the file's *bytes*; it must not then trust its
+ * *schema* — least of all because the most likely producer of a schema-invalid
+ * line is a hand-recovered jsonl (#2962).
+ */
+function toEntry(parsed: unknown): TransitionLogEntry {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new TypeError(`expected a JSON object, got ${Array.isArray(parsed) ? "array" : typeof parsed}`);
+  }
+  const raw = parsed as Record<string, unknown>;
+  if (typeof raw.ts !== "string") throw new TypeError(`ts must be a string, got ${typeof raw.ts}`);
+  if (typeof raw.to !== "string") throw new TypeError(`to must be a string, got ${typeof raw.to}`);
+
+  const forceMessage = optionalString(raw.forceMessage, "forceMessage");
+  // An unrecognised status is normalised to undefined rather than rejected, for
+  // the same reason `toStatus` does it on read: only the exact literal
+  // "attempted" may downgrade an entry to audit-only, so a garbled value can
+  // never silently stop gating transitions.
+  const status = typeof raw.status === "string" ? toStatus(raw.status) : undefined;
+  return {
+    ts: raw.ts,
+    workItemId: nullableString(raw.workItemId, "workItemId"),
+    from: nullableString(raw.from, "from"),
+    to: raw.to,
+    ...(forceMessage !== undefined ? { forceMessage } : {}),
+    ...(status !== undefined ? { status } : {}),
+  };
+}
+
+function parseJsonlEntries(text: string, onCorrupt: OnCorruptLine): { entries: TransitionLogEntry[]; corrupt: number } {
+  const entries: TransitionLogEntry[] = [];
+  let corrupt = 0;
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) continue;
     try {
-      const parsed: unknown = JSON.parse(line);
-      if (parsed !== null && typeof parsed === "object") {
-        out.push(parsed as TransitionLogEntry);
-      }
+      entries.push(toEntry(JSON.parse(line)));
     } catch (err) {
+      corrupt++;
       onCorrupt(i + 1, line, err);
     }
   }
-  return out;
+  return { entries, corrupt };
 }
 
 function insertEntries(db: Database, entries: readonly TransitionLogEntry[]): void {
@@ -258,6 +335,50 @@ function insertEntries(db: Database, entries: readonly TransitionLogEntry[]): vo
   }
 }
 
+/**
+ * Insert imported entries, skipping any row already present. Returns how many
+ * were inserted and how many were skipped as duplicates.
+ *
+ * Row-level dedupe is what makes re-importing the *same* history idempotent, and
+ * it is deliberately applied only on the import path — never to `appendTransitionLog`,
+ * whose job is to record whatever the caller decided.
+ *
+ * The identity tuple is `(ts, work_item_id, from_phase, to_phase, status)`.
+ * `ts` is millisecond-precision, so two rows agreeing on all five are the same
+ * transition by the log's own semantics: a work item's chain cannot legitimately
+ * contain two identical `from → to` moves at the same instant, and if it did,
+ * regression validation would reject the second anyway. `force_message` is
+ * excluded so a re-import whose justification text was reflowed still dedupes.
+ *
+ * `IS` rather than `=` for the nullable columns: `= NULL` is never true in SQL,
+ * so an initial transition (`from_phase` NULL) or a non-work-item entry
+ * (`work_item_id` NULL) would never match itself and would duplicate on every
+ * re-import — precisely the case this exists to fix.
+ */
+function insertImportedEntries(
+  db: Database,
+  entries: readonly TransitionLogEntry[],
+): { inserted: number; skipped: number } {
+  const exists = db.prepare<{ 1: number }, [string, string | null, string | null, string, string | null]>(
+    "SELECT 1 FROM transitions WHERE ts = ? AND work_item_id IS ? AND from_phase IS ? AND to_phase = ? AND status IS ? LIMIT 1",
+  );
+  const insert = db.prepare(
+    "INSERT INTO transitions (ts, work_item_id, from_phase, to_phase, force_message, status) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  let inserted = 0;
+  let skipped = 0;
+  for (const e of entries) {
+    const status = e.status ?? null;
+    if (exists.get(e.ts, e.workItemId, e.from, e.to, status) !== null) {
+      skipped++;
+      continue;
+    }
+    insert.run(e.ts, e.workItemId, e.from, e.to, e.forceMessage ?? null, status);
+    inserted++;
+  }
+  return { inserted, skipped };
+}
+
 /** Candidate park name: the plain `.migrated`, else a nonce-suffixed sibling. */
 function migratedPath(logPath: string): string {
   const first = `${logPath}.migrated`;
@@ -265,24 +386,69 @@ function migratedPath(logPath: string): string {
   return `${first}.${Date.now()}-${randomBytes(4).toString("hex")}`;
 }
 
+/** What one staging-file import contributed. */
+interface ImportResult {
+  inserted: number;
+  skipped: number;
+  corrupt: number;
+}
+
+/** A staging file imported in this transaction, awaiting its post-COMMIT park. */
+interface StagedImport {
+  path: string;
+  result: ImportResult;
+}
+
 /**
  * Import one claimed staging file into the DB. Must run inside the caller's
  * write transaction, and the file must be parked with `parkStagingFile` only
  * after that transaction commits.
  *
- * Exactly-once is enforced by the `imported_files` row, written in the same
- * transaction as the entries. A crash before COMMIT rolls the whole thing back
- * and the staging file is retried on the next open; a crash after COMMIT but
- * before the file is parked leaves the row behind, so the retry skips the
- * insert and only parks the file. The data is never in neither place, and
- * never in both.
+ * ## Idempotence is content-addressed, at two levels
+ *
+ * The dedupe key is a SHA-256 of the file's bytes, not `basename(staging)`. The
+ * name embeds a fresh `Date.now()`-plus-random import nonce, so a name key could
+ * only ever match a crash-after-COMMIT-before-park retry of the *same* claim —
+ * it deduped nothing an operator or a peer binary did, and two paths made that
+ * fatal:
+ *
+ *   - Restoring the parked `.migrated` file, which is the documented recovery
+ *     procedure, re-imported the whole history under a new nonce. Three entries
+ *     became six, chain integrity was destroyed, every visited phase appeared
+ *     twice, and the next real transition threw `RegressionError` — silently.
+ *   - The mixed-binary rollout triggers it with certainty: an old jsonl-era
+ *     binary finds no `transitions.jsonl` (renamed away), so it validates
+ *     against an *empty* history and writes a fresh file, which this binary then
+ *     imported with no dedupe.
+ *
+ * A content key makes a byte-identical restore a no-op. `insertImportedEntries`
+ * then dedupes at row level, which covers the case a content key cannot: a file
+ * that is *partly* new, such as the regenerated jsonl above. Both are needed —
+ * the hash is the cheap exact-match path, the row check is the correct one.
+ *
+ * Exactly-once across a crash still holds: the `imported_content` row is written
+ * in the same transaction as the entries, so a crash before COMMIT rolls the
+ * whole thing back and the staging file is retried on the next open; a crash
+ * after COMMIT but before the park leaves the row behind, so the retry inserts
+ * nothing and only parks the file. The data is never in neither place, and never
+ * in both.
  */
-function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLine): void {
-  const name = basename(staging);
-  const already = db.query<{ name: string }, [string]>("SELECT name FROM imported_files WHERE name = ?").get(name);
-  if (already !== null) return;
-  insertEntries(db, parseJsonlEntries(readFileSync(staging, "utf-8"), onCorrupt));
-  db.run("INSERT INTO imported_files (name, imported_at) VALUES (?, ?)", [name, new Date().toISOString()]);
+function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLine): ImportResult {
+  const bytes = readFileSync(staging);
+  const contentHash = createHash("sha256").update(bytes).digest("hex");
+  const already = db
+    .query<{ content_hash: string }, [string]>("SELECT content_hash FROM imported_content WHERE content_hash = ?")
+    .get(contentHash);
+  if (already !== null) return { inserted: 0, skipped: 0, corrupt: 0 };
+
+  const { entries, corrupt } = parseJsonlEntries(bytes.toString("utf-8"), onCorrupt);
+  const { inserted, skipped } = insertImportedEntries(db, entries);
+  db.run("INSERT INTO imported_content (content_hash, name, imported_at) VALUES (?, ?, ?)", [
+    contentHash,
+    basename(staging),
+    new Date().toISOString(),
+  ]);
+  return { inserted, skipped, corrupt };
 }
 
 /**
@@ -300,21 +466,68 @@ function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLi
  * Unlinking the staging path after a successful link removes a *name*, not data:
  * the content is already reachable under the parked name at that point.
  */
-function parkStagingFile(staging: string, logPath: string): void {
+function parkStagingFile(staging: string, logPath: string): string | null {
   for (;;) {
+    const dest = migratedPath(logPath);
     try {
-      linkSync(staging, migratedPath(logPath));
+      linkSync(staging, dest);
     } catch (err) {
       const code = errnoCode(err);
       // ENOENT: a concurrent process already parked it. Both processes agree the
       // import committed, so there is nothing left to do.
-      if (code === "ENOENT") return;
+      if (code === "ENOENT") return null;
       // EEXIST: lost the race for that name; migratedPath picks a fresh nonce.
       if (code === "EEXIST") continue;
       throw err;
     }
     unlinkSync(staging);
-    return;
+    return dest;
+  }
+}
+
+/**
+ * Move a staging file that cannot be imported out of the replay set, returning
+ * its new path.
+ *
+ * Belt to `toEntry`'s braces. Validation removes the *known* way one bad record
+ * wedged the store, but any unexpected non-contention failure during import has
+ * the same shape — `rename(2)` is not transactional, so the DB rolls back while
+ * the claimed file stays on disk and is replayed on every subsequent open, and
+ * because `openForRead` escalates to a write transaction whenever a staging file
+ * exists, that denies service to every read *and* every write, permanently. One
+ * bad file must cost one error and then self-heal.
+ *
+ * `.unimportable` deliberately does not match `IMPORTING_SUFFIX`, so the file is
+ * never replayed; it is left on disk, under a reported name, because it may be
+ * the only copy of the log.
+ *
+ * `link(2)` first, for the same reason `parkStagingFile` uses it: it fails
+ * `EEXIST` atomically instead of silently replacing its destination. `link`
+ * cannot operate on anything but a regular file, so a staging *path* that is not
+ * a regular file (which is one of the ways import fails in the first place) falls
+ * back to `rename`. That fallback can only ever replace a nonce'd name minted a
+ * moment earlier, and one that by definition holds no importable log data.
+ */
+function quarantineStagingFile(staging: string, logPath: string): string {
+  for (;;) {
+    // Built from `logPath`, NOT from `staging`: appending to the staging name
+    // would leave the result still prefixed with `IMPORTING_SUFFIX`, so
+    // findAbandonedStagingFiles would keep replaying it and the quarantine would
+    // do nothing at all.
+    const dest = `${logPath}${UNIMPORTABLE_SUFFIX}${Date.now()}-${randomBytes(4).toString("hex")}`;
+    try {
+      linkSync(staging, dest);
+    } catch (err) {
+      const code = errnoCode(err);
+      if (code === "EEXIST") continue;
+      if (code === "EPERM" || code === "EISDIR" || code === "EXDEV" || code === "ENOTSUP") {
+        renameSync(staging, dest);
+        return dest;
+      }
+      throw err;
+    }
+    unlinkSync(staging);
+    return dest;
   }
 }
 
@@ -354,12 +567,24 @@ function findAbandonedStagingFiles(logPath: string): string[] {
  * the imported history — leaving the log out of insertion order and the second
  * process's transition validated against an empty history.
  */
-function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptLine): string[] {
-  const staged: string[] = [];
-  for (const abandoned of findAbandonedStagingFiles(logPath)) {
-    importStagingFile(db, abandoned, onCorrupt);
-    staged.push(abandoned);
-  }
+function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptLine): StagedImport[] {
+  const staged: StagedImport[] = [];
+
+  // Every staging file seen here is genuinely abandoned: this runs under the
+  // write lock, and a live import holds that lock for its whole duration.
+  const claim = (staging: string): void => {
+    try {
+      staged.push({ path: staging, result: importStagingFile(db, staging, onCorrupt) });
+    } catch (err) {
+      // Contention is not the file's fault — leave it in place to be replayed
+      // once the lock is free. Anything else is quarantined so it cannot deny
+      // service to the store forever.
+      if (!isBusyError(err)) quarantineStagingFile(staging, logPath);
+      throw err;
+    }
+  };
+
+  for (const abandoned of findAbandonedStagingFiles(logPath)) claim(abandoned);
 
   if (!existsSync(logPath)) return staged;
 
@@ -371,17 +596,44 @@ function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptL
     if (errnoCode(err) === "ENOENT") return staged;
     throw err;
   }
-  importStagingFile(db, staging, onCorrupt);
-  staged.push(staging);
+  claim(staging);
   return staged;
 }
 
 // ── Connection lifecycle ───────────────────────────────────────────────
 
+/** SQLite takes the busy timeout as a C `int`, so this is its ceiling (~24 days). */
+const MAX_BUSY_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Coerce a caller-supplied busy timeout to an integer SQLite will actually apply.
+ *
+ * `Math.max(0, Math.trunc(ms))` looks like a guard but is NaN-transparent —
+ * `Math.max` propagates NaN — so `NaN` and `Infinity` both reached the pragma
+ * verbatim and SQLite silently applied **0**, which disables the contention wait
+ * entirely: every concurrent writer then fails immediately instead of
+ * serialising, and the COMMIT retry cannot recover it because each attempt waits
+ * zero. `1e21` was worse than useless in the other direction — it is an integer,
+ * but it stringifies to `1e+21`, which SQLite parsed as 1ms.
+ *
+ * Clamping to `MAX_BUSY_TIMEOUT_MS` is what keeps the interpolated pragma safe:
+ * the result is always a plain decimal integer in `[0, 2^31)`, so it can never
+ * reach SQL in exponential notation. A non-finite value is a caller bug, and
+ * falling back to the default is the only choice that preserves the property the
+ * store depends on; zero and negative keep their documented "do not wait"
+ * meaning.
+ */
+export function sanitizeBusyTimeout(busyTimeoutMs: number): number {
+  if (!Number.isFinite(busyTimeoutMs)) return DEFAULT_BUSY_TIMEOUT_MS;
+  const ms = Math.trunc(busyTimeoutMs);
+  if (ms <= 0) return 0;
+  return Math.min(ms, MAX_BUSY_TIMEOUT_MS);
+}
+
 function configure(db: Database, busyTimeoutMs: number): void {
   // Rollback journal (the default) is retained deliberately — see the
   // "Journal mode: deliberately NOT WAL" note at the top of this file.
-  db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(busyTimeoutMs))}`);
+  db.exec(`PRAGMA busy_timeout = ${sanitizeBusyTimeout(busyTimeoutMs)}`);
 }
 
 /**
@@ -432,11 +684,54 @@ function rollbackQuietly(db: Database): void {
   }
 }
 
+/** What one completed legacy-jsonl migration did. */
+export interface MigrationReport {
+  /** The legacy jsonl path that was migrated. */
+  logPath: string;
+  /** The SQLite store it was migrated into. */
+  dbPath: string;
+  /** Where the original bytes were parked, and can be recovered from. */
+  parkedPath: string;
+  /** Records inserted. */
+  imported: number;
+  /** Records already present in the store, skipped as duplicates. */
+  skipped: number;
+  /** Records rejected as corrupt (also reported individually via `onCorrupt`). */
+  corrupt: number;
+}
+
+/** Called once per completed legacy-jsonl migration. */
+export type OnMigrate = (report: MigrationReport) => void;
+
+/**
+ * Default migration sink: one line to stderr.
+ *
+ * A migration is a one-way, in-place conversion of load-bearing state that
+ * reported nothing anywhere. It is also now reachable from a pure *read* —
+ * `openForRead` escalates to a write transaction when there is an import
+ * pending — so a read-only-looking command mutates state, unannounced. In #2962
+ * the only reason that was recoverable is the park-not-delete decision; the
+ * operator still got no chance to notice before continuing. Naming the parked
+ * path is the point of the line: it is what recovery reads from.
+ */
+export function defaultOnMigrate(out: { write: (s: string) => void } = process.stderr): OnMigrate {
+  return ({ logPath, dbPath, parkedPath, imported, skipped, corrupt }) => {
+    const extra = [
+      ...(skipped > 0 ? [`${skipped} duplicate${skipped === 1 ? "" : "s"} skipped`] : []),
+      ...(corrupt > 0 ? [`${corrupt} corrupt record${corrupt === 1 ? "" : "s"} rejected`] : []),
+    ];
+    const suffix = extra.length > 0 ? ` (${extra.join(", ")})` : "";
+    out.write(`migrated ${imported} entries from ${logPath} → ${dbPath}${suffix}; original parked at ${parkedPath}\n`);
+  };
+}
+
 export interface StoreOptions {
   /** How long to wait for a contended write lock. */
   timeoutMs?: number;
   /** Corrupt-line sink for the one-time legacy jsonl import. */
   onCorrupt?: OnCorruptLine;
+  /** Migration announcement sink. Defaults to one stderr line per migration. */
+  onMigrate?: OnMigrate;
 }
 
 /**
@@ -469,7 +764,23 @@ function openForRead(logPath: string, opts: StoreOptions = {}): Database | null 
   if (existsSync(logPath) || findAbandonedStagingFiles(logPath).length > 0) {
     // A pending import has to run under the write lock, so a read that finds
     // one drives an otherwise-empty write transaction to completion first.
-    withDbTx(logPath, () => {}, opts);
+    try {
+      withDbTx(logPath, () => {}, opts);
+    } catch (err) {
+      // Contention here is not the reader's problem to solve. The staging-file
+      // scan above runs unlocked, so a reader also fires on another live
+      // process's in-flight claim — and making a previously-infallible read path
+      // fail on that turns read-only orchestrator polling into a stall vector
+      // (`readTransitionHistory` from `phase.ts`, `pruneStaleHistory` from
+      // `track.ts`, where it becomes `exit 1`).
+      //
+      // Falling through is safe because it cannot affect gating: the process
+      // holding the lock is completing the import, and every *writer* takes the
+      // write lock and imports before it validates. The worst case for this
+      // reader is observing the pre-import history, which is exactly what it
+      // would have seen a moment earlier.
+      if (!(err instanceof TransitionLockBusyError)) throw err;
+    }
   }
   if (!existsSync(dbPath)) return null;
   const db = new Database(dbPath, { readonly: true });
@@ -524,7 +835,21 @@ function withDbTx<T>(logPath: string, fn: (db: Database) => T, opts: StoreOption
         throw new Error("withTransitionWriter: fn must be synchronous (returned a Promise)");
       }
       commitWithRetry(db);
-      for (const staging of staged) parkStagingFile(staging, logPath);
+      // Parked, then announced: the report names the parked path, which is the
+      // artifact recovery reads from, so it must exist before it is reported.
+      const onMigrate = opts.onMigrate ?? defaultOnMigrate();
+      for (const { path, result: imported } of staged) {
+        const parkedPath = parkStagingFile(path, logPath);
+        if (parkedPath === null) continue;
+        onMigrate({
+          logPath,
+          dbPath,
+          parkedPath,
+          imported: imported.inserted,
+          skipped: imported.skipped,
+          corrupt: imported.corrupt,
+        });
+      }
       return result;
     } catch (err) {
       rollbackQuietly(db);
@@ -589,23 +914,29 @@ const SELECT_COLUMNS = "ts, work_item_id, from_phase, to_phase, force_message, s
  * (#1375). `id` ordering is insertion order, which is the log's contract —
  * `ts` is supplied by callers and is not monotonic.
  */
-function selectEntries(db: Database, where: string, params: (string | null)[], tail?: number): TransitionLogEntry[] {
+type SelectParam = string | number | null;
+
+function selectEntries(db: Database, where: string, params: SelectParam[], tail?: number): TransitionLogEntry[] {
   const clause = where.length > 0 ? ` WHERE ${where}` : "";
   if (tail === undefined) {
     const rows = db
-      .query<TransitionRow, (string | null)[]>(`SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id ASC`)
+      .query<TransitionRow, SelectParam[]>(`SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id ASC`)
       .all(...params);
     return rows.map(rowToEntry);
   }
-  // The limit is interpolated rather than bound, so a non-integer must be
-  // rejected here: NaN or Infinity would reach SQLite as `LIMIT NaN`.
+  // A non-integer tail is a caller bug and is rejected with a useful message
+  // rather than being coerced into a different query.
   if (!Number.isInteger(tail)) throw new TypeError(`tail must be an integer, got ${tail}`);
   if (tail <= 0) return [];
+  // `LIMIT ?` rather than `LIMIT ${tail}`. Interpolation left a hole the integer
+  // predicate in front of it could not close: `Number.isInteger(1e21)` is true,
+  // but it stringifies to `1e+21`, so it reached SQLite as `LIMIT 1e+21` →
+  // "datatype mismatch". Binding the parameter eliminates the class instead of
+  // patching predicates in front of it; clamping to a safe integer keeps a
+  // "larger than the table" tail meaning exactly that.
   const rows = db
-    .query<TransitionRow, (string | null)[]>(
-      `SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id DESC LIMIT ${tail}`,
-    )
-    .all(...params);
+    .query<TransitionRow, SelectParam[]>(`SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id DESC LIMIT ?`)
+    .all(...params, Math.min(tail, Number.MAX_SAFE_INTEGER));
   return rows.reverse().map(rowToEntry);
 }
 

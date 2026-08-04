@@ -35,6 +35,7 @@ import {
   type ManifestState,
   NO_REPO_ROOT,
   RegressionError,
+  TransitionLockBusyError,
   type TransitionLogEntry,
   UnknownPhaseError,
   type WorkItem,
@@ -480,6 +481,42 @@ export function phaseRun(
   });
 
   return { manifest, forced: decision.forced, from: decision.from };
+}
+
+/**
+ * Backoff schedule for the post-handler commit. Bounded: the handler has
+ * already run, so waiting forever is not an option either.
+ */
+export const COMMIT_LOCK_RETRY_DELAYS_MS = [50, 150, 400, 1000] as const;
+
+/**
+ * Run the post-handler transition commit, retrying while the write lock is
+ * contended.
+ *
+ * `TransitionLockBusyError` was handled nowhere at all, and this is the one call
+ * site where losing the lock is genuinely expensive: the commit happens *after*
+ * `executeAliasBundled` returns, so the handler has already pushed the branch,
+ * opened the PR and set labels. Throwing there leaves a stuck work item whose
+ * side effects happened but whose transition was never recorded — db/log
+ * divergence, with nothing to distinguish it from a handler that never ran.
+ *
+ * Jittered so that N phase runs that collided once do not re-collide in lockstep
+ * on every subsequent attempt.
+ */
+export async function commitWithLockRetry<T>(
+  commit: () => T,
+  deps: { sleep: (ms: number) => Promise<void>; random?: () => number },
+): Promise<T> {
+  const random = deps.random ?? Math.random;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return commit();
+    } catch (err) {
+      const delay = COMMIT_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !(err instanceof TransitionLockBusyError)) throw err;
+      await deps.sleep(delay / 2 + random() * (delay / 2));
+    }
+  }
 }
 
 export type DriftKind =
@@ -1172,6 +1209,8 @@ export interface PhaseExecuteDeps {
   findGitRoot: (cwd: string) => string | null;
   now: () => Date;
   readCliConfig: () => CliConfig;
+  /** Backoff delay for the post-handler commit retry; injected so tests need no real time. */
+  sleep: (ms: number) => Promise<void>;
 }
 
 export function spawnExec(cmd: string[]): ExecResult {
@@ -1191,6 +1230,7 @@ const defaultExecuteDeps: PhaseExecuteDeps = {
   findGitRoot,
   now: () => new Date(),
   readCliConfig,
+  sleep: (ms) => Bun.sleep(ms),
 };
 
 export interface PhaseExecuteArgs {
@@ -1569,15 +1609,35 @@ export async function executePhase(
   // (`from === target && tail === target`) is accepted by
   // validateTransition so successive `phase run <X>` calls don't
   // trip RegressionError.
-  const txResult = phaseRun(
-    {
-      target: parsed.target,
-      from: resolvedFrom,
-      workItemId: parsed.workItemId,
-      forceMessage: parsed.forceMessage,
-    },
-    { cwd, stateCwd: stateRoot, now: ex.now },
-  );
+  let txResult: { manifest: Manifest; forced: boolean; from: string | null };
+  try {
+    txResult = await commitWithLockRetry(
+      () =>
+        phaseRun(
+          {
+            target: parsed.target,
+            from: resolvedFrom,
+            workItemId: parsed.workItemId,
+            forceMessage: parsed.forceMessage,
+          },
+          { cwd, stateCwd: stateRoot, now: ex.now },
+        ),
+      { sleep: ex.sleep },
+    );
+  } catch (err) {
+    if (!(err instanceof TransitionLockBusyError)) throw err;
+    // Never silent: the handler's side effects are already on GitHub, so this is
+    // db/log divergence, not a no-op. Say so, and say that re-running is safe.
+    d.logError(
+      [
+        `phase "${parsed.target}" COMPLETED but its transition could not be recorded: ${err.message}.`,
+        "The handler's side effects (branch, PR, labels) have already happened, so the work item's phase",
+        `and its transition log now disagree. Re-run \`mcx phase run ${parsed.target}\` once the other run`,
+        "finishes — handlers self-check and the idempotent self-loop is accepted.",
+      ].join(" "),
+    );
+    d.exit(1);
+  }
   const source = phase.source ?? "(unknown)";
   const tag = txResult.forced ? " [FORCED]" : "";
   const trail = txResult.from ?? "(initial)";

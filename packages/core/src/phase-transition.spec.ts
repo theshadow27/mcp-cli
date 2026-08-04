@@ -1,10 +1,20 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pollUntil } from "../../../test/harness";
 import type { Manifest } from "./manifest";
+import type { MigrationReport } from "./phase-transition";
 import {
   DisallowedTransitionError,
   RegressionError,
@@ -13,6 +23,7 @@ import {
   appendAttempt,
   appendTransitionLog,
   commitTransition,
+  defaultOnMigrate,
   historyTargets,
   isCommitted,
   levenshtein,
@@ -24,6 +35,7 @@ import {
   validateTransition,
   withTransitionWriter,
 } from "./phase-transition";
+import { sanitizeBusyTimeout } from "./transition-store";
 
 /** Short deadline for the deliberately-contended nested-lock test. */
 const NESTED_LOCK_TIMEOUT_MS = 50;
@@ -601,6 +613,270 @@ describe("legacy jsonl migration (#1328)", () => {
   }, 30_000);
 });
 
+describe("import hardening: a bad record must never wedge or double the store", () => {
+  let dir: string;
+  let log: string;
+
+  const jsonlLine = (e: unknown) => `${JSON.stringify(e)}\n`;
+  const valid = (ts: string, to: string, from: string | null = null) =>
+    jsonlLine({ ts, workItemId: "#7", from, to, status: "committed" });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-import-"));
+    log = join(dir, "transitions.jsonl");
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ── 🔴1: schema-invalid records ─────────────────────────────────────
+
+  test("a schema-invalid record is quarantined as a corrupt line, not a crash", () => {
+    // `{"foo":1}` is valid JSON and a plain object, so the importer passed it
+    // through as a TransitionLogEntry; it then hit `ts TEXT NOT NULL` and threw.
+    writeFileSync(log, `${valid("t1", "impl")}${jsonlLine({ foo: 1 })}${valid("t2", "qa", "impl")}`, "utf-8");
+
+    const corrupt: number[] = [];
+    const entries = readAllTransitions(log, { onCorrupt: (lineNumber) => corrupt.push(lineNumber) });
+
+    expect(entries.map((e) => e.ts)).toEqual(["t1", "t2"]);
+    expect(corrupt).toEqual([2]);
+  });
+
+  test("a wrong-typed field is a corrupt line, not a binding TypeError", () => {
+    // `ts` as a number and `to` as an object each threw a different exception
+    // from the same unvalidated pass-through.
+    writeFileSync(
+      log,
+      `${jsonlLine({ ts: 12345, workItemId: "#7", from: null, to: "impl" })}${jsonlLine({
+        ts: "t2",
+        workItemId: "#7",
+        from: null,
+        to: { x: 1 },
+      })}${valid("t3", "impl")}`,
+      "utf-8",
+    );
+
+    const corrupt: number[] = [];
+    const entries = readAllTransitions(log, { onCorrupt: (lineNumber) => corrupt.push(lineNumber) });
+
+    expect(entries.map((e) => e.ts)).toEqual(["t3"]);
+    expect(corrupt).toEqual([1, 2]);
+  });
+
+  test("a schema-invalid record leaves the store fully usable and consumes no data", () => {
+    // The wedge: rename(2) is not transactional, so a rolled-back import left
+    // the jsonl as `.importing.<nonce>`, which findAbandonedStagingFiles
+    // replayed on every open — and openForRead drives a write transaction
+    // whenever a staging file exists, so every read AND every write threw
+    // forever, with the only copy of the log hidden under a name nobody looks
+    // for.
+    writeFileSync(log, `${valid("t1", "impl")}${jsonlLine({ foo: 1 })}`, "utf-8");
+    const noop = () => {};
+
+    expect(readAllTransitions(log, { onCorrupt: noop }).map((e) => e.ts)).toEqual(["t1"]);
+    // Reads stay usable across reopens...
+    expect(readAllTransitions(log, { onCorrupt: noop }).map((e) => e.ts)).toEqual(["t1"]);
+    expect(readTransitionHistory(log, "#7", noop)).toHaveLength(1);
+    // ...and so do writes.
+    appendTransitionLog(log, { ts: "t2", workItemId: "#7", from: "impl", to: "qa", status: "committed" });
+    expect(readAllTransitions(log, { onCorrupt: noop }).map((e) => e.ts)).toEqual(["t1", "t2"]);
+
+    // No staging file is left to replay, and the original bytes — including the
+    // rejected record — are still recoverable from the park.
+    expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
+    const parked = readdirSync(dir).filter((n) => n.includes(".migrated"));
+    expect(parked).toHaveLength(1);
+    expect(readFileSync(join(dir, parked[0]), "utf-8")).toContain('"foo":1');
+  });
+
+  test("a staging file that cannot be imported at all is quarantined, not replayed forever", () => {
+    // Belt to the validator's braces: any unexpected, non-contention import
+    // failure must cost one error and then self-heal, rather than denying
+    // service to the whole store on every subsequent open. A directory sitting
+    // at a staging path makes readFileSync throw EISDIR deterministically.
+    const staging = join(dir, `transitions.jsonl.importing.${Date.now()}-deadbeef`);
+    mkdirSync(staging);
+    const t0 = { ts: "t0", workItemId: "#7", from: null, to: "impl", status: "committed" } as const;
+
+    // One error, from whichever operation touches the store first...
+    expect(() => appendTransitionLog(log, t0)).toThrow();
+
+    // ...and then it self-heals: the unimportable staging path has been moved
+    // aside, so reads and writes both work instead of replaying the failure.
+    appendTransitionLog(log, t0);
+    expect(readAllTransitions(log).map((e) => e.ts)).toEqual(["t0"]);
+    appendTransitionLog(log, { ts: "t1", workItemId: "#7", from: "impl", to: "qa", status: "committed" });
+    expect(readAllTransitions(log)).toHaveLength(2);
+
+    // Quarantined under a name that is NOT replayed, and still on disk.
+    const quarantined = readdirSync(dir).filter((n) => n.includes(".unimportable"));
+    expect(quarantined).toHaveLength(1);
+    expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
+  });
+
+  // ── 🔴2: content-addressed dedupe ────────────────────────────────────
+
+  test("restoring the parked .migrated file does not double the history", () => {
+    // The documented recovery procedure. `imported_files` keyed on
+    // basename(staging), which embeds a fresh nonce, so it could only ever
+    // match a crash-retry of the SAME claim — it deduped nothing an operator
+    // does. Restoring the park took 3 entries to 6, destroyed chain integrity,
+    // and made the next real transition throw RegressionError.
+    writeFileSync(log, valid("t1", "impl") + valid("t2", "triage", "impl") + valid("t3", "review", "triage"), "utf-8");
+    expect(readAllTransitions(log)).toHaveLength(3);
+
+    const parked = readdirSync(dir).find((n) => n.includes(".migrated"));
+    expect(parked).toBeDefined();
+    copyFileSync(join(dir, parked as string), log);
+
+    expect(readAllTransitions(log)).toHaveLength(3);
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage", "review"]);
+  });
+
+  test("a mixed-binary rollout that regenerates the jsonl does not duplicate entries", () => {
+    // Guaranteed trigger: an old jsonl-era binary finds no transitions.jsonl
+    // (renamed away), validates against an EMPTY history, and writes a fresh
+    // file; the new binary then imports it under a new nonce with no dedupe.
+    writeFileSync(log, valid("t1", "impl") + valid("t2", "triage", "impl"), "utf-8");
+    expect(readAllTransitions(log)).toHaveLength(2);
+
+    // The old binary re-derives the same first transition from scratch.
+    writeFileSync(log, valid("t1", "impl"), "utf-8");
+
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage"]);
+  });
+
+  test("dedupe is content-addressed, so a genuinely new entry in a restored file still imports", () => {
+    // The dedupe must not degrade into "any restored file is ignored": rows
+    // that are already present are skipped, rows that are new are kept.
+    writeFileSync(log, valid("t1", "impl"), "utf-8");
+    expect(readAllTransitions(log)).toHaveLength(1);
+
+    writeFileSync(log, valid("t1", "impl") + valid("t2", "triage", "impl"), "utf-8");
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage"]);
+  });
+
+  // ── 🟡3: migration is announced ──────────────────────────────────────
+
+  test("a migration is announced rather than happening silently", () => {
+    // A one-way, in-place conversion of load-bearing state, now triggerable by
+    // a pure read (openForRead escalates to a write transaction), was reported
+    // nowhere at all.
+    writeFileSync(log, valid("t1", "impl") + valid("t2", "triage", "impl"), "utf-8");
+
+    const reports: MigrationReport[] = [];
+    readAllTransitions(log, { onMigrate: (r) => reports.push(r) });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].imported).toBe(2);
+    expect(reports[0].logPath).toBe(log);
+    expect(reports[0].parkedPath).toContain(".migrated");
+    expect(existsSync(reports[0].parkedPath)).toBe(true);
+
+    // No migration, no report.
+    readAllTransitions(log, { onMigrate: (r) => reports.push(r) });
+    expect(reports).toHaveLength(1);
+  });
+
+  test("the default migration sink writes one line to stderr", () => {
+    const written: string[] = [];
+    defaultOnMigrate({ write: (s) => written.push(s) })({
+      logPath: "/x/.mcx/transitions.jsonl",
+      dbPath: "/x/.mcx/transitions.db",
+      parkedPath: "/x/.mcx/transitions.jsonl.migrated",
+      imported: 7,
+      skipped: 2,
+      corrupt: 1,
+    });
+    expect(written).toHaveLength(1);
+    expect(written[0].endsWith("\n")).toBe(true);
+    expect(written[0]).toContain("migrated 7");
+    expect(written[0]).toContain("transitions.jsonl.migrated");
+  });
+
+  // ── 🟡6: non-object lines ────────────────────────────────────────────
+
+  test("non-object JSON lines fire the corrupt-line sink instead of vanishing", () => {
+    // `typeof parsed === "object"` discarded scalars and null without firing
+    // onCorrupt, which is the sink that exists so log rot is visible. Arrays
+    // were worse: they passed the object check and reached the wedge.
+    writeFileSync(log, `123\n"str"\nnull\n[1,2]\n${valid("t1", "impl")}`, "utf-8");
+
+    const corrupt: number[] = [];
+    const entries = readAllTransitions(log, { onCorrupt: (lineNumber) => corrupt.push(lineNumber) });
+
+    expect(entries.map((e) => e.ts)).toEqual(["t1"]);
+    expect(corrupt).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("option sanitising reaches SQLite as a bounded integer", () => {
+  let dir: string;
+  let log: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-sanitise-"));
+    log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "t1", workItemId: "#7", from: null, to: "impl", status: "committed" });
+    appendTransitionLog(log, { ts: "t2", workItemId: "#7", from: "impl", to: "qa", status: "committed" });
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ── 🟡4 ──────────────────────────────────────────────────────────────
+
+  // `configure` applies the timeout to the store's own connection, and that
+  // wiring is already covered by the held-lock tests below (a 50ms timeout
+  // demonstrably expires). What was broken is the arithmetic in front of it, so
+  // that is what is asserted here — the pragma is per-connection, so it cannot
+  // be observed from a second handle.
+  test.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "a non-finite busy_timeout of %p falls back to the default, never to a disabled wait",
+    (timeoutMs) => {
+      // `Math.max(0, Math.trunc(NaN))` is NaN — Math.max propagates it — so the
+      // pragma read `busy_timeout = NaN` and SQLite silently applied 0, which
+      // disables the wait entirely: every contended writer then fails
+      // immediately instead of serialising, and the COMMIT retry cannot help
+      // because each attempt waits zero.
+      expect(sanitizeBusyTimeout(timeoutMs)).toBe(5000);
+    },
+  );
+
+  test("a busy_timeout too large to stringify as an integer is clamped, not applied as 1ms", () => {
+    // `1e21` is an integer, but it stringifies to `1e+21`, which SQLite parsed
+    // as 1ms. Clamping is what keeps the interpolated pragma a plain decimal.
+    expect(sanitizeBusyTimeout(1e21)).toBe(2_147_483_647);
+    expect(String(sanitizeBusyTimeout(1e21))).toBe("2147483647");
+  });
+
+  test("zero and negative busy_timeouts keep their documented do-not-wait meaning", () => {
+    expect(sanitizeBusyTimeout(0)).toBe(0);
+    expect(sanitizeBusyTimeout(-1)).toBe(0);
+    expect(sanitizeBusyTimeout(250.9)).toBe(250);
+  });
+
+  test("a non-finite timeout still yields a working store end to end", () => {
+    expect(readAllTransitions(log, { timeoutMs: Number.NaN })).toHaveLength(2);
+  });
+
+  // ── 🟡5 ──────────────────────────────────────────────────────────────
+
+  test("an integer tail too large to stringify as an integer still reads", () => {
+    // `Number.isInteger(1e21)` is true, but it stringifies to `1e+21`, so an
+    // interpolated LIMIT reached SQLite as `LIMIT 1e+21` → datatype mismatch.
+    expect(readAllTransitions(log, { tail: 1e21 })).toHaveLength(2);
+    expect(readAllTransitions(log, { tail: Number.MAX_SAFE_INTEGER })).toHaveLength(2);
+    expect(readTransitionHistory(log, "#7", undefined, { tail: 1e21 })).toHaveLength(2);
+  });
+
+  test("a non-integer tail is still rejected before it reaches SQL", () => {
+    expect(() => readAllTransitions(log, { tail: 1.5 })).toThrow(TypeError);
+    expect(() => readAllTransitions(log, { tail: Number.NaN })).toThrow(TypeError);
+  });
+});
+
 describe("commitTransition / withTransitionWriter (issue #1328)", () => {
   let dir: string;
   beforeEach(() => {
@@ -796,6 +1072,37 @@ describe("commitTransition / withTransitionWriter (issue #1328)", () => {
         { timeoutMs: NESTED_LOCK_TIMEOUT_MS },
       ),
     ).toThrow(TransitionLockBusyError);
+
+    expect(await child.exited).toBe(0);
+  });
+
+  test("a read does not fail just because another process holds the import lock", async () => {
+    // The staging-file scan in `openForRead` runs unlocked, so a reader fires on
+    // a *live* peer's in-flight claim as readily as on an abandoned one. If that
+    // escalation propagated, every read-only caller (`readTransitionHistory`
+    // from `phase.ts`, `pruneStaleHistory` from `track.ts`, where it is `exit 1`)
+    // would fail for the duration of someone else's import.
+    const HOLD_MS = 400;
+    const log = join(dir, "transitions.jsonl");
+    const ready = join(dir, "import-lock-held");
+    appendTransitionLog(log, { ts: "t0", workItemId: "#read", from: null, to: "impl" });
+
+    const child = Bun.spawn(["bun", "run", holdWorkerPath, "write", log, ready, String(HOLD_MS)]);
+    await pollUntil(() => existsSync(ready));
+
+    // Planted only once the lock is held, so the reader's escalation is
+    // guaranteed to contend rather than racing the child's own migration.
+    const staging = `${log}.importing.1-deadbeef`;
+    writeFileSync(staging, `${JSON.stringify({ ts: "t1", workItemId: "#read", from: "impl", to: "qa" })}\n`);
+
+    // Pre-import history, not an error.
+    expect(historyTargets(readAllTransitions(log, { timeoutMs: NESTED_LOCK_TIMEOUT_MS }))).toEqual(["impl"]);
+    expect(
+      historyTargets(readTransitionHistory(log, "#read", undefined, { timeoutMs: NESTED_LOCK_TIMEOUT_MS })),
+    ).toEqual(["impl"]);
+    // Contention must never be mistaken for a bad file: the claim stays put for
+    // replay instead of being quarantined.
+    expect(existsSync(staging)).toBe(true);
 
     expect(await child.exited).toBe(0);
   });
