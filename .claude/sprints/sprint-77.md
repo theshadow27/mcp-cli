@@ -227,6 +227,36 @@ which caught 5/5 of these, at ~16 extra sessions per sprint — and a test adver
 from the issue text can encode the same wrong assumption an implementer does. Revisit only if
 the impl-brief change ships and the class still appears at this rate next sprint.
 
+### Orchestrator error: brief repairs from the PR sticky, never the session summary
+
+On #1328 the orchestrator scoped a repair to findings 10-13, dropping **both 🔴 blockers and
+🟡 3-7**. The reviewer's sticky comment on PR #2964 explicitly said *"In scope — fix on this
+PR: blockers 🔴1 and 🔴2, plus 🟡3-7 and 🟡10-12"*. The orchestrator briefed from the
+reviewer's **closing session message** instead, which summarised only what its second-opinion
+agents had *added* — a strict subset presented as if it were the finding list.
+
+Caught only because the repairer **verified the brief against the tree** rather than trusting
+it, and refused to let the PR merge on a partial delta. Had it complied, #1328 would have
+merged with a defect that bricks the store on one malformed line, plus a dedupe key that makes
+the documented recovery procedure silently double the history.
+
+That second one is not hypothetical. **During this sprint this branch accidentally migrated
+the live orchestrator log, and recovery was performed by restoring the parked copy — the exact
+path blocker 🔴2 corrupts.** With it merged, that recovery would have doubled 1919 entries and
+bricked the pipeline on the next transition.
+
+**Rules to adopt:**
+1. **The PR sticky comment is the authoritative finding list.** A session's closing message is
+   a summary written for the orchestrator, not a spec; it routinely omits findings the session
+   considered already-communicated. Always `gh api .../issues/<pr>/comments` and read the
+   sticky before writing a repair brief.
+2. **Enumerate findings by identifier in the brief** (🔴1, 🔴2, 🟡3-7, …) and state the count.
+   An omission is then visible to the repairer as a gap rather than invisible as a silence.
+3. **Tell every repairer to verify the brief against the review and the tree, and to flag a
+   mismatch rather than silently scoping to what they were told.** This is the second time this
+   sprint a worker's refusal to comply caught an orchestrator error — the first was #2690
+   declining the stale `cores/4` prescription that would have made contention worse.
+
 ### Amendments to Excluded
 - **#207 — exclusion reasoning was wrong; promote next sprint.** Excluded at plan time as
   "flags already exist". Half-right: `--full` exists and works, but `mcx claude log --json`
