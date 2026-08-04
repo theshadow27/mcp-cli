@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -365,6 +366,40 @@ describe("bounded reads and filter pushdown (#1375)", () => {
   test("readTransitionHistory accepts a tail", () => {
     const tailed = readTransitionHistory(log, "#even", undefined, { tail: 2 });
     expect(tailed.map((e) => e.to)).toEqual(["step-6", "step-8"]);
+  });
+
+  test("a non-integer tail is rejected rather than reaching SQL", () => {
+    expect(() => readAllTransitions(log, { tail: Number.NaN })).toThrow(TypeError);
+    expect(() => readAllTransitions(log, { tail: Number.POSITIVE_INFINITY })).toThrow(TypeError);
+    expect(() => readAllTransitions(log, { tail: 2.5 })).toThrow(/tail must be an integer/);
+  });
+});
+
+describe("journal mode (#1372)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-phase-journal-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the store runs on the rollback journal, never WAL", () => {
+    // Load-bearing for #1372: WAL needs a `-shm` mmap that network filesystems
+    // cannot provide, so an NFS-mounted `~/` would fail to open or corrupt.
+    // Asserted on the file the store actually created, in its default
+    // configuration — if anyone "optimizes" this to WAL, this test fails.
+    const log = join(dir, "transitions.jsonl");
+    appendTransitionLog(log, { ts: "t1", workItemId: "#1", from: null, to: "impl" });
+
+    const db = new Database(transitionDbPath(log), { readonly: true });
+    try {
+      expect(db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode).toBe("delete");
+    } finally {
+      db.close();
+    }
+    // A rollback-journal store leaves no sidecar files behind once committed.
+    expect(readdirSync(dir)).toEqual(["transitions.db"]);
   });
 });
 

@@ -505,10 +505,13 @@ function selectEntries(db: Database, where: string, params: (string | null)[], t
       .all(...params);
     return rows.map(rowToEntry);
   }
+  // The limit is interpolated rather than bound, so a non-integer must be
+  // rejected here: NaN or Infinity would reach SQLite as `LIMIT NaN`.
+  if (!Number.isInteger(tail)) throw new TypeError(`tail must be an integer, got ${tail}`);
   if (tail <= 0) return [];
   const rows = db
     .query<TransitionRow, (string | null)[]>(
-      `SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id DESC LIMIT ${Math.trunc(tail)}`,
+      `SELECT ${SELECT_COLUMNS} FROM transitions${clause} ORDER BY id DESC LIMIT ${tail}`,
     )
     .all(...params);
   return rows.reverse().map(rowToEntry);
