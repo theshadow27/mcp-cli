@@ -177,6 +177,56 @@ self-repair (PR 2927), `#1328` impl, `#1245` impl, `#2690` impl.
 `#1964` should be formally dropped at wind-down rather than launched late — it is the
 designated pressure valve and it keeps.
 
+### THE finding of sprint 77: tests that cannot express the failure
+
+Five of six adversarial reviews found code that passed a **green `am-i-done` and green CI**
+while being functionally broken. Every reviewer caught it the same way — by *running* the
+code at production settings and observing the result — and no test could have caught any of
+them, because in each case the test and the code encode the same assumption.
+
+| PR | What the test did | What shipped |
+|---|---|---|
+| #1702 | Asserted a rule was dead, per the code's own rationale | Hard-failed a **working** deny rule |
+| #1540 | Real-jq fixture authored from the code's hypothesis; asserted *a* concrete id was extracted | Captured **Sent Items** as the inbox |
+| #1245 | Pinned `retry: { maxRetries: 0 }` — a config **no caller produces** | Adaptation inert; `[250,250,250,250,250]` then abort |
+| #2690 | Pinned `slots: 1`, never exercising the default `K=2` | Docstring asserted an invariant the code lacked |
+| #1590 | Injected an **exact-advance** virtual clock (`now += ms`) | Timer *overshoot* is unrepresentable → post-deadline dispatch invisible |
+
+**Two distinct species, and the second is worse:**
+
+1. **Config-pinning** — the test exercises a configuration no caller produces. Mechanically
+   detectable: flag a spec that only ever exercises an option with an explicit non-default
+   value. Candidate `doing-it-wrong` rule.
+2. **Harness-blindness** — the test *scaffolding* cannot represent the failure mode at all.
+   #1590's clock advances exactly, so "fires at-or-after" never happens; #1540's mock ignored
+   `limit`, so it could not prove the cursor property it asserted. **Not** mechanically
+   detectable, and immune to more tests written on the same harness. A green suite here is
+   not weak evidence — it is *no* evidence, and it actively reads as assurance.
+
+Corollary that changed orchestrator behaviour mid-sprint: **CI green is not evidence against
+a blocker whose failure mode the harness cannot express.** #1590 was green on all five checks
+in both rounds while carrying a reproducible duplicate-external-write bug.
+
+Related: `Math.max(deadline - now, 1)` — a floor that *looks* defensive and does the exact
+opposite, converting "no budget left" into "dispatch anyway". #2955 filed for the clamp-invariant
+rule; the reviewer notes the class is silent **and** inverted, so unreachable by type checking.
+
+**Retro proposals (meta-surface — orchestrator/retro-owned, cannot go to a worker mid-sprint):**
+1. **Impl brief**: bar for done becomes "demonstrate behaviour at the DEFAULT configuration
+   with observed numbers, not asserted intent." Zero marginal sessions. Improvised in this
+   sprint's repair briefs and it worked — #1245 came back with
+   `expect(observedLimits).toEqual([250,125,62,31,25])` and a spec comment reading
+   *"Do not add `maxRetries: 0` to these tests. That configuration has no caller."*
+2. **Review brief**: add an explicit checklist item — *for every test that passes a config
+   override, is the default also covered? Can this harness represent the failure at all?*
+3. **Rule** (`rule-author`): mechanize species 1 only. Species 2 is a judgement call and
+   belongs to review, permanently.
+
+**Rejected: a dedicated adversarial-test-writer phase.** It would duplicate the review phase,
+which caught 5/5 of these, at ~16 extra sessions per sprint — and a test adversary working
+from the issue text can encode the same wrong assumption an implementer does. Revisit only if
+the impl-brief change ships and the class still appears at this rate next sprint.
+
 ### Amendments to Excluded
 - **#207 — exclusion reasoning was wrong; promote next sprint.** Excluded at plan time as
   "flags already exist". Half-right: `--full` exists and works, but `mcx claude log --json`
