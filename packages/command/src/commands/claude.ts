@@ -1281,19 +1281,19 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
-  const keepWorktree = args.includes("--keep") || args.includes("--keep-worktree");
+  const clean = args.includes("--clean");
   const showAll = args.includes("--all") || args.includes("-a");
   const positional = args.filter((a) => !a.startsWith("-"));
   const sessionPrefix = positional[0];
 
   // --all: end all sessions in scope (or all sessions if unscoped)
   if (showAll) {
-    await claudeByeAll(args, d, keepWorktree);
+    await claudeByeAll(args, d, clean);
     return;
   }
 
   if (!sessionPrefix) {
-    d.printError('Usage: mcx claude bye <session-id> "<message>" [--keep|--keep-worktree] [--all]');
+    d.printError('Usage: mcx claude bye <session-id> "<message>" [--clean] [--all]');
     d.exit(1);
   }
 
@@ -1312,9 +1312,10 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   console.log(formatToolResult(result));
 
   if (byeResult.worktree) {
-    if (keepWorktree) {
+    if (!clean) {
       const wtPath = byeResult.cwd ?? resolveKeptWorktreePath(byeResult);
       d.printInfo(`Worktree preserved: ${wtPath}`);
+      d.printInfo("Reclaim with 'mcx claude bye --clean' next time, or sweep later with 'mcx gc'.");
     } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else {
@@ -1328,7 +1329,7 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
 }
 
 /** End all sessions in the detected scope (or all sessions if unscoped). */
-async function claudeByeAll(args: string[], d: ClaudeDeps, keepWorktree: boolean): Promise<void> {
+async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Promise<void> {
   // List sessions with scope filtering
   const toolArgs: Record<string, unknown> = {};
   const bypassScope = args.includes("--all") && !args.includes("--scoped");
@@ -1366,7 +1367,7 @@ async function claudeByeAll(args: string[], d: ClaudeDeps, keepWorktree: boolean
       const id = s.sessionId.slice(0, 8);
       console.error(`  ${id} ended`);
 
-      if (byeResult.worktree && !keepWorktree) {
+      if (byeResult.worktree && clean) {
         if (byeResult.cwd) {
           cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
         } else {

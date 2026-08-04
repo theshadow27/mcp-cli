@@ -74,10 +74,11 @@ registerHelp("claude send", {
 
 registerHelp("claude bye", {
   name: "mcx claude bye",
-  summary: "End a session and stop the process",
-  usage: ['mcx claude bye <session> "wrap up"', "mcx claude bye --all", "mcx claude bye <session> --keep-worktree"],
+  summary: "End a session and stop the process (worktree is kept by default)",
+  usage: ['mcx claude bye <session> "wrap up"', "mcx claude bye --all", "mcx claude bye <session> --clean"],
   options: [
-    ["--keep, --keep-worktree", "Preserve worktree after session ends"],
+    ["--clean", "Also remove the worktree and delete its branch"],
+    ["--keep, --keep-worktree", "No-op: keeping the worktree is the default"],
     ["--all, -a", "End all sessions in scope"],
   ],
 });
