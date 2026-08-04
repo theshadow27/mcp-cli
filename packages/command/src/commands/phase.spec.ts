@@ -9,6 +9,7 @@ import {
   appendTransitionLog,
   historyTargets,
   parseLockfile,
+  readAllTransitions,
   readTransitionHistory,
   serializeLockfile,
 } from "@mcp-cli/core";
@@ -1586,7 +1587,7 @@ describe("formatDriftWarning", () => {
 
 describe("parsePhaseLogArgs", () => {
   test("defaults to no filters", () => {
-    expect(parsePhaseLogArgs([])).toEqual({ workItemId: null, forcedOnly: false, json: false });
+    expect(parsePhaseLogArgs([])).toEqual({ workItemId: null, forcedOnly: false, json: false, tail: null });
   });
 
   test("parses flags", () => {
@@ -1594,12 +1595,24 @@ describe("parsePhaseLogArgs", () => {
       workItemId: "#42",
       forcedOnly: true,
       json: true,
+      tail: null,
     });
     expect(parsePhaseLogArgs(["--work-item=#99"])).toEqual({
       workItemId: "#99",
       forcedOnly: false,
       json: false,
+      tail: null,
     });
+  });
+
+  test("parses --tail", () => {
+    expect(parsePhaseLogArgs(["--tail", "5"]).tail).toBe(5);
+    expect(parsePhaseLogArgs(["--tail=0"]).tail).toBe(0);
+  });
+
+  test("rejects a non-numeric --tail", () => {
+    expect(() => parsePhaseLogArgs(["--tail", "-3"])).toThrow(/--tail requires a non-negative integer/);
+    expect(() => parsePhaseLogArgs(["--tail", "abc"])).toThrow(/--tail requires a non-negative integer/);
   });
 
   test("rejects unknown flag", () => {
@@ -2153,12 +2166,7 @@ defineAlias(({ z }) => ({
     // "approved" is only logged on successful commit, never on crash.
     expect(errs.some((e) => e.includes("approved"))).toBe(false);
     // Log contains the attempted entry (audit trail) but NOT a committed one.
-    const { readFileSync: rfs } = require("node:fs");
-    const raw = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8") as string;
-    const entries = raw
-      .split("\n")
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as { to: string; status?: string });
+    const entries = readAllTransitions(join(dir, ".mcx", "transitions.jsonl"));
     const attempted = entries.filter((e) => e.status === "attempted");
     const committed = entries.filter((e) => e.status === "committed");
     expect(attempted.length).toBe(1);
@@ -2221,12 +2229,7 @@ defineAlias(({ z }) => ({
     expect(second.logs.join("\n")).toContain('"action": "in-flight"');
 
     // Both runs committed to the log (idempotent self-loop allowed).
-    const { readFileSync: rfs } = require("node:fs");
-    const raw = rfs(join(dir, ".mcx", "transitions.jsonl"), "utf-8") as string;
-    const entries = raw
-      .split("\n")
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as { status?: string; to: string });
+    const entries = readAllTransitions(join(dir, ".mcx", "transitions.jsonl"));
     expect(entries.filter((e) => e.status === "committed").length).toBe(2);
     expect(entries.filter((e) => e.status === "attempted").length).toBe(2);
   }, 30_000);
