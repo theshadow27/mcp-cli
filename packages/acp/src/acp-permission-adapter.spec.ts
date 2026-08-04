@@ -83,6 +83,20 @@ describe("buildRules", () => {
     expect(buildRules()).toHaveLength(0);
     expect(buildRules([], [])).toHaveLength(0);
   });
+
+  // Enforcement point for #1702 — a `__*` wildcard carrying an argument pattern is a
+  // dead rule and must be rejected here rather than silently denying at match time.
+  test("rejects a tool-wildcard rule carrying an argument pattern", () => {
+    expect(() => buildRules(["mcp__atlassian__*(query:*)"])).toThrow(/Invalid permission rule/);
+  });
+
+  test("rejects a dead wildcard pattern in disallowedTools too", () => {
+    expect(() => buildRules(undefined, ["mcp__*(rm:*)"])).toThrow(/Invalid permission rule/);
+  });
+
+  test("accepts the bare-server form, which does match via the command fallback", () => {
+    expect(() => buildRules(["mcp__echo(:*)"])).not.toThrow();
+  });
 });
 
 describe("findOptionId", () => {

@@ -119,6 +119,16 @@ describe("PermissionRouter — rules", () => {
     expect(decision.allow).toBe(false);
   });
 
+  test("rejects a tool-wildcard rule carrying an argument pattern", () => {
+    expect(() => new PermissionRouter("rules", [{ tool: "mcp__atlassian__*(query:*)", action: "allow" }])).toThrow(
+      /Invalid permission rule/,
+    );
+  });
+
+  test("accepts a bare-server rule carrying an argument pattern", () => {
+    expect(() => new PermissionRouter("rules", [{ tool: "mcp__echo(:*)", action: "allow" }])).not.toThrow();
+  });
+
   test("multiple allow rules — first match wins", async () => {
     const rules: PermissionRule[] = [
       { tool: "Read", action: "allow" },

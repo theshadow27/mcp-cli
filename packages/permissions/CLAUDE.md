@@ -43,6 +43,27 @@ Only `__*` or a bare `mcp__<server>` pattern trigger prefix matching on tool nam
 
 Deny rules with server wildcards work symmetrically — a server-level deny (`mcp__atlassian__*` or `mcp__atlassian`) combined with a broader allow (`mcp__*`) will block all atlassian tools via the standard first-deny-wins logic.
 
+### Argument patterns are invalid on `__*` tool-name wildcards
+
+An argument pattern combined with a `__*` tool-name wildcard — `mcp__atlassian__*(query:*)`
+or `mcp__*(foo)` — is **rejected at config-ingest time**. Such a rule is dead: the tool
+segment contains `*`, which `parsePattern()`'s tool regex cannot represent, so the whole
+string is kept as a literal tool name and compared for equality against the incoming tool
+name. Nothing is ever named `mcp__atlassian__*(query:*)`, so the rule silently denies.
+
+`assertValidRules()` throws on such a rule, naming it; it runs in `PermissionRouter`'s
+constructor and in each provider's `buildRules()`. JSON-path argument matching for MCP
+input fields is not supported.
+
+**The bare-server form is NOT rejected.** `mcp__atlassian(query:*)` parses correctly
+(tool `mcp__atlassian`, argPattern `query:*`) and does match: the tool name prefix-matches
+the server, then the argument pattern is applied via the unknown-tool fallback in
+`evaluator.ts`, which reads `command` / `cmd` / `script` from the input. So it works for
+MCP tools whose input carries one of those fields, and matches nothing for tools that
+don't. That fallback is fragile (see limitation 3 in the Threat Model) but it is real
+behaviour — both allow and deny rules of this shape fire — so rejecting the form would
+break working configuration.
+
 ### Evaluation Semantics
 
 1. Deny rules take precedence (first deny wins)

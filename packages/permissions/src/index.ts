@@ -6,6 +6,8 @@ export {
   isToolWildcard,
   isBareMcpServerPattern,
   toToolPrefix,
+  validateRulePattern,
+  assertValidRules,
   type PermissionRule,
   type ParsedPattern,
 } from "./rule";

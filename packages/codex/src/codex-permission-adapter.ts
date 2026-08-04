@@ -12,7 +12,13 @@
 
 import type { AgentPermissionRequest, AgentSessionEvent, ContainmentGuard, ContainmentResult } from "@mcp-cli/core";
 import { gateContainment } from "@mcp-cli/core";
-import { type PermissionDecision, type PermissionRequest, type PermissionRule, evaluate } from "@mcp-cli/permissions";
+import {
+  type PermissionDecision,
+  type PermissionRequest,
+  type PermissionRule,
+  assertValidRules,
+  evaluate,
+} from "@mcp-cli/permissions";
 
 export interface AdapterDecision {
   /** Whether the rule engine produced a definitive answer. */
@@ -115,5 +121,6 @@ export function buildRules(allowedTools?: readonly string[], disallowedTools?: r
     }
   }
 
+  assertValidRules(rules);
   return rules;
 }

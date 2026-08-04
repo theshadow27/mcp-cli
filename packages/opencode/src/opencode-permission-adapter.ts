@@ -19,7 +19,13 @@
  */
 
 import type { AgentPermissionRequest } from "@mcp-cli/core";
-import { type PermissionDecision, type PermissionRequest, type PermissionRule, evaluate } from "@mcp-cli/permissions";
+import {
+  type PermissionDecision,
+  type PermissionRequest,
+  type PermissionRule,
+  assertValidRules,
+  evaluate,
+} from "@mcp-cli/permissions";
 
 /** Map OpenCode permission names to mcp-cli tool names. */
 const PERMISSION_MAP: Record<string, string> = {
@@ -126,6 +132,7 @@ export function buildRules(allowedTools?: readonly string[], disallowedTools?: r
     }
   }
 
+  assertValidRules(rules);
   return rules;
 }
 
