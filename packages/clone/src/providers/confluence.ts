@@ -2,6 +2,7 @@
  * Confluence provider — maps a Confluence space to a local directory of markdown files.
  */
 import { unwrapToolResultJson } from "@mcp-cli/core";
+import { AdaptiveBatchSizer } from "./adaptive-batch";
 import type {
   ChangeEvent,
   FetchResult,
@@ -12,11 +13,18 @@ import type {
   Scope,
 } from "./provider";
 import {
+  RETRY_DEFAULTS,
   type RetryOptions,
   VfsError as VfsErrorClass,
+  classifyError,
+  computeBackoff,
   createResilientCaller,
   friendlyMessage,
+  sleep,
 } from "./resilient-caller";
+
+/** Default page size for paginated Confluence listings. */
+export const DEFAULT_BATCH_SIZE = 250;
 
 /** Thrown when CQL search returns truncated results, signaling the caller to fall back to full sync. */
 export class TruncatedChangesError extends Error {
@@ -96,6 +104,11 @@ export interface ConfluenceProviderOptions {
   retry?: RetryOptions;
   /** Disable tool name discovery/fallback (default: false). */
   disableToolDiscovery?: boolean;
+  /**
+   * Upper bound on items per page request (default: 250). Batches shrink below
+   * this on rate limiting and grow back toward it on fast successes.
+   */
+  batchSize?: number;
 }
 
 /** Validate a scope key to prevent CQL injection. Only alphanumeric, hyphens, and underscores allowed. */
@@ -130,18 +143,103 @@ function sanitizeFilename(title: string): string {
     .trim();
 }
 
+/** Extract the opaque pagination cursor from a response's next link. */
+function nextCursor(resp: PagesResponse): string | undefined {
+  if (!resp._links?.next) return undefined;
+  const match = resp._links.next.match(/cursor=([^&]+)/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+/**
+ * Fetch one page of results at the sizer's current batch size.
+ *
+ * This loop owns the entire rate-limit response for paginated reads: on a 429 it
+ * shrinks the sizer, sleeps the exponential backoff, then re-issues the request
+ * at the *new, smaller* limit. That ordering is the whole point — a retry that
+ * replays the identical `limit` cannot succeed, because the 429 is a property of
+ * the batch size. The caller must therefore hand in a non-retrying `call`; if an
+ * inner retrier also retried the 429 it would spend this budget on identical
+ * requests and reach the floor before a single smaller request went out (#2950).
+ *
+ * The cursor is reused across shrink-retries. Confluence v2 cursors encode a
+ * position, not a span (the `limit` in `_links.next` is an echo of the request,
+ * not part of the cursor), so re-requesting the same cursor with a smaller limit
+ * resumes from the same item and returns a prefix of the larger window — no gap,
+ * no overlap. Per Atlassian's v2 pagination contract, the client must treat the
+ * cursor as opaque and may vary `limit` between requests:
+ * https://developer.atlassian.com/cloud/confluence/rest/v2/intro/#pagination
+ * Verified end-to-end by the round-trip corpus test in `confluence.spec.ts`
+ * ("no items are skipped or duplicated when the batch shrinks mid-listing"),
+ * which drives a mock that honors `limit` and asserts exact corpus equality.
+ */
+async function fetchPageBatch(
+  call: (args: Record<string, unknown>) => Promise<PagesResponse>,
+  baseArgs: Record<string, unknown>,
+  cursor: string | undefined,
+  sizer: AdaptiveBatchSizer,
+  retry?: RetryOptions,
+): Promise<PagesResponse> {
+  const maxRetries = retry?.maxRetries ?? RETRY_DEFAULTS.maxRetries;
+  const baseDelayMs = retry?.baseDelayMs ?? RETRY_DEFAULTS.baseDelayMs;
+  const maxDelayMs = retry?.maxDelayMs ?? RETRY_DEFAULTS.maxDelayMs;
+
+  for (let attempt = 0; ; attempt++) {
+    const args: Record<string, unknown> = { ...baseArgs, limit: sizer.size };
+    if (cursor) args.cursor = cursor;
+
+    const started = Date.now();
+    try {
+      const resp = await call(args);
+      sizer.onSuccess(Date.now() - started);
+      return resp;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const kind = err instanceof VfsErrorClass ? err.kind : classifyError(message);
+      if (kind !== "rate_limit" || attempt >= maxRetries) throw err;
+
+      const delay = computeBackoff(attempt, baseDelayMs, maxDelayMs);
+      retry?.onRetry?.(attempt + 1, delay, message);
+      // Shrink before sleeping so the post-backoff request is the smaller one.
+      // At the floor shrink() reports false and we retry unchanged — the backoff
+      // is still worth spending, since the floor may simply be over quota.
+      sizer.shrink();
+      await sleep(delay, retry?.signal);
+    }
+  }
+}
+
 export function createConfluenceProvider(opts: ConfluenceProviderOptions): RemoteProvider {
   const SERVER = "atlassian";
 
-  // Wrap the base caller with retry + tool discovery
+  // Sizer state is owned by the pagination loop alone: only `fetchPageBatch`
+  // shrinks and grows it. Letting unrelated calls (single-page fetch, CQL search,
+  // create/update) shrink it would pin the listing batch near the floor with no
+  // path back, since none of them ever reports a success.
+  const sizer = new AdaptiveBatchSizer({ max: opts.batchSize ?? DEFAULT_BATCH_SIZE });
+
+  // Wrap the base caller with retry + tool discovery for every non-paginated call.
   const resilientCallTool = createResilientCaller({
     callTool: opts.callTool,
     toolDiscovery: !opts.disableToolDiscovery,
     ...opts.retry,
   });
 
+  // Paginated reads get tool discovery but *no* inner retry: `fetchPageBatch`
+  // owns the 429 loop so that each retry goes out at a smaller limit.
+  const pagingCallTool = createResilientCaller({
+    callTool: opts.callTool,
+    toolDiscovery: !opts.disableToolDiscovery,
+    ...opts.retry,
+    maxRetries: 0,
+  });
+
   async function callAtlassian(tool: string, args: Record<string, unknown>): Promise<unknown> {
     const raw = await resilientCallTool(SERVER, tool, args, 30_000);
+    return unwrapToolResultJson<unknown>(raw);
+  }
+
+  async function callAtlassianPaged(tool: string, args: Record<string, unknown>): Promise<unknown> {
+    const raw = await pagingCallTool(SERVER, tool, args, 30_000);
     return unwrapToolResultJson<unknown>(raw);
   }
 
@@ -191,33 +289,29 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
     async *list(scope: ResolvedScope): AsyncIterable<RemoteEntry> {
       const spaceId = scope.resolved.spaceId as string;
+      const baseArgs = {
+        cloudId: scope.cloudId,
+        spaceId,
+        contentFormat: "markdown",
+        sort: "id",
+        status: "current",
+      };
       let cursor: string | undefined;
-      let total = 0;
 
       do {
-        const args: Record<string, unknown> = {
-          cloudId: scope.cloudId,
-          spaceId,
-          contentFormat: "markdown",
-          limit: 250,
-          sort: "id",
-          status: "current",
-        };
-        if (cursor) args.cursor = cursor;
-
-        const resp = (await callAtlassian("getPagesInConfluenceSpace", args)) as PagesResponse;
+        const resp = await fetchPageBatch(
+          (args) => callAtlassianPaged("getPagesInConfluenceSpace", args) as Promise<PagesResponse>,
+          baseArgs,
+          cursor,
+          sizer,
+          opts.retry,
+        );
 
         for (const page of resp.results) {
-          total++;
           yield toRemoteEntry(page, true);
         }
 
-        // Extract cursor from next link
-        cursor = undefined;
-        if (resp._links?.next) {
-          const match = resp._links.next.match(/cursor=([^&]+)/);
-          if (match) cursor = decodeURIComponent(match[1]);
-        }
+        cursor = nextCursor(resp);
       } while (cursor);
     },
 
@@ -452,6 +546,14 @@ export async function bulkFetchPages(
 ): Promise<{ entries: RemoteEntry[]; contentMap: Map<string, string> }> {
   const { callTool } = opts;
   const spaceId = scope.resolved.spaceId as string;
+  const sizer = new AdaptiveBatchSizer({ max: opts.batchSize ?? DEFAULT_BATCH_SIZE });
+  const baseArgs = {
+    cloudId: scope.cloudId,
+    spaceId,
+    contentFormat: "markdown",
+    sort: "id",
+    status: "current",
+  };
 
   const entries: RemoteEntry[] = [];
   const contentMap = new Map<string, string>();
@@ -459,18 +561,14 @@ export async function bulkFetchPages(
   let total = 0;
 
   do {
-    const args: Record<string, unknown> = {
-      cloudId: scope.cloudId,
-      spaceId,
-      contentFormat: "markdown",
-      limit: 250,
-      sort: "id",
-      status: "current",
-    };
-    if (cursor) args.cursor = cursor;
-
-    const raw = await callTool("atlassian", "getPagesInConfluenceSpace", args, 60_000);
-    const resp = unwrapToolResultJson<PagesResponse>(raw);
+    const resp = await fetchPageBatch(
+      async (args) =>
+        unwrapToolResultJson<PagesResponse>(await callTool("atlassian", "getPagesInConfluenceSpace", args, 60_000)),
+      baseArgs,
+      cursor,
+      sizer,
+      opts.retry,
+    );
 
     for (const page of resp.results) {
       total++;
@@ -480,11 +578,7 @@ export async function bulkFetchPages(
       onProgress?.(total, page);
     }
 
-    cursor = undefined;
-    if (resp._links?.next) {
-      const match = resp._links.next.match(/cursor=([^&]+)/);
-      if (match) cursor = decodeURIComponent(match[1]);
-    }
+    cursor = nextCursor(resp);
   } while (cursor);
 
   return { entries, contentMap };

@@ -197,6 +197,43 @@ describe("cmdVfs", () => {
       await cmdVfs(["clone", "jira", "PROJ"], undefined, deps);
       expect(capturedName).toBe("jira");
     });
+
+    test("--batch-size is forwarded to resolveProvider", async () => {
+      let captured: number | undefined;
+      const fakeProvider = {} as ReturnType<VfsDeps["resolveProvider"]>;
+      const deps = makeDeps({
+        resolveProvider: (_name, tuning) => {
+          captured = tuning?.batchSize;
+          return fakeProvider;
+        },
+      });
+
+      await cmdVfs(["clone", "confluence", "SP", "--batch-size", "50"], undefined, deps);
+      expect(captured).toBe(50);
+    });
+
+    test("batchSize is undefined when --batch-size is omitted", async () => {
+      let captured: number | undefined = 999;
+      const fakeProvider = {} as ReturnType<VfsDeps["resolveProvider"]>;
+      const deps = makeDeps({
+        resolveProvider: (_name, tuning) => {
+          captured = tuning?.batchSize;
+          return fakeProvider;
+        },
+      });
+
+      await cmdVfs(["clone", "confluence", "SP"], undefined, deps);
+      expect(captured).toBeUndefined();
+    });
+
+    for (const bad of ["0", "251", "1.5"]) {
+      test(`--batch-size ${bad} is rejected`, async () => {
+        const deps = makeDeps();
+        await expect(cmdVfs(["clone", "confluence", "SP", "--batch-size", bad], undefined, deps)).rejects.toThrow(
+          "exit(1)",
+        );
+      });
+    }
   });
 
   describe("pull flags", () => {

@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   CloneCache,
+  DEFAULT_BATCH_SIZE,
   VfsError,
   clone,
   createAsanaProvider,
@@ -25,12 +26,21 @@ import { ipcCall } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
 
+/** Per-invocation provider tuning sourced from CLI flags. */
+export interface ProviderTuning {
+  /** Upper bound on items per page request; batches adapt downward on rate limiting. */
+  batchSize?: number;
+}
+
+/** Largest page size the Confluence v2 API accepts — single source is the provider. */
+export const MAX_BATCH_SIZE = DEFAULT_BATCH_SIZE;
+
 export interface VfsDeps {
   clone: typeof clone;
   pull: typeof pull;
   push: typeof push;
   exit: (code: number) => never;
-  resolveProvider: (name: string) => ReturnType<typeof createConfluenceProvider>;
+  resolveProvider: (name: string, opts?: ProviderTuning) => ReturnType<typeof createConfluenceProvider>;
   resolveProviderFromCache: (repoDir: string) => {
     provider: ReturnType<typeof createConfluenceProvider>;
     providerName: string;
@@ -118,7 +128,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
     pull,
     push,
     exit: (code: number): never => process.exit(code),
-    resolveProvider: (name: string) => resolveProvider(name),
+    resolveProvider: (name: string, tuning?: ProviderTuning) => resolveProvider(name, tuning),
     resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
     preflightCheck: (name: string) => preflightCheck(name),
   };
@@ -143,7 +153,9 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
 
 async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   if (args.length < 2) {
-    printError("Usage: mcx vfs clone <provider> <scope> [target-dir] [--limit N] [--depth N] [--cloud-id ID]");
+    printError(
+      "Usage: mcx vfs clone <provider> <scope> [target-dir] [--limit N] [--depth N] [--batch-size N] [--cloud-id ID]",
+    );
     deps.exit(1);
   }
 
@@ -154,6 +166,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
     "cloud-id": { type: "string" },
     limit: { type: "number" },
     depth: { type: "number" },
+    "batch-size": { type: "number" },
   });
   if (errors.length > 0) {
     printError(errors[0]);
@@ -171,13 +184,18 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
     printError(`--depth requires an integer, got: ${depthRaw}`);
     deps.exit(1);
   }
+  const batchSize = flags["batch-size"] as number | undefined;
+  if (batchSize !== undefined && (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > MAX_BATCH_SIZE)) {
+    printError(`--batch-size requires an integer between 1 and ${MAX_BATCH_SIZE}, got: ${batchSize}`);
+    deps.exit(1);
+  }
   const limit = limitRaw ?? 0;
   const depth = depthRaw ?? 0;
   const targetDir = positionals[0] ?? `./${scopeKey}`;
 
   await deps.preflightCheck(providerName);
 
-  const provider = deps.resolveProvider(providerName);
+  const provider = deps.resolveProvider(providerName, { batchSize });
   let result: CloneResult;
   try {
     result = await deps.clone({
@@ -283,11 +301,11 @@ export function onRetry(attempt: number, delayMs: number, error: string, write: 
   write(`Rate limited (attempt ${attempt}), retrying in ${delaySec}s... (${error})`);
 }
 
-export function resolveProvider(name: string) {
+export function resolveProvider(name: string, tuning?: ProviderTuning) {
   const retry = { onRetry };
   switch (name) {
     case "confluence":
-      return createConfluenceProvider({ callTool, retry });
+      return createConfluenceProvider({ callTool, retry, batchSize: tuning?.batchSize });
     case "asana":
       return createAsanaProvider({ callTool, retry });
     case "jira":
@@ -345,6 +363,9 @@ Options:
   --cloud-id <id>     Cloud/workspace ID (auto-discovered if omitted)
   --depth <n>         Max hierarchy depth to clone (1 = root only, 2 = root + children)
   --limit <n>         Max items to fetch (for testing)
+  --batch-size <n>    Max items per page request (clone only; 1-250, default 250;
+                      shrinks automatically when the remote rate-limits, and is
+                      not persisted — later pulls start from the default again)
   --full              Force full sync instead of incremental
   --create            Create new remote items from local files (push only)
 

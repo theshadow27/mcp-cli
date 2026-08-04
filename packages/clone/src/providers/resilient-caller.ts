@@ -101,7 +101,7 @@ export function friendlyMessage(err: VfsError, context?: string): string {
     case "auth":
       return `Authentication failed${ctx}. Check your Atlassian credentials:\n  mcx auth atlassian`;
     case "rate_limit":
-      return `Rate limited by the remote API${ctx}. Retries exhausted — try again in a few minutes.`;
+      return `Rate limited by the remote API${ctx}. Retries exhausted at the smallest batch size — try again in a few minutes, or start lower with:\n  mcx vfs clone ... --batch-size 25`;
     case "network":
       return `Network error${ctx}. Check your connection and that the MCP server is running:\n  mcx status`;
     case "not_found":
@@ -169,7 +169,7 @@ export interface RetryOptions {
   signal?: AbortSignal;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason ?? new Error("Aborted"));
@@ -187,7 +187,19 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function computeBackoff(attempt: number, baseMs: number, maxMs: number): number {
+/**
+ * Defaults for every retry knob. Exported so callers that implement their own
+ * rate-limit loop (e.g. the adaptive pagination loop in `confluence.ts`) resolve
+ * the *same* numbers the resilient caller would, instead of a private copy that
+ * silently drifts out of step.
+ */
+export const RETRY_DEFAULTS = {
+  maxRetries: 4,
+  baseDelayMs: 1000,
+  maxDelayMs: 30_000,
+} as const;
+
+export function computeBackoff(attempt: number, baseMs: number, maxMs: number): number {
   // Exponential backoff with jitter: base * 2^attempt + random(0, base)
   const exponential = baseMs * 2 ** attempt;
   const jitter = Math.random() * baseMs;
@@ -213,9 +225,9 @@ export interface ResilientCallerOptions extends RetryOptions {
 export function createResilientCaller(opts: ResilientCallerOptions): McpToolCaller {
   const {
     callTool,
-    maxRetries = 4,
-    baseDelayMs = 1000,
-    maxDelayMs = 30_000,
+    maxRetries = RETRY_DEFAULTS.maxRetries,
+    baseDelayMs = RETRY_DEFAULTS.baseDelayMs,
+    maxDelayMs = RETRY_DEFAULTS.maxDelayMs,
     onRetry,
     signal,
     toolDiscovery = true,

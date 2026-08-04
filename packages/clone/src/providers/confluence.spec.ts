@@ -320,6 +320,231 @@ describe("list", () => {
   });
 });
 
+/**
+ * Every test here runs the retry configuration production actually produces:
+ * `maxRetries` is left at its default of 4 (what `resolveProvider` yields, since
+ * it passes only `onRetry`). Only the backoff *delays* are shortened, which
+ * changes timing and nothing else about the control flow.
+ *
+ * Do not add `maxRetries: 0` to these tests. That configuration has no caller,
+ * and pinning it is exactly what let the shrink-retry path ship inert: with zero
+ * retries the in-flight rate-limit loop never runs, so the tests observed a
+ * shrink that production never performed (#2950).
+ */
+const PROD_RETRY = { baseDelayMs: 1, maxDelayMs: 2 } as const;
+
+describe("list — adaptive batch size", () => {
+  /**
+   * Limits observed by the most recent `drain`. Kept outside the return value so
+   * the wire history is still assertable when `list()` throws — which is the
+   * interesting case for a sustained rate limit.
+   */
+  let observedLimits: number[] = [];
+
+  /** Drain list() while recording the `limit` sent on each underlying request. */
+  async function drain(
+    respond: (call: number, args: Record<string, unknown>) => unknown,
+    providerOpts: Partial<Parameters<typeof createConfluenceProvider>[0]> = {},
+  ): Promise<{ limits: number[]; cursors: (string | undefined)[]; entries: unknown[] }> {
+    const limits: number[] = [];
+    observedLimits = limits;
+    const cursors: (string | undefined)[] = [];
+    let call = 0;
+    const provider = createConfluenceProvider({
+      ...providerOpts,
+      callTool: async (_server, tool, args) => {
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        call++;
+        limits.push((args as Record<string, unknown>).limit as number);
+        cursors.push((args as Record<string, unknown>).cursor as string | undefined);
+        return respond(call, args as Record<string, unknown>);
+      },
+    });
+
+    const entries: unknown[] = [];
+    for await (const entry of provider.list(makeScope())) {
+      entries.push(entry);
+    }
+    return { limits, cursors, entries };
+  }
+
+  test("defaults to a 250-item page limit", async () => {
+    const { limits } = await drain(() => wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] }));
+    expect(limits).toEqual([250]);
+  });
+
+  test("honors an explicit batchSize override", async () => {
+    const { limits } = await drain(() => wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] }), {
+      batchSize: 50,
+    });
+    expect(limits).toEqual([50]);
+  });
+
+  test("halves the batch size and retries after a rate-limited request", async () => {
+    const { limits, entries } = await drain(
+      (call) => {
+        if (call === 1) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] });
+      },
+      { retry: PROD_RETRY },
+    );
+    expect(limits).toEqual([250, 125]);
+    expect(entries).toHaveLength(1);
+  });
+
+  test("every retry under a sustained rate limit goes out smaller", async () => {
+    const retried: Array<{ attempt: number; delayMs: number }> = [];
+    await expect(
+      drain(
+        (_call, args) => {
+          // Fail every request regardless of size, so the only thing under test is
+          // what the loop puts on the wire attempt after attempt.
+          throw new Error(`429 Too Many Requests (limit=${args.limit})`);
+        },
+        { retry: { ...PROD_RETRY, onRetry: (attempt, delayMs) => retried.push({ attempt, delayMs }) } },
+      ),
+    ).rejects.toThrow(/429/);
+
+    // This is the assertion the feature exists for: at the *default* maxRetries of
+    // 4, five requests go out and each one is strictly smaller than the last.
+    // Before #2950's fix this read [250, 250, 250, 250, 250].
+    expect(observedLimits).toEqual([250, 125, 62, 31, 25]);
+    expect(retried.map((r) => r.attempt)).toEqual([1, 2, 3, 4]);
+    // Backoff is actually spent between attempts — never a bare hot retry.
+    expect(retried.every((r) => r.delayMs > 0)).toBe(true);
+  });
+
+  test("reuses the cursor when shrinking, so no items are skipped", async () => {
+    const { limits, cursors, entries } = await drain(
+      (call) => {
+        if (call === 1) {
+          return wrapMcpResult({
+            results: [makePageResponse("p1", "Page 1")],
+            _links: { next: "/pages?cursor=abc123&limit=250" },
+          });
+        }
+        if (call === 2) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p2", "Page 2")] });
+      },
+      { retry: PROD_RETRY },
+    );
+    expect(limits).toEqual([250, 250, 125]);
+    expect(cursors).toEqual([undefined, "abc123", "abc123"]);
+    expect(entries).toHaveLength(2);
+  });
+
+  test("propagates the rate-limit error once retries are exhausted at the floor", async () => {
+    await expect(
+      drain(
+        () => {
+          throw new Error("429 Too Many Requests");
+        },
+        { batchSize: 50, retry: PROD_RETRY },
+      ),
+    ).rejects.toThrow(/429/);
+    // Floor for a ceiling of 50 is 25; the last two attempts sit on the floor.
+    expect(observedLimits).toEqual([50, 25, 25, 25, 25]);
+  });
+
+  test("a sub-floor ceiling still adapts instead of silently giving up", async () => {
+    await expect(
+      drain(
+        () => {
+          throw new Error("429 Too Many Requests");
+        },
+        { batchSize: 10, retry: PROD_RETRY },
+      ),
+    ).rejects.toThrow(/429/);
+    // Floor is capped at half the ceiling, so --batch-size 10 shrinks 10 → 5
+    // rather than reporting "already at the floor" on the first 429.
+    expect(observedLimits).toEqual([10, 5, 5, 5, 5]);
+  });
+
+  test("grows back toward the maximum after a run of fast successes", async () => {
+    const { limits } = await drain(
+      (call) => {
+        if (call === 1) throw new Error("429 Too Many Requests");
+        const last = call >= 6;
+        return wrapMcpResult({
+          results: [makePageResponse(`p${call}`, `Page ${call}`)],
+          ...(last ? {} : { _links: { next: `/pages?cursor=c${call}&limit=250` } }),
+        });
+      },
+      { retry: PROD_RETRY },
+    );
+
+    // 250 rate-limited → 125; three fast successes at 125 grow to ceil(125*1.5)=188.
+    expect(limits.slice(0, 5)).toEqual([250, 125, 125, 125, 188]);
+  });
+
+  test("non-pagination rate limits leave the pagination batch size alone", async () => {
+    // A 429 storm on single-page fetches used to shrink the shared sizer via the
+    // resilient caller's onRetry hook, pinning the listing batch near the floor
+    // with no path back (nothing but pagination reports success).
+    const limits: number[] = [];
+    let fetchCalls = 0;
+    const provider = createConfluenceProvider({
+      retry: PROD_RETRY,
+      callTool: async (_server, tool, args) => {
+        if (tool === "getConfluencePage") {
+          fetchCalls++;
+          if (fetchCalls <= 3) throw new Error("429 Too Many Requests");
+          return wrapMcpResult(makePageResponse("p1", "Page 1"));
+        }
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        limits.push((args as Record<string, unknown>).limit as number);
+        return wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] });
+      },
+    });
+
+    const scope = makeScope();
+    await provider.fetch(scope, "p1");
+    for await (const _entry of provider.list(scope)) {
+      // drain
+    }
+    expect(fetchCalls).toBe(4); // three 429s, retried by the resilient caller
+    expect(limits).toEqual([250]); // pagination untouched by the fetch storm
+  });
+
+  test("no items are skipped or duplicated when the batch shrinks mid-listing", async () => {
+    // Mock a real cursor: it encodes an offset into a corpus and honors `limit`.
+    // A mock that ignores `limit` can only prove the same cursor string was
+    // re-sent — not that the returned window is gap-free and overlap-free.
+    const corpus = Array.from({ length: 400 }, (_, i) => `p${i}`);
+    let call = 0;
+    const limits: number[] = [];
+    const provider = createConfluenceProvider({
+      retry: PROD_RETRY,
+      callTool: async (_server, tool, rawArgs) => {
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        const args = rawArgs as Record<string, unknown>;
+        const limit = args.limit as number;
+        const offset = args.cursor ? Number(args.cursor) : 0;
+        call++;
+        limits.push(limit);
+        // Rate-limit a few requests mid-corpus to force shrinks at nonzero offsets.
+        if (call === 2 || call === 3 || call === 6) throw new Error("429 Too Many Requests");
+        const slice = corpus.slice(offset, offset + limit);
+        const nextOffset = offset + slice.length;
+        return wrapMcpResult({
+          results: slice.map((id) => makePageResponse(id, `Page ${id}`)),
+          ...(nextOffset < corpus.length ? { _links: { next: `/pages?cursor=${nextOffset}&limit=${limit}` } } : {}),
+        });
+      },
+    });
+
+    const ids: string[] = [];
+    for await (const entry of provider.list(makeScope())) {
+      ids.push((entry as RemoteEntry).id);
+    }
+
+    expect(ids).toEqual(corpus); // no gaps, no duplicates, original order
+    expect(new Set(ids).size).toBe(corpus.length);
+    // And the shrinks really happened against the honored limit.
+    expect(limits.slice(0, 4)).toEqual([250, 250, 125, 62]);
+  });
+});
+
 describe("fetch", () => {
   test("fetches a single page by ID", async () => {
     const scope = makeScope();
@@ -524,6 +749,26 @@ describe("bulkFetchPages", () => {
     });
 
     expect(progressCalls).toContain(1);
+  });
+
+  test("honors batchSize and halves it after a rate-limited request", async () => {
+    const scope = makeScope();
+    const limits: number[] = [];
+    let call = 0;
+    const opts = {
+      batchSize: 100,
+      callTool: async (_server: string, tool: string, args: Record<string, unknown>) => {
+        if (tool !== "getPagesInConfluenceSpace") return null;
+        call++;
+        limits.push(args.limit as number);
+        if (call === 1) throw new Error("429 Too Many Requests");
+        return wrapMcpResult({ results: [makePageResponse("p1", "Page 1")] });
+      },
+    };
+
+    const { entries } = await bulkFetchPages(opts, scope);
+    expect(limits).toEqual([100, 50]);
+    expect(entries).toHaveLength(1);
   });
 });
 
