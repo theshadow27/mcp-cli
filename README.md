@@ -314,6 +314,22 @@ Event types include `session.idle`, `session.result`, `session.permission_reques
 
 Payloads come pre-enriched — `cost`, `turns`, `lastTool`, `resultPreview`, `allGreen`, etc. — so orchestrators react push-shaped without a 5-lookup hydration loop. This is the load-bearing primitive for the `/sprint` skill; see [.claude/skills/sprint/README.md](.claude/skills/sprint/README.md).
 
+#### Event envelope contract
+
+Every event is a **flat** JSON object — category-specific fields live at the top level, never under a nested `payload`. A nested `payload` is rejected by the type at typed call sites and stripped at runtime for events arriving over untyped ingress (the `publishEvent` IPC `extra` record, automation `emit-event`). Two fields are stamped by the producer side of the bus and are present on every event a daemon at this version emits — live, replayed, and heartbeat:
+
+- **`summary`** — one-line description, rendered from the same per-type formatters the human-readable output uses. Newlines collapsed, trimmed, capped at 120 chars, never empty. A producer may set it explicitly; it is normalized the same way either way.
+- **`severity`** — actionability tier: `info` (heartbeats, `session.tool_use`, metrics) → `notable` (`pr.opened`, `ci.started`, reviews) → `actionable` (`session.idle`, `session.result`, `ci.finished`, `pr.merged`, `phase.changed`, `alias.crashed`) → `urgent` (`session.permission_request`, `cost.*_over_budget`, `worker.ratelimited`, `daemon.restarted`). A few types are value-dependent: `pr.merge_state_changed` is `actionable` only with a `cascadeHead`, `quota.utilization_threshold` is `urgent` at ≥95%, `pr.review_comment_posted` is `actionable` only when `newCount > 0`. Unmapped event types default to `info`. A producer-supplied value outside the four tiers is discarded in favour of the table, so the field is always one of the four.
+
+So the orchestrator's filter is a severity threshold rather than a hand-maintained event whitelist:
+
+```bash
+mcx monitor --subscribe session,work_item,ci --json \
+  | jq 'select(.severity == null or .severity == "actionable" or .severity == "urgent") | "\(.event)  \(.summary)"'
+```
+
+The `.severity == null` clause makes the filter fail **open**: `PROTOCOL_VERSION` hashes `ipc.ts` only, so a long-lived pre-#1924 `mcpd` will happily serve a new `mcx` fieldless events without a mismatch error. Without the null clause that reads as a silent, healthy stream rather than a stale daemon. Drop the clause once the fields are required rather than optional.
+
 ### Phases & Automation
 
 `mcx` ships a declarative phase engine for work items. Declare a state machine in `.mcx.yaml` at the repo root, write each phase as a `defineAlias` script under `.claude/phases/`, and the daemon drives transitions per work item:

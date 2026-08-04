@@ -7,6 +7,34 @@
  *
  * Part of #1486 (monitor epic), introduced in #1512.
  * Projection layer (formatters, chunk suppression) added in #1515.
+ *
+ * ## Envelope contract (#1924)
+ *
+ * `enrichMonitorEvent` is the single enforcement point. It runs on every event
+ * published through `EventBus.publish`, on every event replayed from the event
+ * log, and on the synthesized NDJSON heartbeat. It does not trust producer
+ * input: the type-level guards below only bind on typed call sites, and two
+ * ingress paths (the `publishEvent` IPC `extra` record and automation
+ * `emit-event`) spread caller-supplied keys the compiler cannot see.
+ *
+ * - **Flat.** Category-specific fields live at the top level of the envelope.
+ *   A nested `payload` object is forbidden — `payload?: never` on
+ *   `MonitorEventBase` rejects it at typed call sites, and `enrichMonitorEvent`
+ *   deletes it at runtime for everything else. Consumers never need `.payload.x`.
+ * - **`summary`** — a one-line description rendered from the shared per-type
+ *   formatters, so consumers get a usable preview without reimplementing the
+ *   formatter switch. Newlines are collapsed, the string is trimmed and capped
+ *   at 120 chars, and it is never empty. A producer-supplied `summary` is
+ *   preferred but is normalized the same way.
+ * - **`severity`** — actionability tier (`info` | `notable` | `actionable` |
+ *   `urgent`). A producer-supplied value is used only if it is one of those
+ *   four; anything else falls back to the classification table. Consumers
+ *   filter with `select(.severity == "actionable" or .severity == "urgent")`
+ *   instead of maintaining their own event-name whitelist.
+ *
+ * Both fields are typed optional for one release of bake-in, so that a consumer
+ * talking to a pre-#1924 daemon still typechecks. Every event emitted by a
+ * daemon at this version has them.
  */
 
 // ── Event categories ──
@@ -121,13 +149,36 @@ export const AUTOMATION_SKIPPED = "automation.skipped" as const;
 export const AUTOMATION_ERRORED = "automation.errored" as const;
 export const AUTOMATION_ESCALATED = "automation.escalated" as const;
 
+// ── Alias supervisor event names (#1924) ──
+
+export const ALIAS_CRASHED = "alias.crashed" as const;
+
 // ── Heartbeat ──
 
 export const HEARTBEAT = "heartbeat" as const;
 
 // ── Envelope ──
 
-/** Common fields for all monitor events. */
+/** Actionability tiers, ascending. See `MONITOR_SEVERITY_RANK` for ordering. */
+export const MONITOR_SEVERITIES = ["info", "notable", "actionable", "urgent"] as const;
+
+export type MonitorSeverity = (typeof MONITOR_SEVERITIES)[number];
+
+/** Numeric rank for threshold comparisons (`rank >= rank("actionable")`). */
+export const MONITOR_SEVERITY_RANK: Record<MonitorSeverity, number> = {
+  info: 0,
+  notable: 1,
+  actionable: 2,
+  urgent: 3,
+};
+
+/**
+ * Common fields for all monitor events.
+ *
+ * Category-specific fields go at the top level — see the envelope contract in
+ * the file header. Nesting them under `payload` is a producer-side contract
+ * violation and is rejected by the type.
+ */
 export interface MonitorEventBase {
   src: string;
   event: string;
@@ -135,6 +186,12 @@ export interface MonitorEventBase {
   workItemId?: string;
   sessionId?: string;
   prNumber?: number;
+  /** Producer-rendered one-liner (≤120 chars). Always present on published events. */
+  summary?: string;
+  /** Actionability tier. Always present on published events. */
+  severity?: MonitorSeverity;
+  /** Forbidden: the envelope is flat. Put category-specific fields at the top level. */
+  payload?: never;
   /** Repo root path this event is scoped to. Present when known / when session is repo-scoped; absent on global events (mail, quota, heartbeats) and sessions started without a configured or discoverable repo root. */
   repoRoot?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
@@ -161,23 +218,23 @@ function ts(e: MonitorEvent): string {
   return `[${h}:${m}:${s}]`;
 }
 
-function wi(e: MonitorEvent): string {
+function wi(e: MonitorEventBase): string {
   return typeof e.workItemId === "string" ? e.workItemId : "";
 }
 
-function sid(e: MonitorEvent): string {
+function sid(e: MonitorEventBase): string {
   return typeof e.sessionId === "string" ? e.sessionId.slice(0, 8) : "";
 }
 
-function pr(e: MonitorEvent): string {
+function pr(e: MonitorEventBase): string {
   return typeof e.prNumber === "number" ? `PR#${e.prNumber}` : "";
 }
 
-function cost(e: MonitorEvent): string {
+function cost(e: MonitorEventBase): string {
   return typeof e.cost === "number" ? `$${e.cost.toFixed(2)}` : "";
 }
 
-function turns(e: MonitorEvent): string {
+function turns(e: MonitorEventBase): string {
   return typeof e.numTurns === "number" ? `${e.numTurns}t` : "";
 }
 
@@ -189,7 +246,13 @@ function join(...parts: (string | undefined | false)[]): string {
   return parts.filter(Boolean).join("  ");
 }
 
-type Formatter = (e: MonitorEvent) => string;
+/**
+ * Formatters run both at emit time (to render `summary`, before `seq`/`ts` are
+ * stamped) and at display time, so they must tolerate a partial envelope.
+ */
+type FormatterInput = MonitorEventBase & Partial<Pick<MonitorEvent, "seq" | "ts">>;
+
+type Formatter = (e: FormatterInput) => string;
 
 const FORMATTERS: Partial<Record<string, Formatter>> = {
   [SESSION_RESULT]: (e) => {
@@ -471,19 +534,166 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
  *
  * Format: `[HH:MM:SS] event.type  <context fields>`
  *
- * Falls back to a generic one-liner for unknown event types.
+ * For event types without a formatter, uses the producer-rendered `summary`
+ * when present, else a generic field dump.
  */
 export function formatMonitorEvent(e: MonitorEvent): string {
   const formatter = FORMATTERS[e.event];
   const label = e.event === HEARTBEAT ? "♥ heartbeat    " : e.event.padEnd(24);
-  const detail = formatter ? formatter(e) : fallback(e);
+  const detail = formatter ? formatter(e) : typeof e.summary === "string" && e.summary ? e.summary : fallback(e);
   const line = `${ts(e)} ${label}  ${detail}`;
   return cap(line, MAX_LINE);
 }
 
-function fallback(e: MonitorEvent): string {
+// ── Producer-owned envelope fields (#1924) ──
+
+const MAX_SUMMARY = 120;
+
+/**
+ * Render the one-line `summary` for an event, from the same per-type formatters
+ * used by `formatMonitorEvent`. Never returns an empty string — events with no
+ * contextual fields summarize to their event name.
+ */
+export function summarizeMonitorEvent(e: FormatterInput): string {
+  if (e.event === HEARTBEAT) return typeof e.seq === "number" ? `heartbeat seq:${e.seq}` : "heartbeat";
+  const formatter = FORMATTERS[e.event];
+  const detail = normalizeSummary(formatter ? formatter(e) : fallback(e));
+  return detail || normalizeSummary(e.event) || e.event || "(unnamed event)";
+}
+
+/**
+ * Baseline severity per event type. Unmapped types default to `info`.
+ * Value-dependent tiers are refined by SEVERITY_OVERRIDES below.
+ */
+const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
+  // urgent — a human/orchestrator decision is blocking progress or money is burning
+  [SESSION_PERMISSION_REQUEST]: "urgent",
+  [SESSION_PERMISSION_BLOCKED]: "urgent",
+  [COST_SESSION_OVER_BUDGET]: "urgent",
+  [COST_SPRINT_OVER_BUDGET]: "urgent",
+  [WORKER_RATELIMITED]: "urgent",
+  [DAEMON_RESTARTED]: "urgent",
+  [SESSION_CONTAINMENT_ESCALATED]: "urgent",
+
+  // actionable — the orchestrator has work to do in response
+  [SESSION_IDLE]: "actionable",
+  [SESSION_RESULT]: "actionable",
+  [SESSION_STUCK]: "actionable",
+  [SESSION_ERROR]: "actionable",
+  [SESSION_DISCONNECTED]: "actionable",
+  [SESSION_ENDED]: "actionable",
+  [SESSION_RATE_LIMITED]: "actionable",
+  [SESSION_CONTAINMENT_DENIED]: "actionable",
+  [ALIAS_CRASHED]: "actionable",
+  [PR_MERGED]: "actionable",
+  [PR_CLOSED]: "actionable",
+  [CI_FINISHED]: "actionable",
+  [CHECKS_FAILED]: "actionable",
+  [PHASE_CHANGED]: "actionable",
+  [GC_PRUNED]: "actionable",
+  [AUTOMATION_ERRORED]: "actionable",
+  [AUTOMATION_ESCALATED]: "actionable",
+
+  // notable — state moved, but nothing to do yet
+  [PR_OPENED]: "notable",
+  [PR_PUSHED]: "notable",
+  [CI_STARTED]: "notable",
+  [CI_RUNNING]: "notable",
+  [CHECKS_STARTED]: "notable",
+  [CHECKS_PASSED]: "notable",
+  [REVIEW_APPROVED]: "notable",
+  [REVIEW_CHANGES_REQUESTED]: "notable",
+  [REVIEW_COMMENTED]: "notable",
+  [REVIEW_STICKY_UPDATED]: "notable",
+  [PR_COMMENT]: "notable",
+  [ISSUE_COMMENT]: "notable",
+  [DAEMON_CONFIG_RELOADED]: "notable",
+  [SESSION_CONTAINMENT_WARNING]: "notable",
+  [SESSION_CONTAINMENT_RESET]: "notable",
+  [SESSION_MODEL_CHANGED]: "notable",
+  [SESSION_CLEARED]: "notable",
+  [SESSION_SPAWN_OVERRIDE]: "notable",
+  [AUTOMATION_FIRED]: "notable",
+  [AUTOMATION_SKIPPED]: "notable",
+
+  // info — telemetry / chatter (also the default for unmapped types)
+  [HEARTBEAT]: "info",
+  [SESSION_TOOL_USE]: "info",
+  [SESSION_RESPONSE]: "info",
+  [MAIL_SENT]: "info",
+  [METRIC_SESSION_FOOTPRINT]: "info",
+  [METRIC_SESSION_COMMAND_HIST]: "info",
+  [METRIC_SESSION_QUERIES]: "info",
+};
+
+/** Value-dependent severity: the same event type can be chatter or a call to action. */
+const SEVERITY_OVERRIDES: Partial<Record<string, (e: MonitorEventBase) => MonitorSeverity>> = {
+  // A BEHIND PR with a known cascade head is the orchestrator's cue to update-branch.
+  [PR_MERGE_STATE_CHANGED]: (e) => (typeof e.cascadeHead === "number" ? "actionable" : "notable"),
+  [QUOTA_UTILIZATION_THRESHOLD]: (e) =>
+    typeof e.utilization === "number" && e.utilization >= 95 ? "urgent" : "notable",
+  [PR_REVIEW_COMMENT_POSTED]: (e) => (typeof e.newCount === "number" && e.newCount > 0 ? "actionable" : "notable"),
+};
+
+/** Classify an event's actionability. Unmapped event types are `info`. */
+export function severityForMonitorEvent(e: MonitorEventBase): MonitorSeverity {
+  const override = SEVERITY_OVERRIDES[e.event];
+  if (override) return override(e);
+  return SEVERITY_BY_EVENT[e.event] ?? "info";
+}
+
+const SEVERITY_SET: ReadonlySet<string> = new Set(MONITOR_SEVERITIES);
+
+/** True when `event` has an explicit tier rather than falling through to the `info` default. */
+export function hasExplicitSeverity(event: string): boolean {
+  return event in SEVERITY_BY_EVENT || event in SEVERITY_OVERRIDES;
+}
+
+/**
+ * Normalize an event onto the envelope contract. This is the single enforcement
+ * point for all three invariants, because the two untyped ingress paths
+ * (`publishEvent` IPC `extra`, automation `emit-event`) spread caller-supplied
+ * keys straight into `publish` and the compiler cannot see them:
+ *
+ * - **`payload` is dropped.** The envelope is flat; a nested payload never
+ *   reaches a consumer even if a caller supplies one.
+ * - **`severity` is validated** against `MONITOR_SEVERITIES`. A missing or
+ *   out-of-set value falls back to the classification table, so the field is
+ *   always one of the four tiers.
+ * - **`summary` is re-normalized** — newlines collapsed, trimmed, capped at 120
+ *   chars — whether it came from a producer or from the formatters. Never empty.
+ */
+export function enrichMonitorEvent<T extends FormatterInput>(e: T): T & { summary: string; severity: MonitorSeverity } {
+  const { payload: _payload, ...rest } = e;
+  try {
+    const producerSummary = typeof e.summary === "string" ? normalizeSummary(e.summary) : "";
+    const summary = producerSummary || summarizeMonitorEvent(e);
+    const severity =
+      typeof e.severity === "string" && SEVERITY_SET.has(e.severity)
+        ? (e.severity as MonitorSeverity)
+        : severityForMonitorEvent(e);
+    return { ...rest, summary, severity } as T & { summary: string; severity: MonitorSeverity };
+  } catch (err) {
+    // Never throw: `publish` calls this before its own error containment, and
+    // some callers (derived-events) publish after committing their cursor, so a
+    // throw here would drop the event permanently. Degrade to the event name
+    // plus the static tier — rendering is best-effort, delivery is not.
+    console.error(`[monitor-event] enrich failed for "${e.event}", degrading:`, err);
+    return {
+      ...rest,
+      summary: typeof e.event === "string" && e.event ? cap(e.event, MAX_SUMMARY) : "(unnamed event)",
+      severity: SEVERITY_BY_EVENT[e.event] ?? "info",
+    } as T & { summary: string; severity: MonitorSeverity };
+  }
+}
+
+function normalizeSummary(s: string): string {
+  return cap(s.replace(/\s*[\r\n]+\s*/g, " ").trim(), MAX_SUMMARY);
+}
+
+function fallback(e: FormatterInput): string {
   const fields = Object.entries(e)
-    .filter(([k]) => !["seq", "ts", "src", "event", "category"].includes(k))
+    .filter(([k]) => !["seq", "ts", "src", "event", "category", "summary", "severity"].includes(k))
     .slice(0, 4)
     .map(([k, v]) => `${k}:${String(v).slice(0, 20)}`);
   return fields.join("  ");

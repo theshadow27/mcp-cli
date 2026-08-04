@@ -11,7 +11,7 @@
  */
 
 import type { AliasType, Logger, ManagedHandle, MonitorCategory, MonitorEventInput } from "@mcp-cli/core";
-import { bundleAlias, spawnManaged } from "@mcp-cli/core";
+import { ALIAS_CRASHED, bundleAlias, spawnManaged } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
 import { safeSetTimeout } from "./safe-timers";
 import { workerPath } from "./worker-path";
@@ -305,7 +305,7 @@ export class MonitorRuntime {
 
       this.bus.publish({
         src: "daemon.alias-supervisor",
-        event: "alias.crashed",
+        event: ALIAS_CRASHED,
         category: "session",
         name: mon.name,
         errorMessage: `Monitor "${mon.name}" exited with code ${code}`,

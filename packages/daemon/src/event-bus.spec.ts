@@ -28,6 +28,39 @@ describe("EventBus", () => {
     expect(new Date(result.ts).getTime()).toBeGreaterThan(0);
   });
 
+  test("publish stamps summary and severity (#1924)", () => {
+    const bus = new EventBus();
+    const received: MonitorEvent[] = [];
+    bus.subscribe((e) => received.push(e));
+
+    const idle = bus.publish({ src: "test", event: "session.idle", category: "session", sessionId: "abcdef1234" });
+    expect(idle.summary).toBeTruthy();
+    expect(idle.severity).toBe("actionable");
+
+    const heartbeat = bus.publish({ src: "test", event: "heartbeat", category: "heartbeat" });
+    expect(heartbeat.severity).toBe("info");
+
+    for (const e of received) {
+      expect(typeof e.summary).toBe("string");
+      expect(e.summary).toBeTruthy();
+      expect(["info", "notable", "actionable", "urgent"] as (string | undefined)[]).toContain(e.severity);
+      expect(Object.hasOwn(e, "payload")).toBe(false);
+    }
+  });
+
+  test("publish preserves a producer-supplied summary/severity", () => {
+    const bus = new EventBus();
+    const e = bus.publish({
+      src: "test",
+      event: "session.idle",
+      category: "session",
+      summary: "explicit",
+      severity: "urgent",
+    });
+    expect(e.summary).toBe("explicit");
+    expect(e.severity).toBe("urgent");
+  });
+
   test("seq is monotonically increasing across sources", () => {
     const bus = new EventBus();
     const e1 = bus.publish(sessionEvent());

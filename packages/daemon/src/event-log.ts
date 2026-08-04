@@ -9,7 +9,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { MonitorEvent } from "@mcp-cli/core";
+import { type MonitorEvent, enrichMonitorEvent } from "@mcp-cli/core";
 import { safeSetInterval } from "./safe-timers";
 
 const CONSUMER = "event_log";
@@ -98,7 +98,8 @@ export class EventLog {
     }
 
     // Overlay the authoritative seq from the DB column — payload stores seq=0 placeholder.
-    return rows.map((r) => ({ ...(JSON.parse(r.payload) as MonitorEvent), seq: r.seq }));
+    // Enrich on read so rows written before summary/severity existed still satisfy the contract.
+    return rows.map((r) => enrichMonitorEvent({ ...(JSON.parse(r.payload) as MonitorEvent), seq: r.seq }));
   }
 
   prune(olderThan: Date): number {
