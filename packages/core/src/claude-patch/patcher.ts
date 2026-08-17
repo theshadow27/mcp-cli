@@ -38,6 +38,15 @@ const CODESIGN_RESIGN_TIMEOUT_MS = 30_000;
 const WHICH_PROBE_TIMEOUT_MS = 5_000;
 
 export interface PatcherDeps {
+  /**
+   * Host platform, in `process.platform` terms. Defaults to `process.platform`.
+   *
+   * Only `"darwin"` gets the Mach-O code-signing pass (entitlements extraction,
+   * temp plist, ad-hoc re-sign) — see #2982. Injectable so both branches are
+   * testable from a single runner instead of being skipped on whichever OS CI
+   * happens to run.
+   */
+  platform: typeof process.platform;
   /** Resolve the version of a claude binary. Default: spawn `<bin> --version`. */
   versionResolver: (binPath: string) => Promise<string>;
   /** Extract entitlements from a signed Mach-O binary. macOS only. */
@@ -215,6 +224,7 @@ export async function defaultSmokeTest(binPath: string): Promise<void> {
 }
 
 export const DEFAULT_DEPS: PatcherDeps = {
+  platform: process.platform,
   versionResolver: defaultVersionResolver,
   extractEntitlements: defaultExtractEntitlements,
   resignBinary: defaultResignBinary,
@@ -290,6 +300,29 @@ function readConfigClaudeBinary(configPath: string): string | null {
     return typeof parsed.claudeBinary === "string" ? parsed.claudeBinary : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Copy the source binary's entitlements onto the staged patched copy and
+ * re-sign it ad-hoc. **macOS only** — the caller gates on platform.
+ *
+ * The entitlements plist is written to a temp file because `codesign
+ * --entitlements` takes a path, not stdin. It is removed whether or not the
+ * re-sign succeeds; the staging binary is the caller's to clean up.
+ */
+async function resignStagedBinary(deps: PatcherDeps, sourcePath: string, stagingPath: string): Promise<void> {
+  const entitlements = await deps.extractEntitlements(sourcePath);
+  const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
+  writeFileSync(entPath, entitlements, { mode: 0o600 });
+  try {
+    await deps.resignBinary(stagingPath, entPath);
+  } finally {
+    try {
+      rmSync(entPath, { force: true });
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -388,17 +421,14 @@ export async function updatePatchedClaude(
   deps.writeBytesAtomic(stagingPath, patched);
   chmodSync(stagingPath, 0o755);
   try {
-    const entitlements = await deps.extractEntitlements(sourcePath);
-    const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
-    writeFileSync(entPath, entitlements, { mode: 0o600 });
-    try {
-      await deps.resignBinary(stagingPath, entPath);
-    } finally {
-      try {
-        rmSync(entPath, { force: true });
-      } catch {
-        // ignore
-      }
+    // Code signing is a Mach-O concept and `codesign` ships only with the
+    // macOS developer tools. Elsewhere the binary is an ELF/PE image that
+    // carries no signature to preserve, so the entitlements probe, the temp
+    // plist, and the ad-hoc re-sign are all skipped outright — running them
+    // off-darwin made patch-update (and therefore every mcx spawn on Linux)
+    // fail with "codesign -d failed: exit undefined". See #2982.
+    if (deps.platform === "darwin") {
+      await resignStagedBinary(deps, sourcePath, stagingPath);
     }
 
     await deps.smokeTest(stagingPath);
