@@ -612,65 +612,76 @@ async function cmdCall(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Auto-save long calls as ephemeral aliases (best-effort, non-blocking)
-  maybeAutoSaveEphemeral(server, tool, toolArgs, { ipcCall });
-
-  // Explicit --jq filter: apply client-side regardless of size/env
-  if (jqFilter) {
-    const formatted = formatToolResult(result);
-    let data: unknown;
-    try {
-      data = JSON.parse(formatted);
-    } catch {
-      for (const hint of jqParseErrorHints(formatted)) {
-        printError(hint);
-      }
-      process.exit(1);
-    }
-    try {
-      const filtered = await applyJqFilter(data, jqFilter);
-      console.log(JSON.stringify(filtered, null, 2));
-    } catch (err) {
-      printError(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-    return;
-  }
-
-  // Size protection: only under CLAUDE=1 and without --full
-  const isClaude = process.env.CLAUDE === "1";
-  if (isClaude && !full) {
-    const formatted = formatToolResult(result);
-    const sizeBytes = Buffer.byteLength(formatted, "utf-8");
-
-    if (sizeBytes > SIZE_HINT) {
-      // Too large — replace with structural analysis
+  /** Write the tool payload to stdout using the applicable output mode. */
+  async function emitResult(): Promise<void> {
+    // Explicit --jq filter: apply client-side regardless of size/env
+    if (jqFilter) {
+      const formatted = formatToolResult(result);
+      let data: unknown;
       try {
-        const data = JSON.parse(formatted);
-        console.log(generateAnalysis(data, sizeBytes));
+        data = JSON.parse(formatted);
       } catch {
-        // Not valid JSON — just report size
-        console.log(
-          `Response too large (${(sizeBytes / 1024).toFixed(1)}KB). Use --jq '<filter>' to filter, or --full for raw output.`,
-        );
+        for (const hint of jqParseErrorHints(formatted)) {
+          printError(hint);
+        }
+        process.exit(1);
+      }
+      try {
+        const filtered = await applyJqFilter(data, jqFilter);
+        console.log(JSON.stringify(filtered, null, 2));
+      } catch (err) {
+        printError(err instanceof Error ? err.message : String(err));
+        process.exit(1);
       }
       return;
     }
 
-    if (sizeBytes > SIZE_OK) {
-      // Medium — pass through + stderr hint
+    // Size protection: only under CLAUDE=1 and without --full
+    const isClaude = process.env.CLAUDE === "1";
+    if (isClaude && !full) {
+      const formatted = formatToolResult(result);
+      const sizeBytes = Buffer.byteLength(formatted, "utf-8");
+
+      if (sizeBytes > SIZE_HINT) {
+        // Too large — replace with structural analysis
+        try {
+          const data = JSON.parse(formatted);
+          console.log(generateAnalysis(data, sizeBytes));
+        } catch {
+          // Not valid JSON — just report size
+          console.log(
+            `Response too large (${(sizeBytes / 1024).toFixed(1)}KB). Use --jq '<filter>' to filter, or --full for raw output.`,
+          );
+        }
+        return;
+      }
+
+      if (sizeBytes > SIZE_OK) {
+        // Medium — pass through + stderr hint
+        console.log(formatted);
+        console.error(`[mcx] ${(sizeBytes / 1024).toFixed(1)}KB response. Use --jq to filter.`);
+        return;
+      }
+
+      // Small — pass through unchanged
       console.log(formatted);
-      console.error(`[mcx] ${(sizeBytes / 1024).toFixed(1)}KB response. Use --jq to filter.`);
       return;
     }
 
-    // Small — pass through unchanged
-    console.log(formatted);
-    return;
+    // Default: no protection (no CLAUDE env, or --full)
+    printToolResult(result);
   }
 
-  // Default: no protection (no CLAUDE env, or --full)
-  printToolResult(result);
+  // Payload first: the ephemeral auto-save below costs an extra daemon
+  // round-trip, and `mcx call` owes its result to stdout inside the <50ms
+  // budget. The hint is stderr-only, so emitting it after stdout is harmless.
+  await emitResult();
+
+  // Auto-save long calls as ephemeral aliases. Awaited — main() resolving
+  // triggers process.exit(), which used to tear down the event loop before the
+  // fire-and-forget socket write landed, so the alias the hint advertised was
+  // never actually saved (#2983).
+  await maybeAutoSaveEphemeral(server, tool, toolArgs, { ipcCall });
 }
 
 async function cmdInfo(args: string[]): Promise<void> {

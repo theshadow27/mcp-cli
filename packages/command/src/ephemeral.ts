@@ -31,15 +31,24 @@ const defaultDeps: EphemeralDeps = {
 };
 
 /**
- * Auto-save a long CLI call as an ephemeral alias (fire-and-forget).
+ * Auto-save a long CLI call as an ephemeral alias.
  * Only saves if the serialized args exceed the character threshold.
+ *
+ * The `saveAlias` IPC is awaited and the "Run again" hint is printed **only**
+ * after the daemon confirms the save (#2983). The previous fire-and-forget
+ * shape printed the hint unconditionally while `process.exit()` in main.ts
+ * tore down the event loop before the socket write landed — so the alias the
+ * hint named never existed.
+ *
+ * Callers must await this **after** writing the tool payload to stdout so the
+ * extra daemon round-trip does not sit in front of `mcx call`'s output path.
  */
-export function maybeAutoSaveEphemeral(
+export async function maybeAutoSaveEphemeral(
   server: string,
   tool: string,
   toolArgs: Record<string, unknown>,
   deps?: Partial<EphemeralDeps>,
-): void {
+): Promise<void> {
   const d = { ...defaultDeps, ...deps };
   const config = d.readCliConfig();
   const ephCfg = config.ephemeralAliases;
@@ -57,10 +66,20 @@ export function maybeAutoSaveEphemeral(
   const script = `const result = await mcp[${JSON.stringify(server)}][${JSON.stringify(tool)}](${argsJson});\nconsole.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));\n`;
   const description = `ephemeral: ${server}/${tool}`;
 
-  // Fire-and-forget — don't block output
-  d.ipcCall("saveAlias", { name, script, description, expiresAt }).catch(() => {
-    // Silently ignore — ephemeral save is best-effort
-  });
+  // Await the save: the hint below promises the alias is runnable, so it must
+  // not be printed unless the daemon actually persisted it.
+  try {
+    const res = await d.ipcCall("saveAlias", { name, script, description, expiresAt });
+    // The daemon refuses to shadow an existing permanent alias with an
+    // ephemeral one; it answers `{ ok: false, reason }` in that case.
+    if (res.ok !== true) {
+      d.logError(`[mcx] ephemeral alias "${name}" was not saved`);
+      return;
+    }
+  } catch (err) {
+    d.logError(`[mcx] ephemeral alias "${name}" was not saved: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
 
   d.logError(`\u{1F4A1} Run again: mcx run ${name} | Edit: mcx alias edit ${name}`);
 }
