@@ -56,6 +56,18 @@ export function isToolError(result: unknown): boolean {
   return typeof result === "object" && result !== null && (result as { isError?: unknown }).isError === true;
 }
 
+/**
+ * Strip one leading `"Error: "` from a message that is about to be handed to
+ * `printError`, which adds that prefix itself.
+ *
+ * Daemon tool handlers wrap failures as `{ text: "Error: <msg>", isError: true }`
+ * — the MCP text convention — so printing the text through `printError` rendered
+ * every failed spawn as `Error: Error: <msg>` (#3003).
+ */
+export function stripErrorPrefix(message: string): string {
+  return message.startsWith("Error: ") ? message.slice("Error: ".length) : message;
+}
+
 /** Format and print a tool call result to stdout */
 export function printToolResult(result: unknown): void {
   const text = formatToolResult(result);

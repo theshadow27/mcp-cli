@@ -184,6 +184,10 @@ describe("isCliOptionKey", () => {
     expect(isCliOptionKey("trust-claude")).toBe(true);
   });
 
+  it("recognizes transport, the rollback knob for the Claude transport default (#3003)", () => {
+    expect(isCliOptionKey("transport")).toBe(true);
+  });
+
   it("returns false for server names", () => {
     expect(isCliOptionKey("my-server")).toBe(false);
   });

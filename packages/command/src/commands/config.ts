@@ -4,7 +4,14 @@
  */
 
 import type { BudgetConfig, GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
-import { DEFAULT_CLAUDE_WS_PORT, ipcCall, isStdioConfig, readCliConfig, writeCliConfig } from "@mcp-cli/core";
+import {
+  CLAUDE_TRANSPORTS,
+  DEFAULT_CLAUDE_WS_PORT,
+  ipcCall,
+  isStdioConfig,
+  readCliConfig,
+  writeCliConfig,
+} from "@mcp-cli/core";
 import { c, printError } from "../output";
 import { readConfigFile, writeConfigFile } from "./config-file";
 
@@ -87,14 +94,15 @@ async function configSources(deps: ConfigDeps): Promise<void> {
 
 // -- CLI option keys --
 
-const VALID_KEYS = ["trust-claude", "terminal", "ws-port", "claude-binary"] as const;
+const VALID_KEYS = ["trust-claude", "terminal", "ws-port", "claude-binary", "transport"] as const;
 type ConfigKey = (typeof VALID_KEYS)[number];
 
-const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal" | "wsPort" | "claudeBinary"> = {
+const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal" | "wsPort" | "claudeBinary" | "transport"> = {
   "trust-claude": "trustClaude",
   terminal: "terminal",
   "ws-port": "wsPort",
   "claude-binary": "claudeBinary",
+  transport: "transport",
 };
 
 /** Keys whose values are stored as booleans (vs strings) */
@@ -102,6 +110,16 @@ const BOOLEAN_KEYS = new Set<ConfigKey>(["trust-claude"]);
 
 /** Keys whose values are stored as numbers */
 const NUMBER_KEYS = new Set<ConfigKey>(["ws-port"]);
+
+/**
+ * Keys restricted to a fixed set of values, with the value assumed when unset.
+ * `transport` is the rollback knob for the version-gated Claude transport
+ * default (#3003) — reachable from the CLI so recovering from a bad default
+ * doesn't require hand-editing ~/.mcp-cli/config.json.
+ */
+const ENUM_KEYS: Partial<Record<ConfigKey, { values: readonly string[]; fallback: string }>> = {
+  transport: { values: CLAUDE_TRANSPORTS, fallback: "auto" },
+};
 
 /** Check if a key is a known CLI option (vs a server name). */
 export function isCliOptionKey(key: string): boolean {
@@ -176,6 +194,11 @@ function configSetCliOption(args: string[], log?: (msg: string) => void): void {
   }
   const prop = KEY_MAP[key as ConfigKey];
   const config = readCliConfig();
+  const enumSpec = ENUM_KEYS[key as ConfigKey];
+  if (enumSpec && !enumSpec.values.includes(value)) {
+    printError(`Invalid value for ${key}: ${value}. Valid values: ${enumSpec.values.join(", ")}`);
+    process.exit(1);
+  }
   if (BOOLEAN_KEYS.has(key as ConfigKey)) {
     (config as Record<string, unknown>)[prop] = value === "true";
   } else if (NUMBER_KEYS.has(key as ConfigKey)) {
@@ -208,7 +231,7 @@ function configGetCliOption(args: string[], log?: (msg: string) => void): void {
     ? false
     : NUMBER_KEYS.has(key as ConfigKey)
       ? String(DEFAULT_CLAUDE_WS_PORT)
-      : "";
+      : (ENUM_KEYS[key as ConfigKey]?.fallback ?? "");
   (log ?? console.log)(String(config[prop] ?? defaultValue));
 }
 

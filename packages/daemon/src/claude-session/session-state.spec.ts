@@ -100,6 +100,20 @@ function activeSession(): SessionState {
   return session;
 }
 
+/** An active session whose CLI speaks the stdio transport (num_turns restarts at 1). */
+function activeStdioSession(): SessionState {
+  const session = new SessionState("sess-1", testIdGenerator(), "stdio");
+  session.handleMessage(SYSTEM_INIT);
+  session.handleMessage(ASSISTANT_MSG);
+  return session;
+}
+
+/** Drive a follow-up prompt all the way to "delivered", as ws-server.sendPrompt does. */
+function sendPrompt(session: SessionState, message: string): void {
+  session.queuePrompt(message);
+  session.promptDelivered();
+}
+
 // ── Tests ──
 
 describe("SessionState", () => {
@@ -340,6 +354,91 @@ describe("SessionState", () => {
       // Replayed result carries the same num_turns=3 — suppressed.
       const replay = session.handleMessage(RESULT_SUCCESS);
       expect(replay).toEqual([]);
+    });
+
+    // -- #3003: a delivered prompt starts a new work cycle ON STDIO ONLY --
+    //
+    // num_turns is only cumulative on the sdk-url WS transport. Over stdio
+    // `--print` the CLI restarts num_turns at 1 for every turn, so the #2837
+    // guard read every follow-up result as a replay, never emitted
+    // session:result, and `mcx claude send --wait` hung forever.
+    //
+    // The reset is scoped to stdio: on ws it would destroy the guard's only
+    // baseline and re-open #2837 case B (see the pending-prompt test below).
+
+    test("stdio: a follow-up prompt re-arms the guard so a repeated num_turns still emits", () => {
+      const session = activeStdioSession();
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+
+      // Follow-up turn. Over stdio the next result carries the SAME num_turns.
+      sendPrompt(session, "second turn");
+      const second = session.handleMessage({ ...RESULT_SUCCESS, result: "TURN-2" });
+      expect(second).toHaveLength(1);
+      expect(second[0].type).toBe("session:result");
+      expect(session.suppressedResult).toBeNull();
+    });
+
+    test("stdio: three consecutive num_turns=1 results all emit", () => {
+      const session = activeStdioSession();
+      const turns = ["ONE", "TWO", "THREE"].map((result, i) => {
+        if (i > 0) sendPrompt(session, `turn ${i + 1}`);
+        return session.handleMessage({ ...RESULT_SUCCESS, num_turns: 1, result });
+      });
+      expect(turns.map((events) => events.length)).toEqual([1, 1, 1]);
+      expect(turns.map((events) => (events[0] as { result: string }).result)).toEqual(["ONE", "TWO", "THREE"]);
+    });
+
+    test("stdio: the re-armed guard still suppresses a duplicate within the new work cycle", () => {
+      const session = activeStdioSession();
+      session.handleMessage(RESULT_SUCCESS);
+      sendPrompt(session, "second turn");
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+      // No new prompt in between — this one is a genuine duplicate.
+      expect(session.handleMessage(RESULT_SUCCESS)).toEqual([]);
+    });
+
+    test("stdio: a queued but UNDELIVERED prompt leaves the baseline alone", () => {
+      const session = activeStdioSession();
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+      // Transport write failed, so ws-server never calls promptDelivered() —
+      // no new turn is running and the baseline must survive.
+      session.queuePrompt("second turn");
+      expect(session.handleMessage(RESULT_SUCCESS)).toEqual([]);
+    });
+
+    test("ws: a delivered prompt does NOT re-arm the guard (num_turns is cumulative)", () => {
+      const session = activeSession();
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+      sendPrompt(session, "second turn");
+      // Same num_turns on ws means a replay, not a new turn.
+      expect(session.handleMessage(RESULT_SUCCESS)).toEqual([]);
+    });
+
+    test("B2: ws reconnect replay with a prompt PENDING does not re-emit the stale result", () => {
+      // #2837 case B, pending-prompt variant. Resetting the baseline in
+      // queuePrompt() made the replayed turn-1 result look like a fresh answer
+      // to turn 2, resolving a `send --wait` waiter with a stale payload while
+      // the real turn was still running (#3003 QA).
+      const session = activeSession();
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1); // num_turns=3
+
+      sendPrompt(session, "turn 2");
+
+      // WS drops mid-turn (sleep/wake, keep-alive fail) and reconnects; the CLI
+      // replays init → assistant → result for the conversation so far.
+      session.disconnect("ws dropped");
+      session.reconnect();
+      expect(session.handleMessage(SYSTEM_INIT).map((e) => e.type)).toEqual(["session:init"]);
+      session.handleMessage(ASSISTANT_MSG);
+
+      const replay = session.handleMessage({ ...RESULT_SUCCESS, result: "STALE-FROM-TURN-1" });
+      expect(replay).toEqual([]);
+      expect(session.suppressedResult).toEqual({ branch: "result", numTurns: 3, lastEmitted: 3 });
+
+      // The genuine turn-2 result (num_turns advanced) still gets through.
+      const real = session.handleMessage({ ...RESULT_SUCCESS, num_turns: 4, result: "TURN-2" });
+      expect(real).toHaveLength(1);
+      expect(real[0]).toMatchObject({ type: "session:result", result: "TURN-2" });
     });
 
     test("C: consecutive results with no turn advance emit only once", () => {

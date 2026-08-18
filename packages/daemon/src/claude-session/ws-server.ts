@@ -88,6 +88,38 @@ const CONNECT_TIMEOUT_MS = 30_000;
  * newline (#2769). 64 KiB matches the spawnManaged stderr ring default. */
 const MAX_STDERR_LINE_CHARS = 64 * 1024;
 
+/** Max chars of child stderr quoted inline in a spawn-failure error message.
+ * The full 64 KiB ring is persisted to `server_logs`; the error only needs
+ * enough to name the cause without turning into a wall of text. */
+const SPAWN_EXIT_STDERR_CHARS = 400;
+
+/**
+ * Build the error message handed to `--wait` callers when the Claude CLI exits
+ * before producing a result.
+ *
+ * A spawn that dies during startup (bad flags, refused auth, an org policy that
+ * blocks the requested mode) writes its reason to stderr and nothing else — no
+ * transcript, no session events. Quoting the tail here is the difference between
+ * an actionable error and `Process exited`, and the `mcx logs <session-id>`
+ * pointer is the only discoverable route to the full text (#3003).
+ */
+export function describeSpawnExit(sessionId: string, stderrTail: string): string {
+  const collapsed = stderrTail
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "")
+    .join(" | ");
+  const hint = `see \`mcx logs ${sessionId}\` for full stderr`;
+  if (collapsed === "") {
+    return `Claude process exited before producing a result (no stderr captured; ${hint})`;
+  }
+  // The tail is what matters (the fatal line is last), so the HEAD is what gets
+  // cut — the marker goes in front of the surviving text, not after it.
+  const quoted =
+    collapsed.length > SPAWN_EXIT_STDERR_CHARS ? `(truncated) ${collapsed.slice(-SPAWN_EXIT_STDERR_CHARS)}` : collapsed;
+  return `Claude process exited before producing a result: ${quoted} (${hint})`;
+}
+
 /** Message types handled by the state machine's dispatch. */
 const HANDLED_MSG_TYPES: ReadonlyArray<string> = [
   "system",
@@ -134,9 +166,10 @@ export interface SessionConfig {
   /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
   repoRoot?: string;
   /**
-   * Resolved transport for this session: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
-   * Resolved from CliConfig.transport + claude version at spawn time.
-   * Default: `"ws"` (preserves legacy behavior).
+   * Per-spawn transport override: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
+   * Set by `mcx claude spawn --transport`. When omitted, prepareSession falls
+   * back to the server's `defaultTransport`, which the worker resolves from
+   * CliConfig.transport + the claude version at startup (#3003).
    */
   transport?: "ws" | "stdio";
   /**
@@ -549,6 +582,15 @@ export class ClaudeWsServer {
    */
   private readonly spawnDisabledReason: string | null;
 
+  /**
+   * Transport used for sessions that carry no per-spawn `--transport` override.
+   * Resolved once at worker startup from `CliConfig.transport` + the detected
+   * claude version (see `transport-resolver.ts`). Defaults to `"ws"` only when
+   * the daemon could not determine a version — modern claude resolves to
+   * `"stdio"`, which needs neither `--sdk-url` nor the patched binary (#3003).
+   */
+  private readonly defaultTransport: "ws" | "stdio";
+
   constructor(deps?: {
     spawn?: SpawnFn;
     killTimeoutMs?: number;
@@ -568,6 +610,8 @@ export class ClaudeWsServer {
     binaryPath?: string;
     /** Disable spawn with this reason. Read paths still work. */
     spawnDisabledReason?: string | null;
+    /** Transport for sessions without a per-spawn override. Default: `"ws"`. */
+    defaultTransport?: "ws" | "stdio";
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -588,6 +632,7 @@ export class ClaudeWsServer {
     this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
     this.binaryPath = deps?.binaryPath ?? "claude";
     this.spawnDisabledReason = deps?.spawnDisabledReason ?? null;
+    this.defaultTransport = deps?.defaultTransport ?? "ws";
   }
 
   /** True when the server is running in TLS (wss://) mode. */
@@ -771,7 +816,7 @@ export class ClaudeWsServer {
       // Skip sessions already in the map (shouldn't happen, but be safe)
       if (this.sessions.has(s.sessionId)) continue;
 
-      const state = new SessionState(s.sessionId);
+      const state = new SessionState(s.sessionId, undefined, s.transport ?? "ws");
       state.state = "disconnected";
       state.model = s.model;
       state.cwd = s.cwd;
@@ -865,7 +910,18 @@ export class ClaudeWsServer {
    */
   /** Prepare a session and return the assigned name and resolved transport. */
   prepareSession(sessionId: string, config: SessionConfig): { name: string; transport: "ws" | "stdio" } {
-    const state = new SessionState(sessionId);
+    // A per-spawn `--transport` wins outright. Otherwise take the version-gated
+    // default — except for containment (worktree) sessions: ContainmentGuard
+    // rides the `can_use_tool` round-trip, which only the WS transport carries,
+    // and spawnClaude fails closed on the combination (#2688/#2791). Those keep ws
+    // rather than being silently downgraded out of the trust boundary. Drop this
+    // carve-out once #2805 gives stdio can_use_tool parity.
+    //
+    // Resolved before SessionState so the state machine knows whether num_turns
+    // is cumulative (ws) or restarts per turn (stdio) — see promptDelivered().
+    const resolvedTransport = config.transport ?? (config.worktree ? "ws" : this.defaultTransport);
+
+    const state = new SessionState(sessionId, undefined, resolvedTransport);
     // Pre-populate state.cwd from config so session info shows the correct
     // cwd even if the Claude process never connects (#1836).
     if (config.cwd) state.cwd = config.cwd;
@@ -882,7 +938,6 @@ export class ClaudeWsServer {
       }
     }
     const name = config.name ?? this.generateName();
-    const resolvedTransport = config.transport ?? "ws";
     const completionSignal = makeWorkCompletedSignal();
 
     this.sessions.set(sessionId, {
@@ -1122,9 +1177,14 @@ export class ClaudeWsServer {
           );
         }
       }
-      // Reject pending result waiters — they can't get results without a process
+      // Reject pending result waiters — they can't get results without a process.
+      // Carry the child's stderr in the message: a spawn that dies before it ever
+      // connects produces no transcript, so a bare "Process exited" left the
+      // caller with nothing to act on and no hint where to look. The full stderr
+      // is in `server_logs` keyed by session id, which `mcx logs <id>` prints —
+      // undiscoverable unless the error says so (#3003).
       for (const waiter of session.resultWaiters) {
-        waiter.reject(new Error("Process exited"));
+        waiter.reject(new Error(describeSpawnExit(sessionId, stderrTail)));
       }
       session.resultWaiters.length = 0;
     });
@@ -1172,8 +1232,12 @@ export class ClaudeWsServer {
     if (!this.sendToSession(session, outbound)) {
       // Transport write failed — sendToSession already transitioned the session
       // to disconnected. Surface the error so the prompt isn't silently lost.
+      // The dedup baseline is deliberately untouched: no new turn started (#3003).
       throw new Error(`Failed to deliver prompt to session ${sessionId}: transport write failed`);
     }
+    // The prompt is on the wire, so a new work cycle has begun. On stdio that
+    // resets the num_turns dedup baseline; on ws it is a no-op (#2837/#3003).
+    session.state.promptDelivered();
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
   }
@@ -1265,7 +1329,11 @@ export class ClaudeWsServer {
     // handleOpen's ws.send(userMessage) for WS transport.
     const prompt = session.config.prompt;
     const outbound = userMessage(prompt, sessionId);
-    this.sendToSession(session, outbound);
+    if (this.sendToSession(session, outbound)) {
+      // Fresh stdio child: num_turns restarts at 1, so drop any baseline left
+      // over from the pre-respawn turns of a revived session (#3003).
+      session.state.promptDelivered();
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     const reader = stdout.getReader();

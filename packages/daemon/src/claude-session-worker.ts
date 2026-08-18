@@ -21,6 +21,7 @@ import {
   type LiveSpan,
   type SessionInfo,
   type WorkItemEvent,
+  readCliConfig,
   resolveEffectiveTools,
   silentLogger,
   startSpan,
@@ -31,6 +32,7 @@ import { isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resol
 import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
+import { resolveTransport } from "./claude-session/transport-resolver";
 import {
   ClaudeWsServer,
   type WaitResult,
@@ -752,15 +754,25 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // case still surfaces clearly: spawnDisabledReason makes spawnClaude
   // throw with the actionable message at first spawn attempt.
   const resolution = await resolveClaudeForSpawn();
+  // Default transport for spawns that carry no per-session `--transport`
+  // override. Version-gated (see transport-resolver.ts) and overridable via
+  // `transport` in ~/.mcp-cli/config.json. Before #3003 this was hardcoded to
+  // "ws" in prepareSession, so every spawn on a modern claude took the
+  // `--sdk-url` remote-control path — which the CLI refuses outright under
+  // API-key auth ("Remote Control is disabled by your organization's policy"),
+  // killing the child before it ever connected.
+  const defaultTransport = resolveTransport(readCliConfig().transport, resolution.version);
   const wsServerOpts: ConstructorParameters<typeof ClaudeWsServer>[0] = isResolved(resolution)
     ? {
         logger: quiet ? silentLogger : undefined,
         binaryPath: resolution.binaryPath,
         tlsConfig: resolution.tlsConfig,
+        defaultTransport,
       }
     : {
         logger: quiet ? silentLogger : undefined,
         spawnDisabledReason: resolution.error,
+        defaultTransport,
       };
 
   // Start WebSocket server
