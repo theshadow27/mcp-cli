@@ -563,6 +563,46 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(session?.state).not.toBe("disconnected");
   });
 
+  // #3003: over stdio the CLI restarts num_turns at 1 on every `--print` turn,
+  // so the #2837 idempotency guard read every follow-up result as a replay and
+  // dropped session:result — `mcx claude send --wait` then hung forever. The
+  // baseline reset lives in sendPrompt()'s call to state.promptDelivered(), and
+  // nothing at the server level covered it: deleting that call left the whole
+  // claude-session suite green while reintroducing the hang.
+  test("stdio session emits a SECOND session:result for a follow-up with the same num_turns", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({
+      spawn: mock.spawn,
+      logger: silentLogger,
+      connectTimeoutMs: 5000,
+    });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const results: Array<{ type: string }> = [];
+    server.onSessionEvent = (_sid, event) => {
+      if (event.type === "session:result") results.push(event);
+    };
+
+    server.prepareSession(sessionId, { prompt: "Initial", transport: "stdio" });
+    server.spawnClaude(sessionId);
+
+    // Turn 1: init → assistant → result(num_turns=1).
+    mock.pushStdout(`${systemInitMessage(sessionId)}\n`);
+    mock.pushStdout(`${assistantMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => results.length === 1, 1000);
+
+    // Turn 2: the CLI reports num_turns=1 again — NOT a replay over stdio.
+    server.sendPrompt(sessionId, "Follow-up question");
+    await pollUntil(() => mock.stdinWrites.length > 1, 1000);
+    mock.pushStdout(`${assistantMessage(sessionId)}\n`);
+    mock.pushStdout(`${resultMessage(sessionId)}\n`);
+    await pollUntil(() => results.length === 2, 1000);
+
+    expect(results).toHaveLength(2);
+  });
+
   test("stdio session sendPrompt writes to stdin", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({

@@ -581,22 +581,20 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
 
-  /** Best-effort worktree removal after a spawn that never produced a session (#1116). */
-  const cleanupWorktreeAfterFailure = (): void => {
-    if (!parsed.worktree || !worktreeResult) return;
-    try {
-      cleanupWorktree(parsed.worktree, worktreeResult.path, d, process.cwd());
-    } catch {
-      // Best-effort cleanup — don't mask the original error
-    }
-  };
-
   let result: unknown;
   try {
     result = await d.callTool("claude_prompt", toolArgs);
   } catch (e) {
-    // IPC failed after worktree was created — clean up to avoid orphans (#1116)
-    cleanupWorktreeAfterFailure();
+    // IPC failed after worktree was created — clean up to avoid orphans (#1116).
+    // Safe here and only here: a rejected callTool means the daemon never
+    // accepted the request, so no session is running in that worktree.
+    if (parsed.worktree && worktreeResult) {
+      try {
+        cleanupWorktree(parsed.worktree, worktreeResult.path, d, process.cwd());
+      } catch {
+        // Best-effort cleanup — don't mask the original error
+      }
+    }
     // `printError` already prefixes "Error: " — both `String(err)` on an Error
     // instance and the daemon's own `Error: <msg>` tool text carry it too, which
     // rendered as "Error: Error: …" for every failed spawn (#3003).
@@ -607,20 +605,28 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
 
   const text = formatToolResult(result);
 
-  // The daemon converts a spawn that never started into a RESOLVED tool result
-  // carrying `isError: true` and a plain `Error: <reason>` string
-  // (claude-session-worker's catch), so `callTool` never throws for it. Without
-  // this branch the error text went to stdout and the process exited 0 for a
-  // session that never ran — the exact inversion #2821 forbids. Treated like
-  // the throw above: same cleanup, same single `Error: ` prefix, same exit 1.
+  // The daemon converts a failed spawn into a RESOLVED tool result carrying
+  // `isError: true` and a plain `Error: <reason>` string (claude-session-worker's
+  // catch), so `callTool` never throws for it. Without this branch the error text
+  // went to stdout and the process exited 0 — the inversion #2821 forbids.
   //
   // Gated on non-parseability as well as `isError`, matching `mcx agent <p>
-  // spawn`: a --wait spawn whose session DID run and finished with
-  // `success: false` is also isError, but its payload is structured JSON that
-  // callers read from stdout — and its worktree may hold real work, so it must
-  // not be cleaned up either (#3003).
+  // spawn`: a --wait spawn whose session ran and finished with `success: false`
+  // is also isError, but its payload is structured JSON that callers read from
+  // stdout (#3003).
+  //
+  // Deliberately does NOT clean up the worktree, unlike the IPC-throw path
+  // above. `isError` text cannot distinguish "never started" from "started and
+  // is STILL RUNNING": the daemon's waitForResult rejects at DEFAULT_TIMEOUT_MS
+  // (270s) — before the 330s IPC timeout, so this is the common case — without
+  // killing the session, and returns exactly this shape. Cleaning up there would
+  // `git worktree remove` + `git branch -d` a live session's workspace out from
+  // under it whenever the tree happened to be clean (read-only task, parked on a
+  // permission prompt, rate-limit backoff). Sniffing an error string is not a
+  // sound "did this session start" oracle at any level of gating, so we accept
+  // orphaned worktrees — `mcx claude bye` and gc reap those, and an orphan is
+  // cheap where destroying live work is not.
   if (isToolError(result) && !isJsonText(text)) {
-    cleanupWorktreeAfterFailure();
     d.printError(stripErrorPrefix(text));
     d.exit(1);
     return;
