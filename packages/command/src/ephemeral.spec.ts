@@ -42,22 +42,22 @@ describe("maybeAutoSaveEphemeral", () => {
     };
   }
 
-  test("does not save when args are below threshold", () => {
+  test("does not save when args are below threshold", async () => {
     const deps = createDeps();
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 400;
 
-    maybeAutoSaveEphemeral("server", "tool", { short: "args" }, deps);
+    await maybeAutoSaveEphemeral("server", "tool", { short: "args" }, deps);
 
     expect(deps.ipcCall).not.toHaveBeenCalled();
     expect(deps.logError).not.toHaveBeenCalled();
   });
 
-  test("saves when args exceed threshold", () => {
+  test("saves when args exceed threshold", async () => {
     const deps = createDeps();
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
     const longArgs = { query: "a".repeat(100) };
-    maybeAutoSaveEphemeral("server", "get_logs", longArgs, deps);
+    await maybeAutoSaveEphemeral("server", "get_logs", longArgs, deps);
 
     expect(deps.ipcCall).toHaveBeenCalledTimes(1);
     const callArgs = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[0];
@@ -69,37 +69,37 @@ describe("maybeAutoSaveEphemeral", () => {
     expect(deps.logError).toHaveBeenCalledTimes(1);
   });
 
-  test("does not save when feature is disabled via config", () => {
+  test("does not save when feature is disabled via config", async () => {
     const deps = createDeps({
       readCliConfig: () => ({ ephemeralAliases: { enabled: false } }),
     });
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
-    maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
+    await maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
 
     expect(deps.ipcCall).not.toHaveBeenCalled();
   });
 
-  test("uses config charThreshold override", () => {
+  test("uses config charThreshold override", async () => {
     const deps = createDeps({
       readCliConfig: () => ({ ephemeralAliases: { charThreshold: 5000 } }),
     });
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
     // Args exceed default (10) but not config override (5000)
-    maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
+    await maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
 
     expect(deps.ipcCall).not.toHaveBeenCalled();
   });
 
-  test("uses config ttlMs override", () => {
+  test("uses config ttlMs override", async () => {
     const deps = createDeps({
       readCliConfig: () => ({ ephemeralAliases: { ttlMs: 60000 } }),
     });
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
     const before = Date.now();
-    maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
+    await maybeAutoSaveEphemeral("server", "tool", { query: "a".repeat(100) }, deps);
 
     const callArgs = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[0];
     const params = callArgs[1] as Record<string, unknown>;
@@ -109,11 +109,11 @@ describe("maybeAutoSaveEphemeral", () => {
     expect(expiresAt).toBeGreaterThanOrEqual(before + 60000);
   });
 
-  test("generates script with correct server/tool references", () => {
+  test("generates script with correct server/tool references", async () => {
     const deps = createDeps();
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
-    maybeAutoSaveEphemeral("my-server", "my-tool", { query: "a".repeat(100) }, deps);
+    await maybeAutoSaveEphemeral("my-server", "my-tool", { query: "a".repeat(100) }, deps);
 
     const callArgs = (deps.ipcCall as ReturnType<typeof mock>).mock.calls[0];
     const params = callArgs[1] as Record<string, unknown>;
@@ -123,15 +123,71 @@ describe("maybeAutoSaveEphemeral", () => {
     expect(script).toContain("mcp[");
   });
 
-  test("hint message includes alias name", () => {
+  test("hint message includes alias name", async () => {
     const deps = createDeps();
     options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
 
-    maybeAutoSaveEphemeral("server", "get_logs", { query: "a".repeat(100) }, deps);
+    await maybeAutoSaveEphemeral("server", "get_logs", { query: "a".repeat(100) }, deps);
 
     const logCall = (deps.logError as ReturnType<typeof mock>).mock.calls[0];
     const msg = logCall[0] as string;
     expect(msg).toContain("mcx run");
     expect(msg).toContain("mcx alias edit");
+  });
+
+  // #2983: the hint promises `mcx run <name>` works — it must never be printed
+  // for an alias the daemon did not persist.
+  test("does not print the run hint when saveAlias rejects", async () => {
+    const deps = createDeps({
+      ipcCall: mock(() => Promise.reject(new Error("daemon unavailable"))) as EphemeralDeps["ipcCall"],
+    });
+    options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
+
+    await maybeAutoSaveEphemeral("server", "get_logs", { query: "a".repeat(100) }, deps);
+
+    const messages = (deps.logError as ReturnType<typeof mock>).mock.calls.map((c) => c[0] as string);
+    expect(messages.some((m) => m.includes("mcx run"))).toBe(false);
+    expect(messages.some((m) => m.includes("daemon unavailable"))).toBe(true);
+  });
+
+  test("does not print the run hint when saveAlias reports ok: false", async () => {
+    const deps = createDeps({
+      ipcCall: mock(() => Promise.resolve({ ok: false, reason: "permanent_alias_exists" })) as EphemeralDeps["ipcCall"],
+    });
+    options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
+
+    await maybeAutoSaveEphemeral("server", "get_logs", { query: "a".repeat(100) }, deps);
+
+    const messages = (deps.logError as ReturnType<typeof mock>).mock.calls.map((c) => c[0] as string);
+    expect(messages.some((m) => m.includes("mcx run"))).toBe(false);
+    expect(messages.some((m) => m.includes("was not saved"))).toBe(true);
+  });
+
+  test("prints the run hint only after the save resolves", async () => {
+    const order: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const deps = createDeps({
+      ipcCall: mock(async () => {
+        order.push("save-start");
+        await gate;
+        order.push("save-done");
+        return { ok: true, filePath: "/tmp/test.ts" };
+      }) as EphemeralDeps["ipcCall"],
+      logError: mock((msg: string) => {
+        order.push(`log:${msg.includes("mcx run") ? "hint" : "other"}`);
+      }),
+    });
+    options.EPHEMERAL_ALIAS_CHAR_THRESHOLD = 10;
+
+    const pending = maybeAutoSaveEphemeral("server", "get_logs", { query: "a".repeat(100) }, deps);
+    expect(order).toEqual(["save-start"]);
+
+    release?.();
+    await pending;
+
+    expect(order).toEqual(["save-start", "save-done", "log:hint"]);
   });
 });
