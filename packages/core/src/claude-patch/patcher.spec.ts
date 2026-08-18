@@ -1,10 +1,20 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { sha256Hex } from "../manifest-lock";
 import {
+  DEFAULT_DEPS,
   defaultExtractEntitlements,
   defaultResignBinary,
   defaultSmokeTest,
@@ -31,7 +41,13 @@ const enc = new TextEncoder();
 function makeFakeDeps(overrides: Partial<PatcherDeps> = {}): PatcherDeps {
   // Default fake deps that simulate a successful sign+smoke flow without
   // touching real codesign or spawning claude.
+  //
+  // `platform` is pinned to "darwin" so the signing path stays under test on
+  // every runner (the injected extract/resign doubles never shell out). The
+  // off-darwin skip branch is covered explicitly in the platform-gate block
+  // below — see #2982.
   return {
+    platform: "darwin",
     versionResolver: async () => "2.1.121",
     extractEntitlements: async () => "<plist><dict/></plist>",
     resignBinary: async () => {},
@@ -245,6 +261,144 @@ describe("updatePatchedClaude", () => {
     await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/entitlements/);
     const stagingFiles = readdirSync(storeDir).filter((f) => f.includes(".staging."));
     expect(stagingFiles).toHaveLength(0);
+  });
+});
+
+// Mach-O signing is macOS-only; off-darwin `codesign` doesn't exist and the
+// ELF copy needs no signature. Before #2982 the patcher ran it unconditionally,
+// so every `mcx claude patch-update` on Linux died with
+// "codesign -d failed: exit undefined" and spawn was unusable on the box.
+// `deps.platform` is injected here so BOTH branches run on ANY host.
+describe("Mach-O signing platform gate (#2982)", () => {
+  let tmpDir: string;
+  let storeDir: string;
+  /** Empty dir pointed at by TMPDIR during the patch, so the temp entitlements plist is observable. */
+  let plistScratch: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "patcher-platform-"));
+    storeDir = join(tmpDir, "store");
+    plistScratch = join(tmpDir, "tmp");
+    mkdirSync(plistScratch);
+  });
+
+  /** Run `fn` with os.tmpdir() redirected at the (empty) scratch dir. */
+  async function withScratchTmpdir<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.TMPDIR;
+    process.env.TMPDIR = plistScratch;
+    try {
+      return await fn();
+    } finally {
+      restoreEnv("TMPDIR", prev);
+    }
+  }
+
+  test("darwin: extracts entitlements, re-signs the staging copy, then smoke tests", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const calls: string[] = [];
+    const seen: { binPath?: string; entPath?: string; entContent?: string; tmpDuringSign?: string[] } = {};
+    const deps = makeFakeDeps({
+      platform: "darwin",
+      extractEntitlements: async (p) => {
+        calls.push(`extract:${p}`);
+        return "<plist><dict/></plist>";
+      },
+      resignBinary: async (binPath, entPath) => {
+        calls.push("resign");
+        seen.binPath = binPath;
+        seen.entPath = entPath;
+        seen.entContent = readFileSync(entPath, "utf-8");
+        seen.tmpDuringSign = readdirSync(plistScratch);
+      },
+      smokeTest: async (binPath) => {
+        calls.push(`smoke:${binPath.includes(".staging.")}`);
+      },
+    });
+
+    const result = await withScratchTmpdir(() => updatePatchedClaude({ sourcePath, storeDir }, deps));
+
+    expect(calls).toEqual([`extract:${sourcePath}`, "resign", "smoke:true"]);
+    // codesign runs against the staging copy — never the source, never the published path.
+    expect(seen.binPath).toContain("2.1.121.patched.staging.");
+    // The plist really existed on disk while codesign ran, holding the extracted entitlements.
+    expect(seen.entContent).toBe("<plist><dict/></plist>");
+    expect(seen.tmpDuringSign).toEqual([basename(seen.entPath ?? "")]);
+    // ...and is removed afterwards.
+    expect(readdirSync(plistScratch)).toEqual([]);
+    expect(result.status).toBe("patched");
+    expect(readdirSync(storeDir).sort()).toEqual(["2.1.121.meta.json", "2.1.121.patched", "current"]);
+  });
+
+  test("darwin: a real signing failure still aborts the patch and cleans up", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    let smokeCalls = 0;
+    const deps = makeFakeDeps({
+      platform: "darwin",
+      resignBinary: async () => {
+        throw new Error("codesign --force failed: exit 1");
+      },
+      smokeTest: async () => {
+        smokeCalls++;
+      },
+    });
+
+    await expect(withScratchTmpdir(() => updatePatchedClaude({ sourcePath, storeDir }, deps))).rejects.toThrow(
+      /codesign --force failed/,
+    );
+    expect(smokeCalls).toBe(0);
+    // Nothing published, no staging leftovers, no orphaned entitlements plist.
+    expect(readdirSync(storeDir)).toEqual([]);
+    expect(readdirSync(plistScratch)).toEqual([]);
+  });
+
+  for (const platform of ["linux", "win32"] as const) {
+    test(`${platform}: skips entitlements + re-sign entirely, still smoke tests and promotes`, async () => {
+      const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+      const calls: string[] = [];
+      const deps = makeFakeDeps({
+        platform,
+        extractEntitlements: async () => {
+          calls.push("extract");
+          return "<plist><dict/></plist>";
+        },
+        resignBinary: async () => {
+          calls.push("resign");
+        },
+        smokeTest: async (binPath) => {
+          calls.push(`smoke:${binPath.includes(".staging.")}`);
+        },
+      });
+
+      const result = await withScratchTmpdir(() => updatePatchedClaude({ sourcePath, storeDir }, deps));
+
+      // No codesign shell-outs at all — and no temp plist was ever written.
+      expect(calls).toEqual(["smoke:true"]);
+      expect(readdirSync(plistScratch)).toEqual([]);
+
+      expect(result.status).toBe("patched");
+      if (result.status !== "patched") throw new Error("typeguard");
+      expect(existsSync(result.patchedPath)).toBe(true);
+      expect(existsSync(result.currentLink)).toBe(true);
+      expect(readdirSync(storeDir).sort()).toEqual(["2.1.121.meta.json", "2.1.121.patched", "current"]);
+      // The promoted binary is the patched bytes, not the untouched source.
+      expect(new TextDecoder().decode(readFileSync(result.patchedPath))).not.toContain("claude-staging.fedstart.com");
+    });
+  }
+
+  test("off-darwin: a smoke-test failure still aborts (the gate skips signing, not verification)", async () => {
+    const sourcePath = makeFakeClaudeBinary(tmpDir, "2.1.121");
+    const deps = makeFakeDeps({
+      platform: "linux",
+      smokeTest: async () => {
+        throw new Error("simulated smoke test failure");
+      },
+    });
+    await expect(updatePatchedClaude({ sourcePath, storeDir }, deps)).rejects.toThrow(/smoke/);
+    expect(readdirSync(storeDir)).toEqual([]);
+  });
+
+  test("DEFAULT_DEPS wires the real host platform", () => {
+    expect(DEFAULT_DEPS.platform).toBe(process.platform);
   });
 });
 
