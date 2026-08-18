@@ -174,7 +174,7 @@ export const defaultDeps: ClaudeDeps = {
  *
  * Exported so tests can assert every member routes through `cmdClaudeInternal`.
  */
-export const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update"]);
+export const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update", "auth"]);
 
 /**
  * `mcx claude` — thin alias that routes to `mcx agent claude` for shared
@@ -265,6 +265,11 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     case "patch-update":
       await claudePatchUpdate(subArgs, d);
       break;
+    case "auth": {
+      const { claudeAuth } = await import("./claude-auth");
+      await claudeAuth(subArgs, d);
+      break;
+    }
     case "status": {
       const { cmdAgent } = await import("./agent");
       await cmdAgent(["claude", sub, ...subArgs], d);
@@ -272,7 +277,7 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     }
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", "worktrees", or "status".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", "auth", "worktrees", or "status".`,
       );
       d.exit(1);
   }
@@ -2298,6 +2303,9 @@ Usage:
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
   mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)
+  mcx claude auth ls [--json]              List saved auth profiles (Linux only)
+  mcx claude auth save <profile>           Snapshot the active Claude identity into a profile
+  mcx claude auth load <profile>           Switch the active Claude identity to a profile
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude

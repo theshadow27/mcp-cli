@@ -34,6 +34,10 @@ export function testOptions(input?: TestOptionsInput) {
   options.CACHE_DIR = join(dir, "cache");
   options.USER_SERVERS_PATH = join(dir, "servers.json");
   options.CLAUDE_CONFIG_PATH = join(dir, "claude.json");
+  options.CLAUDE_HOME_DIR = join(dir, "claude-home");
+  options.CLAUDE_CREDENTIALS_PATH = join(dir, "claude-home", ".credentials.json");
+  options.CLAUDE_POLICY_LIMITS_PATH = join(dir, "claude-home", "policy-limits.json");
+  options.AUTH_PROFILES_DIR = join(dir, "auth-profiles");
   options.PROJECTS_DIR = join(dir, "projects");
   options.TYPES_PATH = join(dir, "mcp-cli.d.ts");
   options.LOCK_PATH = join(dir, "mcpd.lock");
