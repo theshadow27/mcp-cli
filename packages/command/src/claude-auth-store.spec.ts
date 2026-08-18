@@ -1,19 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
+  type AuthErrorCode,
   type AuthPaths,
   AuthProfileError,
   type ClaudeAuthProfile,
@@ -22,11 +28,14 @@ import {
   listProfiles,
   loadProfile,
   patchClaudeConfigIdentity,
+  readActivePointer,
   readActiveProfileName,
   readProfile,
   saveProfile,
   summarizeProfile,
+  withExclusiveLock,
   writeFileAtomic,
+  writeProfile,
 } from "./claude-auth-store";
 
 // ── Fixtures ──
@@ -109,6 +118,51 @@ function load(paths: AuthPaths, name: string, env: Record<string, string | undef
 
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
+}
+
+/**
+ * Run `fn`, assert it threw an `AuthProfileError` with `code`, and hand the error back.
+ * Keeps the assertion inside the catch (the `test-empty-catch` rule) while still letting
+ * callers make further assertions about the state the failure left behind.
+ */
+function expectAuthError(fn: () => unknown, code: AuthErrorCode): AuthProfileError {
+  try {
+    fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(AuthProfileError);
+    expect((err as AuthProfileError).code).toBe(code);
+    return err as AuthProfileError;
+  }
+  throw new Error(`expected an AuthProfileError with code "${code}"`);
+}
+
+/** Access token inside a credential blob — used only to prove bytes survived, never printed. */
+function accessTokenOf(rawCredentials: string): string {
+  const token = JSON.parse(rawCredentials).claudeAiOauth?.accessToken;
+  if (typeof token !== "string") throw new Error("fixture has no access token");
+  return token;
+}
+
+/**
+ * Invariant (a) probe: does the outgoing credential blob exist anywhere under the
+ * profile store (profile file or backup)? Asserts on the bytes that survived rather
+ * than on what the API claims it did.
+ */
+function storeContainsCredentials(paths: AuthPaths, rawCredentials: string): boolean {
+  const needle = accessTokenOf(rawCredentials);
+  const walk = (dir: string): boolean => {
+    if (!existsSync(dir)) return false;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (walk(full)) return true;
+        continue;
+      }
+      if (readFileSync(full, "utf-8").includes(needle)) return true;
+    }
+    return false;
+  };
+  return walk(paths.profilesDir);
 }
 
 // ── save ──
@@ -312,24 +366,46 @@ describe("loadProfile", () => {
 
     expect(result.previousActive).toBeNull();
     expect(result.backupDir).not.toBeNull();
-    expect(result.warnings.join(" ")).toContain("no active profile was recorded");
+    expect(result.warnings.join(" ")).toContain("no profile owned the credentials");
     const rescued = JSON.parse(readFileSync(join(result.backupDir as string, "credentials.json"), "utf-8"));
     expect(rescued).toEqual(credentials()); // the pre-switch identity is recoverable
   });
 
-  test("dangling active pointer: warns and keeps an orphan backup", () => {
+  test("dangling active pointer: no write-back, and the outgoing blob still exists on disk", () => {
     using fs = sandbox();
     save(fs, "work");
     save(fs, "other");
     load(fs, "work"); // consumes the one-time "original" backup, active = work
+    const outgoing = readFileSync(fs.credentialsPath, "utf-8");
     rmSync(join(fs.profilesDir, "work.json"));
 
     const result = load(fs, "other");
 
     expect(result.wroteBack).toBeNull();
-    expect(result.orphanBackupDir).not.toBeNull();
     expect(result.warnings.join(" ")).toContain("no longer exists");
-    expect(existsSync(join(result.orphanBackupDir as string, "credentials.json"))).toBe(true);
+    // "other" holds an identical copy already, so nothing had to be backed up — but the
+    // bytes must still be findable somewhere in the store (invariant (a)).
+    expect(result.outgoingPreservedAs).toBe("already-stored");
+    expect(storeContainsCredentials(fs, outgoing)).toBe(true);
+  });
+
+  test("dangling active pointer whose credentials are unique: orphan backup keeps them", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    save(fs, "other");
+    load(fs, "work");
+    rmSync(join(fs.profilesDir, "work.json"));
+    // Claude refreshes the token, so no profile holds this blob any more.
+    const refreshed = credentials({ accessToken: "unique-after-refresh" });
+    writeFileSync(fs.credentialsPath, JSON.stringify(refreshed));
+
+    const result = load(fs, "other");
+
+    expect(result.outgoingPreservedAs).toBe("backup");
+    expect(result.orphanBackupDir).not.toBeNull();
+    expect(JSON.parse(readFileSync(join(result.orphanBackupDir as string, "credentials.json"), "utf-8"))).toEqual(
+      refreshed,
+    );
   });
 
   test("api-key profile leaves credentials untouched and warns about the env var", () => {
@@ -359,7 +435,8 @@ describe("loadProfile", () => {
     load(fs, "ci");
 
     const result = load(fs, "work");
-    expect(result.previousActive).toBe("ci");
+    // An api-key profile stores no tokens, so it can never be the owner of the live blob.
+    expect(result.previousActive).toBeNull();
     expect(result.wroteBack).toBeNull();
   });
 
@@ -524,14 +601,15 @@ describe("summarizeProfile / listProfiles", () => {
     save(fs, "zeta");
     save(fs, "alpha");
 
-    const summaries = listProfiles(fs, NOW);
-    expect(summaries.map((s) => s.name)).toEqual(["alpha", "zeta"]);
-    expect(summaries.filter((s) => s.active).map((s) => s.name)).toEqual(["alpha"]);
+    const { profiles, problems } = listProfiles(fs, NOW);
+    expect(profiles.map((s) => s.name)).toEqual(["alpha", "zeta"]);
+    expect(profiles.map((s) => s.active)).toEqual([true, false]);
+    expect(problems).toEqual([]);
   });
 
   test("returns an empty list when nothing has been saved", () => {
     using fs = sandbox();
-    expect(listProfiles(fs, NOW)).toEqual([]);
+    expect(listProfiles(fs, NOW)).toEqual({ profiles: [], problems: [] });
   });
 });
 
@@ -642,5 +720,353 @@ describe("saveProfile forceOauth", () => {
     expect(result.profile.kind).toBe("oauth");
     expect(result.profile.credentials).toEqual(credentials());
     expect(readFileSync(join(fs.profilesDir, "work.json"), "utf-8")).not.toContain("sk-ant-api03-SECRET");
+  });
+});
+
+// ── QA regressions: the outgoing blob must always survive (invariant (a)) ──
+
+describe("loadProfile — invariant (a): outgoing credentials always survive", () => {
+  test("P1-1: a token refreshed while an api-key profile is active is not destroyed", () => {
+    using fs = sandbox();
+    save(fs, "work"); // oauth, owns the live credentials
+    save(fs, "ci", {}, "MY_KEY"); // api-key profile, stores no tokens
+    load(fs, "ci"); // pointer moves to "ci"; credentials deliberately left alone
+
+    // Claude refreshes the token in place while "ci" is the recorded active profile.
+    const refreshed = credentials({ accessToken: "refreshed-under-api-key", refreshToken: "rt-REFRESHED" });
+    const refreshedRaw = JSON.stringify(refreshed);
+    writeFileSync(fs.credentialsPath, refreshedRaw);
+
+    const result = load(fs, "work");
+
+    // Before the fix the api-key pointer short-circuited the write-back with no backup,
+    // and the very next line overwrote .credentials.json — the refresh token was gone.
+    expect(result.credentialsWritten).toBe(true);
+    expect(storeContainsCredentials(fs, refreshedRaw)).toBe(true);
+    expect(result.outgoingPreservedAs).toBe("backup");
+    expect(result.warnings.join(" ")).toContain("api-key profile");
+  });
+
+  test("credentials belonging to an unknown account are backed up, never assumed", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    // Someone logs in as a different account outside mcx.
+    const foreign = credentials({ accessToken: "foreign-token" });
+    const foreignRaw = JSON.stringify(foreign);
+    writeFileSync(fs.credentialsPath, foreignRaw);
+    writeFileSync(
+      fs.claudeConfigPath,
+      JSON.stringify({ userID: "user-foreign", oauthAccount: oauthAccount("foreign@example.com") }),
+    );
+
+    const result = load(fs, "work");
+
+    expect(result.wroteBack).toBeNull();
+    expect(result.outgoingPreservedAs).toBe("backup");
+    expect(storeContainsCredentials(fs, foreignRaw)).toBe(true);
+    // The foreign blob must not have been filed under "work".
+    expect(readProfile(fs, "work")?.credentials).toEqual(credentials());
+  });
+
+  test("a refresh of the same account is still written back to its profile", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "second-identity" })));
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }));
+    save(fs, "personal");
+
+    // Same account as "personal" (identity untouched), new token bytes.
+    const refreshed = credentials({ accessToken: "personal-refreshed" });
+    writeFileSync(fs.credentialsPath, JSON.stringify(refreshed));
+
+    const result = load(fs, "work");
+
+    expect(result.wroteBack).toBe("personal");
+    expect(result.outgoingPreservedAs).toBe("write-back");
+    expect(readProfile(fs, "personal")?.credentials).toEqual(refreshed);
+  });
+});
+
+// ── QA regressions: all-or-nothing switch (invariant (f)) ──
+
+describe("loadProfile — torn-state protection", () => {
+  test("P1-2: a locked ~/.claude.json aborts before .credentials.json is touched", () => {
+    using fs = sandbox();
+    save(fs, "one");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "two-token" })));
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-two", oauthAccount: oauthAccount("two@x.com") }));
+    save(fs, "two"); // active = two
+
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+    const configBefore = readFileSync(fs.claudeConfigPath, "utf-8");
+
+    // flock(2) conflicts between distinct file descriptions, even inside one process.
+    const fd = openSync(fs.claudeConfigPath, "a+");
+    expect(tryFlockExclusive(fd)).toBe(true);
+    try {
+      expectAuthError(
+        () => loadProfile({ paths: fs, name: "one", env: {}, now: NOW, platform: "linux", lockDeadlineMs: 50 }),
+        "config-locked",
+      );
+
+      // Nothing may have been mutated: no half-switched identity.
+      expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+      expect(readFileSync(fs.claudeConfigPath, "utf-8")).toBe(configBefore);
+      const pointer = readActivePointer(fs);
+      expect(pointer?.name).toBe("two");
+      expect(pointer?.pending).toBeNull();
+    } finally {
+      flockUnlock(fd);
+      closeSync(fd);
+    }
+  });
+
+  test("P1-2: an interrupted switch is not trusted on the next load", () => {
+    using fs = sandbox();
+    save(fs, "one");
+    const oneCredentials = readProfile(fs, "one")?.credentials;
+
+    // Simulate a crash mid-switch: pointer still names "one" (with its fingerprint) and
+    // carries the pending marker, while the live blob is already somebody else's.
+    const pointerPath = join(fs.profilesDir, "active.json");
+    const pointer = JSON.parse(readFileSync(pointerPath, "utf-8"));
+    writeFileSync(pointerPath, JSON.stringify({ ...pointer, pending: "two" }));
+    const strangerRaw = JSON.stringify(credentials({ accessToken: "mid-switch-token" }));
+    writeFileSync(fs.credentialsPath, strangerRaw);
+
+    // A third profile to switch into, created without disturbing the pointer.
+    writeFileSync(
+      join(fs.profilesDir, "three.json"),
+      JSON.stringify({
+        version: 1,
+        name: "three",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        credentials: credentials({ accessToken: "three-token" }),
+        identity: { userID: "user-three" },
+      }),
+      { mode: 0o600 },
+    );
+
+    const result = load(fs, "three");
+
+    expect(result.wroteBack).toBeNull();
+    expect(result.warnings.join(" ")).toContain("interrupted");
+    // "one" must not have been contaminated with the mid-switch blob.
+    expect(readProfile(fs, "one")?.credentials).toEqual(oneCredentials);
+    expect(storeContainsCredentials(fs, strangerRaw)).toBe(true);
+  });
+
+  test("a second concurrent auth operation is refused rather than interleaved", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+
+    const fd = openSync(join(fs.profilesDir, ".operation.lock"), "a+");
+    expect(tryFlockExclusive(fd)).toBe(true);
+    try {
+      expectAuthError(
+        () => loadProfile({ paths: fs, name: "work", env: {}, now: NOW, platform: "linux", lockDeadlineMs: 50 }),
+        "config-locked",
+      );
+      expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+    } finally {
+      flockUnlock(fd);
+      closeSync(fd);
+    }
+  });
+});
+
+// ── QA regressions: api-key profiles hold no secrets (invariant (b)) ──
+
+describe("api-key profiles never hold credentials", () => {
+  test("P1-3: re-loading an api-key profile does not absorb the live OAuth tokens", () => {
+    using fs = sandbox();
+    save(fs, "ci", {}, "MY_KEY");
+    load(fs, "ci");
+    load(fs, "ci"); // second load previously hit the "refreshed" branch
+
+    const raw = readFileSync(join(fs.profilesDir, "ci.json"), "utf-8");
+    expect(raw).not.toContain(ACCESS_TOKEN);
+    expect(raw).not.toContain(REFRESH_TOKEN);
+    const profile = readProfile(fs, "ci");
+    expect(profile?.credentials).toBeUndefined();
+    expect(profile?.identity).toBeUndefined();
+  });
+
+  test("writeProfile strips credentials and identity from an api-key record", () => {
+    using fs = sandbox();
+    writeProfile(fs, {
+      version: 1,
+      name: "ci",
+      kind: "api-key",
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+      apiKeyEnvVar: "MY_KEY",
+      credentials: credentials(),
+      identity: { userID: "user-a" },
+    });
+
+    const raw = readFileSync(join(fs.profilesDir, "ci.json"), "utf-8");
+    expect(raw).not.toContain(ACCESS_TOKEN);
+    expect(JSON.parse(raw)).toEqual({
+      version: 1,
+      name: "ci",
+      kind: "api-key",
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+      apiKeyEnvVar: "MY_KEY",
+    });
+  });
+});
+
+// ── QA regressions: permissions, IO errors, corrupt files ──
+
+describe("loadProfile — file hygiene", () => {
+  test("a ~/.claude.json created by the switch is 0600, not 0664", () => {
+    using fs = sandbox({ claudeConfig: null });
+    save(fs, "work"); // owns the live credentials; no ~/.claude.json exists yet
+    writeFileSync(
+      join(fs.profilesDir, "other.json"),
+      JSON.stringify({
+        version: 1,
+        name: "other",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        credentials: credentials({ accessToken: "other-token" }),
+        identity: { userID: "user-a", oauthAccount: oauthAccount("a@example.com") },
+      }),
+      { mode: 0o600 },
+    );
+
+    const result = load(fs, "other");
+
+    expect(result.identityWritten).toBe(true);
+    expect(mode(fs.claudeConfigPath)).toBe(0o600);
+    expect(mode(fs.credentialsPath)).toBe(0o600);
+  });
+
+  test("a missing credentials directory is created rather than throwing ENOENT", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    rmSync(fs.credentialsPath);
+    rmSync(join(fs.root, ".claude"), { recursive: true });
+
+    const result = load(fs, "work");
+
+    expect(result.credentialsWritten).toBe(true);
+    expect(JSON.parse(readFileSync(fs.credentialsPath, "utf-8"))).toEqual(credentials());
+  });
+
+  test("an unusable credentials path surfaces as AuthProfileError, not a raw errno", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    // A regular file where a directory is expected → ENOTDIR from the write.
+    const blocker = join(fs.root, "blocker");
+    writeFileSync(blocker, "not a directory");
+    const brokenPaths = { ...fs, credentialsPath: join(blocker, ".credentials.json") };
+
+    const error = expectAuthError(
+      () => loadProfile({ paths: brokenPaths, name: "work", env: {}, now: NOW, platform: "linux" }),
+      "io",
+    );
+    expect(error.message).toMatch(/: E[A-Z]+$/);
+  });
+
+  test("an unreadable credentials file surfaces as AuthProfileError, not a raw errno", () => {
+    if (process.getuid?.() === 0) return; // root ignores mode bits — nothing to assert
+    using fs = sandbox();
+    save(fs, "work");
+    chmodSync(fs.credentialsPath, 0o000);
+
+    try {
+      expectAuthError(() => loadProfile({ paths: fs, name: "work", env: {}, now: NOW, platform: "linux" }), "io");
+    } finally {
+      chmodSync(fs.credentialsPath, 0o600);
+    }
+  });
+
+  test("a symlinked credentials file keeps its link instead of being replaced", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })));
+    save(fs, "other");
+
+    const realTarget = join(fs.root, "real-credentials.json");
+    rmSync(fs.credentialsPath);
+    writeFileSync(realTarget, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    symlinkSync(realTarget, fs.credentialsPath);
+
+    load(fs, "work");
+
+    expect(lstatSync(fs.credentialsPath).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(realTarget, "utf-8"))).toEqual(credentials());
+  });
+});
+
+describe("listProfiles — one bad file must not hide the rest", () => {
+  test("a corrupt profile is reported as a problem while healthy ones still list", () => {
+    using fs = sandbox();
+    save(fs, "good");
+    writeFileSync(join(fs.profilesDir, "broken.json"), "{ not json", { mode: 0o600 });
+
+    const { profiles, problems } = listProfiles(fs, NOW);
+
+    expect(profiles.map((p) => p.name)).toEqual(["good"]);
+    expect(problems.map((p) => p.name)).toEqual(["broken"]);
+    expect(problems[0].message).toContain("not valid JSON");
+  });
+});
+
+describe("loadProfile — rollback", () => {
+  test("a failure after the credentials write restores the previous bytes and pointer", () => {
+    using fs = sandbox();
+    save(fs, "one");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "two-token" })));
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-two", oauthAccount: oauthAccount("two@x.com") }));
+    save(fs, "two"); // active = two
+
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+    const configBefore = readFileSync(fs.claudeConfigPath, "utf-8");
+
+    expect(() =>
+      loadProfile({
+        paths: fs,
+        name: "one",
+        env: {},
+        now: NOW,
+        platform: "linux",
+        hooks: {
+          onAfterCredentialsWrite: () => {
+            throw new Error("simulated crash between credential and identity writes");
+          },
+        },
+      }),
+    ).toThrow("simulated crash");
+
+    expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+    expect(readFileSync(fs.claudeConfigPath, "utf-8")).toBe(configBefore);
+    const pointer = readActivePointer(fs);
+    expect(pointer?.name).toBe("two");
+    expect(pointer?.pending).toBeNull();
+  });
+
+  test("a failed lock acquisition does not leave an empty config file behind", () => {
+    using fs = sandbox({ claudeConfig: null });
+    expect(existsSync(fs.claudeConfigPath)).toBe(false);
+
+    expect(() =>
+      withExclusiveLock(
+        fs.claudeConfigPath,
+        () => {
+          throw new AuthProfileError("boom", "io");
+        },
+        50,
+      ),
+    ).toThrow(AuthProfileError);
+
+    expect(existsSync(fs.claudeConfigPath)).toBe(false);
   });
 });

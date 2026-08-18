@@ -91,8 +91,6 @@ const _originalOptions = {
   ALIASES_DIR,
   CACHE_DIR,
   CLAUDE_CONFIG_PATH: join(homedir(), ".claude.json"),
-  /** Claude Code's per-user state directory (~/.claude) */
-  CLAUDE_HOME_DIR: join(homedir(), ".claude"),
   /** Claude Code's OAuth credential file (Linux; on macOS these live in the Keychain) */
   CLAUDE_CREDENTIALS_PATH: join(homedir(), ".claude", ".credentials.json"),
   /** Claude Code's cached org-policy file — refetched on CLI startup */

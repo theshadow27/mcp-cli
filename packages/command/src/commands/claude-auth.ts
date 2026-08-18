@@ -11,6 +11,7 @@ import {
   type AuthPaths,
   AuthProfileError,
   type ProfileSummary,
+  assertPlatformSupported,
   defaultAuthPaths,
   listProfiles,
   loadProfile,
@@ -53,6 +54,9 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
   };
 }
 
+/** Subcommands that read or write Claude's own credential files. */
+const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load"]);
+
 const AUTH_SUBCOMMANDS = ["save", "load", "ls"] as const;
 type AuthSubcommand = (typeof AUTH_SUBCOMMANDS)[number];
 
@@ -61,8 +65,23 @@ function isAuthSubcommand(value: string): value is AuthSubcommand {
 }
 
 export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Partial<AuthEnvDeps>): Promise<void> {
-  const envDeps = resolveEnvDeps(overrides);
   const sub = args[0] ?? "";
+
+  // Platform gate first: on an unsupported platform we must not even stat Claude's
+  // files, so the "nothing was read or written" promise is literally true.
+  if (MUTATING_SUBCOMMANDS.has(sub)) {
+    try {
+      assertPlatformSupported(overrides?.platform ?? process.platform);
+    } catch (err) {
+      if (err instanceof AuthProfileError) {
+        d.printError(err.message);
+        return d.exit(EXIT_UNSUPPORTED_PLATFORM);
+      }
+      throw err;
+    }
+  }
+
+  const envDeps = resolveEnvDeps(overrides);
 
   if (!isAuthSubcommand(sub)) {
     d.printError(
@@ -199,6 +218,7 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
         : `  "${result.wroteBack}" was already up to date`,
     );
   }
+  if (result.outgoingPreservedAs === "already-stored") d.log("  outgoing credentials were already stored in a profile");
   if (result.backupDir) d.log(`  backed up pre-existing credentials to ${result.backupDir}`);
   if (result.orphanBackupDir) d.log(`  backed up unattributed credentials to ${result.orphanBackupDir}`);
   if (result.credentialsWritten) d.log("  credentials written");
@@ -207,7 +227,10 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
 }
 
 async function runLs(json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
-  const summaries = listProfiles(envDeps.paths, envDeps.now());
+  const { profiles: summaries, problems } = listProfiles(envDeps.paths, envDeps.now());
+
+  // A hand-edited profile must never hide the healthy ones — report it, keep going.
+  for (const problem of problems) d.printInfo(`warning: profile "${problem.name}" is unreadable: ${problem.message}`);
 
   if (json) {
     d.log(JSON.stringify(summaries, null, 2));

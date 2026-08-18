@@ -12,13 +12,21 @@
  * per profile means a profile swap is a single `rename()` — there is no window in
  * which credentials have been updated but identity has not.
  *
- * Security invariants (enforced by tests):
- *   - API key **values** are never stored. An `api-key` profile records only the
- *     NAME of the env var that is expected to carry the key.
- *   - Token values are never returned by any summary/list/format function.
- *   - The profile directory is 0700, every file 0600.
- *   - Every write is atomic (temp file + `rename`), so a crash can never leave a
- *     truncated `.credentials.json` behind.
+ * Safety invariants (each pinned by a test that fails without its guard):
+ *   (a) `.credentials.json` is never overwritten unless the *outgoing* blob already
+ *       exists somewhere on disk — written back to its origin profile, already stored
+ *       in some profile, or copied into a backup directory. Attribution is evidence-
+ *       based (see `attributeLiveCredentials`); when ownership cannot be proven we
+ *       back up rather than guess.
+ *   (b) An `api-key` profile never contains `credentials` or `identity`. API key
+ *       VALUES are never stored — only the NAME of the env var expected to carry one.
+ *   (c) Token values are never returned by any summary/list/format function.
+ *   (d) The profile directory is 0700, every file (ours and any we create) 0600.
+ *   (e) Every write is atomic (temp file + fsync + `rename`), so a crash can never
+ *       leave a truncated `.credentials.json` behind.
+ *   (f) A switch is all-or-nothing: the `~/.claude.json` lock is taken *before* the
+ *       credentials are replaced, a `pending` marker records an in-flight switch, and
+ *       a failure part-way rolls the credential file back.
  *
  * macOS is not supported yet: credentials live in the Keychain there, not in a
  * file (see `assertPlatformSupported`).
@@ -29,14 +37,17 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { flockUnlock, options, tryFlockExclusive } from "@mcp-cli/core";
@@ -120,8 +131,8 @@ export interface AuthPaths {
  * With `CLAUDE_CONFIG_DIR` unset the paths come from `options`, which tests override.
  */
 export function defaultAuthPaths(env: Record<string, string | undefined> = process.env): AuthPaths {
-  const configDir = env.CLAUDE_CONFIG_DIR?.trim() ? env.CLAUDE_CONFIG_DIR : undefined;
-  const secureDir = env.CLAUDE_SECURESTORAGE_CONFIG_DIR?.trim() ? env.CLAUDE_SECURESTORAGE_CONFIG_DIR : undefined;
+  const configDir = trimmedEnv(env.CLAUDE_CONFIG_DIR);
+  const secureDir = trimmedEnv(env.CLAUDE_SECURESTORAGE_CONFIG_DIR);
 
   const credentialsRoot = secureDir ?? configDir;
   const credentialsPath = credentialsRoot
@@ -143,18 +154,29 @@ export function defaultAuthPaths(env: Record<string, string | undefined> = proce
   };
 }
 
-/** Raised for every expected failure so the CLI can map it to an exit code without message sniffing. */
+/** Env value with surrounding whitespace removed, or undefined when unset/blank. */
+function trimmedEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/** Stable, machine-readable failure codes so the CLI maps errors without message sniffing. */
+export const AUTH_ERROR_CODES = [
+  "unsupported-platform",
+  "invalid-name",
+  "not-found",
+  "no-credentials",
+  "config-locked",
+  "config-unreadable",
+  "io",
+] as const;
+export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
+
+/** Raised for every expected failure so the CLI can map it to an exit code. */
 export class AuthProfileError extends Error {
   constructor(
     message: string,
-    /** Stable, machine-readable failure code. */
-    readonly code:
-      | "unsupported-platform"
-      | "invalid-name"
-      | "not-found"
-      | "no-credentials"
-      | "config-locked"
-      | "config-unreadable",
+    readonly code: AuthErrorCode,
     errorOptions?: ErrorOptions,
   ) {
     super(message, errorOptions);
@@ -168,6 +190,7 @@ const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const ACTIVE_FILE = "active.json";
+const OPERATION_LOCK_FILE = ".operation.lock";
 const BACKUPS_DIR = "backups";
 const ORIGINAL_BACKUP = "original";
 
@@ -186,23 +209,71 @@ export function profilePath(paths: AuthPaths, name: string): string {
 }
 
 export function ensureProfilesDir(paths: AuthPaths): void {
-  mkdirSync(paths.profilesDir, { recursive: true, mode: DIR_MODE });
-  // mkdir's mode argument is masked by umask; force the bits for a pre-existing dir too.
-  chmodSync(paths.profilesDir, DIR_MODE);
+  io(`create ${paths.profilesDir}`, () => {
+    mkdirSync(paths.profilesDir, { recursive: true, mode: DIR_MODE });
+    // mkdir's mode argument is masked by umask; force the bits for a pre-existing dir too.
+    chmodSync(paths.profilesDir, DIR_MODE);
+  });
 }
 
 // ── Low-level IO ──
 
-/** Write `content` to `path` via temp file + rename. A crash can never leave a truncated target. */
-export function writeFileAtomic(path: string, content: string, mode: number = FILE_MODE): void {
-  const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  writeFileSync(tmp, content, { mode });
-  chmodSync(tmp, mode); // umask-proof
-  renameSync(tmp, path);
+/**
+ * Run a filesystem operation, converting errno failures (ENOENT, EACCES, …) into an
+ * `AuthProfileError` so the CLI prints one clean line instead of a stack trace (#2821).
+ */
+function io<T>(what: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof AuthProfileError) throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (!code) throw err;
+    throw new AuthProfileError(`Could not ${what}: ${code}`, "io", { cause: err });
+  }
 }
 
-function readJsonObject(path: string, what: string): Record<string, unknown> {
-  const raw = readFileSync(path, "utf-8");
+/**
+ * Write `content` to `path` via temp file + fsync + rename — a crash can never leave a
+ * truncated target. A symlinked target is replaced through its realpath so the link is
+ * not silently swapped for a regular file, and the temp file is removed on any failure.
+ */
+export function writeFileAtomic(path: string, content: string, mode: number = FILE_MODE): void {
+  const target = resolveLinkTarget(path);
+  const tmp = `${target}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  io(`write ${target}`, () => {
+    try {
+      const fd = openSync(tmp, "w", mode);
+      try {
+        writeSync(fd, content);
+        fsyncSync(fd); // durability: the bytes are on disk before the rename publishes them
+      } finally {
+        closeSync(fd);
+      }
+      chmodSync(tmp, mode); // umask-proof
+      renameSync(tmp, target);
+    } catch (err) {
+      if (existsSync(tmp)) unlinkSync(tmp);
+      throw err;
+    }
+  });
+}
+
+/** Follow a symlink to the file it points at, so atomic replace keeps the link intact. */
+function resolveLinkTarget(path: string): string {
+  try {
+    if (lstatSync(path).isSymbolicLink()) return realpathSync(path);
+  } catch {
+    // Path does not exist yet — write it directly. (Not an error: first write.)
+  }
+  return path;
+}
+
+function readTextFile(path: string, what: string): string {
+  return io(`read ${what} at ${path}`, () => readFileSync(path, "utf-8"));
+}
+
+function parseJsonObject(raw: string, path: string, what: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -217,6 +288,15 @@ function readJsonObject(path: string, what: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function readJsonObject(path: string, what: string): Record<string, unknown> {
+  return parseJsonObject(readTextFile(path, what), path, what);
+}
+
+/** SHA-256 of a credential blob's exact bytes — provenance evidence, never a secret itself. */
+export function fingerprintCredentials(raw: string): string {
+  return new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+}
+
 /** File mode bits (permission bits only), or `fallback` when the file is absent. */
 function modeOf(path: string, fallback: number): number {
   if (!existsSync(path)) return fallback;
@@ -229,15 +309,20 @@ const LOCK_RETRY_MS = 25;
 /**
  * Run `fn` while holding an exclusive advisory lock on `path`.
  *
- * Claude Code rewrites `~/.claude.json` in place while it runs, so the lock plus
- * the mtime re-check in `patchClaudeConfigIdentity` is our concurrency defence.
- * The lock is kernel-managed and released on process death.
+ * Claude Code rewrites `~/.claude.json` in place while it runs, so the lock plus the
+ * mtime re-check in `patchIdentityLocked` is our concurrency defence. The lock is
+ * kernel-managed and released on process death. A file we had to create for the lock
+ * is removed again if it is still empty when the operation fails, so a failed switch
+ * leaves no stray zero-byte config behind.
  */
 export function withExclusiveLock<T>(path: string, fn: () => T, deadlineMs = LOCK_DEADLINE_MS): T {
-  // "a+" creates the file if absent and never truncates an existing one.
-  const fd = openSync(path, "a+");
+  const createdByUs = !existsSync(path);
+  // "a+" creates the file if absent and never truncates an existing one; 0600 at
+  // creation time so a fresh ~/.claude.json is never born group/world readable.
+  const fd = io(`open ${path}`, () => openSync(path, "a+", FILE_MODE));
   const deadline = Date.now() + deadlineMs;
   let held = false;
+  let ok = false;
   try {
     while (!held) {
       held = tryFlockExclusive(fd);
@@ -247,6 +332,36 @@ export function withExclusiveLock<T>(path: string, fn: () => T, deadlineMs = LOC
           `${path} is locked by another process (is Claude Code running?) — retry in a moment`,
           "config-locked",
         );
+      }
+      Bun.sleepSync(LOCK_RETRY_MS);
+    }
+    const result = fn();
+    ok = true;
+    return result;
+  } finally {
+    if (held) flockUnlock(fd);
+    closeSync(fd);
+    if (!ok && createdByUs && existsSync(path) && statSync(path).size === 0) unlinkSync(path);
+  }
+}
+
+/**
+ * Serialize a whole `save`/`load` against other mcx processes. Without it two
+ * concurrent `auth load` runs interleave their read-modify-write and produce the same
+ * torn state a mid-flight crash would.
+ */
+export function withOperationLock<T>(paths: AuthPaths, fn: () => T, deadlineMs = LOCK_DEADLINE_MS): T {
+  ensureProfilesDir(paths);
+  const lockPath = join(paths.profilesDir, OPERATION_LOCK_FILE);
+  const fd = io(`open ${lockPath}`, () => openSync(lockPath, "a+", FILE_MODE));
+  const deadline = Date.now() + deadlineMs;
+  let held = false;
+  try {
+    while (!held) {
+      held = tryFlockExclusive(fd);
+      if (held) break;
+      if (Date.now() >= deadline) {
+        throw new AuthProfileError("another mcx claude auth command is running — retry in a moment", "config-locked");
       }
       Bun.sleepSync(LOCK_RETRY_MS);
     }
@@ -261,7 +376,7 @@ export function withExclusiveLock<T>(path: string, fn: () => T, deadlineMs = LOC
 
 export function listProfileNames(paths: AuthPaths): string[] {
   if (!existsSync(paths.profilesDir)) return [];
-  return readdirSync(paths.profilesDir)
+  return io(`list ${paths.profilesDir}`, () => readdirSync(paths.profilesDir))
     .filter((f) => f.endsWith(".json") && f !== ACTIVE_FILE)
     .map((f) => f.slice(0, -".json".length))
     .filter((name) => PROFILE_NAME_RE.test(name))
@@ -272,19 +387,40 @@ export function readProfile(paths: AuthPaths, name: string): ClaudeAuthProfile |
   const path = profilePath(paths, name);
   if (!existsSync(path)) return null;
   const raw = readJsonObject(path, `Profile "${name}"`);
-  return raw as unknown as ClaudeAuthProfile;
+  return { ...(raw as unknown as ClaudeAuthProfile), name };
 }
 
-export function writeProfile(paths: AuthPaths, profile: ClaudeAuthProfile): void {
+/**
+ * Write a profile record.
+ *
+ * Chokepoint for invariant (b): an api-key profile is stripped of any credential or
+ * identity material on the way to disk, so no future code path can smuggle tokens into
+ * one by constructing the object carelessly.
+ */
+export function writeProfile(paths: AuthPaths, profile: ClaudeAuthProfile): ClaudeAuthProfile {
+  const record: ClaudeAuthProfile = { ...profile };
+  if (record.kind === "api-key") {
+    record.credentials = undefined;
+    record.identity = undefined;
+  }
   ensureProfilesDir(paths);
-  writeFileAtomic(profilePath(paths, profile.name), `${JSON.stringify(profile, null, 2)}\n`);
+  // JSON.stringify drops undefined-valued keys, so the stripped fields never hit disk.
+  writeFileAtomic(profilePath(paths, record.name), `${JSON.stringify(record, null, 2)}\n`);
+  return record;
 }
 
-/** Which profile the live credential file currently holds, and where that file was. */
+/**
+ * Which profile the live credential file holds, where that file was, and the
+ * fingerprint of the exact blob mcx last wrote there.
+ */
 export interface ActivePointer {
   name: string;
-  /** Credential path the pointer was written for. Null for pointers written before this field existed. */
+  /** Credential path the pointer was written for. Null for pointers predating the field. */
   credentialsPath: string | null;
+  /** SHA-256 of the credential blob mcx wrote. Null for pointers predating the field. */
+  credentialsFingerprint: string | null;
+  /** Set while a switch is in flight — its presence means a previous run was interrupted. */
+  pending: string | null;
 }
 
 export function readActivePointer(paths: AuthPaths): ActivePointer | null {
@@ -293,25 +429,42 @@ export function readActivePointer(paths: AuthPaths): ActivePointer | null {
   const raw = readJsonObject(path, "Active-profile pointer");
   const name = raw.profile;
   if (typeof name !== "string" || !PROFILE_NAME_RE.test(name)) return null;
-  return { name, credentialsPath: typeof raw.credentialsPath === "string" ? raw.credentialsPath : null };
+  return {
+    name,
+    credentialsPath: typeof raw.credentialsPath === "string" ? raw.credentialsPath : null,
+    credentialsFingerprint: typeof raw.credentialsFingerprint === "string" ? raw.credentialsFingerprint : null,
+    pending: typeof raw.pending === "string" ? raw.pending : null,
+  };
 }
 
 export function readActiveProfileName(paths: AuthPaths): string | null {
   return readActivePointer(paths)?.name ?? null;
 }
 
-export function writeActiveProfileName(paths: AuthPaths, name: string, now: Date): void {
+interface PointerWrite {
+  name: string;
+  credentialsFingerprint: string | null;
+  pending?: string;
+}
+
+function writeActivePointer(paths: AuthPaths, pointer: PointerWrite, now: Date): void {
   ensureProfilesDir(paths);
-  writeFileAtomic(
-    join(paths.profilesDir, ACTIVE_FILE),
-    `${JSON.stringify({ profile: name, since: now.toISOString(), credentialsPath: paths.credentialsPath }, null, 2)}\n`,
-  );
+  const record = {
+    profile: pointer.name,
+    since: now.toISOString(),
+    credentialsPath: paths.credentialsPath,
+    credentialsFingerprint: pointer.credentialsFingerprint,
+    ...(pointer.pending ? { pending: pointer.pending } : {}),
+  };
+  writeFileAtomic(join(paths.profilesDir, ACTIVE_FILE), `${JSON.stringify(record, null, 2)}\n`);
 }
 
 // ── Live state ──
 
 export interface LiveState {
   credentials: Record<string, unknown> | null;
+  /** Exact bytes of the credential file, for fingerprinting and rollback. */
+  credentialsRaw: string | null;
   identity: StoredIdentity;
   policy: StoredPolicy | null;
 }
@@ -333,9 +486,12 @@ function readPolicySnapshot(paths: AuthPaths, now: Date): StoredPolicy | null {
 
 /** Read the currently-active identity off disk. Never mutates anything. */
 export function readLiveState(paths: AuthPaths, now: Date): LiveState {
-  const credentials = existsSync(paths.credentialsPath)
-    ? readJsonObject(paths.credentialsPath, "Claude credentials")
-    : null;
+  let credentials: Record<string, unknown> | null = null;
+  let credentialsRaw: string | null = null;
+  if (existsSync(paths.credentialsPath)) {
+    credentialsRaw = readTextFile(paths.credentialsPath, "Claude credentials");
+    credentials = parseJsonObject(credentialsRaw, paths.credentialsPath, "Claude credentials");
+  }
 
   const identity: StoredIdentity = {};
   if (existsSync(paths.claudeConfigPath)) {
@@ -347,7 +503,7 @@ export function readLiveState(paths: AuthPaths, now: Date): LiveState {
     }
   }
 
-  return { credentials, identity, policy: readPolicySnapshot(paths, now) };
+  return { credentials, credentialsRaw, identity, policy: readPolicySnapshot(paths, now) };
 }
 
 /**
@@ -374,54 +530,63 @@ function applyIdentity(config: Record<string, unknown>, identity: StoredIdentity
 }
 
 /**
- * Patch only `userID` / `oauthAccount` in `~/.claude.json`, preserving every other
- * key and the file's existing permissions.
+ * Patch `userID` / `oauthAccount` in `~/.claude.json`. Caller must already hold the
+ * exclusive lock on `path` (see `withExclusiveLock`).
  *
- * Concurrency: the read-modify-write runs under an exclusive advisory lock, and the
- * file's mtime+size are re-checked immediately before the rename. If Claude Code
- * rewrote the file underneath us we retry rather than clobber its changes.
+ * The file's mtime+size are re-checked immediately before the rename: if Claude Code
+ * rewrote the file underneath us we re-read and retry rather than clobber its changes.
+ * A file that did not exist before is created 0600; an existing file keeps its mode.
  */
+function patchIdentityLocked(path: string, identity: StoredIdentity, existedBefore: boolean, attempts = 3): void {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const before = existsSync(path) ? statSync(path) : null;
+    const config = before && before.size > 0 ? readJsonObject(path, "~/.claude.json") : {};
+
+    const next = applyIdentity(config, identity);
+
+    const after = existsSync(path) ? statSync(path) : null;
+    const changedUnderUs =
+      (before === null) !== (after === null) ||
+      (before !== null && after !== null && (before.mtimeMs !== after.mtimeMs || before.size !== after.size));
+    if (changedUnderUs) continue; // another writer won the race — re-read and retry
+
+    // `withExclusiveLock` may have created the file (as an empty 0600 stub) purely to
+    // hold the lock — that must not be mistaken for a pre-existing file whose mode we
+    // are meant to preserve.
+    writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`, existedBefore ? modeOf(path, FILE_MODE) : FILE_MODE);
+    return;
+  }
+  throw new AuthProfileError(
+    `${path} kept changing while writing identity keys (is Claude Code running?) — retry in a moment`,
+    "config-locked",
+  );
+}
+
+/** Locking wrapper around `patchIdentityLocked`, for callers outside a switch. */
 export function patchClaudeConfigIdentity(path: string, identity: StoredIdentity, attempts = 3): void {
-  withExclusiveLock(path, () => {
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const before = existsSync(path) ? statSync(path) : null;
-      const config = before && before.size > 0 ? readJsonObject(path, "~/.claude.json") : {};
-
-      const next = applyIdentity(config, identity);
-
-      const after = existsSync(path) ? statSync(path) : null;
-      const changedUnderUs =
-        (before === null) !== (after === null) ||
-        (before !== null && after !== null && (before.mtimeMs !== after.mtimeMs || before.size !== after.size));
-      if (changedUnderUs) continue; // another writer won the race — re-read and retry
-
-      writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`, modeOf(path, FILE_MODE));
-      return;
-    }
-    throw new AuthProfileError(
-      `${path} kept changing while writing identity keys (is Claude Code running?) — retry in a moment`,
-      "config-locked",
-    );
-  });
+  const existedBefore = existsSync(path);
+  withExclusiveLock(path, () => patchIdentityLocked(path, identity, existedBefore, attempts));
 }
 
 // ── Backups ──
 
 /** Copy the live identity files into `dir`. Missing files are skipped. */
 function backupLiveFiles(paths: AuthPaths, dir: string): string {
-  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-  chmodSync(dir, DIR_MODE);
-  for (const [src, name] of [
-    [paths.credentialsPath, "credentials.json"],
-    [paths.claudeConfigPath, "claude.json"],
-    [paths.policyLimitsPath, "policy-limits.json"],
-  ] as const) {
-    if (!existsSync(src)) continue;
-    const dest = join(dir, name);
-    copyFileSync(src, dest);
-    chmodSync(dest, FILE_MODE);
-  }
-  return dir;
+  return io(`write backup ${dir}`, () => {
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    chmodSync(dir, DIR_MODE);
+    for (const [src, name] of [
+      [paths.credentialsPath, "credentials.json"],
+      [paths.claudeConfigPath, "claude.json"],
+      [paths.policyLimitsPath, "policy-limits.json"],
+    ] as const) {
+      if (!existsSync(src)) continue;
+      const dest = join(dir, name);
+      copyFileSync(src, dest);
+      chmodSync(dest, FILE_MODE);
+    }
+    return dir;
+  });
 }
 
 /**
@@ -439,7 +604,13 @@ export function backupOriginals(paths: AuthPaths): string | null {
 export function backupOrphan(paths: AuthPaths, now: Date): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-");
   ensureProfilesDir(paths);
-  return backupLiveFiles(paths, join(paths.profilesDir, BACKUPS_DIR, `orphan-${stamp}`));
+  let dir = join(paths.profilesDir, BACKUPS_DIR, `orphan-${stamp}`);
+  // Two orphan backups inside the same millisecond (or with an injected clock) must not
+  // overwrite each other — the whole point is that nothing is lost.
+  for (let suffix = 2; existsSync(dir); suffix++) {
+    dir = join(paths.profilesDir, BACKUPS_DIR, `orphan-${stamp}-${suffix}`);
+  }
+  return backupLiveFiles(paths, dir);
 }
 
 // ── Platform support ──
@@ -467,6 +638,8 @@ export interface SaveOptions {
   platform: string;
   /** Force an api-key profile bound to this env var name (implies kind "api-key"). */
   apiKeyEnvVar?: string;
+  /** How long to wait for the operation/config locks (ms). Injected by tests. */
+  lockDeadlineMs?: number;
   /**
    * Capture the OAuth credentials even when an API key is present in `env`.
    * Needed because a shell with `ANTHROPIC_API_KEY` exported would otherwise
@@ -490,60 +663,67 @@ export function saveProfile(opts: SaveOptions): SaveResult {
   assertPlatformSupported(platform);
   validateProfileName(name);
 
-  const warnings: string[] = [];
-  const existing = readProfile(paths, name);
-  const apiKeyEnvVar = opts.forceOauth
-    ? undefined
-    : (opts.apiKeyEnvVar ?? (env[DEFAULT_API_KEY_ENV] ? DEFAULT_API_KEY_ENV : undefined));
-  const kind: ProfileKind = apiKeyEnvVar ? "api-key" : "oauth";
-  const live = readLiveState(paths, now);
+  return withOperationLock(
+    paths,
+    () => {
+      const warnings: string[] = [];
+      const existing = readProfile(paths, name);
+      const apiKeyEnvVar = opts.forceOauth
+        ? undefined
+        : (opts.apiKeyEnvVar ?? (env[DEFAULT_API_KEY_ENV] ? DEFAULT_API_KEY_ENV : undefined));
+      const kind: ProfileKind = apiKeyEnvVar ? "api-key" : "oauth";
+      const live = readLiveState(paths, now);
 
-  const profile: ClaudeAuthProfile = {
-    version: PROFILE_VERSION,
-    name,
-    kind,
-    createdAt: existing?.createdAt ?? now.toISOString(),
-    updatedAt: now.toISOString(),
-  };
-  if (live.policy) profile.policy = live.policy;
+      const profile: ClaudeAuthProfile = {
+        version: PROFILE_VERSION,
+        name,
+        kind,
+        createdAt: existing?.createdAt ?? now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      if (live.policy) profile.policy = live.policy;
 
-  if (kind === "api-key") {
-    // Record the env var NAME only — never the key value, and never someone
-    // else's OAuth tokens that merely happen to be on disk right now.
-    profile.apiKeyEnvVar = apiKeyEnvVar;
-    if (!env[apiKeyEnvVar as string]) {
-      warnings.push(`${apiKeyEnvVar} is not set in this environment — the profile records the variable name only`);
-    }
-    if (live.credentials) {
-      warnings.push(
-        `live OAuth credentials in ${paths.credentialsPath} were NOT captured (api-key profiles store no tokens)`,
-      );
-    }
-  } else {
-    if (!live.credentials) {
-      throw new AuthProfileError(
-        `No Claude credentials found at ${paths.credentialsPath} — log in with claude first, or set ${DEFAULT_API_KEY_ENV} to save an api-key profile`,
-        "no-credentials",
-      );
-    }
-    profile.credentials = live.credentials;
-    profile.identity = live.identity;
-    if (live.identity.userID === undefined && live.identity.oauthAccount === undefined) {
-      warnings.push(`no userID/oauthAccount found in ${paths.claudeConfigPath} — only credentials were captured`);
-    }
-  }
+      if (kind === "api-key") {
+        // Record the env var NAME only — never the key value, and never someone
+        // else's OAuth tokens that merely happen to be on disk right now.
+        profile.apiKeyEnvVar = apiKeyEnvVar;
+        if (!env[apiKeyEnvVar as string]) {
+          warnings.push(`${apiKeyEnvVar} is not set in this environment — the profile records the variable name only`);
+        }
+        if (live.credentials) {
+          warnings.push(
+            `live OAuth credentials in ${paths.credentialsPath} were NOT captured (api-key profiles store no tokens)`,
+          );
+        }
+      } else {
+        if (!live.credentials || !live.credentialsRaw) {
+          throw new AuthProfileError(
+            `No Claude credentials found at ${paths.credentialsPath} — log in with claude first, or set ${DEFAULT_API_KEY_ENV} to save an api-key profile`,
+            "no-credentials",
+          );
+        }
+        profile.credentials = live.credentials;
+        profile.identity = live.identity;
+        if (live.identity.userID === undefined && live.identity.oauthAccount === undefined) {
+          warnings.push(`no userID/oauthAccount found in ${paths.claudeConfigPath} — only credentials were captured`);
+        }
+      }
 
-  writeProfile(paths, profile);
+      const stored = writeProfile(paths, profile);
 
-  // An oauth save establishes provenance for the live credentials: the next
-  // `load` knows where to write a refreshed token back to.
-  let becameActive = false;
-  if (kind === "oauth") {
-    writeActiveProfileName(paths, name, now);
-    becameActive = true;
-  }
+      // An oauth save establishes provenance for the live credentials: the pointer
+      // records both the profile and the fingerprint of the blob it describes, so the
+      // next `load` can prove (not assume) whose tokens are live.
+      let becameActive = false;
+      if (kind === "oauth" && live.credentialsRaw) {
+        writeActivePointer(paths, { name, credentialsFingerprint: fingerprintCredentials(live.credentialsRaw) }, now);
+        becameActive = true;
+      }
 
-  return { profile, replaced: existing !== null, becameActive, warnings };
+      return { profile: stored, replaced: existing !== null, becameActive, warnings };
+    },
+    opts.lockDeadlineMs,
+  );
 }
 
 // ── load ──
@@ -554,6 +734,15 @@ export interface LoadOptions {
   env: Record<string, string | undefined>;
   now: Date;
   platform: string;
+  /** How long to wait for the operation/config locks (ms). Injected by tests. */
+  lockDeadlineMs?: number;
+  /**
+   * Fault-injection seam. `onAfterCredentialsWrite` runs inside the switch, right after
+   * `.credentials.json` has been replaced and before the identity patch — the only
+   * window where a rollback is needed. Tests use it to prove the rollback works; nothing
+   * in production sets it.
+   */
+  hooks?: { onAfterCredentialsWrite?: () => void };
 }
 
 export interface LoadResult {
@@ -565,6 +754,8 @@ export interface LoadResult {
   wroteBackChanged: boolean;
   backupDir: string | null;
   orphanBackupDir: string | null;
+  /** How the outgoing credentials were preserved — the evidence for invariant (a). */
+  outgoingPreservedAs: "write-back" | "already-stored" | "backup" | "nothing-to-preserve";
   credentialsWritten: boolean;
   identityWritten: boolean;
   policyInvalidated: boolean;
@@ -577,9 +768,99 @@ function jsonEquals(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function accountUuid(identity: StoredIdentity | undefined): string | null {
+  const value = identity?.oauthAccount?.accountUuid;
+  return typeof value === "string" ? value : null;
+}
+
+type AttributionReason =
+  | "no-live-credentials"
+  | "no-pointer"
+  | "other-config-dir"
+  | "interrupted-switch"
+  | "pointer-profile-missing"
+  | "api-key-pointer"
+  | "fingerprint-match"
+  | "stored-copy-match"
+  | "refreshed-same-account"
+  | "unrecognized-credentials";
+
+interface Attribution {
+  /** Profile that provably owns the live credentials, or null when ownership is unproven. */
+  owner: ClaudeAuthProfile | null;
+  reason: AttributionReason;
+}
+
+/**
+ * Decide who owns the credentials currently on disk — on evidence, never on the
+ * pointer alone. The pointer says what mcx *last wrote*; anything else on disk got
+ * there some other way, and guessing is how a live refresh token gets overwritten.
+ *
+ * Ownership is proven when either:
+ *   - the live blob is byte-identical to what the pointer recorded (or to the copy the
+ *     profile already stores), or
+ *   - the blob changed but `~/.claude.json` still names the same account as the
+ *     profile — the signature of Claude refreshing the token in place.
+ *
+ * A pointer left in `pending` state (an interrupted switch) is never trusted: in that
+ * state the live blob and the recorded identity can belong to different profiles.
+ */
+function attributeLiveCredentials(paths: AuthPaths, live: LiveState, pointer: ActivePointer | null): Attribution {
+  if (!live.credentials || !live.credentialsRaw) return { owner: null, reason: "no-live-credentials" };
+  if (!pointer) return { owner: null, reason: "no-pointer" };
+  if (pointer.credentialsPath !== null && pointer.credentialsPath !== paths.credentialsPath) {
+    return { owner: null, reason: "other-config-dir" };
+  }
+  if (pointer.pending) return { owner: null, reason: "interrupted-switch" };
+
+  const origin = readProfileSafely(paths, pointer.name);
+  if (!origin) return { owner: null, reason: "pointer-profile-missing" };
+  // api-key profiles hold no tokens by design, so they can never own a live blob —
+  // the outgoing credentials belong to somebody else and must be preserved elsewhere.
+  if (origin.kind !== "oauth") return { owner: null, reason: "api-key-pointer" };
+
+  const liveFingerprint = fingerprintCredentials(live.credentialsRaw);
+  if (pointer.credentialsFingerprint && pointer.credentialsFingerprint === liveFingerprint) {
+    return { owner: origin, reason: "fingerprint-match" };
+  }
+  if (jsonEquals(live.credentials, origin.credentials)) return { owner: origin, reason: "stored-copy-match" };
+
+  const liveAccount = accountUuid(live.identity);
+  if (liveAccount !== null && liveAccount === accountUuid(origin.identity)) {
+    return { owner: origin, reason: "refreshed-same-account" };
+  }
+  return { owner: null, reason: "unrecognized-credentials" };
+}
+
+/** Read a profile, returning null (instead of throwing) when the file is unreadable. */
+function readProfileSafely(paths: AuthPaths, name: string): ClaudeAuthProfile | null {
+  try {
+    return readProfile(paths, name);
+  } catch {
+    // A corrupt or unreadable profile must not brick a switch — treat as unknown.
+    return null;
+  }
+}
+
+/** True when any profile already stores exactly this credential blob. */
+function anyProfileStores(paths: AuthPaths, credentials: Record<string, unknown>): string | null {
+  for (const name of listProfileNames(paths)) {
+    const profile = readProfileSafely(paths, name);
+    if (profile?.credentials && jsonEquals(profile.credentials, credentials)) return name;
+  }
+  return null;
+}
+
 export function loadProfile(opts: LoadOptions): LoadResult {
   const { paths, name, env, now, platform } = opts;
   assertPlatformSupported(platform);
+  validateProfileName(name);
+
+  return withOperationLock(paths, () => loadProfileLocked(opts), opts.lockDeadlineMs);
+}
+
+function loadProfileLocked(opts: LoadOptions): LoadResult {
+  const { paths, name, env, now } = opts;
 
   const target = readProfile(paths, name);
   if (!target) {
@@ -590,56 +871,23 @@ export function loadProfile(opts: LoadOptions): LoadResult {
   }
 
   const warnings: string[] = [];
-  // The pointer records which credential file it described. A different
-  // CLAUDE_CONFIG_DIR means those live credentials are not the ones the pointer
-  // names, so we must not write them back into that profile.
   const pointer = readActivePointer(paths);
-  const pointerApplies =
-    pointer !== null && (pointer.credentialsPath ?? paths.credentialsPath) === paths.credentialsPath;
-  if (pointer && !pointerApplies) {
-    warnings.push(
-      `active profile "${pointer.name}" was recorded for ${pointer.credentialsPath} — nothing was written back for this config dir`,
-    );
-  }
-  const previousActive = pointerApplies && pointer ? pointer.name : null;
   const live = readLiveState(paths, now);
+  const attribution = attributeLiveCredentials(paths, live, pointer);
+  const previousActive = attribution.owner?.name ?? null;
 
   // (6) Back up anything we did not create, once, before the first overwrite.
   const backupDir = backupOriginals(paths);
 
-  // (4) Write-back: Claude rewrites .credentials.json in place on refresh, so the
-  // live tokens must land back in their origin profile before we replace them.
+  // ── Invariant (a): the outgoing blob must exist on disk before we replace it ──
   let wroteBack: string | null = null;
   let wroteBackChanged = false;
   let orphanBackupDir: string | null = null;
+  let outgoingPreservedAs: LoadResult["outgoingPreservedAs"] = "nothing-to-preserve";
 
-  if (previousActive === name) {
-    // Re-loading the active profile: refresh the stored copy, then continue
-    // (cheap idempotent path — also repairs a profile whose token has rotated).
-    if (live.credentials && !jsonEquals(live.credentials, target.credentials)) {
-      const refreshed: ClaudeAuthProfile = {
-        ...target,
-        credentials: live.credentials,
-        identity: live.identity,
-        updatedAt: now.toISOString(),
-      };
-      writeProfile(paths, refreshed);
-      target.credentials = refreshed.credentials;
-      target.identity = refreshed.identity;
-      wroteBack = name;
-      wroteBackChanged = true;
-    }
-  } else if (previousActive) {
-    const origin = readProfile(paths, previousActive);
-    if (!origin) {
-      warnings.push(
-        `active profile "${previousActive}" no longer exists — the live credentials were backed up instead of written back`,
-      );
-      if (live.credentials) orphanBackupDir = backupOrphan(paths, now);
-    } else if (origin.kind === "api-key") {
-      // api-key profiles intentionally hold no tokens; nothing to write back.
-      wroteBack = null;
-    } else if (live.credentials) {
+  if (live.credentials) {
+    if (attribution.owner) {
+      const origin = attribution.owner;
       const changed = !jsonEquals(live.credentials, origin.credentials) || !jsonEquals(live.identity, origin.identity);
       if (changed) {
         writeProfile(paths, {
@@ -649,47 +897,108 @@ export function loadProfile(opts: LoadOptions): LoadResult {
           updatedAt: now.toISOString(),
         });
       }
-      wroteBack = previousActive;
+      wroteBack = origin.name;
       wroteBackChanged = changed;
+      outgoingPreservedAs = "write-back";
+      if (origin.name === name) {
+        // Re-loading the active profile: keep the refreshed blob rather than reverting
+        // to the older stored copy.
+        target.credentials = live.credentials;
+        target.identity = live.identity;
+      }
+    } else {
+      const storedIn = anyProfileStores(paths, live.credentials);
+      if (storedIn) {
+        outgoingPreservedAs = "already-stored";
+      } else {
+        orphanBackupDir = backupOrphan(paths, now);
+        outgoingPreservedAs = "backup";
+      }
+      warnings.push(describeUnattributed(paths, attribution.reason, pointer, orphanBackupDir, storedIn));
     }
-  } else if (live.credentials) {
-    // First ever use, or the pointer was lost: do not guess an owner — keep a copy.
-    if (backupDir === null) orphanBackupDir = backupOrphan(paths, now);
-    warnings.push(
-      `no active profile was recorded — the live credentials were backed up to ${orphanBackupDir ?? backupDir}. Run "mcx claude auth save <name>" first to keep them as a profile.`,
-    );
   }
 
-  // Apply the target profile.
+  // ── Apply the target profile ──
+  //
+  // (f) The ~/.claude.json lock is taken FIRST: a `config-locked` failure then happens
+  // before anything is mutated, instead of leaving new credentials next to the old
+  // identity. Inside the lock a `pending` marker records the in-flight switch, and any
+  // failure rolls the credential file back to the bytes we found.
+  const identityToWrite =
+    target.identity && (target.identity.userID !== undefined || target.identity.oauthAccount !== undefined)
+      ? target.identity
+      : null;
+  const configExistedBefore = existsSync(paths.claudeConfigPath);
+
   let credentialsWritten = false;
-  if (target.credentials) {
-    writeFileAtomic(paths.credentialsPath, `${JSON.stringify(target.credentials, null, 2)}\n`);
-    credentialsWritten = true;
-  } else if (target.kind === "api-key") {
-    warnings.push(
-      `profile "${name}" is an api-key profile: export ${target.apiKeyEnvVar ?? DEFAULT_API_KEY_ENV} before running claude`,
-    );
-    if (target.apiKeyEnvVar && !env[target.apiKeyEnvVar]) {
-      warnings.push(`${target.apiKeyEnvVar} is not set in this environment`);
-    }
-  } else {
-    warnings.push(`profile "${name}" has no stored credentials — ${paths.credentialsPath} was left untouched`);
-  }
-
   let identityWritten = false;
-  if (target.identity && (target.identity.userID !== undefined || target.identity.oauthAccount !== undefined)) {
-    patchClaudeConfigIdentity(paths.claudeConfigPath, target.identity);
-    identityWritten = true;
-  }
-
-  // (8) The org policy is cached per identity — drop it so Claude refetches.
   let policyInvalidated = false;
-  if (existsSync(paths.policyLimitsPath)) {
-    unlinkSync(paths.policyLimitsPath);
-    policyInvalidated = true;
-  }
 
-  writeActiveProfileName(paths, name, now);
+  withExclusiveLock(
+    paths.claudeConfigPath,
+    () => {
+      writeActivePointer(
+        paths,
+        {
+          name: pointer?.name ?? name,
+          credentialsFingerprint: pointer?.credentialsFingerprint ?? null,
+          pending: name,
+        },
+        now,
+      );
+
+      try {
+        if (target.credentials) {
+          io(`create ${dirname(paths.credentialsPath)}`, () =>
+            mkdirSync(dirname(paths.credentialsPath), { recursive: true, mode: DIR_MODE }),
+          );
+          writeFileAtomic(paths.credentialsPath, credentialsText(target.credentials));
+          credentialsWritten = true;
+          opts.hooks?.onAfterCredentialsWrite?.();
+        }
+
+        if (identityToWrite) {
+          patchIdentityLocked(paths.claudeConfigPath, identityToWrite, configExistedBefore);
+          identityWritten = true;
+        }
+      } catch (err) {
+        rollbackCredentials(paths, live.credentialsRaw, credentialsWritten);
+        restorePointer(paths, pointer, now);
+        throw err;
+      }
+
+      // (8) The org policy is cached per identity — drop it so Claude refetches.
+      if (existsSync(paths.policyLimitsPath)) {
+        io(`remove ${paths.policyLimitsPath}`, () => unlinkSync(paths.policyLimitsPath));
+        policyInvalidated = true;
+      }
+
+      writeActivePointer(
+        paths,
+        {
+          name,
+          credentialsFingerprint: target.credentials
+            ? fingerprintCredentials(credentialsText(target.credentials))
+            : null,
+        },
+        now,
+      );
+    },
+    opts.lockDeadlineMs,
+  );
+
+  if (!target.credentials) {
+    if (target.kind === "api-key") {
+      warnings.push(
+        `profile "${name}" is an api-key profile: export ${target.apiKeyEnvVar ?? DEFAULT_API_KEY_ENV} before running claude`,
+      );
+      if (target.apiKeyEnvVar && !env[target.apiKeyEnvVar]) {
+        warnings.push(`${target.apiKeyEnvVar} is not set in this environment`);
+      }
+    } else {
+      warnings.push(`profile "${name}" has no stored credentials — ${paths.credentialsPath} was left untouched`);
+    }
+  }
 
   return {
     name,
@@ -699,12 +1008,77 @@ export function loadProfile(opts: LoadOptions): LoadResult {
     wroteBackChanged,
     backupDir,
     orphanBackupDir,
+    outgoingPreservedAs,
     credentialsWritten,
     identityWritten,
     policyInvalidated,
     apiKeyEnvVar: target.apiKeyEnvVar ?? null,
     warnings,
   };
+}
+
+/** Serialized form of a credential blob — one definition so fingerprints always match. */
+function credentialsText(credentials: Record<string, unknown>): string {
+  return `${JSON.stringify(credentials, null, 2)}\n`;
+}
+
+/** Put the credential file back exactly as we found it after a failed switch. */
+function rollbackCredentials(paths: AuthPaths, previousRaw: string | null, credentialsWritten: boolean): void {
+  if (!credentialsWritten) return;
+  try {
+    if (previousRaw === null) {
+      if (existsSync(paths.credentialsPath)) unlinkSync(paths.credentialsPath);
+    } else {
+      writeFileAtomic(paths.credentialsPath, previousRaw);
+    }
+  } catch (err) {
+    // Rollback itself failed: the outgoing blob is still preserved (invariant (a)), so
+    // surface the original failure while making the recovery path visible.
+    console.error(
+      `[claude auth] could not roll back ${paths.credentialsPath} — restore it from the backup directory: ${String(err)}`,
+    );
+  }
+}
+
+/** Restore the pointer to its pre-switch state (clearing the pending marker). */
+function restorePointer(paths: AuthPaths, pointer: ActivePointer | null, now: Date): void {
+  try {
+    if (!pointer) {
+      const path = join(paths.profilesDir, ACTIVE_FILE);
+      if (existsSync(path)) unlinkSync(path);
+      return;
+    }
+    writeActivePointer(paths, { name: pointer.name, credentialsFingerprint: pointer.credentialsFingerprint }, now);
+  } catch (err) {
+    console.error(`[claude auth] could not restore the active-profile pointer: ${String(err)}`);
+  }
+}
+
+/** One clear sentence per reason the live credentials could not be attributed. */
+function describeUnattributed(
+  paths: AuthPaths,
+  reason: AttributionReason,
+  pointer: ActivePointer | null,
+  orphanBackupDir: string | null,
+  storedIn: string | null,
+): string {
+  const preserved = orphanBackupDir
+    ? `backed up to ${orphanBackupDir}`
+    : `already stored in profile "${storedIn}" — nothing to preserve`;
+  switch (reason) {
+    case "no-pointer":
+      return `no profile owned the credentials at ${paths.credentialsPath} — they were ${preserved}. Run "mcx claude auth save <name>" first to keep them as a profile.`;
+    case "other-config-dir":
+      return `the active profile "${pointer?.name}" was recorded for ${pointer?.credentialsPath} — the credentials in this config dir were ${preserved}`;
+    case "interrupted-switch":
+      return `a previous switch to "${pointer?.pending}" was interrupted, so the owner of the live credentials is unknown — they were ${preserved}`;
+    case "pointer-profile-missing":
+      return `the active profile "${pointer?.name}" no longer exists — the live credentials were ${preserved}`;
+    case "api-key-pointer":
+      return `the active profile "${pointer?.name}" is an api-key profile and stores no tokens, so it cannot own the live credentials — they were ${preserved}`;
+    default:
+      return `the credentials at ${paths.credentialsPath} do not match any profile (refreshed by another account, or written outside mcx) — they were ${preserved}`;
+  }
 }
 
 // ── ls ──
@@ -745,13 +1119,24 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
   };
 }
 
-export function listProfiles(paths: AuthPaths, now: Date): ProfileSummary[] {
+export interface ProfileListing {
+  profiles: ProfileSummary[];
+  /** Profiles that could not be read. One bad file must never hide the healthy ones. */
+  problems: { name: string; message: string }[];
+}
+
+export function listProfiles(paths: AuthPaths, now: Date): ProfileListing {
   const active = readActiveProfileName(paths);
-  const summaries: ProfileSummary[] = [];
+  const profiles: ProfileSummary[] = [];
+  const problems: { name: string; message: string }[] = [];
   for (const name of listProfileNames(paths)) {
-    const profile = readProfile(paths, name);
-    if (!profile) continue;
-    summaries.push(summarizeProfile({ ...profile, name }, active, now));
+    try {
+      const profile = readProfile(paths, name);
+      if (!profile) continue;
+      profiles.push(summarizeProfile(profile, active, now));
+    } catch (err) {
+      problems.push({ name, message: err instanceof Error ? err.message : String(err) });
+    }
   }
-  return summaries;
+  return { profiles, problems };
 }

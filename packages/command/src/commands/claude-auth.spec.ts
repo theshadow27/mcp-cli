@@ -341,3 +341,60 @@ describe("formatProfileTable", () => {
     expect(lines[1]).toContain("-");
   });
 });
+
+describe("mcx claude auth — QA regressions", () => {
+  test("ls still lists healthy profiles when one file is corrupt, warning on stderr", async () => {
+    using h = harness();
+    await claudeAuth(["save", "good"], h.deps, h.envDeps);
+    writeFileSync(join(h.paths.profilesDir, "broken.json"), "{ not json", { mode: 0o600 });
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
+
+    expect(JSON.parse(h.out.join("\n")).map((p: { name: string }) => p.name)).toEqual(["good"]);
+    expect(h.info.join(" ")).toContain('profile "broken" is unreadable');
+  });
+
+  test("an IO failure exits 1 with a clean message instead of a stack trace", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const blocker = join(h.root, "blocker");
+    writeFileSync(blocker, "not a directory");
+    const brokenDeps = { ...h.envDeps, paths: { ...h.paths, credentialsPath: join(blocker, ".credentials.json") } };
+
+    await expectExit(() => claudeAuth(["load", "work"], h.deps, brokenDeps), 1);
+
+    expect(h.err.join(" ")).toContain("Could not");
+    expect(h.err.join(" ")).not.toContain("at <anonymous>");
+  });
+
+  test("load --json reports how the outgoing credentials were preserved", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.out.length = 0;
+
+    await claudeAuth(["load", "work", "--json"], h.deps, h.envDeps);
+
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload.outgoingPreservedAs).toBe("write-back");
+    expect(payload.wroteBack).toBe("work");
+  });
+
+  test("switching away from an api-key profile preserves the live credentials", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    await claudeAuth(["save", "ci", "--api-key-env", "MY_KEY"], h.deps, h.envDeps);
+    await claudeAuth(["load", "ci"], h.deps, h.envDeps);
+    // Claude refreshes the token while the api-key profile is active.
+    const refreshed = JSON.stringify({ claudeAiOauth: { accessToken: "cli-refreshed", expiresAt: EXPIRES_AT } });
+    writeFileSync(h.paths.credentialsPath, refreshed);
+    h.out.length = 0;
+
+    await claudeAuth(["load", "work", "--json"], h.deps, h.envDeps);
+
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload.outgoingPreservedAs).toBe("backup");
+    expect(readFileSync(join(payload.orphanBackupDir, "credentials.json"), "utf-8")).toContain("cli-refreshed");
+  });
+});
