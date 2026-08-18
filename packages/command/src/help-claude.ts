@@ -206,8 +206,10 @@ registerHelp("claude auth", {
     "A profile snapshots ~/.claude/.credentials.json plus the userID/oauthAccount keys",
     "in ~/.claude.json. Profiles live in ~/.mcp-cli/auth-profiles/ (dir 0700, files 0600).",
     "API key VALUES are never stored: an api-key profile records only the env var name.",
-    "`load` writes the live credentials back to the active profile first, so a token",
-    "refreshed by Claude since the last save is never lost, and drops the cached",
+    "`load` preserves the credentials it is about to replace before replacing them:",
+    "written back to the profile that provably owns them (fingerprint or same account),",
+    "or copied into ~/.mcp-cli/auth-profiles/backups/ when ownership cannot be proven —",
+    "so a token Claude refreshed in place is never lost. It also drops the cached",
     "policy-limits.json so org policy does not leak across identities.",
   ],
   usage: [
