@@ -27,6 +27,7 @@ import {
   permissionDeny,
   userMessage,
 } from "./ndjson";
+import type { SessionTransport } from "./transport-resolver";
 
 // ── Events emitted by handleMessage ──
 
@@ -133,12 +134,17 @@ export class SessionState {
    * The baseline is reset by:
    *   - resetForClear() — a /clear respawns a fresh conversation whose
    *     num_turns restarts at 1.
-   *   - queuePrompt() — a follow-up prompt starts a new work cycle, so the
-   *     result that answers it is never a replay. This matters because
-   *     num_turns is only cumulative on the sdk-url WS transport; over stdio
-   *     `--print` every turn reports num_turns=1, so without the reset the
-   *     guard suppressed `session:result` on every follow-up and
-   *     `mcx claude send --wait` hung forever (#3003).
+   *   - promptDelivered(), on the **stdio transport only** — over stdio
+   *     `--print` every turn reports num_turns=1, so num_turns is not a
+   *     monotonic key there and without the reset the guard suppressed
+   *     `session:result` on every follow-up and `mcx claude send --wait` hung
+   *     forever (#3003).
+   *
+   * NOT reset for a new prompt on ws: num_turns IS cumulative there, so the
+   * baseline stays meaningful across turns. Dropping it would re-open #2837
+   * case B — a disconnect()+reconnect() replay while a prompt is pending would
+   * re-emit the PREVIOUS turn's result and resolve the `--wait` waiter with a
+   * stale answer while the real turn is still running.
    *
    * NOT reset in reconnect(): a reconnect is the same conversation and skips
    * the initial message (handleOpen sends it only on fresh connections), so a
@@ -151,10 +157,18 @@ export class SessionState {
    */
   private lastEmittedNumTurns = -1;
 
-  constructor(sessionId: string, genRequestId?: RequestIdGenerator) {
+  /**
+   * Transport this session's CLI process speaks. Only `stdio` restarts
+   * num_turns at 1 on every turn; `ws` keeps it cumulative. Read solely by
+   * promptDelivered() to scope the dedup-baseline reset.
+   */
+  private readonly transport: SessionTransport;
+
+  constructor(sessionId: string, genRequestId?: RequestIdGenerator, transport: SessionTransport = "ws") {
     this.sessionId = sessionId;
     this.state = "connecting";
     this.genRequestId = genRequestId ?? createDefaultIdGenerator();
+    this.transport = transport;
   }
 
   /**
@@ -191,12 +205,22 @@ export class SessionState {
     if (this.state === "idle" || this.state === "init") {
       this.state = "active";
     }
-    // New work cycle: the next result answers THIS prompt and can never be a
-    // replay of the previous turn's, so drop the num_turns dedup baseline. Over
-    // stdio the CLI restarts num_turns at 1 for every turn, which the #2837
-    // guard would otherwise read as a duplicate (#3003).
-    this.lastEmittedNumTurns = -1;
     return userMessage(message, this.sessionId);
+  }
+
+  /**
+   * Record that the message built by queuePrompt() actually reached the CLI.
+   *
+   * Called by the caller AFTER a successful transport write — never before,
+   * because a failed write leaves no new turn running and must not disturb the
+   * dedup baseline (ws-server throws on write failure, #3003).
+   *
+   * On stdio this starts a new work cycle whose result reports num_turns=1
+   * again, so the #2837 baseline has to drop. On ws num_turns stays cumulative
+   * and the baseline is left alone — see lastEmittedNumTurns.
+   */
+  promptDelivered(): void {
+    if (this.transport === "stdio") this.lastEmittedNumTurns = -1;
   }
 
   /** Build a permission response for a pending can_use_tool request. */

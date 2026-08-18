@@ -40,6 +40,7 @@ import {
   printError as defaultPrintError,
   printInfo as defaultPrintInfo,
   formatToolResult,
+  isToolError,
   stripErrorPrefix,
 } from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
@@ -580,29 +581,67 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     }
   }
 
+  /** Best-effort worktree removal after a spawn that never produced a session (#1116). */
+  const cleanupWorktreeAfterFailure = (): void => {
+    if (!parsed.worktree || !worktreeResult) return;
+    try {
+      cleanupWorktree(parsed.worktree, worktreeResult.path, d, process.cwd());
+    } catch {
+      // Best-effort cleanup — don't mask the original error
+    }
+  };
+
+  let result: unknown;
   try {
-    const result = await d.callTool("claude_prompt", toolArgs);
-    console.log(formatToolResult(result));
+    result = await d.callTool("claude_prompt", toolArgs);
   } catch (e) {
     // IPC failed after worktree was created — clean up to avoid orphans (#1116)
-    if (parsed.worktree && worktreeResult) {
-      try {
-        cleanupWorktree(parsed.worktree, worktreeResult.path, d, process.cwd());
-      } catch {
-        // Best-effort cleanup — don't mask the original error
-      }
-    }
+    cleanupWorktreeAfterFailure();
     // `printError` already prefixes "Error: " — both `String(err)` on an Error
     // instance and the daemon's own `Error: <msg>` tool text carry it too, which
     // rendered as "Error: Error: …" for every failed spawn (#3003).
     d.printError(stripErrorPrefix(e instanceof Error ? e.message : String(e)));
     d.exit(1);
+    return;
   }
+
+  const text = formatToolResult(result);
+
+  // The daemon converts a spawn that never started into a RESOLVED tool result
+  // carrying `isError: true` and a plain `Error: <reason>` string
+  // (claude-session-worker's catch), so `callTool` never throws for it. Without
+  // this branch the error text went to stdout and the process exited 0 for a
+  // session that never ran — the exact inversion #2821 forbids. Treated like
+  // the throw above: same cleanup, same single `Error: ` prefix, same exit 1.
+  //
+  // Gated on non-parseability as well as `isError`, matching `mcx agent <p>
+  // spawn`: a --wait spawn whose session DID run and finished with
+  // `success: false` is also isError, but its payload is structured JSON that
+  // callers read from stdout — and its worktree may hold real work, so it must
+  // not be cleaned up either (#3003).
+  if (isToolError(result) && !isJsonText(text)) {
+    cleanupWorktreeAfterFailure();
+    d.printError(stripErrorPrefix(text));
+    d.exit(1);
+    return;
+  }
+
+  d.log(text);
 
   // Write null → initial transition so downstream phases can infer "from"
   // from the log rather than the Tier-3 work_items.phase fallback (#1623).
   if (parsed.workItemId) {
     tryWriteInitialTransition(parsed.workItemId, resolveGitRootOrCwd(d.getGitRoot, d.printError));
+  }
+}
+
+/** True when the tool text is a JSON document (a structured payload, not an error string). */
+function isJsonText(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
   }
 }
 

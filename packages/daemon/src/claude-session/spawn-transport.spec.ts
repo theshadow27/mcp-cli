@@ -93,4 +93,13 @@ describe("describeSpawnExit (#3003)", () => {
     expect(msg).toContain("(truncated)");
     expect(msg.length).toBeLessThan(600);
   });
+
+  test("the truncation marker sits in front of the kept tail, not after it", () => {
+    // slice(-N) drops the HEAD, so a trailing "(truncated)" claimed the wrong end
+    // was cut. The fatal line is always last — keep it, and say the head is gone.
+    const msg = describeSpawnExit("abc-123", `${"x".repeat(10_000)} FATAL: policy denied`);
+    expect(msg).toContain("(truncated) ");
+    expect(msg.indexOf("(truncated)")).toBeLessThan(msg.indexOf("FATAL: policy denied"));
+    expect(msg).toContain("FATAL: policy denied");
+  });
 });

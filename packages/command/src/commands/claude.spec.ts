@@ -870,6 +870,66 @@ describe("mcx claude spawn", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
 
+  // #3003 QA / #2821: the daemon turns a failed spawn into a RESOLVED tool
+  // result with `isError: true` (claude-session-worker's catch), so `callTool`
+  // never throws for it. `mcx claude spawn` printed that text to stdout and
+  // exited 0 — a session that never ran reported success.
+  const FAILED_SPAWN = {
+    content: [{ type: "text", text: "Error: Claude process exited before producing a result: policy denied" }],
+    isError: true,
+  };
+
+  test("a spawn that never ran exits 1 with the error on stderr and nothing on stdout", async () => {
+    const deps = makeDeps({ callTool: mock(async () => FAILED_SPAWN) });
+    const stdout: string[] = [];
+    const origLog = console.log;
+    console.log = (...a: unknown[]) => {
+      stdout.push(String(a[0]));
+    };
+    try {
+      await expect(cmdClaude(["spawn", "--task", "x", "--wait"], deps)).rejects.toThrow(ExitError);
+    } finally {
+      console.log = origLog;
+    }
+    // Single "Error: " prefix — printError adds its own, so the daemon's is stripped.
+    expect(deps.printError).toHaveBeenCalledWith("Claude process exited before producing a result: policy denied");
+    expect(logCalls(deps)).toEqual([]);
+    expect(stdout).toEqual([]);
+  });
+
+  test("a successful spawn still writes its payload to stdout", async () => {
+    const deps = makeDeps({ callTool: mock(async () => toolResult({ sessionId: "abc", success: true })) });
+    await cmdClaude(["spawn", "--task", "x"], deps);
+    expect(logCalls(deps)).toEqual([JSON.stringify({ sessionId: "abc", success: true }, null, 2)]);
+    expect(deps.printError).not.toHaveBeenCalled();
+  });
+
+  test("a session that ran and failed still emits its JSON payload on stdout", async () => {
+    // isError, but structured — callers parse it, and the worktree may hold
+    // real work, so neither stderr-routing nor cleanup applies.
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const deps = makeDeps({
+      callTool: mock(async () => ({
+        content: [{ type: "text", text: JSON.stringify({ sessionId: "abc", success: false }, null, 2) }],
+        isError: true,
+      })),
+      exec,
+    });
+    await cmdClaude(["spawn", "--task", "x", "--worktree", "kept", "--wait"], deps);
+    expect(logCalls(deps)).toEqual([JSON.stringify({ sessionId: "abc", success: false }, null, 2)]);
+    expect(deps.printError).not.toHaveBeenCalled();
+    const argvs = (exec.mock.calls as unknown as Array<[string[]]>).map((c) => c[0].join(" "));
+    expect(argvs.some((a) => a.includes("worktree remove"))).toBe(false);
+  });
+
+  test("a tool-level spawn failure cleans up the worktree it created (#1116)", async () => {
+    const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const deps = makeDeps({ callTool: mock(async () => FAILED_SPAWN), exec });
+    await expect(cmdClaude(["spawn", "--task", "x", "--worktree", "doomed"], deps)).rejects.toThrow(ExitError);
+    const argvs = (exec.mock.calls as unknown as Array<[string[]]>).map((c) => c[0].join(" "));
+    expect(argvs.some((a) => a.includes("worktree remove"))).toBe(true);
+  });
+
   test("refuses to spawn when daemon is stale (#1218)", async () => {
     const callTool = mock(async () => toolResult({ sessionId: "abc" }));
     const deps = makeDeps({

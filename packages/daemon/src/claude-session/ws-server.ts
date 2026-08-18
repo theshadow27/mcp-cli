@@ -113,8 +113,10 @@ export function describeSpawnExit(sessionId: string, stderrTail: string): string
   if (collapsed === "") {
     return `Claude process exited before producing a result (no stderr captured; ${hint})`;
   }
+  // The tail is what matters (the fatal line is last), so the HEAD is what gets
+  // cut — the marker goes in front of the surviving text, not after it.
   const quoted =
-    collapsed.length > SPAWN_EXIT_STDERR_CHARS ? `${collapsed.slice(-SPAWN_EXIT_STDERR_CHARS)} (truncated)` : collapsed;
+    collapsed.length > SPAWN_EXIT_STDERR_CHARS ? `(truncated) ${collapsed.slice(-SPAWN_EXIT_STDERR_CHARS)}` : collapsed;
   return `Claude process exited before producing a result: ${quoted} (${hint})`;
 }
 
@@ -814,7 +816,7 @@ export class ClaudeWsServer {
       // Skip sessions already in the map (shouldn't happen, but be safe)
       if (this.sessions.has(s.sessionId)) continue;
 
-      const state = new SessionState(s.sessionId);
+      const state = new SessionState(s.sessionId, undefined, s.transport ?? "ws");
       state.state = "disconnected";
       state.model = s.model;
       state.cwd = s.cwd;
@@ -908,7 +910,18 @@ export class ClaudeWsServer {
    */
   /** Prepare a session and return the assigned name and resolved transport. */
   prepareSession(sessionId: string, config: SessionConfig): { name: string; transport: "ws" | "stdio" } {
-    const state = new SessionState(sessionId);
+    // A per-spawn `--transport` wins outright. Otherwise take the version-gated
+    // default — except for containment (worktree) sessions: ContainmentGuard
+    // rides the `can_use_tool` round-trip, which only the WS transport carries,
+    // and spawnClaude fails closed on the combination (#2688/#2791). Those keep ws
+    // rather than being silently downgraded out of the trust boundary. Drop this
+    // carve-out once #2805 gives stdio can_use_tool parity.
+    //
+    // Resolved before SessionState so the state machine knows whether num_turns
+    // is cumulative (ws) or restarts per turn (stdio) — see promptDelivered().
+    const resolvedTransport = config.transport ?? (config.worktree ? "ws" : this.defaultTransport);
+
+    const state = new SessionState(sessionId, undefined, resolvedTransport);
     // Pre-populate state.cwd from config so session info shows the correct
     // cwd even if the Claude process never connects (#1836).
     if (config.cwd) state.cwd = config.cwd;
@@ -925,13 +938,6 @@ export class ClaudeWsServer {
       }
     }
     const name = config.name ?? this.generateName();
-    // A per-spawn `--transport` wins outright. Otherwise take the version-gated
-    // default — except for containment (worktree) sessions: ContainmentGuard
-    // rides the `can_use_tool` round-trip, which only the WS transport carries,
-    // and spawnClaude fails closed on the combination (#2688/#2791). Those keep ws
-    // rather than being silently downgraded out of the trust boundary. Drop this
-    // carve-out once #2805 gives stdio can_use_tool parity.
-    const resolvedTransport = config.transport ?? (config.worktree ? "ws" : this.defaultTransport);
     const completionSignal = makeWorkCompletedSignal();
 
     this.sessions.set(sessionId, {
@@ -1226,8 +1232,12 @@ export class ClaudeWsServer {
     if (!this.sendToSession(session, outbound)) {
       // Transport write failed — sendToSession already transitioned the session
       // to disconnected. Surface the error so the prompt isn't silently lost.
+      // The dedup baseline is deliberately untouched: no new turn started (#3003).
       throw new Error(`Failed to deliver prompt to session ${sessionId}: transport write failed`);
     }
+    // The prompt is on the wire, so a new work cycle has begun. On stdio that
+    // resets the num_turns dedup baseline; on ws it is a no-op (#2837/#3003).
+    session.state.promptDelivered();
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: effective } });
     this.recordSessionProgress(sessionId, session);
   }
@@ -1319,7 +1329,11 @@ export class ClaudeWsServer {
     // handleOpen's ws.send(userMessage) for WS transport.
     const prompt = session.config.prompt;
     const outbound = userMessage(prompt, sessionId);
-    this.sendToSession(session, outbound);
+    if (this.sendToSession(session, outbound)) {
+      // Fresh stdio child: num_turns restarts at 1, so drop any baseline left
+      // over from the pre-respawn turns of a revived session (#3003).
+      session.state.promptDelivered();
+    }
     this.addTranscript(session, "outbound", { type: "user", message: { role: "user", content: prompt } });
 
     const reader = stdout.getReader();

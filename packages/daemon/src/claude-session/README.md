@@ -61,7 +61,11 @@ Values:
 
 Per-session override via `SessionConfig.transport` (`"ws" | "stdio"`).
 
-Rollback is config-only; takes effect on next spawn.
+Rollback via `config.json` takes effect on the next **daemon/worker restart**,
+not the next spawn: `readCliConfig().transport` is read once in `startServer()`
+(`claude-session-worker.ts`) and handed to the long-lived `ClaudeWsServer` as
+`defaultTransport`. The per-spawn `mcx claude spawn --transport <ws|stdio>`
+override does take effect immediately.
 
 ## Behavioural divergences from the WS path
 
@@ -71,10 +75,20 @@ counters must be checked against both:
 - **`num_turns` is not cumulative over stdio.** On `sdk-url` it accumulates
   across the conversation; over `--print` the CLI restarts it at `1` for every
   turn. The #2837 result-idempotency guard keys on `num_turns`, so
-  `queuePrompt()` resets its baseline — a new prompt starts a new work cycle and
-  its result can never be a replay. Without that reset the guard suppressed
-  `session:result` on every follow-up and `mcx claude send --wait` hung forever
-  (#3003).
+  `SessionState.promptDelivered()` resets its baseline **on stdio only** — a new
+  stdio work cycle reports `num_turns=1` again and its result can never be a
+  replay. Without that reset the guard suppressed `session:result` on every
+  follow-up and `mcx claude send --wait` hung forever (#3003).
+
+  The reset is deliberately *not* applied on `ws`, where `num_turns` stays
+  cumulative and the baseline is the guard's only defence: dropping it re-opened
+  #2837 case B, where a `disconnect()` + `reconnect()` replay arriving while a
+  prompt is pending re-emitted the previous turn's result and resolved a
+  `send --wait` waiter with a stale answer. `SessionState` therefore takes the
+  resolved transport as a constructor argument, and `queuePrompt()` no longer
+  touches the baseline at all — `sendPrompt()` calls `promptDelivered()` only
+  *after* the transport write succeeds, so a failed write leaves the baseline
+  intact (no new turn started).
 - **`system/init` is re-emitted every turn** — see below.
 
 ## `system/init` dedupe
