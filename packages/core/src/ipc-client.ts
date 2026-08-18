@@ -24,6 +24,27 @@ function getProcessSpan(): LiveSpan {
   return _processSpan;
 }
 
+/** True for the `DOMException` an `AbortController` raises on `abort()`. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
+/**
+ * True when `err` is the abort we ourselves triggered via the stream's own
+ * `abort()` function, and therefore a clean end-of-stream rather than a failure.
+ *
+ * Tearing down a streaming `fetch()` mid-flight rejects the in-flight read with
+ * `AbortError`. Bun >= 1.4 surfaces that rejection through the async iterator's
+ * close path, so a consumer doing `stream.abort(); break;` gets the AbortError
+ * thrown out of its `for await` — and, when the loop is already unwinding, as an
+ * unhandled rejection. `abort()` means "stop iterating", so the generator must
+ * absorb it. Every other error (and any abort from a caller-supplied signal we
+ * did not raise) still propagates.
+ */
+function isSelfAbort(controller: AbortController, err: unknown): boolean {
+  return controller.signal.aborted && isAbortError(err);
+}
+
 /**
  * Structured error thrown by ipcCall() when the daemon returns an error response.
  * Preserves the error code, data, and remote stack trace from the daemon.
@@ -163,36 +184,41 @@ export function openLogStream(params: {
   const url = `http://localhost/logs?${qs.toString()}`;
 
   async function* iterate(): AsyncGenerator<{ timestamp: number; line: string }> {
-    const res = await fetch(url, {
-      method: "GET",
-      unix: options.SOCKET_PATH,
-      signal: controller.signal,
-    } as RequestInit);
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        unix: options.SOCKET_PATH,
+        signal: controller.signal,
+      } as RequestInit);
 
-    if (!res.ok) {
-      throw new Error(`SSE stream error: ${res.status} ${await res.text()}`);
-    }
+      if (!res.ok) {
+        throw new Error(`SSE stream error: ${res.status} ${await res.text()}`);
+      }
 
-    const body = res.body;
-    if (!body) throw new Error("No response body");
+      const body = res.body;
+      if (!body) throw new Error("No response body");
 
-    const decoder = new TextDecoder();
-    let buffer = "";
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-    for await (const chunk of body) {
-      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
+      for await (const chunk of body) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
 
-      for (const part of parts) {
-        const line = part.replace(/^data: /, "");
-        if (!line) continue;
-        try {
-          yield JSON.parse(line) as { timestamp: number; line: string };
-        } catch {
-          // Skip malformed SSE events
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "");
+          if (!line) continue;
+          try {
+            yield JSON.parse(line) as { timestamp: number; line: string };
+          } catch {
+            // Skip malformed SSE events
+          }
         }
       }
+    } catch (err) {
+      if (!isSelfAbort(controller, err)) throw err;
+      // abort() was called — end iteration cleanly.
     }
   }
 
@@ -245,45 +271,50 @@ export function openEventStream(params?: {
   const url = `http://localhost/events${qsStr ? `?${qsStr}` : ""}`;
 
   async function* iterate(): AsyncGenerator<import("./monitor-event").MonitorEvent> {
-    const res = await fetch(url, {
-      method: "GET",
-      unix: options.SOCKET_PATH,
-      signal: controller.signal,
-    } as RequestInit);
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        unix: options.SOCKET_PATH,
+        signal: controller.signal,
+      } as RequestInit);
 
-    if (!res.ok) {
-      throw new Error(`Event stream error: ${res.status} ${await res.text()}`);
-    }
+      if (!res.ok) {
+        throw new Error(`Event stream error: ${res.status} ${await res.text()}`);
+      }
 
-    const body = res.body;
-    if (!body) throw new Error("No response body");
+      const body = res.body;
+      if (!body) throw new Error("No response body");
 
-    const decoder = new TextDecoder();
-    let buffer = "";
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-    for await (const chunk of body) {
-      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      for await (const chunk of body) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          yield JSON.parse(trimmed) as import("./monitor-event").MonitorEvent;
-        } catch {
-          // Skip malformed lines
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            yield JSON.parse(trimmed) as import("./monitor-event").MonitorEvent;
+          } catch {
+            // Skip malformed lines
+          }
         }
       }
-    }
-    // Flush any trailing bytes buffered by the streaming decoder
-    const trailing = decoder.decode();
-    if (trailing.trim()) {
-      try {
-        yield JSON.parse(trailing.trim()) as import("./monitor-event").MonitorEvent;
-      } catch {
-        // Ignore incomplete trailing data
+      // Flush any trailing bytes buffered by the streaming decoder
+      const trailing = decoder.decode();
+      if (trailing.trim()) {
+        try {
+          yield JSON.parse(trailing.trim()) as import("./monitor-event").MonitorEvent;
+        } catch {
+          // Ignore incomplete trailing data
+        }
       }
+    } catch (err) {
+      if (!isSelfAbort(controller, err)) throw err;
+      // abort() was called — end iteration cleanly.
     }
   }
 

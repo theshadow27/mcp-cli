@@ -161,26 +161,54 @@ describe("openEventStream() client integration", () => {
     startServerWithBus();
 
     const stream = openEventStream();
-    // Abort before any iteration begins — the signal is already set when fetch() is called,
-    // so the generator should throw AbortError immediately on the first .next() call.
+    // Abort before any iteration begins — the signal is already set when fetch() is
+    // called, so the generator must end iteration immediately *and cleanly*: an abort
+    // we initiated ourselves is an end-of-stream, not an error the consumer has to
+    // catch (#2985).
     stream.abort();
 
-    let iterationEnded = false;
-
-    void (async () => {
-      try {
-        for await (const _event of stream.events) {
-          // Should never reach here — abort was called before iteration
-        }
-      } catch (err: unknown) {
-        expect(err).toBeInstanceOf(DOMException);
-        expect((err as DOMException).name).toBe("AbortError");
-      } finally {
-        iterationEnded = true;
+    let eventCount = 0;
+    const consumed = (async () => {
+      for await (const _event of stream.events) {
+        // Should never reach here — abort was called before iteration
+        eventCount++;
       }
+      return "iteration-ended";
     })();
 
-    await pollUntil(() => iterationEnded);
+    // Must *resolve*, not reject: the consumer never has to catch its own abort,
+    // and the iterator must not be left dangling.
+    await expect(consumed).resolves.toBe("iteration-ended");
+    expect(eventCount).toBe(0);
+  });
+
+  test("a non-abort stream error still propagates to the consumer", async () => {
+    // The abort-absorbing catch in openEventStream() must not swallow real failures.
+    // Point the client at a server that answers /events with a 500.
+    const errSocket = tmpSocket();
+    const errServer = Bun.serve({
+      unix: errSocket,
+      fetch: () => new Response("boom", { status: 500 }),
+    });
+    options.SOCKET_PATH = errSocket;
+
+    try {
+      const stream = openEventStream();
+      const consume = (async () => {
+        for await (const _event of stream.events) {
+          /* no events expected */
+        }
+      })();
+      await expect(consume).rejects.toThrow(/Event stream error: 500/);
+    } finally {
+      errServer.stop(true);
+      try {
+        unlinkSync(errSocket);
+        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+      } catch {
+        /* already cleaned up */
+      }
+    }
   });
 
   test("?since=N query param is forwarded correctly in the request URL", async () => {
