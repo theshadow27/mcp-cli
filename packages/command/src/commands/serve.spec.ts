@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ALIAS_SERVER_NAME } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
+import { restoreEnv, unsetEnv } from "../../../../test/env";
 import { pollUntil } from "../../../../test/harness";
 import { _resetJqStateForTesting } from "../jq/index";
 import { SERVE_SIZE_OK, SERVE_SIZE_TRUNCATE } from "../jq/jq-support";
@@ -126,15 +127,11 @@ describe("checkRecursionGuard", () => {
   });
 
   afterEach(() => {
-    if (savedEnv === undefined) {
-      process.env.MCX_SERVE = undefined;
-    } else {
-      process.env.MCX_SERVE = savedEnv;
-    }
+    restoreEnv("MCX_SERVE", savedEnv);
   });
 
   test("returns false when MCX_SERVE is not set", () => {
-    process.env.MCX_SERVE = undefined;
+    unsetEnv("MCX_SERVE");
     expect(checkRecursionGuard()).toBe(false);
   });
 

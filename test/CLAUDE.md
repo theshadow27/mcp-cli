@@ -37,6 +37,10 @@ profiler then surfaces the file as a candidate for splitting.
 Before writing new helpers, check what already exists:
 - `test/harness.ts` — `startTestDaemon`, `rpc`, `createTestDir`, `echoServerConfig` for integration tests
 - `test/test-options.ts` — `testOptions` with temp dir setup and `Symbol.dispose` cleanup
+- `test/env.ts` — `unsetEnv` / `restoreEnv` for save-mutate-restore around `process.env`.
+  **Never write `process.env.FOO = undefined`** — it stringifies to the literal
+  `"undefined"` (truthy) instead of removing the key, and leaks into every later test
+  in the file (#2984)
 - `packages/daemon/src/test-helpers.ts` — `makeConfig`, `makeMockTransport`, `makeMockClient`
 
 ## Core Rules

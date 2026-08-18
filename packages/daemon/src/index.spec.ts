@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
+import { restoreEnv } from "../../../test/env";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
@@ -33,11 +34,7 @@ async function withDaemonTimeout<T>(timeoutMs: string, fn: () => Promise<T>): Pr
   try {
     return await fn();
   } finally {
-    if (orig === undefined) {
-      process.env.MCP_DAEMON_TIMEOUT = undefined;
-    } else {
-      process.env.MCP_DAEMON_TIMEOUT = orig;
-    }
+    restoreEnv("MCP_DAEMON_TIMEOUT", orig);
   }
 }
 
