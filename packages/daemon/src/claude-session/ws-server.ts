@@ -88,6 +88,36 @@ const CONNECT_TIMEOUT_MS = 30_000;
  * newline (#2769). 64 KiB matches the spawnManaged stderr ring default. */
 const MAX_STDERR_LINE_CHARS = 64 * 1024;
 
+/** Max chars of child stderr quoted inline in a spawn-failure error message.
+ * The full 64 KiB ring is persisted to `server_logs`; the error only needs
+ * enough to name the cause without turning into a wall of text. */
+const SPAWN_EXIT_STDERR_CHARS = 400;
+
+/**
+ * Build the error message handed to `--wait` callers when the Claude CLI exits
+ * before producing a result.
+ *
+ * A spawn that dies during startup (bad flags, refused auth, an org policy that
+ * blocks the requested mode) writes its reason to stderr and nothing else — no
+ * transcript, no session events. Quoting the tail here is the difference between
+ * an actionable error and `Process exited`, and the `mcx logs <session-id>`
+ * pointer is the only discoverable route to the full text (#3003).
+ */
+export function describeSpawnExit(sessionId: string, stderrTail: string): string {
+  const collapsed = stderrTail
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "")
+    .join(" | ");
+  const hint = `see \`mcx logs ${sessionId}\` for full stderr`;
+  if (collapsed === "") {
+    return `Claude process exited before producing a result (no stderr captured; ${hint})`;
+  }
+  const quoted =
+    collapsed.length > SPAWN_EXIT_STDERR_CHARS ? `${collapsed.slice(-SPAWN_EXIT_STDERR_CHARS)} (truncated)` : collapsed;
+  return `Claude process exited before producing a result: ${quoted} (${hint})`;
+}
+
 /** Message types handled by the state machine's dispatch. */
 const HANDLED_MSG_TYPES: ReadonlyArray<string> = [
   "system",
@@ -134,9 +164,10 @@ export interface SessionConfig {
   /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
   repoRoot?: string;
   /**
-   * Resolved transport for this session: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
-   * Resolved from CliConfig.transport + claude version at spawn time.
-   * Default: `"ws"` (preserves legacy behavior).
+   * Per-spawn transport override: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
+   * Set by `mcx claude spawn --transport`. When omitted, prepareSession falls
+   * back to the server's `defaultTransport`, which the worker resolves from
+   * CliConfig.transport + the claude version at startup (#3003).
    */
   transport?: "ws" | "stdio";
   /**
@@ -549,6 +580,15 @@ export class ClaudeWsServer {
    */
   private readonly spawnDisabledReason: string | null;
 
+  /**
+   * Transport used for sessions that carry no per-spawn `--transport` override.
+   * Resolved once at worker startup from `CliConfig.transport` + the detected
+   * claude version (see `transport-resolver.ts`). Defaults to `"ws"` only when
+   * the daemon could not determine a version — modern claude resolves to
+   * `"stdio"`, which needs neither `--sdk-url` nor the patched binary (#3003).
+   */
+  private readonly defaultTransport: "ws" | "stdio";
+
   constructor(deps?: {
     spawn?: SpawnFn;
     killTimeoutMs?: number;
@@ -568,6 +608,8 @@ export class ClaudeWsServer {
     binaryPath?: string;
     /** Disable spawn with this reason. Read paths still work. */
     spawnDisabledReason?: string | null;
+    /** Transport for sessions without a per-spawn override. Default: `"ws"`. */
+    defaultTransport?: "ws" | "stdio";
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -588,6 +630,7 @@ export class ClaudeWsServer {
     this.hostname = deps?.hostname ?? (this.tlsConfig ? "::1" : undefined);
     this.binaryPath = deps?.binaryPath ?? "claude";
     this.spawnDisabledReason = deps?.spawnDisabledReason ?? null;
+    this.defaultTransport = deps?.defaultTransport ?? "ws";
   }
 
   /** True when the server is running in TLS (wss://) mode. */
@@ -882,7 +925,13 @@ export class ClaudeWsServer {
       }
     }
     const name = config.name ?? this.generateName();
-    const resolvedTransport = config.transport ?? "ws";
+    // A per-spawn `--transport` wins outright. Otherwise take the version-gated
+    // default — except for containment (worktree) sessions: ContainmentGuard
+    // rides the `can_use_tool` round-trip, which only the WS transport carries,
+    // and spawnClaude fails closed on the combination (#2688/#2791). Those keep ws
+    // rather than being silently downgraded out of the trust boundary. Drop this
+    // carve-out once #2805 gives stdio can_use_tool parity.
+    const resolvedTransport = config.transport ?? (config.worktree ? "ws" : this.defaultTransport);
     const completionSignal = makeWorkCompletedSignal();
 
     this.sessions.set(sessionId, {
@@ -1122,9 +1171,14 @@ export class ClaudeWsServer {
           );
         }
       }
-      // Reject pending result waiters — they can't get results without a process
+      // Reject pending result waiters — they can't get results without a process.
+      // Carry the child's stderr in the message: a spawn that dies before it ever
+      // connects produces no transcript, so a bare "Process exited" left the
+      // caller with nothing to act on and no hint where to look. The full stderr
+      // is in `server_logs` keyed by session id, which `mcx logs <id>` prints —
+      // undiscoverable unless the error says so (#3003).
       for (const waiter of session.resultWaiters) {
-        waiter.reject(new Error("Process exited"));
+        waiter.reject(new Error(describeSpawnExit(sessionId, stderrTail)));
       }
       session.resultWaiters.length = 0;
     });

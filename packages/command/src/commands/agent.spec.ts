@@ -292,11 +292,51 @@ describe("agent codex spawn", () => {
     expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-wt" }));
   });
 
-  test("routes non-JSON daemon errors to stderr", async () => {
+  // #3003: a spawn that never started comes back as a plain "Error: <reason>"
+  // string. It used to be printed and `return`ed — exit 0 for a session that
+  // never ran — and printError doubled the prefix the daemon text already had.
+  test("a spawn that never started exits non-zero with a single Error: prefix", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => ({
+        content: [{ type: "text", text: "Error: Claude process exited before producing a result: boom" }],
+        isError: true,
+      })),
+    });
+    await expect(cmdAgent(["codex", "spawn", "--task", "x", "--wait"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith("Claude process exited before producing a result: boom");
+    expect(deps.log).not.toHaveBeenCalled();
+  });
+
+  test("a spawn that never started exits non-zero with --json too", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => ({
+        content: [{ type: "text", text: "Error: boom" }],
+        isError: true,
+      })),
+    });
+    await expect(cmdAgent(["codex", "spawn", "--task", "x", "--json"], deps)).rejects.toThrow(ExitError);
+    expect(deps.printError).toHaveBeenCalledWith("boom");
+    expect(deps.log).not.toHaveBeenCalled();
+  });
+
+  test("a session that ran and failed still emits its JSON payload on stdout", async () => {
+    // isError, but the payload is structured — callers parse it. Must not be
+    // rerouted to stderr just because the daemon flagged it.
+    const payload = JSON.stringify({ sessionId: "s1", success: false, errors: ["nope"] });
+    const deps = makeDeps({
+      callTool: mock(async () => ({ content: [{ type: "text", text: payload }], isError: true })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--wait"], deps);
+    expect(JSON.parse(logCalls(deps).join(""))).toEqual({ sessionId: "s1", success: false, errors: ["nope"] });
+    expect(deps.printError).not.toHaveBeenCalled();
+  });
+
+  test("routes non-JSON daemon errors to stderr and exits non-zero", async () => {
     const deps = makeDeps({
       callTool: mock(async () => ({ content: [{ type: "text", text: "connection refused" }] })),
     });
-    await cmdAgent(["codex", "spawn", "--task", "x"], deps);
+    // Exit 1 rather than 0: the spawn did not happen (#3003).
+    await expect(cmdAgent(["codex", "spawn", "--task", "x"], deps)).rejects.toThrow(ExitError);
     expect(deps.printError).toHaveBeenCalledWith("connection refused");
   });
 

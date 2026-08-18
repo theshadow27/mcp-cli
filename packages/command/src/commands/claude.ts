@@ -35,7 +35,13 @@ import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
 import { parseFlags } from "../flags";
 import { applyJqFilter } from "../jq/index";
-import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
+import {
+  c,
+  printError as defaultPrintError,
+  printInfo as defaultPrintInfo,
+  formatToolResult,
+  stripErrorPrefix,
+} from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   colorState,
@@ -586,7 +592,10 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
         // Best-effort cleanup — don't mask the original error
       }
     }
-    d.printError(String(e));
+    // `printError` already prefixes "Error: " — both `String(err)` on an Error
+    // instance and the daemon's own `Error: <msg>` tool text carry it too, which
+    // rendered as "Error: Error: …" for every failed spawn (#3003).
+    d.printError(stripErrorPrefix(e instanceof Error ? e.message : String(e)));
     d.exit(1);
   }
 

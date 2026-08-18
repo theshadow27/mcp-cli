@@ -342,6 +342,34 @@ describe("SessionState", () => {
       expect(replay).toEqual([]);
     });
 
+    // -- #3003: a new prompt starts a new work cycle --
+    //
+    // num_turns is only cumulative on the sdk-url WS transport. Over stdio
+    // `--print` the CLI restarts num_turns at 1 for every turn, so the #2837
+    // guard read every follow-up result as a replay, never emitted
+    // session:result, and `mcx claude send --wait` hung forever.
+
+    test("a follow-up prompt re-arms the guard so a repeated num_turns still emits", () => {
+      const session = activeSession();
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+
+      // Follow-up turn. Over stdio the next result carries the SAME num_turns.
+      session.queuePrompt("second turn");
+      const second = session.handleMessage({ ...RESULT_SUCCESS, result: "TURN-2" });
+      expect(second).toHaveLength(1);
+      expect(second[0].type).toBe("session:result");
+      expect(session.suppressedResult).toBeNull();
+    });
+
+    test("the re-armed guard still suppresses a duplicate within the new work cycle", () => {
+      const session = activeSession();
+      session.handleMessage(RESULT_SUCCESS);
+      session.queuePrompt("second turn");
+      expect(session.handleMessage(RESULT_SUCCESS)).toHaveLength(1);
+      // No new prompt in between — this one is a genuine duplicate.
+      expect(session.handleMessage(RESULT_SUCCESS)).toEqual([]);
+    });
+
     test("C: consecutive results with no turn advance emit only once", () => {
       const session = activeSession();
       const e1 = session.handleMessage(RESULT_SUCCESS);

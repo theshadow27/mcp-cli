@@ -127,12 +127,22 @@ export class SessionState {
 
   /**
    * num_turns of the last emitted `session:result`/`session:error` event.
-   * num_turns is cumulative and strictly increases per real turn, so a
-   * replayed historical `result` (WS-reconnect / revive replay) carries the
-   * old value and is suppressed. Reset in resetForClear() — a /clear respawns
-   * a fresh conversation whose num_turns restarts at 1. NOT reset in
-   * reconnect(): a reconnect is the same conversation, so a replayed result
-   * there should be suppressed (#2837).
+   * Within one work cycle a replayed historical `result` (WS-reconnect /
+   * revive replay) carries a non-increasing value and is suppressed (#2837).
+   *
+   * The baseline is reset by:
+   *   - resetForClear() — a /clear respawns a fresh conversation whose
+   *     num_turns restarts at 1.
+   *   - queuePrompt() — a follow-up prompt starts a new work cycle, so the
+   *     result that answers it is never a replay. This matters because
+   *     num_turns is only cumulative on the sdk-url WS transport; over stdio
+   *     `--print` every turn reports num_turns=1, so without the reset the
+   *     guard suppressed `session:result` on every follow-up and
+   *     `mcx claude send --wait` hung forever (#3003).
+   *
+   * NOT reset in reconnect(): a reconnect is the same conversation and skips
+   * the initial message (handleOpen sends it only on fresh connections), so a
+   * replayed result there must still be suppressed (#2837).
    *
    * Scope: this dedup is per-instance and does NOT survive a daemon restart —
    * restoreSessions() builds a fresh SessionState (lastEmittedNumTurns=-1) and
@@ -181,6 +191,11 @@ export class SessionState {
     if (this.state === "idle" || this.state === "init") {
       this.state = "active";
     }
+    // New work cycle: the next result answers THIS prompt and can never be a
+    // replay of the previous turn's, so drop the num_turns dedup baseline. Over
+    // stdio the CLI restarts num_turns at 1 for every turn, which the #2837
+    // guard would otherwise read as a duplicate (#3003).
+    this.lastEmittedNumTurns = -1;
     return userMessage(message, this.sessionId);
   }
 

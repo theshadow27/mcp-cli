@@ -8,6 +8,7 @@ import {
   printAliasList,
   printServerList,
   printToolList,
+  stripErrorPrefix,
 } from "./output";
 
 describe("formatToolResult", () => {
@@ -376,5 +377,23 @@ describe("printServerList rate limit line", () => {
   test("omits the line entirely when the server is unthrottled", () => {
     const output = captureStdout(() => printServerList([base]));
     expect(output).not.toContain("rate limit");
+  });
+});
+
+describe("stripErrorPrefix", () => {
+  test("removes one leading Error: so printError does not double it (#3003)", () => {
+    expect(stripErrorPrefix("Error: boom")).toBe("boom");
+  });
+
+  test("leaves a message without the prefix untouched", () => {
+    expect(stripErrorPrefix("boom")).toBe("boom");
+  });
+
+  test("strips only the first prefix", () => {
+    expect(stripErrorPrefix("Error: Error: boom")).toBe("Error: boom");
+  });
+
+  test("does not strip a prefix that appears mid-message", () => {
+    expect(stripErrorPrefix("spawn failed: Error: boom")).toBe("spawn failed: Error: boom");
   });
 });

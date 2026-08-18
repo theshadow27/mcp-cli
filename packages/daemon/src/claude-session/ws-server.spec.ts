@@ -1290,7 +1290,10 @@ describe("ClaudeWsServer", () => {
 
     const err = await resultPromise;
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toContain("Process exited");
+    expect((err as Error).message).toContain("exited before producing a result");
+    // The rejection must name where the child's stderr can be read, or a spawn
+    // that dies during startup leaves the caller nothing to act on (#3003).
+    expect((err as Error).message).toContain("mcx logs test-session");
   });
 
   test("process exit resolves pending event waiters with disconnect event", async () => {

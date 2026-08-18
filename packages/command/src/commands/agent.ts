@@ -44,7 +44,13 @@ import {
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
 import { applyJqFilter } from "../jq/index";
-import { c, printError as defaultPrintError, printInfo as defaultPrintInfo, formatToolResult } from "../output";
+import {
+  c,
+  printError as defaultPrintError,
+  printInfo as defaultPrintInfo,
+  formatToolResult,
+  stripErrorPrefix,
+} from "../output";
 import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   type SharedSessionDeps,
@@ -537,17 +543,26 @@ async function agentSpawn(
   const result = await d.callTool(`${P}_prompt`, toolArgs);
   const text = formatToolResult(result);
 
-  if (parsed.json) {
-    d.log(text);
-    return;
-  }
-
+  // A spawn that never started comes back as a plain `Error: <reason>` string
+  // rather than JSON. Route it to stderr and exit non-zero — it used to be
+  // printed and `return`ed, so `mcx claude spawn --wait` reported exit 0 for a
+  // session that never ran, with a doubled "Error: Error:" prefix (`printError`
+  // adds one and the daemon's tool text carries its own). Parse before the
+  // --json branch so that path can't emit the error string on stdout either.
+  //
+  // Deliberately keyed on parseability, not `isToolError`: a --wait spawn whose
+  // session ran and finished with `success: false` is also isError, but its
+  // payload is structured JSON that callers read from stdout (#3003).
   let parsed_data: { sessionId?: string } | undefined;
   try {
     parsed_data = JSON.parse(text) as { sessionId?: string };
   } catch {
-    // Not JSON — daemon returned an error string. Route to stderr.
-    d.printError(text);
+    d.printError(stripErrorPrefix(text));
+    d.exit(1);
+  }
+
+  if (parsed.json) {
+    d.log(text);
     return;
   }
   if (parsed_data?.sessionId) {

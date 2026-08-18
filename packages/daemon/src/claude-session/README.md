@@ -34,7 +34,15 @@ claude binaries.
 | > 2.1.122 | `stdio` |
 
 The gate is implemented in `transport-resolver.ts` as a pure function
-`resolveTransport(configPref, version)`.
+`resolveTransport(configPref, version)`, called once at claude-session-worker
+startup and handed to `ClaudeWsServer` as `defaultTransport`. `prepareSession`
+uses it for every spawn that carries no per-session override.
+
+**Exception — contained (worktree) sessions stay on `sdk-url`.** ContainmentGuard
+rides the `can_use_tool` round-trip, which only the WS transport carries, and
+`spawnClaude` fails closed on stdio + worktree (#2688/#2791). Those sessions keep
+`ws` regardless of version. Remove the carve-out in `prepareSession` once #2805
+gives stdio `can_use_tool` parity.
 
 ## Configuration
 
@@ -54,6 +62,20 @@ Values:
 Per-session override via `SessionConfig.transport` (`"ws" | "stdio"`).
 
 Rollback is config-only; takes effect on next spawn.
+
+## Behavioural divergences from the WS path
+
+The two transports are not wire-identical. Anything that reads CLI-reported
+counters must be checked against both:
+
+- **`num_turns` is not cumulative over stdio.** On `sdk-url` it accumulates
+  across the conversation; over `--print` the CLI restarts it at `1` for every
+  turn. The #2837 result-idempotency guard keys on `num_turns`, so
+  `queuePrompt()` resets its baseline — a new prompt starts a new work cycle and
+  its result can never be a replay. Without that reset the guard suppressed
+  `session:result` on every follow-up and `mcx claude send --wait` hung forever
+  (#3003).
+- **`system/init` is re-emitted every turn** — see below.
 
 ## `system/init` dedupe
 

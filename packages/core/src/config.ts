@@ -83,8 +83,11 @@ export interface EphemeralAliasConfig {
   promotionThreshold?: number;
 }
 
+/** Every accepted transport value, in the order CLI help lists them. */
+export const CLAUDE_TRANSPORTS = ["auto", "stdio", "sdk-url"] as const;
+
 /** Transport mode for Claude CLI sessions. */
-export type ClaudeTransport = "auto" | "stdio" | "sdk-url";
+export type ClaudeTransport = (typeof CLAUDE_TRANSPORTS)[number];
 
 /** mcp-cli config file (~/.mcp-cli/config.json) */
 export interface CliConfig {
