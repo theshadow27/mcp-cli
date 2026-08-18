@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { restoreEnv, unsetEnv } from "../../../../../test/env";
 import {
   _defaultInstall,
   _resetCache,
@@ -32,19 +33,20 @@ describe("playwrightCandidates", () => {
       const candidates = playwrightCandidates();
       expect(candidates).toContain(join("/fake/bun", "install", "global", "node_modules", "playwright"));
     } finally {
-      if (prev === undefined) process.env.BUN_INSTALL = undefined;
-      else process.env.BUN_INSTALL = prev;
+      restoreEnv("BUN_INSTALL", prev);
     }
   });
 
   test("omits BUN_INSTALL path when env var is unset", () => {
     const prev = process.env.BUN_INSTALL;
     try {
-      process.env.BUN_INSTALL = undefined;
+      // Must be a real removal: assigning `undefined` leaves the string
+      // "undefined" behind, which still reads as a set BUN_INSTALL (#2984).
+      unsetEnv("BUN_INSTALL");
       const candidates = playwrightCandidates();
       expect(candidates.some((c) => c.includes("install/global"))).toBe(false);
     } finally {
-      if (prev !== undefined) process.env.BUN_INSTALL = prev;
+      restoreEnv("BUN_INSTALL", prev);
     }
   });
 });

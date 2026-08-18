@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BUILD_VERSION, PID_MAX_AGE_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { DaemonStartCooldownError } from "@mcp-cli/core";
+import { unsetEnv } from "../../../test/env";
 import { testOptions } from "../../../test/test-options";
 import {
   _buildStaleDaemonWarning,
@@ -46,7 +47,7 @@ describe("verboseLog", () => {
   });
 
   test("does nothing when MCX_VERBOSE is not set", () => {
-    process.env.MCX_VERBOSE = undefined;
+    unsetEnv("MCX_VERBOSE");
     const lines: string[] = [];
     const origError = console.error;
     console.error = (...args: unknown[]) => lines.push(String(args[0]));

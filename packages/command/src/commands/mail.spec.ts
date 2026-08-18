@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IpcMethod, MailMessage } from "@mcp-cli/core";
+import { restoreEnv, unsetEnv } from "../../../../test/env";
 import type { MailDeps } from "./mail";
 import { cmdMail, defaultSenderName, parseMailArgs } from "./mail";
 
@@ -317,15 +318,13 @@ describe("defaultSenderName", () => {
   test("returns USER env var when not CLAUDE", () => {
     const origClaude = process.env.CLAUDE;
     const origUser = process.env.USER;
-    process.env.CLAUDE = undefined;
+    unsetEnv("CLAUDE");
     process.env.USER = "jacob";
     try {
       expect(defaultSenderName()).toBe("jacob");
     } finally {
-      if (origClaude !== undefined) process.env.CLAUDE = origClaude;
-      else process.env.CLAUDE = undefined;
-      if (origUser !== undefined) process.env.USER = origUser;
-      else process.env.USER = undefined;
+      restoreEnv("CLAUDE", origClaude);
+      restoreEnv("USER", origUser);
     }
   });
 
@@ -337,8 +336,7 @@ describe("defaultSenderName", () => {
       const base = cwd.split("/").pop() ?? "claude";
       expect(defaultSenderName()).toBe(`claude-${base}`);
     } finally {
-      if (origClaude !== undefined) process.env.CLAUDE = origClaude;
-      else process.env.CLAUDE = undefined;
+      restoreEnv("CLAUDE", origClaude);
     }
   });
 });
