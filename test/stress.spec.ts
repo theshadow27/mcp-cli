@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
-import { createTestDir, echoServerConfig, rpc, startTestDaemon } from "./harness";
+import { createTestDir, echoServerConfig, reapDaemonPidFile, rpc, startTestDaemon } from "./harness";
 
 // These tests involve real process spawning and network I/O
 setDefaultTimeout(60_000);
@@ -24,7 +24,11 @@ async function mcx(
   args: string[],
   opts?: { timeout?: number; env?: Record<string, string> },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
+  // await using: guarantees this short-lived client process is killed even if
+  // an assertion throws mid-function, before proc.exited resolves normally
+  // (test/CLAUDE.md "Subprocess Spawning"). By the time we return, proc.exited
+  // has already resolved, so disposal here is a cheap no-op in the normal path.
+  await using proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, MCP_CLI_DIR: dir, ...opts?.env },
@@ -58,15 +62,20 @@ async function mcx(
 describe("S1: Concurrent auto-start", () => {
   let dir: string;
 
-  afterEach(() => {
-    // Kill any daemon left behind (best-effort)
-    try {
-      const pidFile = join(dir, "mcpd.pid");
-      const data = JSON.parse(readFileSync(pidFile, "utf-8"));
-      process.kill(data.pid, "SIGTERM");
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
-    } catch {
-      // no daemon running, fine
+  // This test is the one deliberate exception to --no-orphans in the whole
+  // suite (see test/CLAUDE.md "Orphan-tolerant tests" and #619): it verifies
+  // that a real `mcpd` daemon genuinely outlives the `mcx` process that
+  // auto-started it. That means leak-prevention can't be delegated to the
+  // test runner flag here — this afterEach is the compensating control.
+  // Reap explicitly, poll until confirmed dead (not fire-and-forget), and
+  // fail loudly on a genuine leak rather than swallowing it.
+  afterEach(async () => {
+    if (!dir) return; // test body threw before creating its temp dir — nothing to reap
+    const result = await reapDaemonPidFile(dir);
+    if (result.found && !result.reaped) {
+      throw new Error(
+        `S1 afterEach: daemon pid ${result.pid} survived SIGTERM+SIGKILL — orphaned process left running (see stderr log above)`,
+      );
     }
   });
 

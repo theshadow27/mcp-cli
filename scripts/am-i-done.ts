@@ -42,6 +42,7 @@ import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
 import { StepRunner } from "./_runner/runner";
 import type { Step } from "./_runner/types";
 import { doingItWrongStep } from "./doing-it-wrong";
+import { ORPHAN_TOLERANT_TEST_FILES } from "./orphan-tolerant-tests";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 
@@ -120,10 +121,16 @@ const RULES: Step = {
 // and fails open; it never signals a process. CI steps stay unleased — each CI
 // runner is its own host, so the per-container semaphore would never block and
 // we don't want to perturb CI timing.
+// --path-ignore-patterns is repeated once per orphan-tolerant file (a
+// comma-joined single pattern does NOT work — bun treats it as one literal
+// glob and matches nothing, verified empirically against 1.4.0).
+const ORPHAN_TOLERANT_IGNORE_FLAGS = ORPHAN_TOLERANT_TEST_FILES.map((f) => `--path-ignore-patterns=${f}`).join(" ");
+
 const TEST_PARALLEL: Step = {
   name: "test-parallel",
-  description: "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362)",
-  command: "bun test --parallel --no-orphans --path-ignore-patterns=packages/control/**",
+  description:
+    "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362; excluding orphan-tolerant tests — see #619)",
+  command: `bun test --parallel --no-orphans --path-ignore-patterns=packages/control/** ${ORPHAN_TOLERANT_IGNORE_FLAGS}`,
   lease: true,
 };
 
@@ -131,6 +138,16 @@ const TEST_CONTROL: Step = {
   name: "test-control",
   description: "bun test packages/control (sequential — yoga-layout TDZ workaround #2362)",
   command: "bun test --no-orphans packages/control",
+  lease: true,
+};
+
+// test/stress.spec.ts's S1 verifies genuine daemon setsid-style detachment —
+// structurally incompatible with --no-orphans, so it runs on its own without
+// the flag (see scripts/orphan-tolerant-tests.ts and #619).
+const TEST_STRESS: Step = {
+  name: "test-stress",
+  description: "orphan-tolerant tests (no --no-orphans — real daemon detachment under test, #619)",
+  command: `bun test ${ORPHAN_TOLERANT_TEST_FILES.join(" ")}`,
   lease: true,
 };
 
@@ -306,6 +323,7 @@ export const COMPREHENSIVE: Step[] = [
   PHASE_LOCK,
   TEST_PARALLEL,
   TEST_CONTROL,
+  TEST_STRESS,
   TEST_PHASES_CI,
   TEST_HOOKS_CI,
   COVERAGE,
