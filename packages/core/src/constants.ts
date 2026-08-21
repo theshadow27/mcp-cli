@@ -91,6 +91,12 @@ const _originalOptions = {
   ALIASES_DIR,
   CACHE_DIR,
   CLAUDE_CONFIG_PATH: join(homedir(), ".claude.json"),
+  /** Claude Code's OAuth credential file (Linux; on macOS these live in the Keychain) */
+  CLAUDE_CREDENTIALS_PATH: join(homedir(), ".claude", ".credentials.json"),
+  /** Claude Code's cached org-policy file — refetched on CLI startup */
+  CLAUDE_POLICY_LIMITS_PATH: join(homedir(), ".claude", "policy-limits.json"),
+  /** Directory holding saved Claude auth profiles (`mcx claude auth save/load`) */
+  AUTH_PROFILES_DIR: join(MCP_CLI_DIR, "auth-profiles"),
   CLAUDE_DESKTOP_CONFIG_PATH: join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json"),
   USER_SERVERS_PATH: join(MCP_CLI_DIR, "servers.json"),
   PROJECTS_DIR: join(MCP_CLI_DIR, "projects"),

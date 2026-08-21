@@ -192,3 +192,41 @@ registerHelp("claude patch-update", {
     "mcx claude patch-update --force            # rebuild the patched copy from scratch",
   ],
 });
+
+registerHelp("claude auth", {
+  name: "mcx claude auth",
+  summary: "Save, list, and switch Claude identities without an interactive /login (see #3006)",
+  notes: [
+    "Linux only for now — on macOS Claude Code keeps its credentials in the Keychain,",
+    "so save/load exit 2 with a clear error there (ls still works).",
+    "",
+    "Honors CLAUDE_CONFIG_DIR (and CLAUDE_SECURESTORAGE_CONFIG_DIR): with a redirected",
+    "config dir the credentials, .claude.json and policy-limits.json all live inside it.",
+    "",
+    "A profile snapshots ~/.claude/.credentials.json plus the userID/oauthAccount keys",
+    "in ~/.claude.json. Profiles live in ~/.mcp-cli/auth-profiles/ (dir 0700, files 0600).",
+    "API key VALUES are never stored: an api-key profile records only the env var name.",
+    "`load` preserves the credentials it is about to replace before replacing them:",
+    "written back to the profile that provably owns them (fingerprint or same account),",
+    "or copied into ~/.mcp-cli/auth-profiles/backups/ when ownership cannot be proven —",
+    "so a token Claude refreshed in place is never lost. It also drops the cached",
+    "policy-limits.json so org policy does not leak across identities.",
+  ],
+  usage: [
+    "mcx claude auth save <profile> [--json]",
+    "mcx claude auth save <profile> --api-key-env ANTHROPIC_API_KEY",
+    "mcx claude auth save <profile> --oauth",
+    "mcx claude auth load <profile> [--json]",
+    "mcx claude auth ls [--json]",
+  ],
+  options: [
+    ["--json", "Structured JSON on stdout instead of human text"],
+    ["--api-key-env <VAR>", "Save an api-key profile bound to this env var name (value never stored)"],
+    ["--oauth", "Capture the claude.ai OAuth identity even when ANTHROPIC_API_KEY is exported"],
+  ],
+  examples: [
+    "mcx claude auth save work           # capture the identity that is logged in right now",
+    "mcx claude auth load personal       # switch to another saved identity",
+    "mcx claude auth ls --json | jq '.[] | {name, expiresAt}'",
+  ],
+});
