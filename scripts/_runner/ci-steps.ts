@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
 
 import { RAN_FILES_RE } from "../bun-summary";
+import { ORPHAN_TOLERANT_TEST_FILES } from "../orphan-tolerant-tests";
 import { buildImportGraph } from "../rules/_engine/import-graph";
 import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import type { Logger, ScriptFunction, StepResult } from "./types";
@@ -242,36 +243,77 @@ interface TestOpts {
   logName: string;
 }
 
+/**
+ * Which of ORPHAN_TOLERANT_TEST_FILES fall within a `bun test` path
+ * selection — either listed exactly, or nested under a selected directory.
+ */
+function orphanTolerantSubset(paths: string[]): string[] {
+  return ORPHAN_TOLERANT_TEST_FILES.filter((f) =>
+    paths.some((p) => p === f || f.startsWith(p.endsWith("/") ? p : `${p}/`)),
+  );
+}
+
+/**
+ * Run one `bun test` invocation with the #1004 crash-after-pass retry
+ * tolerance. Factored out of `bunTestWithCrashTolerance` so the same
+ * retry/classify logic can also cover the orphan-tolerant tests' own
+ * separate invocation (see below).
+ */
+async function runWithCrashTolerance(
+  args: string[],
+  logName: string,
+  logger: Logger,
+  env: Record<string, string | undefined>,
+): Promise<StepResult> {
+  const first = await runBun(args, logger, env, junitTmpPath(logName));
+  persistLog(logName, first.output);
+  if (first.code === 0) return { success: true };
+  if (hasZeroJunitFailures(first)) {
+    logger.warn(`bun crash (exit ${first.code}) after all tests passed — treating as pass (#1004)`);
+    return { success: true };
+  }
+  if (!isBunPanic(first.code, first.signal)) {
+    return { success: false, error: `exit ${first.code}` };
+  }
+
+  logger.warn(`bun panic (exit ${first.code}, signal ${first.signal ?? "none"}) — retrying once (#1004)`);
+  const second = await runBun(args, logger, env, junitTmpPath(`${logName}_retry`));
+  persistLog(`${logName}_retry`, second.output);
+  if (second.code === 0) return { success: true };
+  if (hasZeroJunitFailures(second)) {
+    logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
+    return { success: true };
+  }
+  // A panic on BOTH runs is only tolerated when the retry recorded zero
+  // failures — which the check above already handled. A double panic with no
+  // pass evidence (no junit, no " 0 fail" line) is a hard failure, not a
+  // pass-by-policy: promoting it would report a partition green with zero
+  // proof the suite passed, and hides the "abort instead of fail" gaming
+  // vector (SIGABRT/SIGTRAP are userspace-raisable). #2780.
+  return { success: false, error: `exit ${second.code}` };
+}
+
+/**
+ * Run `bun test --no-orphans` over the given paths, with #1004 crash-after-pass
+ * retry tolerance. Any orphan-tolerant file within `opts.paths` (currently just
+ * `test/stress.spec.ts` — see `../orphan-tolerant-tests.ts` and #619) is excluded
+ * from that run via `--path-ignore-patterns` and run in its own invocation,
+ * WITHOUT `--no-orphans`, immediately after. Both must pass for the step to pass.
+ */
 export function bunTestWithCrashTolerance(opts: TestOpts): ScriptFunction {
   return async ({ logger, env }) => {
-    const args = ["test", "--no-orphans", ...opts.paths];
+    const orphanTolerant = orphanTolerantSubset(opts.paths);
+    const ignoreArgs = orphanTolerant.map((f) => `--path-ignore-patterns=${f}`);
+    const mainResult = await runWithCrashTolerance(
+      ["test", "--no-orphans", ...opts.paths, ...ignoreArgs],
+      opts.logName,
+      logger,
+      env,
+    );
+    if (!mainResult.success || orphanTolerant.length === 0) return mainResult;
 
-    const first = await runBun(args, logger, env, junitTmpPath(opts.logName));
-    persistLog(opts.logName, first.output);
-    if (first.code === 0) return { success: true };
-    if (hasZeroJunitFailures(first)) {
-      logger.warn(`bun crash (exit ${first.code}) after all tests passed — treating as pass (#1004)`);
-      return { success: true };
-    }
-    if (!isBunPanic(first.code, first.signal)) {
-      return { success: false, error: `exit ${first.code}` };
-    }
-
-    logger.warn(`bun panic (exit ${first.code}, signal ${first.signal ?? "none"}) — retrying once (#1004)`);
-    const second = await runBun(args, logger, env, junitTmpPath(`${opts.logName}_retry`));
-    persistLog(`${opts.logName}_retry`, second.output);
-    if (second.code === 0) return { success: true };
-    if (hasZeroJunitFailures(second)) {
-      logger.warn(`bun crash (exit ${second.code}) on retry after all tests passed — treating as pass (#1004)`);
-      return { success: true };
-    }
-    // A panic on BOTH runs is only tolerated when the retry recorded zero
-    // failures — which the check above already handled. A double panic with no
-    // pass evidence (no junit, no " 0 fail" line) is a hard failure, not a
-    // pass-by-policy: promoting it would report a partition green with zero
-    // proof the suite passed, and hides the "abort instead of fail" gaming
-    // vector (SIGABRT/SIGTRAP are userspace-raisable). #2780.
-    return { success: false, error: `exit ${second.code}` };
+    logger.info(`running orphan-tolerant tests separately (no --no-orphans, #619): ${orphanTolerant.join(", ")}`);
+    return runWithCrashTolerance(["test", ...orphanTolerant], `${opts.logName}_orphan_tolerant`, logger, env);
   };
 }
 
@@ -495,11 +537,15 @@ function recordClosureVerdicts(
  *
  * The safe subset runs `--parallel` (a quiet-machine sweep showed 0 flakes
  * across 22k executions); `packages/control` runs sequentially in a second
- * pass because of the yoga-layout TDZ crash under `--parallel` (#2362). Both
- * carry the #1004 crash-after-pass tolerance — a non-zero exit AFTER a clean
- * `0 fail` summary is a known post-test Bun crash, not a real failure. Note:
- * unlike `bunTestWithCrashTolerance`, this step does NOT retry on SIGILL (exit
- * 132) before the summary is printed — only post-summary crashes are tolerated.
+ * pass because of the yoga-layout TDZ crash under `--parallel` (#2362). A
+ * third pass covers `ORPHAN_TOLERANT_TEST_FILES` (test/stress.spec.ts) without
+ * `--no-orphans` — that flag is structurally incompatible with the real daemon
+ * detachment the file verifies (../orphan-tolerant-tests.ts, #619) — still
+ * scoped by `--changed` so an untouched diff costs ~0ms. All three carry the
+ * #1004 crash-after-pass tolerance — a non-zero exit AFTER a clean `0 fail`
+ * summary is a known post-test Bun crash, not a real failure. Note: unlike
+ * `bunTestWithCrashTolerance`, this step does NOT retry on SIGILL (exit 132)
+ * before the summary is printed — only post-summary crashes are tolerated.
  */
 export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
   const resolveBase = opts.resolveBase ?? defaultResolveBase;
@@ -556,8 +602,13 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
 
     logger.info(`diff-aware: running tests affected by changes since ${base} (bun test --changed)`);
 
-    // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel, #2362).
+    // Safe subset, parallel. control excluded (yoga-layout TDZ under --parallel,
+    // #2362); orphan-tolerant files (test/stress.spec.ts) excluded too — they
+    // verify genuine daemon detachment and are structurally incompatible with
+    // --no-orphans (see ../orphan-tolerant-tests.ts and #619). Checked separately
+    // below, still --changed-scoped so an untouched diff costs ~0ms.
     // --pass-with-no-tests: a diff that touches no test-reachable code is a pass, not an error.
+    const orphanIgnoreArgs = ORPHAN_TOLERANT_TEST_FILES.map((f) => `--path-ignore-patterns=${f}`);
     const main = await runBun(
       [
         "test",
@@ -565,6 +616,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
         `--changed=${base}`,
         "--parallel",
         "--path-ignore-patterns=packages/control/**",
+        ...orphanIgnoreArgs,
         ...skipPatterns,
         "--pass-with-no-tests",
       ],
@@ -590,16 +642,31 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
     );
     persistLog(`${opts.logName}_control`, control.output);
     const controlVerdict = classifyChangedTest(control, logger);
-    if (key) storeVerdict(repoRoot, key, controlVerdict.success);
+
+    // Orphan-tolerant specs: no --no-orphans, ever (#619). `--changed=${base}`
+    // still gates the actual run — bun reports "no changed files, nothing to
+    // run" and exits 0 instantly when the diff doesn't touch this file (or its
+    // closure), so this costs nothing on the common path.
+    const orphanTolerant = await runBun(
+      ["test", `--changed=${base}`, ...ORPHAN_TOLERANT_TEST_FILES, "--pass-with-no-tests"],
+      logger,
+      env,
+      junitTmpPath(`${opts.logName}_orphan_tolerant`),
+    );
+    persistLog(`${opts.logName}_orphan_tolerant`, orphanTolerant.output);
+    const orphanTolerantVerdict = classifyChangedTest(orphanTolerant, logger);
+
+    const overallSuccess = controlVerdict.success && orphanTolerantVerdict.success;
+    if (key) storeVerdict(repoRoot, key, overallSuccess);
 
     // Record per-file verdicts only for files that actually ran (#2408).
     // Skipped files keep their existing cached green — re-stamping them
     // would create a circular guarantee (skipped → green → skipped).
     if (cacheResult) {
-      recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, controlVerdict.success, repoRoot);
+      recordClosureVerdicts(cacheResult.toRun, cacheResult.hashes, overallSuccess, repoRoot);
     }
 
-    return controlVerdict;
+    return controlVerdict.success ? orphanTolerantVerdict : controlVerdict;
   };
 }
 

@@ -15,6 +15,7 @@
  */
 
 import { Glob } from "bun";
+import { ORPHAN_TOLERANT_TEST_FILES } from "./orphan-tolerant-tests";
 
 // --- Argument parsing ---
 
@@ -108,7 +109,11 @@ async function discoverSpecFiles(): Promise<string[]> {
 
 async function timeTestFile(file: string, timeoutSec: number): Promise<RunResult> {
   const start = Bun.nanoseconds();
-  const proc = Bun.spawn(["bun", "test", "--no-orphans", file], {
+  // Orphan-tolerant files (test/stress.spec.ts) verify genuine daemon
+  // detachment — --no-orphans kills that daemon before the test can observe
+  // it, so it's omitted for this one file (./orphan-tolerant-tests.ts, #619).
+  const noOrphansFlag = ORPHAN_TOLERANT_TEST_FILES.includes(file) ? [] : ["--no-orphans"];
+  const proc = Bun.spawn(["bun", "test", ...noOrphansFlag, file], {
     stdout: "ignore",
     stderr: "ignore",
   });

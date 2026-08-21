@@ -137,6 +137,101 @@ export async function startTestDaemon(
 }
 
 /**
+ * True if a process is alive: `process.kill(pid, 0)` succeeds, or fails with
+ * EPERM (alive but owned by another user — can't signal it, but it exists).
+ * Mirrors `isProcessAlive` in `packages/daemon/src/orphan-reaper.ts`.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return true;
+    return false;
+  }
+}
+
+/**
+ * Kill a process by PID and poll until it's confirmed dead — never
+ * fire-and-forget. Sends SIGTERM, polls for exit, and escalates to SIGKILL if
+ * it's still alive after `timeoutMs`. Returns `false` if the process survives
+ * even SIGKILL within the combined deadline — a real leak, not a flake.
+ *
+ * For tests granted the `--no-orphans` exception (see test/CLAUDE.md
+ * "Orphan-tolerant tests" and #619): this is the compensating control —
+ * leak-prevention becomes the test's own explicit responsibility instead of
+ * delegated to the flag.
+ */
+export async function killAndVerifyDead(pid: number, opts?: { timeoutMs?: number }): Promise<boolean> {
+  const timeoutMs = opts?.timeoutMs ?? 3_000;
+
+  if (!isProcessAlive(pid)) return true;
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return true; // already gone
+  }
+
+  const termDeadline = Date.now() + timeoutMs;
+  while (Date.now() < termDeadline) {
+    if (!isProcessAlive(pid)) return true;
+    await Bun.sleep(50);
+  }
+
+  // Still alive after SIGTERM — escalate.
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return true;
+  }
+
+  const killDeadline = Date.now() + timeoutMs;
+  while (Date.now() < killDeadline) {
+    if (!isProcessAlive(pid)) return true;
+    await Bun.sleep(50);
+  }
+
+  return false;
+}
+
+/**
+ * Read a daemon pidfile (`mcpd.pid`, as written by `ensureDaemon()` —
+ * `{ pid: number, ... }` JSON) from a test's `MCP_CLI_DIR`, kill the process,
+ * and poll until it's confirmed dead. Logs to stderr either way — proof the
+ * cleanup ran and worked belongs in the test output, not just trust.
+ *
+ * Built for tests (like test/stress.spec.ts S1) that cause a real `mcpd` to
+ * outlive its spawning `mcx` process by design and must explicitly reap it —
+ * see test/CLAUDE.md "Orphan-tolerant tests" and #619.
+ */
+export async function reapDaemonPidFile(
+  dir: string,
+  opts?: { timeoutMs?: number },
+): Promise<{ found: boolean; pid?: number; reaped?: boolean }> {
+  const pidFile = join(dir, "mcpd.pid");
+  let pid: number;
+  try {
+    const data = JSON.parse(readFileSync(pidFile, "utf-8")) as { pid: number };
+    pid = data.pid;
+  } catch {
+    console.error(`[reapDaemonPidFile] no pidfile at ${pidFile} — no daemon was started, nothing to reap`);
+    return { found: false };
+  }
+
+  console.error(`[reapDaemonPidFile] found daemon pid ${pid} at ${pidFile} — killing and verifying dead`);
+  const reaped = await killAndVerifyDead(pid, opts);
+  if (reaped) {
+    console.error(`[reapDaemonPidFile] pid ${pid} confirmed dead — cleanup verified`);
+  } else {
+    console.error(
+      `[reapDaemonPidFile] LEAK: pid ${pid} survived SIGTERM+SIGKILL within ${opts?.timeoutMs ?? 3_000}ms x2 — orphaned daemon process, investigate`,
+    );
+  }
+  return { found: true, pid, reaped };
+}
+
+/**
  * Poll condition until it returns truthy or deadline passes.
  * Never use a fixed sleep to wait for async side effects — poll instead.
  * Throws with a descriptive message on timeout so test failures are visible.
