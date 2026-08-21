@@ -70,6 +70,39 @@ const [stdout, stderr, exitCode] = await Promise.all([
 
 Assert `stdout`/`stderr` **before** `exitCode` — gives better error messages on failure.
 
+## Orphan-tolerant tests
+
+`bun test --no-orphans` is the default expectation for every test in this suite — it
+recursively kills any descendant process left running when the `bun test` tree exits,
+which is what makes real leaked fixtures/workers visible instead of silently piling up
+on the host (sprint 64, #2394).
+
+`test/stress.spec.ts` (S1: Concurrent auto-start) is the one deliberate, narrow
+exception. It spawns real `mcx` CLI processes that race to auto-start a real `mcpd`
+daemon; the daemon is *meant* to outlive the `mcx` process that spawned it — that's the
+auto-start contract under test. `--no-orphans` kills the daemon before the losing `mcx`
+processes can reach it. This isn't a test bug or a loophole to close: verifying "the
+daemon survives its spawner" is structurally incompatible with a flag whose contract is
+"nothing survives its spawner". No amount of test-code cleverness reconciles the two.
+Confirmed against `oven-sh/bun#13675` (closed, maintainer-verified) and #619 — see that
+issue for the full investigation.
+
+The exception is not free: **any test claiming it must explicitly track and
+kill+verify-dead every process it causes to be started**, so leak-prevention becomes the
+test's own responsibility instead of the flag's. Use `test/harness.ts`'s
+`reapDaemonPidFile(dir)` (reads `mcpd.pid`, kills it, and polls until the PID is
+confirmed dead — escalating SIGTERM → SIGKILL, never fire-and-forget) or the lower-level
+`killAndVerifyDead(pid)` it's built on. Both log loudly to stderr on every path — found a
+daemon and reaped it, found nothing to reap, or (a real leak) survived SIGKILL — so a
+future orphan is visible in test output, not silently trusted away. `test/stress.spec.ts`
+S1's `afterEach` is the reference usage; copy it for the next test that genuinely needs
+this exception. The corresponding `--no-orphans` scoping lives in
+`scripts/orphan-tolerant-tests.ts` (single source of truth for which files are exempt)
+and is mirrored at every `bun test` call site that would otherwise apply the flag
+suite-wide (`package.json`, `scripts/am-i-done.ts`, `scripts/_runner/ci-steps.ts`,
+`scripts/check-coverage.ts`, `scripts/test-timing.ts`) — adding a new orphan-tolerant
+file means updating that constant, not re-deriving the exclusion at each site.
+
 ## Waiting for Readiness
 
 **Anti-pattern:** `await Bun.sleep(500)` then assume ready

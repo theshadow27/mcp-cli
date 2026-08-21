@@ -133,6 +133,7 @@ import {
   formatDegradedRunError,
   formatExclusionList,
 } from "./coverage-report";
+import { ORPHAN_TOLERANT_TEST_FILES } from "./orphan-tolerant-tests";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
@@ -141,7 +142,11 @@ import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTi
 /** Run a single test file and return its wall-clock duration in ms */
 async function timeTestFile(file: string): Promise<{ file: string; ms: number }> {
   const start = performance.now();
-  const p = Bun.spawn(["bun", "test", "--no-orphans", file, "--timeout", "30000"], {
+  // Orphan-tolerant files (test/stress.spec.ts) verify genuine daemon
+  // detachment — --no-orphans kills that daemon before the test can observe
+  // it, so it's omitted for this one file (../orphan-tolerant-tests.ts, #619).
+  const noOrphansFlag = ORPHAN_TOLERANT_TEST_FILES.includes(file) ? [] : ["--no-orphans"];
+  const p = Bun.spawn(["bun", "test", ...noOrphansFlag, file, "--timeout", "30000"], {
     stdout: "ignore",
     stderr: "ignore",
   });
@@ -180,6 +185,11 @@ await installProc.exited;
 // Pre-commit (default): skips run-2 entirely — daemon tests take ~136s and
 // segfault on macOS (#957). CI is the gate for daemon tests. See #1125.
 // CI (--ci flag): runs both phases with segfault retry at the workflow level.
+//
+// Run 3 (gated with run-2): ORPHAN_TOLERANT_TEST_FILES (test/stress.spec.ts),
+// carved out of run-2's daemonTestFiles and run without --no-orphans — that
+// flag would kill the real daemon the test deliberately detaches to outlive
+// its spawner (../orphan-tolerant-tests.ts, #619).
 
 /** Discover non-daemon package test directories */
 const packageDirs = readdirSync(resolve(import.meta.dir, "../packages"), { withFileTypes: true })
@@ -274,12 +284,24 @@ let exitCode2 = 0;
 // visible at the aggregation site.
 let junit2Path: string | undefined = undefined;
 
+// Run 3: orphan-tolerant tests (test/stress.spec.ts) — verifies genuine daemon
+// detachment, structurally incompatible with --no-orphans (../orphan-tolerant-tests.ts,
+// #619). Neither run-1 nor run-2 may carry --no-orphans over this file, so it's
+// excluded from run-2's daemonTestFiles below and given its own invocation,
+// gated by the same skipRun2 condition (pre-commit skips all of test/, so this
+// stays skipped there too — consistent with the existing daemon-test skip).
+let stdout3 = "";
+let stderr3 = "";
+let exitCode3 = 0;
+let junit3Path: string | undefined = undefined;
+
 if (skipRun2) {
   console.log("Skipping run-2 (daemon tests) — pre-commit fast path (#1125). Use --ci or --force-run2 for full suite.");
 } else {
   const daemonTestFiles = readdirSync(resolve(import.meta.dir, "../test"))
     .filter((f) => f.endsWith(".spec.ts") && !RUN1_TEST_FILES.has(`test/${f}`))
-    .map((f) => `test/${f}`);
+    .map((f) => `test/${f}`)
+    .filter((f) => !ORPHAN_TOLERANT_TEST_FILES.includes(f));
   // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
   // and ws-server's port-retry tax has been reduced (see ws-server.ts).
   junit2Path = junitOutfile ? `/tmp/coverage-junit-run2-${Date.now()}.xml` : undefined;
@@ -313,13 +335,25 @@ if (skipRun2) {
   [stdout2, stderr2] = await Promise.all([new Response(proc2.stdout).text(), new Response(proc2.stderr).text()]);
   exitCode2 = await proc2.exited;
   clearTimeout(run2Deadline);
+
+  // Run 3: orphan-tolerant tests, no --no-orphans (#619). Only reachable when
+  // run-2 also runs — pre-commit's fast-path skip covers this file too.
+  junit3Path = junitOutfile ? `/tmp/coverage-junit-run3-${Date.now()}.xml` : undefined;
+  const run3Args = ["bun", "test", ...ORPHAN_TOLERANT_TEST_FILES];
+  if (junit3Path) run3Args.push("--reporter", "junit", `--reporter-outfile=${junit3Path}`);
+  const proc3 = Bun.spawn(run3Args, {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  [stdout3, stderr3] = await Promise.all([new Response(proc3.stdout).text(), new Response(proc3.stderr).text()]);
+  exitCode3 = await proc3.exited;
 }
 
 const testDuration = Date.now() - testStart;
 
-// Combine output from both runs
-const stdout = stdout1 + stdout2;
-const stderr = stderr1 + stderr2;
+// Combine output from all three runs
+const stdout = stdout1 + stdout2 + stdout3;
+const stderr = stderr1 + stderr2 + stderr3;
 
 // Print original output so user sees test results + coverage table.
 // Use awaited Bun.write so the kernel pipe drains before any later
@@ -353,19 +387,20 @@ if (junitOutfile) {
       }
     };
     const f1 = readJunitFailures(junit1Path);
-    // run-2 was skipped → no tests ran in that phase, treat as 0 failures.
+    // run-2/run-3 were skipped → no tests ran in that phase, treat as 0 failures.
     const f2 = skipRun2 ? 0 : readJunitFailures(junit2Path);
+    const f3 = skipRun2 ? 0 : readJunitFailures(junit3Path);
     // Any missing junit file → write null so the outer classifier uses the
     // durable stdout fallback instead of trusting a fabricated zero.
-    const totalFailures = f1 === null || f2 === null ? null : f1 + f2;
+    const totalFailures = f1 === null || f2 === null || f3 === null ? null : f1 + f2 + f3;
     writeFileSync(junitOutfile, JSON.stringify({ failures: totalFailures }));
   } catch {
     /* best-effort — crash tolerance is non-essential */
   }
 }
 
-// Fail if either run failed
-const exitCode = exitCode1 !== 0 ? exitCode1 : exitCode2;
+// Fail if any run failed
+const exitCode = exitCode1 !== 0 ? exitCode1 : exitCode2 !== 0 ? exitCode2 : exitCode3;
 if (exitCode !== 0) {
   try {
     logTestRun(stdout + stderr, exitCode, testDuration);
@@ -399,7 +434,7 @@ const globalLines = Number.parseFloat(allFilesMatch[2]);
 const fileRowRegex = /^\s*([\w/.@-]+\.(?:ts|tsx))\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/gm;
 
 const bestCoverage = new Map<string, { funcs: number; lines: number }>();
-for (const source of [coverageRun1, stdout2 + stderr2]) {
+for (const source of [coverageRun1, stdout2 + stderr2 + stdout3 + stderr3]) {
   for (const match of source.matchAll(fileRowRegex)) {
     const file = match[1];
     const funcs = Number.parseFloat(match[2]);
