@@ -80,6 +80,12 @@ export interface RemoteProvider {
   /** Provider name (e.g., "confluence", "jira"). */
   readonly name: string;
 
+  /**
+   * Plural noun for what this provider counts, used in progress output
+   * ("250/5000 pages"). Defaults to "items" — Jira does not clone pages (#1249).
+   */
+  readonly itemNoun?: string;
+
   // ── Discovery ──────────────────────────────────────────────
 
   /** Resolve a scope key to a fully qualified scope (e.g., look up spaceId from key). */

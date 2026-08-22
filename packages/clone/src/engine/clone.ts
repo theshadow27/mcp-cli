@@ -74,6 +74,27 @@ export function computeDepth(entry: RemoteEntry, entryById: Map<string, RemoteEn
 }
 
 export async function clone(opts: CloneOptions): Promise<CloneResult> {
+  const progress = new ProgressReporter({
+    operation: "clone",
+    provider: opts.provider.name,
+    scope: opts.scope.key,
+    repoRoot: resolve(opts.targetDir),
+    unit: opts.provider.itemNoun,
+    log: (msg) => log(opts, msg),
+    onEvent: opts.onEvent,
+  });
+  try {
+    return await runClone(opts, progress);
+  } catch (err) {
+    // Close the stream on the way out. A `vfs.started` followed by nothing —
+    // auth expiry, rate limit, ENOSPC — hangs `mcx monitor --until` and
+    // `ctx.waitForEvent` to their timeouts. No-ops if we never started.
+    await progress.fail(err);
+    throw err;
+  }
+}
+
+async function runClone(opts: CloneOptions, progress: ProgressReporter): Promise<CloneResult> {
   const { targetDir, provider, scope, limit = 0, depth = 0 } = opts;
   const absTarget = resolve(targetDir);
 
@@ -103,18 +124,15 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   // Providers that support inline content (e.g., Confluence) return content
   // with the listing, avoiding N+1 individual fetch calls.
   //
-  // Ask the provider for a page count first so progress has a denominator; a
-  // provider without `count()` (or one whose count call fails) still reports,
-  // just without a percentage. See #1249.
-  const progress = new ProgressReporter({
-    operation: "clone",
-    provider: provider.name,
-    scope: scope.key,
-    log: (msg) => log(opts, msg),
-    onEvent: opts.onEvent,
-  });
+  // Announce first, *then* ask the provider for a page count: `count()` goes
+  // through the resilient caller (30s timeout, 4 retries), so on a rate-limited
+  // remote it can take minutes — exactly when the user most needs to see that
+  // the clone is alive. The denominator lands on the first progress line
+  // instead. A provider without `count()` (or one whose count call fails) still
+  // reports, just without a percentage. See #1249.
+  await progress.start();
   const listTotal = await estimateTotal(provider, resolved, limit);
-  progress.start(listTotal);
+  progress.announceTotal(listTotal);
 
   const entries: RemoteEntry[] = [];
   const contentMap = new Map<string, string>();
@@ -126,7 +144,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
       contentMap.set(entry.id, entry.content);
     }
     fetched++;
-    progress.tick("list", fetched, listTotal);
+    await progress.tick("list", fetched, listTotal);
     if (limit > 0 && fetched >= limit) break;
   }
 
@@ -169,7 +187,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
         if (idx >= 0) includedEntries[idx] = r.entry;
         contentFetched++;
       }
-      progress.tick("content", contentFetched, missingContent.length);
+      await progress.tick("content", contentFetched, missingContent.length);
     }
   }
 
@@ -197,7 +215,6 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
     mkdirSync(dirname(absPath), { recursive: true });
     writeFileSync(absPath, withFrontmatter, "utf-8");
     written++;
-    progress.tick("write", written, includedEntries.length);
   }
 
   // Write stubs for depth-excluded pages
@@ -284,7 +301,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   log(opts, `  → remote "origin" set to ${remoteUrl}`);
 
   log(opts, `\nDone! Cloned ${includedEntries.length} pages${stubNote} to ${absTarget}`);
-  progress.finish(includedEntries.length);
+  await progress.finish(includedEntries.length);
 
   return {
     path: absTarget,

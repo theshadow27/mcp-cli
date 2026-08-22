@@ -245,6 +245,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
   const provider: RemoteProvider = {
     name: "confluence",
+    itemNoun: "pages",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);

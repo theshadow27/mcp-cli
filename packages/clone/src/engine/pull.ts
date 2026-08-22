@@ -14,7 +14,7 @@
  */
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
@@ -72,6 +72,9 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
   const cache = new CloneCache(cachePath);
   const result: PullResult = { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: false };
+  // Declared out here so the catch can close the event stream — the reporter
+  // itself can only be built once the scope key is read from the cache.
+  let progress: ProgressReporter | undefined;
 
   try {
     // ── Load scope from cache ────────────────────────────────
@@ -82,14 +85,16 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     // The scope key only becomes known here (it lives in the cache), so the
     // reporter — and with it the vfs.started event — is built after the lookup.
-    const progress = new ProgressReporter({
+    progress = new ProgressReporter({
       operation: "pull",
       provider: provider.name,
       scope: scope.key,
+      repoRoot: resolve(repoDir),
+      unit: provider.itemNoun,
       log: (msg) => log(opts, msg),
       onEvent: opts.onEvent,
     });
-    progress.start();
+    await progress.start();
 
     // ── Decide depth ─────────────────────────────────────────
     // If user specifies --depth, use it. Otherwise, use the stored clone depth.
@@ -193,7 +198,15 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         .join(", ");
       log(opts, `\nPull complete. ${summary}.`);
     }
-    progress.finish(totalChanges);
+    // `totalChanges` is what the pull *produced*, not where the bar got to — it
+    // rides as `items` so a subscriber tracking `current` doesn't watch it
+    // collapse from a page count to a change count at the end.
+    await progress.finish(totalChanges);
+  } catch (err) {
+    // Every vfs.started gets exactly one terminal event, including when the
+    // provider throws mid-sync. No-ops if we failed before start().
+    await progress?.fail(err);
+    throw err;
   } finally {
     cache.close();
   }
@@ -262,7 +275,7 @@ async function incrementalPull(
   for (const change of changes) {
     const { entry } = change;
     reached++;
-    progress?.tick("content", reached, changes.length);
+    await progress?.tick("content", reached, changes.length);
 
     if (change.type === "deleted") {
       const cached = cachedById.get(entry.id);
@@ -355,6 +368,7 @@ async function fullPull(
   let fetched = 0;
 
   const listTotal = await estimateTotal(provider, scope);
+  progress?.announceTotal(listTotal);
 
   for await (const entry of provider.list(scope)) {
     remoteEntries.push(entry);
@@ -362,7 +376,7 @@ async function fullPull(
       remoteContentMap.set(entry.id, entry.content);
     }
     fetched++;
-    progress?.tick("list", fetched, listTotal);
+    await progress?.tick("list", fetched, listTotal);
   }
 
   log(opts, `  → ${remoteEntries.length} remote pages`);
@@ -452,7 +466,7 @@ async function fullPull(
         remoteContentMap.set(r.id, r.content);
         contentFetched++;
       }
-      progress?.tick("content", contentFetched, needsFetch.length);
+      await progress?.tick("content", contentFetched, needsFetch.length);
     }
   }
 

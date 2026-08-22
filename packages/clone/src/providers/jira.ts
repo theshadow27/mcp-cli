@@ -122,6 +122,7 @@ export function createJiraProvider(opts: JiraProviderOptions): RemoteProvider {
 
   const provider: RemoteProvider = {
     name: "jira",
+    itemNoun: "issues",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);

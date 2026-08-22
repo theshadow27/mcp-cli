@@ -13,25 +13,50 @@
  *    watch a clone running in another terminal. There is no side channel — the
  *    command layer forwards these straight to the daemon's `publishEvent` IPC.
  *
+ * Two properties the bus half depends on, both of which this module owns:
+ *
+ * - **Every `start()` is followed by exactly one terminal event** — `finish()`
+ *   on success, `fail()` on any thrown error. A `vfs.started` trailing off into
+ *   silence would reproduce on the bus the exact defect the stderr line fixes,
+ *   and would hang `mcx monitor --until` / `ctx.waitForEvent` to their timeouts.
+ * - **The sink is awaited.** `main()` resolving triggers `process.exit()`, which
+ *   tears the event loop down before an un-awaited socket write lands (#2983).
+ *   Best-effort telemetry means *swallow the error*, not *skip the await*: the
+ *   publisher bounds its own timeout, and the reporter waits for it.
+ *
  * Emission is throttled by *item count*, never by wall-clock time: the same
  * input sequence always produces the same updates, which keeps tests
  * deterministic (see test/CLAUDE.md — test the condition, not time passing).
  */
 import type { VfsOperation, VfsPhase, VfsProgressFields } from "@mcp-cli/core";
-import { VFS_COMPLETED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, generateSpanId } from "@mcp-cli/core";
 import type { RemoteProvider, ResolvedScope } from "../providers/provider";
 
 /** One progress update, ready to be published as a flat monitor event. */
 export interface VfsProgressEvent extends VfsProgressFields {
-  /** Monitor event name — one of `vfs.started` / `vfs.progress` / `vfs.completed`. */
-  event: typeof VFS_STARTED | typeof VFS_PROGRESS | typeof VFS_COMPLETED;
+  /** Monitor event name — one of the `vfs.*` names. */
+  event: typeof VFS_STARTED | typeof VFS_PROGRESS | typeof VFS_COMPLETED | typeof VFS_FAILED;
 }
 
-/** Sink for progress events. Must not throw — the reporter does not guard it. */
-export type VfsProgressSink = (event: VfsProgressEvent) => void;
+/**
+ * Sink for progress events.
+ *
+ * May return a promise; the reporter awaits it, so a sink that writes to a
+ * socket is guaranteed to have flushed before the operation returns. Must not
+ * throw or reject — the reporter does not guard it, and a clone must not fail
+ * over its own telemetry.
+ */
+export type VfsProgressSink = (event: VfsProgressEvent) => void | Promise<void>;
 
-/** Emit one update per this share of a known total (5% → 20 updates per phase). */
+/** Emit one update per this share of a known total (5% → up to 20 per phase). */
 export const DEFAULT_PERCENT_STEP = 5;
+
+/**
+ * Never emit more often than one update per this many items, even when 5% of
+ * the total is fewer. Without a floor a 40-page clone reports every single page
+ * — 40 stderr lines and 40 IPC publishes where it used to print none.
+ */
+export const MIN_PERCENT_STEP_ITEMS = 10;
 
 /** Emit one update per this many items when the total is unknown. */
 export const DEFAULT_COUNT_STEP = 50;
@@ -41,16 +66,19 @@ export interface ProgressThrottle {
   percentStep?: number;
   /** Items between updates when no total is known. Defaults to {@link DEFAULT_COUNT_STEP}. */
   countStep?: number;
+  /** Lower bound on the percent-derived step. Defaults to {@link MIN_PERCENT_STEP_ITEMS}. */
+  minStep?: number;
 }
 
 /**
  * Decide whether `current` deserves an update given the last one emitted.
  *
- * With a known total the step is a share of it, so a 5000-item scope reports
- * every 250 items and a 20-item scope reports every item; the tick that reaches
- * the total always reports, so a phase never ends mid-bar. Without a total the
- * step is a flat item count. Overshoot (an estimate that came in low) falls back
- * to the step rule rather than reporting every single item.
+ * With a known total the step is a share of it but never below `minStep`, so a
+ * 5000-item scope reports every 250 items and a 40-item scope reports every 10
+ * rather than every one; the tick that reaches the total always reports, so a
+ * phase never ends mid-bar. Without a total the step is a flat item count.
+ * Overshoot (an estimate that came in low) falls back to the step rule rather
+ * than reporting every single item.
  */
 export function shouldReport(
   current: number,
@@ -63,7 +91,8 @@ export function shouldReport(
   if (total !== undefined && total > 0) {
     if (current >= total && lastReported < total) return true;
     const percentStep = throttle.percentStep ?? DEFAULT_PERCENT_STEP;
-    const step = Math.max(1, Math.ceil((total * percentStep) / 100));
+    const minStep = throttle.minStep ?? MIN_PERCENT_STEP_ITEMS;
+    const step = Math.max(minStep, Math.ceil((total * percentStep) / 100));
     return current - lastReported >= step;
   }
 
@@ -79,26 +108,45 @@ export function percentOf(current: number, total: number | undefined): number | 
 const PHASE_LABEL: Record<VfsPhase, string> = {
   list: "Fetching",
   content: "Fetching content for",
-  write: "Writing",
 };
+
+/** Fallback noun when a provider doesn't name what it counts. */
+export const DEFAULT_UNIT = "items";
 
 /** Render the stderr line: `  Fetching FOO... 250/5000 pages (5%)`. */
 export function formatProgressLine(e: VfsProgressEvent): string {
   const label = e.phase ? PHASE_LABEL[e.phase] : "Fetching";
   const pct = e.percent === undefined ? "" : ` (${e.percent}%)`;
   const of = e.total === undefined ? "" : `/${e.total}`;
-  return `  ${label} ${e.scope}... ${e.current}${of} pages${pct}`;
+  return `  ${label} ${e.scope}... ${e.current}${of} ${e.unit ?? DEFAULT_UNIT}${pct}`;
 }
 
 export interface ProgressReporterOptions {
   operation: VfsOperation;
   provider: string;
   scope: string;
+  /**
+   * Repo this operation targets — clone's target dir, pull's repo dir. Carried
+   * on every event so repo-scoped monitors elsewhere on the box can filter it
+   * out; an event without one passes *every* repo filter (`event-filter.ts`).
+   */
+  repoRoot: string;
+  /** Noun for the counted items, from the provider. Defaults to {@link DEFAULT_UNIT}. */
+  unit?: string;
   /** Human-readable sink — the engine's existing stderr logger. */
   log: (message: string) => void;
   /** Event-bus sink. Omitted when nothing is listening (tests, library use). */
   onEvent?: VfsProgressSink;
   throttle?: ProgressThrottle;
+  /** Correlation id for the run. Defaults to a fresh span id; injectable for tests. */
+  runId?: string;
+}
+
+/** The last position a phase reported, whether or not it was emitted. */
+interface Position {
+  phase: VfsPhase;
+  current: number;
+  total?: number;
 }
 
 /**
@@ -111,58 +159,106 @@ export interface ProgressReporterOptions {
 export class ProgressReporter {
   private readonly lastReported = new Map<VfsPhase, number>();
   private readonly opts: ProgressReporterOptions;
+  private readonly runId: string;
+  /** Where the run actually got to, updated on every tick — throttled or not. */
+  private position: Position | undefined;
+  private started = false;
+  private terminated = false;
 
   constructor(opts: ProgressReporterOptions) {
     this.opts = opts;
+    this.runId = opts.runId ?? generateSpanId();
   }
 
-  /** Announce the operation, with the provider's up-front estimate if it has one. */
-  start(total?: number): void {
+  /** Announce the operation. Idempotent — only the first call emits. */
+  async start(): Promise<void> {
+    if (this.started) return;
+    this.started = true;
     const { operation, provider, scope } = this.opts;
-    const suffix = total === undefined ? "" : ` (${total} pages)`;
-    this.opts.log(`${operation === "clone" ? "Cloning" : "Pulling"} ${provider}/${scope}...${suffix}`);
-    this.emit({ event: VFS_STARTED, ...this.base(), current: 0, ...(total === undefined ? {} : { total }) });
+    this.opts.log(`${operation === "clone" ? "Cloning" : "Pulling"} ${provider}/${scope}...`);
+    await this.emit({ event: VFS_STARTED, ...this.base(), current: 0 });
+  }
+
+  /**
+   * Report the denominator once the provider has been asked for it.
+   *
+   * Only logs: the total reaches the bus on the first `vfs.progress`, and
+   * emitting a second event for it would buy subscribers nothing.
+   */
+  announceTotal(total: number | undefined): void {
+    if (total === undefined) return;
+    this.opts.log(`  → ${total} ${this.opts.unit ?? DEFAULT_UNIT} to fetch`);
   }
 
   /**
    * Record that `current` items of `phase` are done. Emits at most one update per
    * throttle step; returns whether this call produced one.
    */
-  tick(phase: VfsPhase, current: number, total?: number): boolean {
-    // A counter that moved backwards means the phase restarted — pull falls back
-    // from an incremental sync to a full one and re-runs `content` from zero.
-    // Without this reset the second pass would stay silent until it passed the
-    // first pass's high-water mark.
-    const previous = this.lastReported.get(phase) ?? 0;
-    const last = current < previous ? 0 : previous;
+  async tick(phase: VfsPhase, current: number, total?: number): Promise<boolean> {
+    this.position = { phase, current, ...(total === undefined ? {} : { total }) };
+    const last = this.lastReported.get(phase) ?? 0;
     if (!shouldReport(current, total, last, this.opts.throttle)) return false;
     this.lastReported.set(phase, current);
 
-    const percent = percentOf(current, total);
-    const event: VfsProgressEvent = {
-      event: VFS_PROGRESS,
+    const event: VfsProgressEvent = { event: VFS_PROGRESS, ...this.base(), ...this.tail() };
+    this.opts.log(formatProgressLine(event));
+    await this.emit(event);
+    return true;
+  }
+
+  /**
+   * Publish the success terminal event. The engine keeps ownership of its
+   * summary line. `items` is what the run *produced* (pages cloned, changes
+   * applied) — deliberately a separate field from `current`/`total`, which stay
+   * in the unit of the last phase so a subscriber tracking the bar doesn't see
+   * it collapse to a different scale at the end.
+   */
+  async finish(items?: number): Promise<void> {
+    if (!this.started || this.terminated) return;
+    this.terminated = true;
+    await this.emit({
+      event: VFS_COMPLETED,
       ...this.base(),
+      ...this.tail(),
+      ...(items === undefined ? {} : { items }),
+    });
+  }
+
+  /**
+   * Publish the failure terminal event. Called from the engines' catch blocks so
+   * an auth expiry, a rate limit, or a full disk still closes the stream.
+   */
+  async fail(error: unknown): Promise<void> {
+    if (!this.started || this.terminated) return;
+    this.terminated = true;
+    await this.emit({
+      event: VFS_FAILED,
+      ...this.base(),
+      ...this.tail(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  private base(): Pick<VfsProgressFields, "runId" | "operation" | "provider" | "scope" | "repoRoot" | "unit"> {
+    const { operation, provider, scope, repoRoot, unit } = this.opts;
+    return { runId: this.runId, operation, provider, scope, repoRoot, unit: unit ?? DEFAULT_UNIT };
+  }
+
+  /** Current position as event fields — `{current: 0}` before the first tick. */
+  private tail(): Pick<VfsProgressFields, "phase" | "current" | "total" | "percent"> {
+    if (!this.position) return { current: 0 };
+    const { phase, current, total } = this.position;
+    const percent = percentOf(current, total);
+    return {
       phase,
       current,
       ...(total === undefined ? {} : { total }),
       ...(percent === undefined ? {} : { percent }),
     };
-    this.opts.log(formatProgressLine(event));
-    this.emit(event);
-    return true;
   }
 
-  /** Publish the terminal event. The engine keeps ownership of its summary line. */
-  finish(total: number): void {
-    this.emit({ event: VFS_COMPLETED, ...this.base(), current: total, total, percent: 100 });
-  }
-
-  private base(): Pick<VfsProgressFields, "operation" | "provider" | "scope"> {
-    return { operation: this.opts.operation, provider: this.opts.provider, scope: this.opts.scope };
-  }
-
-  private emit(event: VfsProgressEvent): void {
-    this.opts.onEvent?.(event);
+  private async emit(event: VfsProgressEvent): Promise<void> {
+    await this.opts.onEvent?.(event);
   }
 }
 
@@ -172,6 +268,10 @@ export class ProgressReporter {
  * A provider that can't count, one whose count call fails, and one that answers
  * with garbage all degrade the same way: `undefined`, and progress falls back to
  * a bare item counter. A clone must never fail over its progress denominator.
+ *
+ * Zero counts as "don't know", not as a real total: `0` would render a header
+ * that says the space is empty next to a bar that keeps climbing, and an empty
+ * space is indistinguishable from a `totalSize` the remote failed to populate.
  *
  * `limit` (the `--limit` flag) caps the answer, since the listing stops there.
  */
@@ -187,6 +287,6 @@ export async function estimateTotal(
   } catch {
     return undefined;
   }
-  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return undefined;
+  if (typeof total !== "number" || !Number.isFinite(total) || total <= 0) return undefined;
   return limit > 0 ? Math.min(total, limit) : total;
 }

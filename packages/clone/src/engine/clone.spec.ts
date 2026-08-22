@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { VFS_COMPLETED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { join, resolve } from "node:path";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { clone, computeDepth } from "./clone";
@@ -319,12 +319,13 @@ describe("clone", () => {
 });
 
 describe("clone progress reporting (#1249)", () => {
-  /** 40 pages: enough that a 5% step reports every other page. */
+  /** Provider over `count` pages that names what it counts. */
   function bulkProvider(count: number, overrides: Partial<RemoteProvider> = {}): RemoteProvider {
     const entries = Array.from({ length: count }, (_, i) =>
       makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 1, content: `Body ${i}` }),
     );
     return makeProvider({
+      itemNoun: "pages",
       list: async function* () {
         for (const e of entries) yield e;
       },
@@ -332,30 +333,98 @@ describe("clone progress reporting (#1249)", () => {
     });
   }
 
-  test("emits started, progress and completed events with a total from count()", async () => {
+  function sink(events: VfsProgressEvent[]): (e: VfsProgressEvent) => void {
+    return (e) => {
+      events.push(e);
+    };
+  }
+
+  test("emits started, progress and exactly one terminal event", async () => {
     const events: VfsProgressEvent[] = [];
     const provider = bulkProvider(40, { count: async () => 40 });
 
-    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: (e) => events.push(e) });
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
     expect(events[0]).toMatchObject({ event: VFS_STARTED, operation: "clone", provider: "test", scope: "FOO" });
-    expect(events[0].total).toBe(40);
-    expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, current: 40, total: 40, percent: 100 });
+    // The denominator resolves *after* started, so a rate-limited count() can no
+    // longer delay the first sign of life by minutes.
+    expect(events[0].total).toBeUndefined();
 
     const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
-    expect(listing).toHaveLength(20); // one per 5% of 40 pages
-    expect(listing[0]).toMatchObject({ current: 2, total: 40, percent: 5 });
-    expect(listing.at(-1)).toMatchObject({ current: 40, percent: 100 });
+    expect(listing.map((e) => e.current)).toEqual([10, 20, 30, 40]); // 5% of 40, floored at 10
+    expect(listing[0]).toMatchObject({ current: 10, total: 40, percent: 25 });
+
+    const terminal = events.filter((e) => e.event === VFS_COMPLETED || e.event === VFS_FAILED);
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject({ event: VFS_COMPLETED, current: 40, total: 40, percent: 100, items: 40 });
+  });
+
+  test("carries repoRoot and a single runId so monitors filter and demultiplex", async () => {
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(40, { count: async () => 40 });
+
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
+
+    // Without repoRoot every event passes every repo-scoped monitor filter
+    // (event-filter.ts) — a clone elsewhere on the box would spray into an
+    // unrelated repo's stream.
+    expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolve(targetDir)]));
+    expect(new Set(events.map((e) => e.runId)).size).toBe(1);
+    expect(events[0].runId).toMatch(/^[0-9a-f]{16}$/);
+    expect(new Set(events.map((e) => e.unit))).toEqual(new Set(["pages"]));
+  });
+
+  test("publishes a terminal vfs.failed when the remote throws mid-listing", async () => {
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(40, {
+      count: async () => 40,
+      list: async function* () {
+        yield makeEntry({ id: "p0", title: "Page 0", content: "Body 0" });
+        throw new Error("401 token expired");
+      },
+    });
+
+    await expect(
+      clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) }),
+    ).rejects.toThrow("401 token expired");
+
+    // The invariant subscribers depend on: started is never left dangling, so
+    // `mcx monitor --until` and ctx.waitForEvent terminate on failure too.
+    expect(events[0].event).toBe(VFS_STARTED);
+    expect(events.at(-1)).toMatchObject({ event: VFS_FAILED, error: "401 token expired", runId: events[0].runId });
+    expect(events.filter((e) => e.event === VFS_FAILED || e.event === VFS_COMPLETED)).toHaveLength(1);
+  });
+
+  test("a failure before the operation starts emits nothing at all", async () => {
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(5, {
+      resolveScope: async () => {
+        throw new Error("space not found");
+      },
+    });
+
+    await expect(
+      clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) }),
+    ).rejects.toThrow("space not found");
+    expect(events).toEqual([]);
   });
 
   test("renders the count and percent on the stderr line", async () => {
     const lines: string[] = [];
     const provider = bulkProvider(40, { count: async () => 40 });
 
-    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: (m) => lines.push(m) });
+    await clone({
+      targetDir,
+      provider,
+      scope: makeScope("FOO"),
+      onProgress: (m) => {
+        lines.push(m);
+      },
+    });
 
-    expect(lines).toContain("Cloning test/FOO... (40 pages)");
-    expect(lines).toContain("  Fetching FOO... 2/40 pages (5%)");
+    expect(lines).toContain("Cloning test/FOO...");
+    expect(lines).toContain("  → 40 pages to fetch");
+    expect(lines).toContain("  Fetching FOO... 10/40 pages (25%)");
     expect(lines).toContain("  Fetching FOO... 40/40 pages (100%)");
   });
 
@@ -363,7 +432,7 @@ describe("clone progress reporting (#1249)", () => {
     const events: VfsProgressEvent[] = [];
     const provider = bulkProvider(60);
 
-    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: (e) => events.push(e) });
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
     const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
     expect(listing.map((e) => e.current)).toEqual([50]); // default 50-item step
@@ -392,10 +461,9 @@ describe("clone progress reporting (#1249)", () => {
       scope: makeScope("FOO"),
       limit: 10,
       onProgress: () => {},
-      onEvent: (e) => events.push(e),
+      onEvent: sink(events),
     });
 
-    expect(events[0].total).toBe(10);
     const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
     expect(listing.at(-1)).toMatchObject({ current: 10, total: 10, percent: 100 });
   });
@@ -404,16 +472,26 @@ describe("clone progress reporting (#1249)", () => {
     const events: VfsProgressEvent[] = [];
     const entries = Array.from({ length: 20 }, (_, i) => makeEntry({ id: `p${i}`, title: `Page ${i}` }));
     const provider = makeProvider({
+      itemNoun: "pages",
       count: async () => 20,
       list: async function* () {
         for (const e of entries) yield e; // no `content` — forces individual fetches
       },
     });
 
-    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: (e) => events.push(e) });
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
     const content = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "content");
     expect(content.at(-1)).toMatchObject({ current: 20, total: 20, percent: 100 });
+  });
+
+  test("writing files is not a reported phase — it is local and fast", async () => {
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(40, { count: async () => 40 });
+
+    await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
+
+    expect(events.some((e) => e.phase !== undefined && e.phase !== "list" && e.phase !== "content")).toBe(false);
   });
 
   test("clone works with no event sink attached", async () => {

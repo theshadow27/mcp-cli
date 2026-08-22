@@ -51,18 +51,33 @@ export interface VfsDeps {
 }
 
 /**
+ * Ceiling on one telemetry publish. `ipcCall`'s 60s default is sized for real
+ * work; a wedged daemon must not be able to stall a clone on its own progress.
+ */
+export const PROGRESS_PUBLISH_TIMEOUT_MS = 2_000;
+
+/**
  * Forward clone/pull progress onto the daemon event bus, so `mcx monitor` can
  * follow a long clone running in another terminal.
  *
- * Fire-and-forget on purpose: the daemon may be down, and a clone must neither
- * stall on nor fail over its own telemetry. Updates are already throttled by the
+ * Best-effort, which means *swallow the error* — not *skip the await*. `main()`
+ * resolving calls `process.exit()`, which tears down the event loop before an
+ * un-awaited socket write lands, so a fire-and-forget publish silently drops the
+ * terminal `vfs.completed` / `vfs.failed` event (#2983). The await is bounded by
+ * {@link PROGRESS_PUBLISH_TIMEOUT_MS} instead. Updates are throttled by the
  * engine's reporter, so this is a handful of calls per phase, not one per page.
  */
 export function makeProgressPublisher(ipc: typeof ipcCall = ipcCall): VfsProgressSink {
-  return ({ event, ...fields }) => {
-    void Promise.resolve(ipc("publishEvent", { src: "cli.vfs", event, category: "vfs", extra: { ...fields } })).catch(
-      () => {},
-    );
+  return async ({ event, ...fields }) => {
+    try {
+      await ipc(
+        "publishEvent",
+        { src: "cli.vfs", event, category: "vfs", extra: { ...fields } },
+        { timeoutMs: PROGRESS_PUBLISH_TIMEOUT_MS },
+      );
+    } catch {
+      // The daemon may be down or wedged; a clone does not fail over telemetry.
+    }
   };
 }
 
@@ -391,8 +406,11 @@ Options:
 
 Progress:
   clone and pull print live progress to stderr ("Fetching FOO... 250/5000 pages
-  (5%)") and publish vfs.started / vfs.progress / vfs.completed on the daemon
-  event bus — follow a long clone from another terminal with: mcx monitor
+  (5%)") and publish vfs.started, vfs.progress, and exactly one terminal event
+  — vfs.completed or vfs.failed — on the daemon event bus. Follow a long clone
+  from another terminal with: mcx monitor
+  Every event carries a runId (one run) and repoRoot (the target dir), so
+  concurrent clones demultiplex and repo-scoped monitors stay unpolluted.
   The percentage needs a provider that can count its scope up front (confluence);
   others report a bare item count.
 

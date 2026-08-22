@@ -157,15 +157,28 @@ export const AUTOMATION_ESCALATED = "automation.escalated" as const;
 export const VFS_STARTED = "vfs.started" as const;
 export const VFS_PROGRESS = "vfs.progress" as const;
 export const VFS_COMPLETED = "vfs.completed" as const;
+export const VFS_FAILED = "vfs.failed" as const;
+
+/**
+ * The terminal events of a vfs operation.
+ *
+ * Contract for subscribers: every `vfs.started` is followed by exactly one of
+ * these, on both the success and the failure path. `mcx monitor --until` and
+ * `ctx.waitForEvent` rely on it — without a terminal event on failure a hung
+ * clone and a crashed one are indistinguishable, which is the very defect
+ * #1249 exists to fix.
+ */
+export const VFS_TERMINAL_EVENTS = [VFS_COMPLETED, VFS_FAILED] as const;
 
 /** The long-running vfs operations that report progress. */
 export type VfsOperation = "clone" | "pull";
 
 /**
  * Stage of a vfs operation. `list` walks the remote index, `content` fetches
- * bodies for entries whose listing had none, `write` lands files on disk.
+ * bodies for entries whose listing had none. Writing files is not a phase: it
+ * is local `writeFileSync` calls, fast enough that nobody waits on it.
  */
-export type VfsPhase = "list" | "content" | "write";
+export type VfsPhase = "list" | "content";
 
 /**
  * Flat payload fields carried by `vfs.*` events. Spread at the top level of the
@@ -173,12 +186,25 @@ export type VfsPhase = "list" | "content" | "write";
  * under `payload`.
  */
 export interface VfsProgressFields {
+  /**
+   * Correlation id, constant for one clone/pull run. Two concurrent runs
+   * interleave on the bus; this is how a subscriber demultiplexes them (the
+   * same role `sessionId` plays for session events).
+   */
+  runId: string;
   operation: VfsOperation;
   /** Provider name, e.g. "confluence". */
   provider: string;
   /** Scope key, e.g. a Confluence space key. */
   scope: string;
-  /** Stage this update belongs to. Absent on `vfs.completed`. */
+  /**
+   * Repo the operation targets — clone's target directory, pull's repo dir.
+   * Required: `event-filter.ts` passes an event with no `repoRoot` through
+   * every repo-scoped filter, so omitting it would spray clone chatter into
+   * unrelated monitors.
+   */
+  repoRoot: string;
+  /** Stage this update belongs to. Absent before the first tick. */
   phase?: VfsPhase;
   /** Items processed so far in `phase`. */
   current: number;
@@ -186,6 +212,12 @@ export interface VfsProgressFields {
   total?: number;
   /** `current`/`total` as a 0-100 integer. Present only when `total` is known. */
   percent?: number;
+  /** Noun for the counted items, e.g. "pages" for Confluence, "issues" for Jira. */
+  unit?: string;
+  /** What the run produced (pages cloned, changes applied). Terminal events only. */
+  items?: number;
+  /** Failure reason. `vfs.failed` only. */
+  error?: string;
 }
 
 // ── Alias supervisor event names (#1924) ──
@@ -588,6 +620,8 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
 
   [VFS_COMPLETED]: (e) => join(vfsTarget(e), vfsCount(e)),
 
+  [VFS_FAILED]: (e) => join(vfsTarget(e), vfsCount(e), typeof e.error === "string" ? e.error : "failed"),
+
   [HEARTBEAT]: (e) => `seq:${e.seq}`,
 };
 
@@ -599,13 +633,14 @@ function vfsTarget(e: MonitorEventBase): string {
   return join(op, provider && scope ? `${provider}/${scope}` : provider || scope);
 }
 
-/** `250/5000 (5%)`, degrading to `250` when the provider can't estimate a total. */
+/** `250/5000 pages (5%)`, degrading to `250 pages` when no total could be estimated. */
 function vfsCount(e: MonitorEventBase): string {
   if (typeof e.current !== "number") return "";
+  const unit = typeof e.unit === "string" && e.unit ? ` ${e.unit}` : "";
   const total = typeof e.total === "number" ? e.total : undefined;
-  if (total === undefined) return `${e.current}`;
+  if (total === undefined) return `${e.current}${unit}`;
   const pct = typeof e.percent === "number" ? ` (${e.percent}%)` : "";
-  return `${e.current}/${total}${pct}`;
+  return `${e.current}/${total}${unit}${pct}`;
 }
 
 /**
@@ -672,6 +707,7 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [GC_PRUNED]: "actionable",
   [AUTOMATION_ERRORED]: "actionable",
   [AUTOMATION_ESCALATED]: "actionable",
+  [VFS_FAILED]: "actionable",
 
   // notable — state moved, but nothing to do yet
   [PR_OPENED]: "notable",

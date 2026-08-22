@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloneCache, VfsError } from "@mcp-cli/clone";
-import { VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { VFS_COMPLETED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
 import type { VfsDeps } from "./vfs";
 import {
+  PROGRESS_PUBLISH_TIMEOUT_MS,
   cmdVfs,
   makeProgressPublisher,
   makeToolCaller,
@@ -514,27 +515,31 @@ describe("makeToolCaller", () => {
 });
 
 describe("makeProgressPublisher (#1249)", () => {
-  type IpcCall = { method: string; params: Record<string, unknown> };
+  type IpcCall = { method: string; params: Record<string, unknown>; opts?: { timeoutMs?: number } };
 
   function fakeIpc(calls: IpcCall[], impl?: () => Promise<unknown>) {
-    return (async (method: string, params: Record<string, unknown>) => {
-      calls.push({ method, params });
+    return (async (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => {
+      calls.push({ method, params, opts });
       return impl ? await impl() : { ok: true, seq: 1 };
     }) as unknown as Parameters<typeof makeProgressPublisher>[0];
   }
 
-  test("publishes a flat vfs event on the daemon event bus", () => {
+  const FIELDS = {
+    runId: "0123456789abcdef",
+    operation: "clone",
+    provider: "confluence",
+    scope: "FOO",
+    repoRoot: "/tmp/atlassian/foo",
+    unit: "pages",
+    phase: "list",
+    current: 250,
+    total: 5000,
+    percent: 5,
+  } as const;
+
+  test("publishes a flat vfs event on the daemon event bus", async () => {
     const calls: IpcCall[] = [];
-    makeProgressPublisher(fakeIpc(calls))({
-      event: VFS_PROGRESS,
-      operation: "clone",
-      provider: "confluence",
-      scope: "FOO",
-      phase: "list",
-      current: 250,
-      total: 5000,
-      percent: 5,
-    });
+    await makeProgressPublisher(fakeIpc(calls))({ event: VFS_PROGRESS, ...FIELDS });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("publishEvent");
@@ -543,16 +548,37 @@ describe("makeProgressPublisher (#1249)", () => {
       event: VFS_PROGRESS,
       category: "vfs",
       // Flat, per the envelope contract — `event` is lifted out, nothing nests.
-      extra: {
-        operation: "clone",
-        provider: "confluence",
-        scope: "FOO",
-        phase: "list",
-        current: 250,
-        total: 5000,
-        percent: 5,
-      },
+      // `repoRoot` scopes the event to the clone target so it cannot leak into
+      // an unrelated repo's monitor; `runId` demultiplexes concurrent runs.
+      extra: { ...FIELDS },
     });
+  });
+
+  test("awaits the publish, so process.exit() cannot drop the terminal event", async () => {
+    // Regression guard for #2983: a fire-and-forget publish returns before the
+    // socket write lands, and main() resolving calls process.exit() under it.
+    let releasePublish: (() => void) | undefined;
+    let landed = false;
+    const publish = makeProgressPublisher((async () => {
+      await new Promise<void>((r) => {
+        releasePublish = r;
+      });
+      landed = true;
+      return { ok: true, seq: 1 };
+    }) as unknown as Parameters<typeof makeProgressPublisher>[0]);
+
+    const pending = publish({ event: VFS_COMPLETED, ...FIELDS });
+    expect(landed).toBe(false); // still in flight — the sink has not returned
+    releasePublish?.();
+    await pending;
+    expect(landed).toBe(true);
+  });
+
+  test("bounds the publish, so a wedged daemon cannot stall a clone", async () => {
+    const calls: IpcCall[] = [];
+    await makeProgressPublisher(fakeIpc(calls))({ event: VFS_PROGRESS, ...FIELDS });
+    expect(calls[0].opts?.timeoutMs).toBe(PROGRESS_PUBLISH_TIMEOUT_MS);
+    expect(PROGRESS_PUBLISH_TIMEOUT_MS).toBeLessThan(60_000); // ipcCall's default
   });
 
   test("swallows IPC failures — a clone must not die over telemetry", async () => {
@@ -563,11 +589,7 @@ describe("makeProgressPublisher (#1249)", () => {
       }),
     );
 
-    expect(() =>
-      publish({ event: VFS_STARTED, operation: "clone", provider: "confluence", scope: "FOO", current: 0 }),
-    ).not.toThrow();
-    // Let the rejected publish settle; an unhandled rejection here would fail the run.
-    await Promise.resolve();
+    await expect(publish({ event: VFS_STARTED, ...FIELDS, current: 0 })).resolves.toBeUndefined();
     expect(calls).toHaveLength(1);
   });
 
