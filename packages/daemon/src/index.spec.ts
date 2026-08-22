@@ -99,8 +99,9 @@ describe("daemon index.ts", () => {
     });
 
     test("opens StateDb at configured path", () => {
-      const dbPath = join(opts.dir, "state.db");
-      expect(existsSync(dbPath)).toBe(true);
+      // mcx.db, not state.db — the daemon never opens the legacy file (#3034).
+      expect(existsSync(join(opts.dir, "mcx.db"))).toBe(true);
+      expect(existsSync(join(opts.dir, "state.db"))).toBe(false);
     });
 
     test("starts IPC server that responds to ping", async () => {
