@@ -138,6 +138,19 @@ Find test files (`*.spec.ts` or `*.test.ts`) that cover the described functional
 
 Follow existing test patterns in the codebase (bun:test, `*.spec.ts` files colocated with source). If a function needs to be exported to make it testable, export it. Keep tests focused and meaningful — don't pad with trivial assertions.
 
+**Guard-reachability check (mandatory for the diff's key guards).** Coverage
+is blind to a check that reports healthy about code that never runs — the
+defect class behind 14 of sprint 78's 18 repair rounds and both of its QA
+fails (a file sat at 98% line coverage with three freely-deletable guards).
+For each load-bearing guard/validation the diff adds, verify it by
+**mutation**: temporarily invert or delete the guard and confirm a test
+goes red — against the real caller, not a fake that supplies exactly what
+production fails to supply. If nothing goes red, the guard is unverified:
+write the missing test or flag it in the QA comment as unreachable. Restore
+the code before proceeding (`git checkout -- <file>` / `git stash pop`);
+`git status` must be clean of your mutations before Step 5. (Mechanization
+of this check is tracked in #3201/#3212 — until a rule exists, QA owns it.)
+
 ### Step 5: Run Tests
 
 ```bash
