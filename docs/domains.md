@@ -245,6 +245,43 @@ Two kinds, and they do not overlap:
 Project code and the web server are separate processes because they fail differently and
 one should not take the other with it.
 
+### Lifecycle of a domain worker
+
+`packages/daemon/src/domain-supervisor.ts` owns one worker per domain; the daemon owns
+the supervisor and stays up regardless of what any worker does.
+
+- **Spawned lazily, on first use** — not at daemon start. A domain row is a name bound to
+  a location and nothing else; spawning per row at startup would make "registered" mean
+  "running" and give the row the state column this table deliberately lacks. It is also
+  the only policy that survives the host move: for a domain with a `host`, you connect
+  when you need it, because "start it at daemon start" is not something you can do.
+- **Removal is not lazy**, because nothing calls into a deleted domain and so nothing
+  would notice. `DomainSupervisor.sync()` reconciles running workers against the table on
+  the daemon's existing 30s tick: a removed domain loses its worker, and a renamed or
+  moved one loses it too — the next use starts a fresh worker at the new location.
+- **Restarts run under `restart-policy.ts`** with the same backoff and crash budget as
+  every other worker. A restart re-reads the `domains` row rather than replaying the
+  snapshot it started with, and a worker whose row has vanished is *not* restarted.
+- **Nothing in a worker survives a restart.** A restart and a move to another host are
+  the same event from the worker's point of view, and memory does not move. State that
+  must survive belongs in the database.
+- **A caller can tell "coming back" from "gone".** `DomainSupervisor.status()` returns a
+  discriminated union — `no-such-domain` does not even carry a domain to act on — so the
+  retryable and permanent cases cannot be conflated by reading an error string.
+
+### The worker is addressed, never shared
+
+The daemon reaches a worker through a `DomainLink` (`domain-link.ts`): control messages
+one way, MCP JSON-RPC over the same link, failure as an event. A Bun Worker today, a
+socket when the domain grows a `host` — [`agent-protocol.md`](agent-protocol.md) §2.1
+carries the message schemas. Nothing in that interface may assume in-process delivery:
+no shared references, no synchronous call-and-return, and every message is checked with
+`assertWireSafe` so a value that survives structured clone but not JSON fails at the send.
+
+`Bun.serve` is removed from a domain worker's global at startup (`no-http.ts`), so
+"serves no HTTP" is a property of the running process rather than a claim about the
+source. That covers Bun's listener entry points; the static half of the rule is #3045.
+
 Because a project must be **installed** before it runs — the same as phases today — the
 console's page is built at install time with `Bun.build`. That typechecks every renderer
 the project supplies and emits a bundle. The daemon never transpiles project TSX at request
