@@ -32,8 +32,14 @@ Common names: orchestrator, manager, implementer, reviewer, qa.
 Use \`mcx mail -u <name>\` to read a specific mailbox by name.
 Mailboxes are created implicitly on first send.
 
+Mail is scoped to a domain. A bare recipient is local to the domain
+this directory belongs to; \`name@domain\` addresses another domain's
+mailbox, and its replies route back here. A bare read never sees
+another domain's mail. See \`docs/domains.md\`.
+
 Usage:
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
+  mcx mail -s "subject" <name>@<dom>  Send to another domain
   mcx mail -H                        List message headers
   mcx mail -u <user>                 Read a user's mailbox
   mcx mail -r <msgnum>               Reply to a message (body from stdin)
@@ -46,6 +52,7 @@ Options:
   -u <user>         Read a specific user's mailbox
   -r <msgnum>       Reply to message number
   -N                Suppress header list
+  -d <domain>       Act in this domain (default: the domain owning \$PWD)
   --wait            Block until a message arrives
   --timeout=<sec>   Timeout for --wait (default: 180)
   --for=<name>      Filter --wait by recipient
@@ -67,7 +74,27 @@ export interface MailArgs {
   forRecipient: string | undefined;
   recipient: string | undefined;
   from: string | undefined;
+  /** `-d <domain>`. When absent, the daemon resolves the domain owning the caller's cwd. */
+  domain: string | undefined;
   error: string | undefined;
+}
+
+/** Every early return from {@link parseMailArgs} is this shape plus an error. */
+function mailArgsError(error: string): MailArgs {
+  return {
+    subject: undefined,
+    headersOnly: false,
+    user: undefined,
+    replyTo: undefined,
+    suppressHeaders: false,
+    wait: false,
+    timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
+    forRecipient: undefined,
+    recipient: undefined,
+    from: undefined,
+    domain: undefined,
+    error,
+  };
 }
 
 export interface MailDeps {
@@ -78,6 +105,12 @@ export interface MailDeps {
   readStdin: () => Promise<string>;
   isTTY: boolean;
   defaultSender: string;
+  /**
+   * The caller's working directory, sent with every mail call so the daemon can resolve
+   * which domain this command is acting in (#3038). The daemon never substitutes its own
+   * cwd — `mcpd`'s cwd is whatever directory it happened to start in.
+   */
+  cwd: string;
   exit: (code: number) => never;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -91,10 +124,16 @@ const defaultDeps: MailDeps = {
   readStdin,
   isTTY: !!process.stdin.isTTY,
   defaultSender: defaultSenderName(),
+  cwd: process.cwd(),
   exit: (code) => process.exit(code),
   now: () => Date.now(),
   sleep: (ms) => Bun.sleep(ms),
 };
+
+/** The domain scope every mail IPC call carries. One helper so no call site can omit it. */
+function mailScope(parsed: MailArgs, d: MailDeps): { cwd: string; domain: string | undefined } {
+  return { cwd: d.cwd, domain: parsed.domain };
+}
 
 export function defaultSenderName(): string {
   if (process.env.CLAUDE === "1") {
@@ -116,6 +155,7 @@ const mailFlagSpecs = {
   timeout: { type: "number" as const },
   for: { type: "string" as const },
   from: { type: "string" as const },
+  domain: { type: "string" as const, alias: "d" },
 };
 
 /** Map generic parseFlags error messages to the domain-specific ones tests expect. */
@@ -127,43 +167,17 @@ function mapFlagError(err: string): string {
   if (err.includes("--timeout") && err.includes("requires")) return "--timeout requires a positive number";
   if (err.includes("--for") && err.includes("requires")) return "--for requires a recipient name";
   if (err.includes("--from") && err.includes("requires")) return "--from requires a sender name";
+  if (err.includes("-d") && err.includes("requires")) return "-d requires a domain name";
+  if (err.includes("--domain") && err.includes("requires")) return "-d requires a domain name";
   return err;
 }
 
 export function parseMailArgs(args: string[]): MailArgs {
   const { flags, positionals, errors, help } = parseFlags(args, mailFlagSpecs);
 
-  if (help) {
-    return {
-      subject: undefined,
-      headersOnly: false,
-      user: undefined,
-      replyTo: undefined,
-      suppressHeaders: false,
-      wait: false,
-      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
-      forRecipient: undefined,
-      recipient: undefined,
-      from: undefined,
-      error: "HELP",
-    };
-  }
+  if (help) return mailArgsError("HELP");
 
-  if (errors.length > 0) {
-    return {
-      subject: undefined,
-      headersOnly: false,
-      user: undefined,
-      replyTo: undefined,
-      suppressHeaders: false,
-      wait: false,
-      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
-      forRecipient: undefined,
-      recipient: undefined,
-      from: undefined,
-      error: mapFlagError(errors[0]),
-    };
-  }
+  if (errors.length > 0) return mailArgsError(mapFlagError(errors[0]));
 
   const subject = flags.subject as string | undefined;
   const headersOnly = (flags["headers-only"] as boolean | undefined) ?? false;
@@ -174,23 +188,12 @@ export function parseMailArgs(args: string[]): MailArgs {
   const timeout = (flags.timeout as number | undefined) ?? DEFAULT_MAIL_WAIT_TIMEOUT_S;
   const forRecipient = flags.for as string | undefined;
   const from = flags.from as string | undefined;
+  const domain = flags.domain as string | undefined;
   const recipient = positionals[0] as string | undefined;
 
   // Post-validation: timeout must be positive
   if (flags.timeout !== undefined && timeout <= 0) {
-    return {
-      subject: undefined,
-      headersOnly: false,
-      user: undefined,
-      replyTo: undefined,
-      suppressHeaders: false,
-      wait: false,
-      timeout: DEFAULT_MAIL_WAIT_TIMEOUT_S,
-      forRecipient: undefined,
-      recipient: undefined,
-      from: undefined,
-      error: "--timeout requires a positive number",
-    };
+    return mailArgsError("--timeout requires a positive number");
   }
 
   return {
@@ -204,6 +207,7 @@ export function parseMailArgs(args: string[]): MailArgs {
     forRecipient,
     recipient,
     from,
+    domain,
     error: undefined,
   };
 }
@@ -257,6 +261,7 @@ async function cmdSend(parsed: MailArgs, sender: string, d: MailDeps): Promise<v
     recipient: parsed.recipient,
     subject: parsed.subject,
     body: body || undefined,
+    ...mailScope(parsed, d),
   })) as { id: number };
 
   d.writeStdout(`${JSON.stringify(result)}\n`);
@@ -277,6 +282,7 @@ async function cmdReply(parsed: MailArgs, sender: string, d: MailDeps): Promise<
     sender,
     body,
     subject: parsed.subject,
+    ...mailScope(parsed, d),
   })) as { id: number };
 
   d.writeStdout(`${JSON.stringify(result)}\n`);
@@ -287,6 +293,7 @@ async function cmdRead(parsed: MailArgs, d: MailDeps): Promise<void> {
     recipient: parsed.user,
     unreadOnly: !parsed.user,
     limit: 50,
+    ...mailScope(parsed, d),
   })) as { messages: MailMessage[] };
 
   if (result.messages.length === 0) {
@@ -309,7 +316,7 @@ async function cmdRead(parsed: MailArgs, d: MailDeps): Promise<void> {
       d.writeStdout(`\n--- Message ${first.id} from ${first.sender} ---\n${first.body}\n`);
     }
     if (!first.read) {
-      await d.ipcCall("markRead", { id: first.id });
+      await d.ipcCall("markRead", { id: first.id, ...mailScope(parsed, d) });
     }
   }
 }
@@ -326,6 +333,7 @@ async function cmdWait(parsed: MailArgs, _sender: string, d: MailDeps): Promise<
     const result = (await d.ipcCall("waitForMail", {
       recipient,
       timeout: serverTimeout,
+      ...mailScope(parsed, d),
     })) as { message: MailMessage | null };
 
     if (result.message) {

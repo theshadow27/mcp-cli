@@ -131,7 +131,14 @@ export function makeDefaultDeps(provider: AgentProvider): AgentDeps {
     log: console.log,
     logError: console.error,
     pollMail: async (recipient) => {
-      const result = (await ipcCall("readMail", { recipient, unreadOnly: true, limit: 1 })) as {
+      // cwd scopes the read to this repo's domain (#3038) — `mcx agent wait` must not
+      // wake on a same-named mailbox in another project's domain.
+      const result = (await ipcCall("readMail", {
+        recipient,
+        unreadOnly: true,
+        limit: 1,
+        cwd: process.cwd(),
+      })) as {
         messages: MailMessage[];
       };
       return result.messages[0] ?? null;

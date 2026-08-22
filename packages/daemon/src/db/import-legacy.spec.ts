@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import { IMPORTED_TABLES, IMPORT_MARKER_KEY, importLegacyState, recoveryInstructions } from "./import-legacy";
@@ -582,7 +583,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     legacy.saveTokens("atlassian", { access_token: "prod-tok", token_type: "Bearer" });
     legacy.setNote("srv", "tool", "a note");
     legacy.setAliasState("/repo", "ns", "k", { nested: [1, 2, 3] });
-    legacy.insertMail("alice", "bob", "subject", "body");
+    legacy.insertMail(NO_DOMAIN_ID, "alice", "bob", "subject", "body");
     legacy.upsertSession({ sessionId: "sess-1", provider: "claude", cwd: "/repo", state: "running" });
     legacy.saveAlias("impl", "/repo/.claude/phases/impl.ts", "the impl phase", "defineAlias");
     const legacyWi = new WorkItemDb(legacy.database);

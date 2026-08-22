@@ -11,6 +11,7 @@ function makeMsg(overrides: Partial<MailMessage> & { id: number }): MailMessage 
     subject: "test subject",
     body: "hello world",
     replyTo: null,
+    domainId: 0,
     read: false,
     createdAt: "2026-03-11T12:00:00Z",
     ...overrides,

@@ -1,5 +1,6 @@
 import { ipcCall } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
+import { controlMailScope } from "../mail-scope";
 
 interface UseUnreadMailResult {
   unreadCount: number;
@@ -24,7 +25,7 @@ export function useUnreadMail(opts: UseUnreadMailOptions = {}): UseUnreadMailRes
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCallFn("readMail", { unreadOnly: true });
+        const result = await ipcCallFn("readMail", { unreadOnly: true, ...controlMailScope() });
         if (!cancelled) {
           setUnreadCount(result.messages.length);
         }

@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { MAIL_SENT, MAIL_SERVER_NAME, type MonitorEvent } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { MailServer, buildMailToolCache } from "./mail-server";
+
+/**
+ * Every `_mail_*` tool is domain-scoped (#3038); the caller must say where it is.
+ * No domains are registered in these fixtures, so this resolves to the unassigned
+ * partition — the behaviour these tests asserted before the partition existed.
+ */
+const TOOL_CWD = "/tmp/mail-server-spec";
 
 describe("MAIL_SERVER_NAME", () => {
   test("is _mail", () => {
@@ -64,7 +73,7 @@ describe("MailServer", () => {
     const { client } = await server.start();
     const result = await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", subject: "hello", body: "hi there" },
+      arguments: { sender: "alice", recipient: "bob", subject: "hello", body: "hi there", cwd: TOOL_CWD },
     });
 
     const content = result.content as Array<{ type: string; text: string }>;
@@ -83,16 +92,16 @@ describe("MailServer", () => {
 
     await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", body: "msg1" },
+      arguments: { sender: "alice", recipient: "bob", body: "msg1", cwd: TOOL_CWD },
     });
     await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", body: "msg2" },
+      arguments: { sender: "alice", recipient: "bob", body: "msg2", cwd: TOOL_CWD },
     });
 
     const result = await client.callTool({
       name: "_mail_read",
-      arguments: { recipient: "bob" },
+      arguments: { recipient: "bob", cwd: TOOL_CWD },
     });
 
     const content = result.content as Array<{ type: string; text: string }>;
@@ -110,12 +119,12 @@ describe("MailServer", () => {
 
     await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", body: "waiting message" },
+      arguments: { sender: "alice", recipient: "bob", body: "waiting message", cwd: TOOL_CWD },
     });
 
     const result = await client.callTool({
       name: "_mail_wait",
-      arguments: { recipient: "bob", timeout: 5 },
+      arguments: { recipient: "bob", timeout: 5, cwd: TOOL_CWD },
     });
 
     const content = result.content as Array<{ type: string; text: string }>;
@@ -134,7 +143,7 @@ describe("MailServer", () => {
 
     const result = await client.callTool({
       name: "_mail_wait",
-      arguments: { recipient: "nobody", timeout: 0.5 },
+      arguments: { recipient: "nobody", timeout: 0.5, cwd: TOOL_CWD },
     });
 
     const content = result.content as Array<{ type: string; text: string }>;
@@ -151,14 +160,14 @@ describe("MailServer", () => {
 
     const sendResult = await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", subject: "hello", body: "original" },
+      arguments: { sender: "alice", recipient: "bob", subject: "hello", body: "original", cwd: TOOL_CWD },
     });
     const sendContent = sendResult.content as Array<{ type: string; text: string }>;
     const { id } = JSON.parse(sendContent[0].text) as { id: number };
 
     const replyResult = await client.callTool({
       name: "_mail_reply",
-      arguments: { id, sender: "bob", body: "reply body" },
+      arguments: { id, sender: "bob", body: "reply body", cwd: TOOL_CWD },
     });
 
     const replyContent = replyResult.content as Array<{ type: string; text: string }>;
@@ -169,7 +178,7 @@ describe("MailServer", () => {
     // Verify reply is in alice's mailbox
     const readResult = await client.callTool({
       name: "_mail_read",
-      arguments: { recipient: "alice" },
+      arguments: { recipient: "alice", cwd: TOOL_CWD },
     });
     const readContent = readResult.content as Array<{ type: string; text: string }>;
     const { messages } = JSON.parse(readContent[0].text) as { messages: Array<{ subject: string; replyTo: number }> };
@@ -187,7 +196,7 @@ describe("MailServer", () => {
 
     const result = await client.callTool({
       name: "_mail_reply",
-      arguments: { id: 9999, sender: "bob", body: "reply" },
+      arguments: { id: 9999, sender: "bob", body: "reply", cwd: TOOL_CWD },
     });
 
     expect(result.isError).toBe(true);
@@ -204,10 +213,79 @@ describe("MailServer", () => {
 
     const result = await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "", recipient: "bob" },
+      arguments: { sender: "", recipient: "bob", cwd: TOOL_CWD },
     });
 
     expect(result.isError).toBe(true);
+  });
+
+  // #3038. Agents reach mail through these tools, not through the CLI, so the partition
+  // has to hold here too — a guard on the IPC handlers alone would be a guard at four of
+  // five call sites. Each of these fails against the pre-#3038 tools.
+  test("every _mail_* tool refuses an unscoped call rather than guessing a partition", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MailServer(db);
+    const { client } = await server.start();
+
+    for (const [name, args] of [
+      ["_mail_send", { sender: "a", recipient: "b" }],
+      ["_mail_read", {}],
+      ["_mail_wait", { recipient: "b", timeout: 1 }],
+      ["_mail_reply", { id: 1, sender: "b", body: "r" }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBe(true);
+      const content = result.content as Array<{ type: string; text: string }>;
+      expect(content[0].text).toContain("domain scope");
+    }
+  });
+
+  test("_mail_read and _mail_wait never see another domain's mail", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    const alphaDir = join(opts.MCP_CLI_DIR, "alpha");
+    const betaDir = join(opts.MCP_CLI_DIR, "beta");
+    mkdirSync(alphaDir, { recursive: true });
+    mkdirSync(betaDir, { recursive: true });
+    db.createDomain("alpha", alphaDir);
+    db.createDomain("beta", betaDir);
+    server = new MailServer(db);
+    const { client } = await server.start();
+
+    await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "worker", recipient: "orchestrator", body: "beta only", cwd: betaDir },
+    });
+
+    const read = await client.callTool({
+      name: "_mail_read",
+      arguments: { recipient: "orchestrator", cwd: alphaDir },
+    });
+    const readContent = read.content as Array<{ type: string; text: string }>;
+    expect((JSON.parse(readContent[0].text) as { messages: unknown[] }).messages).toHaveLength(0);
+
+    const wait = await client.callTool({
+      name: "_mail_wait",
+      arguments: { recipient: "orchestrator", timeout: 0.5, cwd: alphaDir },
+    });
+    const waitContent = wait.content as Array<{ type: string; text: string }>;
+    expect((JSON.parse(waitContent[0].text) as { message: unknown }).message).toBeNull();
+  });
+
+  test("_mail_send to an unknown domain errors at send time", async () => {
+    using opts = testOptions();
+    db = new StateDb(opts.DB_PATH);
+    server = new MailServer(db);
+    const { client } = await server.start();
+
+    const result = await client.callTool({
+      name: "_mail_send",
+      arguments: { sender: "a", recipient: "orchestrator@nosuchdomain", cwd: TOOL_CWD },
+    });
+    expect(result.isError).toBe(true);
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content[0].text).toContain("unknown domain");
   });
 
   test("unknown tool returns error", async () => {
@@ -235,7 +313,7 @@ describe("MailServer", () => {
     const { client } = await server.start();
     await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", body: "hello" },
+      arguments: { sender: "alice", recipient: "bob", body: "hello", cwd: TOOL_CWD },
     });
 
     expect(events).toHaveLength(1);
@@ -257,7 +335,7 @@ describe("MailServer", () => {
 
     const sendResult = await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", subject: "hi", body: "original" },
+      arguments: { sender: "alice", recipient: "bob", subject: "hi", body: "original", cwd: TOOL_CWD },
     });
     const sendContent = sendResult.content as Array<{ type: string; text: string }>;
     const { id } = JSON.parse(sendContent[0].text) as { id: number };
@@ -266,7 +344,7 @@ describe("MailServer", () => {
 
     await client.callTool({
       name: "_mail_reply",
-      arguments: { id, sender: "bob", body: "reply" },
+      arguments: { id, sender: "bob", body: "reply", cwd: TOOL_CWD },
     });
 
     expect(events).toHaveLength(1);
@@ -283,7 +361,7 @@ describe("MailServer", () => {
     const { client } = await server.start();
     const result = await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "bob", body: "hello" },
+      arguments: { sender: "alice", recipient: "bob", body: "hello", cwd: TOOL_CWD },
     });
     expect(result.isError).toBeFalsy();
   });
@@ -301,7 +379,7 @@ describe("MailServer", () => {
     const { client } = await server.start();
     await client.callTool({
       name: "_mail_send",
-      arguments: { sender: "alice", recipient: "carol", body: "hi" },
+      arguments: { sender: "alice", recipient: "carol", body: "hi", cwd: TOOL_CWD },
     });
 
     expect(events).toHaveLength(1);
