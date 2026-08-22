@@ -77,6 +77,7 @@ import {
   spawnCaptureSync,
   suggestPhases,
   validateTransition,
+  workItemStateNamespace,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
@@ -1559,7 +1560,7 @@ export async function executePhase(
   // state that is discarded after the process exits, preventing cross-run
   // state leaks between unrelated invocations.
   const state = workItem
-    ? createAliasState({ repoRoot, namespace: `workitem:${workItem.id}`, call: ex.ipcCall })
+    ? createAliasState({ repoRoot, namespace: workItemStateNamespace(workItem.id), call: ex.ipcCall })
     : createEphemeralState();
   const phaseController = new AbortController();
   const onPhaseSignal = (sig: NodeJS.Signals) => {
@@ -1582,10 +1583,14 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
-    // The partition this phase run belongs to, taken from the work item the daemon
-    // returned. The *name* needs the domains table, which the CLI cannot read until
-    // #3035 lands the `mcx domain` IPC surface; the id is what actually partitions, and
-    // it is the daemon — not this value — that scopes the `_work_items` tools.
+    // The partition this phase run belongs to, read off the work item the daemon returned.
+    //
+    // `null` here means "not known from this process", NOT "outside every domain": with no
+    // --work-item there is nothing to read the id from, even when the cwd is inside a domain.
+    // The CLI cannot resolve a domain on its own — that needs the `mcx domain` IPC surface
+    // (#3035), which also supplies the missing `name` (#3165). Scoping does not depend on
+    // this value in either case: the daemon scopes the `_work_items` tools from the caller's
+    // cwd, so a null here never widens what a phase script can reach.
     domain: workItem ? { id: workItem.domainId, name: null } : null,
     repoRoot,
     gh: createGhClient({ repoRoot }),

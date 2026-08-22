@@ -382,11 +382,20 @@ const { items } = await ctx.mcp._work_items.work_items_list({});
 
 Two consequences worth knowing:
 
-- **Work-item ids are qualified by domain** once a domain is registered (`d3:#42` rather
-  than `#42`). With no domain registered — the default until someone runs `mcx domain add` —
-  ids are unchanged, so existing scripts and stored ids keep working untouched.
-- `ctx.domain.name` is `null` under `mcx phase run` until `mcx domain` lands its IPC
-  surface (#3035); `ctx.domain.id` is always correct.
+- **Work-item ids are qualified by domain** once a domain exists (`d3:#42` rather than
+  `#42`); with no domain, ids are unchanged. Do **not** assume "no domain" is the default
+  state: the daemon's one-shot legacy import runs on every start and creates a domain row
+  for each `~/.mcp-cli/scopes/*.json` sidecar, so an installation that ever used `mcx scope`
+  already has domains and never typed a command to get them. Treat an id as opaque — read it
+  from `ctx.workItem.id` or a tool response and pass it back unchanged; never reconstruct one
+  by formatting an issue number.
+- Under `mcx phase run`, `ctx.domain` is read off the work item, so it is `null` when the
+  phase was invoked without `--work-item` — **even if the cwd is inside a domain**. `null`
+  means "not known from this process", never "outside every domain". `ctx.domain.name` is
+  also `null` there, pending the `mcx domain` IPC surface (#3035 / #3165). Aliases executed
+  inside the daemon get the full `{ id, name }`, resolved from the caller's cwd.
+- Neither gap affects scoping: the daemon scopes the `_work_items` tools from the caller's
+  cwd, so a `null` `ctx.domain` never widens what a phase script can reach.
 
 ## `ctx.gh` — GitHub API client
 

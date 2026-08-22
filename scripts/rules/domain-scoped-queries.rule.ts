@@ -43,6 +43,55 @@ const CREATE_TABLE = /create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z0-9_]
 /** A statement worth checking. `WITH`/`CREATE` are schema or read-only plumbing. */
 const IS_DML = /\b(?:select|insert\s+into|update|delete\s+from)\b/i;
 
+/**
+ * `domain_id` compared against something, capturing the right-hand operand.
+ *
+ * A bare presence test is NOT enough, and that is the whole point of this regex. The first
+ * version of this rule asked only whether the token `domain_id` appeared anywhere in the
+ * statement, which the token satisfies from a SELECT column list or an UPDATE ... SET clause —
+ * so `SELECT id, domain_id FROM work_items WHERE pr_number = ?` passed a rule written
+ * specifically to catch it. The fixtures cover exactly those inputs now.
+ */
+const DOMAIN_COMPARISON = /\b(?:[a-z_][a-z0-9_]*\.)?domain_id\b\s*(?:=|==|<>|!=|>=|<=|>|<|\bis\b|\bin\b)\s*([^\s,)]+)/i;
+
+/** `INSERT INTO <table> ( … )` — the parenthesized column list. */
+const INSERT_COLUMNS = /insert\s+(?:or\s+\w+\s+)?into\s+[a-z_][a-z0-9_]*\s*\(([^)]*)\)/i;
+
+/**
+ * Is `domain_id` actually constraining this statement?
+ *
+ * For an INSERT, that means naming the column in the column list — a row written without it
+ * lands in the sentinel partition and is invisible to its own domain. For everything else it
+ * means appearing in a predicate: the text after `WHERE` / `ON`, never the projection or the
+ * SET clause. A self-comparison (`domain_id = domain_id`) is rejected too — it satisfies a
+ * naive matcher while constraining nothing.
+ */
+function constrainsDomain(sql: string): boolean {
+  const insert = INSERT_COLUMNS.exec(sql);
+  if (insert) return /\bdomain_id\b/i.test(insert[1]);
+
+  // Only predicate positions count. Splitting on WHERE/ON drops the projection and the
+  // SET clause, which is where the bypasses lived.
+  const predicates = sql.split(/\b(?:where|on)\b/i).slice(1);
+  return predicates.some((clause) => {
+    const match = DOMAIN_COMPARISON.exec(clause);
+    if (!match) return false;
+    const rhs = match[1].replace(/^[a-z_][a-z0-9_]*\./i, "");
+    return rhs.toLowerCase() !== "domain_id";
+  });
+}
+
+/**
+ * Split a SQL string into individual statements.
+ *
+ * `db.exec` blobs hold several statements at once, and the rule skips `CREATE` statements as
+ * schema. Without splitting, one `CREATE TABLE` in the blob would exempt every DML statement
+ * beside it.
+ */
+function statements(sql: string): string[] {
+  return sql.split(";").filter((part) => part.trim().length > 0);
+}
+
 /** Table referenced by a DML statement. */
 function tablesReferenced(sql: string, partitioned: ReadonlySet<string>): string[] {
   const hits: string[] = [];
@@ -110,13 +159,16 @@ const rule: CheckRule = {
 
     for (const { text, line } of sqlStrings(file, ast)) {
       if (!IS_DML.test(text)) continue;
-      // A CREATE TABLE/INDEX block is schema, not a query. Its inner SELECT-less body
-      // can still match IS_DML via a column named e.g. `updated_at`, so skip it wholesale.
-      if (/create\s+(?:table|unique\s+index|index)/i.test(text)) continue;
-      const hits = tablesReferenced(text, partitioned);
-      if (hits.length === 0) continue;
-      if (/\bdomain_id\b/i.test(text)) continue;
-      violated(line, 1, `${hits.join(", ")}: ${text.replace(/\s+/g, " ").slice(0, 100)}`);
+      for (const stmt of statements(text)) {
+        if (!IS_DML.test(stmt)) continue;
+        // A CREATE TABLE/INDEX statement is schema, not a query. Its body can still match
+        // IS_DML via a column named e.g. `updated_at`, so skip it.
+        if (/create\s+(?:table|unique\s+index|index)/i.test(stmt)) continue;
+        const hits = tablesReferenced(stmt, partitioned);
+        if (hits.length === 0) continue;
+        if (constrainsDomain(stmt)) continue;
+        violated(line, 1, `${hits.join(", ")}: ${stmt.replace(/\s+/g, " ").trim().slice(0, 100)}`);
+      }
     }
   },
 };

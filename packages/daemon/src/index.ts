@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { NdjsonRecorder } from "@mcp-cli/core";
+import { NdjsonRecorder, workItemStateNamespace } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -847,7 +847,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             };
           },
           getWorkItemState: (workItemId) => {
-            return db.listAliasState(automationRepoRoot, `workitem:${workItemId}`);
+            return db.listAliasState(automationRepoRoot, workItemStateNamespace(workItemId));
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {

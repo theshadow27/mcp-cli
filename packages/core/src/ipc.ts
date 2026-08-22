@@ -922,7 +922,13 @@ export interface IpcMethodResult {
   listNotes: NoteEntry[];
   deleteNote: { ok: true; deleted: boolean };
   trackWorkItem: WorkItem;
-  untrackWorkItem: { ok: true; deleted: boolean };
+  /**
+   * `id` is the CANONICAL id of the row that was deleted, present only when `deleted`.
+   * The caller needs it to clean up the item's phase-state namespace: once ids are
+   * domain-qualified the caller cannot reconstruct the stored spelling from what it typed,
+   * and after the delete it can no longer look it up (#3037 review R2).
+   */
+  untrackWorkItem: { ok: true; deleted: boolean; id?: string };
   listWorkItems: { items: WorkItem[]; hiddenCount: number };
   getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;

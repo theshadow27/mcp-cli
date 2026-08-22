@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME, workItemStateNamespace } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
 import { type DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { DOMAIN_META_KEY } from "./domain-scope";
@@ -1822,5 +1822,144 @@ describe("WorkItemsServer — domain scoping", () => {
     // Ids are byte-identical to what this repo has always minted.
     expect(item.id).toBe("issue:42");
     expect(db.forDomain(NO_DOMAIN_ID).getWorkItemByIssue(42)?.id).toBe("issue:42");
+  });
+});
+
+/**
+ * R1 regression: phase state must be keyed by the CANONICAL work-item id.
+ *
+ * The four phase_state_* handlers used to build `workitem:${workItemId}` from the raw
+ * argument, while the phase runner builds it from the stored id. Domain-qualified ids make
+ * those two spellings different strings for the same row — and because the existence check
+ * accepts BOTH spellings, each caller succeeded and neither saw an error. A phase script
+ * would then read state the tools had never written.
+ *
+ * Every test here fails against that behaviour rather than merely describing it.
+ */
+describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1)", () => {
+  let server: WorkItemsServer | undefined;
+  let stateDbInst: StateDb | undefined;
+  let dbPathToClean: string | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    stateDbInst?.close();
+    if (dbPathToClean) cleanupDb(dbPathToClean);
+    server = undefined;
+    stateDbInst = undefined;
+    dbPathToClean = undefined;
+  });
+
+  function asDomain(id: number, name: string) {
+    return { _meta: { [DOMAIN_META_KEY]: { id, name } } };
+  }
+
+  function parse(result: unknown): Record<string, unknown> {
+    return JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+  }
+
+  async function trackedInDomain() {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { stateDb });
+    const { client } = await server.start();
+    const item = parse(
+      await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") }),
+    );
+    // Premise of every assertion below: the stored id is NOT the spelling a caller types.
+    expect(item.id).toBe("d1:issue:42");
+    return { client, stateDb, storedId: item.id as string };
+  }
+
+  test("a write via the unscoped spelling is readable via the canonical one", async () => {
+    const { client, storedId } = await trackedInDomain();
+
+    const set = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:42", repoRoot: "/repo", key: "session_id", value: "abc-123" },
+      ...asDomain(1, "alpha"),
+    });
+    expect(set.isError).toBeFalsy();
+
+    const get = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: storedId, repoRoot: "/repo", key: "session_id" },
+      ...asDomain(1, "alpha"),
+    });
+    expect(parse(get).value).toBe("abc-123");
+  });
+
+  test("both spellings address one namespace — the one the phase runner uses", async () => {
+    const { client, stateDb, storedId } = await trackedInDomain();
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:42", repoRoot: "/repo", key: "typed", value: 1 },
+      ...asDomain(1, "alpha"),
+    });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: storedId, repoRoot: "/repo", key: "canonical", value: 2 },
+      ...asDomain(1, "alpha"),
+    });
+
+    // Assert the premise directly against the database: ONE namespace, holding both keys,
+    // and it is the namespace commands/phase.ts derives from the stored id.
+    const runnerNamespace = workItemStateNamespace(storedId);
+    expect(runnerNamespace).toBe("workitem:d1:issue:42");
+    expect(stateDb.listAliasState("/repo", runnerNamespace)).toEqual({ typed: 1, canonical: 2 });
+    // ...and nothing was written to the namespace the raw argument would have produced.
+    expect(stateDb.listAliasState("/repo", "workitem:issue:42")).toEqual({});
+  });
+
+  test("list and delete agree with set on which namespace is real", async () => {
+    const { client, storedId } = await trackedInDomain();
+
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: storedId, repoRoot: "/repo", key: "session_id", value: "x" },
+      ...asDomain(1, "alpha"),
+    });
+
+    // Listed through the typed spelling — pre-fix this returned an empty store.
+    const listed = parse(
+      await client.callTool({
+        name: "phase_state_list",
+        arguments: { workItemId: "issue:42", repoRoot: "/repo" },
+        ...asDomain(1, "alpha"),
+      }),
+    );
+    expect(listed.entries).toEqual({ session_id: "x" });
+
+    // Deleted through the typed spelling — pre-fix this reported deleted:false and left it.
+    const deleted = parse(
+      await client.callTool({
+        name: "phase_state_delete",
+        arguments: { workItemId: "issue:42", repoRoot: "/repo", key: "session_id" },
+        ...asDomain(1, "alpha"),
+      }),
+    );
+    expect(deleted.deleted).toBe(true);
+
+    const after = parse(
+      await client.callTool({
+        name: "phase_state_list",
+        arguments: { workItemId: storedId, repoRoot: "/repo" },
+        ...asDomain(1, "alpha"),
+      }),
+    );
+    expect(after.entries).toEqual({});
+  });
+
+  test("the namespace still cannot cross a domain — a neighbour's id is not found", async () => {
+    const { client } = await trackedInDomain();
+
+    const wrongDomain = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "d1:issue:42", repoRoot: "/repo", key: "k", value: 1 },
+      ...asDomain(2, "beta"),
+    });
+    expect(wrongDomain.isError).toBe(true);
   });
 });

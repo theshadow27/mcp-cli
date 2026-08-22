@@ -60,9 +60,17 @@ epic C's, not this layer's.)
 tracks (`#42`, `pr:7`, `branch:fix/foo`) and is the table's global primary key, so two
 domains tracking issue 42 would collide on the key even though `(domain_id, issue_number)`
 is unique. Inside a registered domain the id becomes `d<id>:<base>`; in the unassigned
-partition it is unchanged, which is why an installation with no domains registered sees
-byte-identical ids to before. Lookups accept either spelling and are filtered by `domain_id`
-either way, so a shorter spelling never reaches further.
+partition it is unchanged, so an installation with no domains sees byte-identical ids to
+before. Lookups accept either spelling and are filtered by `domain_id` either way, so a
+shorter spelling never reaches further.
+
+**"No domains" is not the default state, and code must not assume it is.** `importLegacyState`
+runs on *every* daemon start, and `importScopesAsDomains` inserts a domain row for every
+`~/.mcp-cli/scopes/*.json` sidecar — no user action, and `mcx domain add` does not exist yet
+(it ships in #3035). Any box that ever used `mcx scope` therefore has domains already. This is
+why an id must be treated as opaque: reconstructing one by formatting an issue number produces
+the unqualified spelling, which addresses a different row than the stored id and fails
+silently. Read ids from the database or a tool response and pass them back unchanged.
 
 **The check is a rule, not a convention.** `scripts/rules/domain-scoped-queries.rule.ts`
 fails the build on a statement in a `@domain-partitioned` module that touches a table
