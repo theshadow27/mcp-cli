@@ -398,7 +398,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const trackableFields = getTrackableFields(manifest?.state);
 
   try {
-    const { items, hiddenCount } = await deps.ipcCall("listWorkItems", {
+    const { items, hiddenCount, unassignedCount } = await deps.ipcCall("listWorkItems", {
       cwd,
       ...(phase ? { phase } : {}),
       includeArchived,
@@ -438,6 +438,15 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
     }
 
     if (items.length === 0 && hiddenCount === 0) {
+      if (unassignedCount && unassignedCount > 0) {
+        // "Nothing tracked" and "your items predate this directory becoming a domain" are
+        // the same empty list. Say which one this is, and how to see them.
+        const plural = unassignedCount === 1 ? "" : "s";
+        console.error(
+          `No tracked work items in this domain — but ${unassignedCount} item${plural} exist from before it was one. They were written without a domain and are listed from a directory outside every registered domain.`,
+        );
+        return;
+      }
       console.error("No tracked work items. Use `mcx track <number>` to start tracking.");
       return;
     }

@@ -7,6 +7,7 @@ import {
   GetWorkItemParamsSchema,
   IPC_ERROR,
   ListWorkItemsParamsSchema,
+  NO_DOMAIN_ID,
   TrackWorkItemParamsSchema,
   UntrackWorkItemParamsSchema,
   resolveRealpath,
@@ -22,7 +23,9 @@ export class WorkItemHandlers {
   constructor(
     private readonly workItemDb: WorkItemDb,
     private readonly db: StateDb,
-    private readonly resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null,
+    private readonly resolveIssuePr:
+      | ((number: number, domainId: number) => Promise<{ prNumber: number | null }>)
+      | null,
     private readonly loadManifestFn: ((repoRoot: string) => Manifest | null) | null,
     private readonly logger: Logger,
     private readonly domains: DomainResolver = NULL_DOMAIN_RESOLVER,
@@ -46,7 +49,7 @@ export class WorkItemHandlers {
 
   private resolveAndUpdateWorkItem(scoped: DomainWorkItems, itemId: string, issueNumber: number): void {
     if (!this.resolveIssuePr) return;
-    this.resolveIssuePr(issueNumber)
+    this.resolveIssuePr(issueNumber, scoped.domainId)
       .then((resolved) => {
         if (!resolved.prNumber) return;
 
@@ -162,7 +165,11 @@ export class WorkItemHandlers {
       const excludeArchived = includeArchived === false;
       const items = scoped.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
       const hiddenCount = excludeArchived ? scoped.countArchivedWorkItems() : 0;
-      return { items, hiddenCount };
+      // See WorkItemDb.countUnassignedWorkItems: distinguish "nothing tracked here" from
+      // "your pre-domain rows are stranded in partition 0", which otherwise look identical.
+      const unassignedCount =
+        items.length === 0 && scoped.domainId !== NO_DOMAIN_ID ? this.workItemDb.countUnassignedWorkItems() : 0;
+      return { items, hiddenCount, ...(unassignedCount > 0 ? { unassignedCount } : {}) };
     });
 
     handlers.set("getWorkItem", async (params, _ctx) => {

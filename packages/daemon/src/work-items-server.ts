@@ -21,6 +21,7 @@
 import { isAbsolute, resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import {
+  NO_DOMAIN_ID,
   WORK_ITEMS_SERVER_NAME,
   canTransition,
   consoleLogger,
@@ -330,8 +331,14 @@ export class WorkItemsServer {
   /** Resolves a manifest for a given repo root, or returns null. Injected for testability. */
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
 
-  /** Resolves a PR number to its head branch name. Injected for testability. */
-  private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
+  /**
+   * Resolves a PR number to its head branch name, IN A GIVEN DOMAIN. Injected for testability.
+   *
+   * `domainId` is required, not defaulted: "PR #7" names a different pull request in each
+   * domain, so a resolver that guesses the repo writes another project's branch onto this
+   * project's work item.
+   */
+  private resolveBranchFromPr: ((prNumber: number, domainId: number) => Promise<string | null>) | null;
 
   /** Optional store for phase-scoped state (alias_state table), with its domain resolver. */
   private phaseState: PhaseStateBinding | null;
@@ -343,7 +350,7 @@ export class WorkItemsServer {
     opts?: {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
-      resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
+      resolveBranchFromPr?: (prNumber: number, domainId: number) => Promise<string | null>;
       phaseState?: PhaseStateBinding;
       logger?: Logger;
     },
@@ -459,9 +466,18 @@ export class WorkItemsServer {
             const excludeArchived = a.include_archived === false;
             const items = scoped.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
             const hiddenCount = excludeArchived ? scoped.countArchivedWorkItems() : 0;
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({ items, count: items.length, hiddenCount }) }],
-            };
+            // An empty list inside a domain is ambiguous: "nothing tracked" and "everything
+            // you tracked predates domains and is stranded in partition 0" look identical.
+            // Say which. Rows imported from the pre-domain database all arrive unassigned,
+            // and a domain can appear on this box with no user action at all.
+            const unassignedCount =
+              items.length === 0 && scope.id !== NO_DOMAIN_ID ? this.workItemDb.countUnassignedWorkItems() : 0;
+            const body: Record<string, unknown> = { items, count: items.length, hiddenCount };
+            if (unassignedCount > 0) {
+              body.unassignedCount = unassignedCount;
+              body.note = `0 work items in domain ${scope.name ?? scope.id}, but ${unassignedCount} unassigned item(s) exist from before this directory belonged to a domain. They are readable from outside every domain.`;
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
           }
 
           case "work_items_get": {
@@ -719,7 +735,7 @@ export class WorkItemsServer {
     if (!existing || existing.branch != null) return false;
     let resolved: string | null = null;
     try {
-      resolved = await this.resolveBranchFromPr(prNumber);
+      resolved = await this.resolveBranchFromPr(prNumber, scoped.domainId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] Failed to resolve branch for PR #${prNumber}: ${msg}`);

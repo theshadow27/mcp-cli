@@ -340,6 +340,38 @@ describe("WorkItemHandlers – domain scoping (#3037)", () => {
     return { map, workItemDb };
   }
 
+  test("resolveIssuePr is told which domain's issue #42 to resolve", async () => {
+    const sqliteDb = new Database(":memory:");
+    const workItemDb = new WorkItemDb(sqliteDb);
+    const db = {
+      ...makeAliasStateDb(),
+      resolveDomain(path: string) {
+        return path.startsWith("/home/u/alpha") ? ALPHA : path.startsWith("/home/u/beta") ? BETA : null;
+      },
+    };
+    const seen: Array<{ number: number; domainId: number }> = [];
+    const map = new Map<IpcMethod, RequestHandler>();
+    new WorkItemHandlers(
+      workItemDb,
+      db as never,
+      async (number, domainId) => {
+        seen.push({ number, domainId });
+        return { prNumber: null };
+      },
+      null,
+      noopLogger() as never,
+    ).register(map);
+
+    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/beta" }, {} as never);
+    // Fire-and-forget: let the resolver promise settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Pre-fix the resolver took only an issue number and answered from the daemon's cwd,
+    // so domain B's issue 42 was resolved against whatever repo started the daemon.
+    expect(seen).toEqual([{ number: 42, domainId: 2 }]);
+  });
+
   test("two projects each track issue #42 without colliding", async () => {
     const { map } = buildScopedHandlers();
     const a = (await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never)) as {

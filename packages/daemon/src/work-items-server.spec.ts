@@ -1963,3 +1963,163 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
     expect(wrongDomain.isError).toBe(true);
   });
 });
+
+/**
+ * Repo identity is domain-scoped (#3037 round-2 sweep).
+ *
+ * "PR #7" names a different pull request in every domain, so a resolver that guesses the repo
+ * from the daemon's cwd writes ANOTHER project's branch onto this project's work item. The
+ * daemon resolves the repo per domain; these pin that the caller's domain reaches it.
+ */
+describe("WorkItemsServer — branch resolution is domain-scoped", () => {
+  let server: WorkItemsServer | undefined;
+  let rawDb: Database | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    rawDb?.close();
+    server = undefined;
+    rawDb = undefined;
+  });
+
+  function asDomain(id: number, name: string) {
+    return { _meta: { [DOMAIN_META_KEY]: { id, name } } };
+  }
+
+  test("the resolver is told which domain's PR #7 to look up", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const seen: Array<{ prNumber: number; domainId: number }> = [];
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async (prNumber, domainId) => {
+        seen.push({ prNumber, domainId });
+        return `resolved/d${domainId}`;
+      },
+    });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 7 }, ...asDomain(3, "gamma") });
+
+    // Pre-fix the resolver took only a PR number and answered from the daemon's cwd.
+    expect(seen).toEqual([{ prNumber: 7, domainId: 3 }]);
+    // ...and the branch it returned was written to the item in that same domain.
+    expect(db.forDomain(3).getWorkItemByPr(7)?.branch).toBe("resolved/d3");
+  });
+
+  test("two domains tracking PR #7 each resolve against their own repo", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async (_prNumber, domainId) => `branch-from-domain-${domainId}`,
+    });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 7 }, ...asDomain(1, "alpha") });
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 7 }, ...asDomain(2, "beta") });
+
+    expect(db.forDomain(1).getWorkItemByPr(7)?.branch).toBe("branch-from-domain-1");
+    expect(db.forDomain(2).getWorkItemByPr(7)?.branch).toBe("branch-from-domain-2");
+  });
+
+  test("an unassigned caller resolves in the unassigned partition", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    const seen: number[] = [];
+    server = new WorkItemsServer(db, {
+      resolveBranchFromPr: async (_prNumber, domainId) => {
+        seen.push(domainId);
+        return "main";
+      },
+    });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { prNumber: 7 } });
+    expect(seen).toEqual([NO_DOMAIN_ID]);
+  });
+});
+
+/**
+ * The partition-closure question (#3175 round-3 safety review).
+ *
+ * On any box that ever ran `mcx scope`, `importScopesAsDomains` creates a domain row at daemon
+ * boot with NO user action, while every imported work item arrives at the unassigned sentinel
+ * (import-legacy.ts: "a column present only in the new schema takes its default"). A user
+ * standing in their own project therefore queries a domain that holds nothing, and their items
+ * are all in partition 0.
+ *
+ * The empty list is the correct answer for that domain. The SILENCE is not — "nothing tracked"
+ * and "your items are stranded" must not look identical. That is the same lesson this PR
+ * learned when a startup-bound daemon reader reported no tracked items rather than an error.
+ */
+describe("WorkItemsServer — stranded pre-domain rows are reported, not silently empty", () => {
+  let server: WorkItemsServer | undefined;
+  let rawDb: Database | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    rawDb?.close();
+    server = undefined;
+    rawDb = undefined;
+  });
+
+  function asDomain(id: number, name: string) {
+    return { _meta: { [DOMAIN_META_KEY]: { id, name } } };
+  }
+
+  function parse(result: unknown): Record<string, unknown> {
+    return JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+  }
+
+  async function withStrandedRows() {
+    const { db, items, raw } = createWorkItemDb();
+    rawDb = raw;
+    // Exactly the post-import state: rows at the sentinel, a domain that appeared by itself.
+    items.createWorkItem({ id: "#42", issueNumber: 42 });
+    items.createWorkItem({ id: "#43", issueNumber: 43 });
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    return { client, db };
+  }
+
+  test("an in-domain caller with stranded rows is TOLD, not just given []", async () => {
+    const { client } = await withStrandedRows();
+
+    const body = parse(await client.callTool({ name: "work_items_list", arguments: {}, ...asDomain(1, "gerald") }));
+
+    expect(body.count).toBe(0);
+    // The part that fails against a bare empty list.
+    expect(body.unassignedCount).toBe(2);
+    expect(String(body.note)).toContain("gerald");
+    expect(String(body.note)).toContain("outside every domain");
+  });
+
+  test("the rows are still readable from outside every domain — nothing was lost", async () => {
+    const { client } = await withStrandedRows();
+
+    const body = parse(await client.callTool({ name: "work_items_list", arguments: {} }));
+    expect(body.count).toBe(2);
+    // No note when the caller is already in the partition holding the rows.
+    expect(body.unassignedCount).toBeUndefined();
+    expect(body.note).toBeUndefined();
+  });
+
+  test("a domain that genuinely has items says nothing about the sentinel partition", async () => {
+    const { client, db } = await withStrandedRows();
+    db.forDomain(1).createWorkItem({ issueNumber: 99 });
+
+    const body = parse(await client.callTool({ name: "work_items_list", arguments: {}, ...asDomain(1, "gerald") }));
+    expect(body.count).toBe(1);
+    expect(body.unassignedCount).toBeUndefined();
+  });
+
+  test("an empty domain with an empty sentinel partition stays quiet", async () => {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+
+    const body = parse(await client.callTool({ name: "work_items_list", arguments: {}, ...asDomain(1, "gerald") }));
+    expect(body.count).toBe(0);
+    expect(body.unassignedCount).toBeUndefined();
+  });
+});

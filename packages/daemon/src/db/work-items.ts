@@ -342,6 +342,28 @@ export class WorkItemDb {
   }
 
   /**
+   * How many work items sit in the unassigned partition.
+   *
+   * A **count of the sentinel partition only** — never a peer domain, and never row contents.
+   * It exists to make one specific failure legible: rows written before domains existed are
+   * imported at `domain_id = 0`, while `importScopesAsDomains` auto-creates a domain per
+   * `~/.mcp-cli/scopes/*.json` sidecar on daemon boot. A user standing in their own project
+   * therefore queries domain N, their items are all in partition 0, and they get an empty
+   * list with no explanation.
+   *
+   * The empty list is the honest answer for that domain; the silence is not. Callers use this
+   * to say "0 here, but N unassigned" instead of just "0" — the same lesson this PR learned
+   * when a startup-bound daemon reader reported no tracked items rather than an error.
+   */
+  countUnassignedWorkItems(): number {
+    return (
+      this.db
+        .query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM work_items WHERE domain_id = ?")
+        .get(NO_DOMAIN_ID)?.n ?? 0
+    );
+  }
+
+  /**
    * **Ring 0: the daemon's own readers, which span every domain by design.**
    *
    * The pollers, derived-event rules, automation dispatcher and `ctx.workItem` resolution are

@@ -1030,7 +1030,12 @@ export interface IpcMethodResult {
    * and after the delete it can no longer look it up (#3037 review R2).
    */
   untrackWorkItem: { ok: true; deleted: boolean; id?: string };
-  listWorkItems: { items: WorkItem[]; hiddenCount: number };
+  /**
+   * `unassignedCount` is present only when the caller's domain holds nothing but pre-domain
+   * rows exist in partition 0 — the difference between "nothing tracked" and "your items are
+   * stranded". See WorkItemDb.countUnassignedWorkItems.
+   */
+  listWorkItems: { items: WorkItem[]; hiddenCount: number; unassignedCount?: number };
   getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;
   aliasStateSet: AliasStateSetResult;

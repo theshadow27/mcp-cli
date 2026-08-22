@@ -7,6 +7,7 @@ import {
   type DomainResolver,
   UNSCOPED_DOMAIN,
   domainScopeFromMeta,
+  domainStateRoot,
   resolveDomainId,
   resolveDomainScope,
 } from "./domain-scope";
@@ -101,5 +102,31 @@ describe("DOMAIN_SCOPED_SERVERS", () => {
 
   test("a third-party server does not — mcx routing metadata stays inside mcx", () => {
     expect(DOMAIN_SCOPED_SERVERS.has("atlassian")).toBe(false);
+  });
+});
+
+/**
+ * Phase state is keyed by `(repo_root, namespace, key)` and the phase runner writes it under
+ * the CALLER's git root. A daemon-internal reader substituting its own cwd reads a different
+ * key and gets `{}` — no error, an empty store. Same silent-empty shape as the startup-bound
+ * work-item readers, and the reason the automation dispatcher's state lookups were wrong.
+ */
+describe("domainStateRoot", () => {
+  const lookup = {
+    getDomainById(id: number): Domain | null {
+      return id === 1 ? domain(1, "alpha", "/home/u/alpha") : null;
+    },
+  };
+
+  test("a domained row is keyed under its OWN domain's path, not the daemon's cwd", () => {
+    expect(domainStateRoot(lookup, 1, "/daemon/cwd")).toBe("/home/u/alpha");
+  });
+
+  test("the unassigned partition falls back to the daemon's cwd — where those rows came from", () => {
+    expect(domainStateRoot(lookup, NO_DOMAIN_ID, "/daemon/cwd")).toBe("/daemon/cwd");
+  });
+
+  test("an unknown domain id falls back rather than inventing a path", () => {
+    expect(domainStateRoot(lookup, 99, "/daemon/cwd")).toBe("/daemon/cwd");
   });
 });

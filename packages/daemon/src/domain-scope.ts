@@ -31,7 +31,8 @@
  * accident of process ancestry. Those readers are ring 0 — see `WorkItemDb.acrossDomains`.
  */
 
-import { type Domain, NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
+import { resolve } from "node:path";
+import { type Domain, NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME, resolveRealpath } from "@mcp-cli/core";
 
 /** The slice of StateDb this module needs. Narrow so tests need no database. */
 export interface DomainResolver {
@@ -67,6 +68,27 @@ export function resolveDomainScope(resolver: DomainResolver | null, path: string
   }
   if (!domain) return UNSCOPED_DOMAIN;
   return { id: domain.id, name: domain.name };
+}
+
+/**
+ * The filesystem root a domain's state is keyed under.
+ *
+ * Phase state lives in `alias_state`, keyed by `(repo_root, namespace, key)`, and the phase
+ * runner writes it under the **caller's** git root. A daemon-internal reader that substitutes
+ * its own cwd therefore reads a different key and gets `{}` — no error, just an empty store,
+ * the same silent-empty failure that made the startup-bound work-item readers wrong.
+ *
+ * `NO_DOMAIN_ID` returns `fallback` (the daemon's cwd): rows in the unassigned partition were
+ * written from there, so for them, and only for them, the daemon's own directory is right.
+ */
+export function domainStateRoot(
+  lookup: { getDomainById(id: number): Domain | null },
+  domainId: number,
+  fallback: string,
+): string {
+  if (domainId === NO_DOMAIN_ID) return fallback;
+  const path = lookup.getDomainById(domainId)?.path;
+  return path ? resolveRealpath(resolve(path)) : fallback;
 }
 
 /** Just the id, for callers that partition but do not display. */
