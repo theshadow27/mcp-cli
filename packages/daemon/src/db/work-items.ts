@@ -340,6 +340,169 @@ export class WorkItemDb {
     }
     return new DomainWorkItems(this.db, domainId);
   }
+
+  /**
+   * **Ring 0: the daemon's own readers, which span every domain by design.**
+   *
+   * The pollers, derived-event rules, automation dispatcher and `ctx.workItem` resolution are
+   * daemon-internal machinery, not a caller standing in a project. They must observe every
+   * tracked item on the box, because there is no "the daemon's domain" to observe instead:
+   * `mcpd` is auto-started by whichever `mcx` invocation happened to need it, sometimes with
+   * no cwd at all, so any startup-time binding partitions the daemon by an accident of
+   * process ancestry.
+   *
+   * Binding them at startup — which this PR briefly did — produces the worst available
+   * failure: writers scope per request from the caller's cwd, readers sit in whatever
+   * partition the daemon woke up in, and `listWorkItems()` returns `[]`. No PR state, no CI
+   * events, no automation, for every tracked item, reported as an empty list rather than an
+   * error.
+   *
+   * **This is a deliberate cross-domain read, not a forgotten `WHERE`.** That distinction is
+   * the entire reason this lives behind a named method instead of a bare query: an unscoped
+   * read that merely *looks* unscoped is exactly what the next scoping sweep will "fix" back
+   * into the bug above. Every statement here also carries a `dotw-ignore` naming the reason,
+   * so the rule that enforces partitioning cannot be silently satisfied by accident.
+   *
+   * Reads are cross-domain; **writes are not**. Every row carries its `domainId`, so a caller
+   * dispatches through {@link CrossDomainWorkItems.forRow} and writes inside the partition the
+   * row actually belongs to.
+   */
+  acrossDomains(): CrossDomainWorkItems {
+    return new CrossDomainWorkItems(this.db, this);
+  }
+}
+
+/**
+ * Ring-0 reads over every domain. See {@link WorkItemDb.acrossDomains} for why this exists
+ * and why it is named rather than implicit.
+ *
+ * Lookups by a per-domain unique key (`pr_number`, `branch`, `issue_number`) return an
+ * **array**: two domains may each legitimately hold PR #7, and collapsing that to one row
+ * would reintroduce the ambiguity #3034 removed. Callers that can only act on one must say
+ * which, in the open.
+ */
+export class CrossDomainWorkItems {
+  private db: Database;
+  private owner: WorkItemDb;
+
+  constructor(db: Database, owner: WorkItemDb) {
+    this.db = db;
+    this.owner = owner;
+  }
+
+  /** The scoped handle for a row this view returned — how a ring-0 reader writes. */
+  forRow(item: Pick<WorkItem, "domainId">): DomainWorkItems {
+    return this.owner.forDomain(item.domainId);
+  }
+
+  /** Every tracked item on the box, in every domain. */
+  listWorkItems(filter?: { phase?: string; excludeArchived?: boolean }): WorkItem[] {
+    const archiveClause = filter?.excludeArchived
+      ? " AND NOT (phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days'))"
+      : "";
+    if (filter?.phase) {
+      return (
+        this.db
+          // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+          .query<WorkItemRow, [string]>(`SELECT * FROM work_items WHERE phase = ?${archiveClause} ORDER BY created_at`)
+          .all(filter.phase)
+          .map(rowToWorkItem)
+      );
+    }
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, []>(`SELECT * FROM work_items WHERE 1 = 1${archiveClause} ORDER BY created_at`)
+        .all()
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** By global primary key. Unambiguous: `id` is unique across the whole table. */
+  getWorkItem(id: string): WorkItem | null {
+    const row = this.db
+      // dotw-ignore domain-scoped-queries: ring 0 — id is the global primary key (see WorkItemDb.acrossDomains)
+      .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE id = ?")
+      .get(id);
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  /** Every domain's item for this PR number. May legitimately hold more than one. */
+  findByPr(prNumber: number): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE pr_number = ? ORDER BY domain_id")
+        .all(prNumber)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** Every domain's item for this branch name. */
+  findByBranch(branch: string): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ? ORDER BY domain_id")
+        .all(branch)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** Every domain's item for this issue number. */
+  findByIssue(issueNumber: number): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE issue_number = ? ORDER BY domain_id")
+        .all(issueNumber)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /**
+   * CI run states for every domain, keyed by {@link ciRunStateKey}.
+   *
+   * The key is `domainId:prNumber`, not `prNumber`: a bare PR number collides the moment two
+   * domains each have a PR #7, which is the case this whole epic exists to support.
+   */
+  loadCiRunStates(): Map<string, CiRunState> {
+    type CiRunStateRow = {
+      domain_id: number;
+      pr_number: number;
+      suite_id: number;
+      started_at: number;
+      emitted_started: number;
+      emitted_finished: number;
+    };
+    const rows = this.db
+      .query<CiRunStateRow, []>(
+        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        "SELECT domain_id, pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states",
+      )
+      .all();
+    const map = new Map<string, CiRunState>();
+    for (const row of rows) {
+      map.set(ciRunStateKey(row.domain_id, row.pr_number), {
+        suiteId: row.suite_id,
+        startedAt: row.started_at,
+        emittedStarted: row.emitted_started !== 0,
+        emittedFinished: row.emitted_finished !== 0,
+      });
+    }
+    return map;
+  }
+}
+
+/** Composite key for a CI run state held across domains. See {@link CrossDomainWorkItems.loadCiRunStates}. */
+export function ciRunStateKey(domainId: number, prNumber: number): string {
+  return `${domainId}:${prNumber}`;
+}
+
+/** Inverse of {@link ciRunStateKey}. */
+export function parseCiRunStateKey(key: string): { domainId: number; prNumber: number } {
+  const [domainId, prNumber] = key.split(":");
+  return { domainId: Number(domainId), prNumber: Number(prNumber) };
 }
 
 /**

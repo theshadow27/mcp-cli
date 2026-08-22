@@ -23,7 +23,7 @@ import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
-import type { DomainWorkItems } from "../db/work-items";
+import type { CrossDomainWorkItems } from "../db/work-items";
 import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
@@ -100,8 +100,11 @@ export interface FetchIssueCommentsResult {
 }
 
 export interface CopilotPollerOptions {
-  /** Work-item handle for the domain this poller watches (#3037). */
-  workItemDb: DomainWorkItems;
+  /**
+   * **Ring-0 work-item access, spanning every domain** (see `WorkItemDb.acrossDomains`).
+   * A daemon-internal poller has no domain of its own to be scoped to.
+   */
+  workItemDb: CrossDomainWorkItems;
   stateDb: StateDb;
   logger?: Logger;
   intervalMs?: number;
@@ -116,7 +119,7 @@ export interface CopilotPollerOptions {
 // ── Poller ──
 
 export class CopilotPoller {
-  private workItemDb: DomainWorkItems;
+  private workItemDb: CrossDomainWorkItems;
   private stateDb: StateDb;
   private logger: Logger;
   private fixedInterval: number | null;

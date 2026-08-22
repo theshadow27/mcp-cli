@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import type { WorkItemEvent } from "@mcp-cli/core";
-import { type DomainWorkItems, WorkItemDb } from "../db/work-items";
+import { type CrossDomainWorkItems, type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import type { CiEvent } from "./ci-events";
 import type { CiCheck, PRStatus, RepoInfo } from "./graphql-client";
 import { WorkItemPoller } from "./work-item-poller";
@@ -35,11 +35,16 @@ function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStat
 
 describe("WorkItemPoller", () => {
   let sqlDb: Database;
-  let db: DomainWorkItems;
+  /** Ring-0 handle handed to the poller — the thing under test. */
+  let db: CrossDomainWorkItems;
+  /** Scoped handle used only to ARRANGE rows; the poller must find them without being told. */
+  let seed: DomainWorkItems;
 
   beforeEach(() => {
     sqlDb = new Database(":memory:");
-    db = new WorkItemDb(sqlDb).forDomain(NO_DOMAIN_ID);
+    const wdb = new WorkItemDb(sqlDb);
+    db = wdb.acrossDomains();
+    seed = wdb.forDomain(NO_DOMAIN_ID);
   });
 
   afterEach(() => {
@@ -65,7 +70,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("no-op when items exist but none have prNumber", async () => {
-    db.createWorkItem({ id: "#100", issueNumber: 100 });
+    seed.createWorkItem({ id: "#100", issueNumber: 100 });
 
     let fetchCalled = false;
     const poller = new WorkItemPoller({
@@ -83,7 +88,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("fetches and updates PR state", async () => {
-    db.createWorkItem({ id: "pr:42", prNumber: 42, prState: "open", mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:42", prNumber: 42, prState: "open", mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -96,13 +101,13 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    const item = db.getWorkItem("pr:42");
+    const item = seed.getWorkItem("pr:42");
     expect(item?.prState).toBe("merged");
     expect(events).toContainEqual(expect.objectContaining({ type: "pr:merged", prNumber: 42 }));
   });
 
   test("updates CI status and emits checks:passed", async () => {
-    db.createWorkItem({ id: "pr:10", prNumber: 10, ciStatus: "running" });
+    seed.createWorkItem({ id: "pr:10", prNumber: 10, ciStatus: "running" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -115,13 +120,13 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    const item = db.getWorkItem("pr:10");
+    const item = seed.getWorkItem("pr:10");
     expect(item?.ciStatus).toBe("passed");
     expect(events).toContainEqual({ type: "checks:passed", prNumber: 10 });
   });
 
   test("updates review status and emits review:approved", async () => {
-    db.createWorkItem({ id: "pr:5", prNumber: 5, reviewStatus: "pending" });
+    seed.createWorkItem({ id: "pr:5", prNumber: 5, reviewStatus: "pending" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -139,13 +144,13 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    const item = db.getWorkItem("pr:5");
+    const item = seed.getWorkItem("pr:5");
     expect(item?.reviewStatus).toBe("approved");
     expect(events).toContainEqual({ type: "review:approved", prNumber: 5 });
   });
 
   test("emits checks:failed with failedJob", async () => {
-    db.createWorkItem({ id: "pr:7", prNumber: 7, ciStatus: "running" });
+    seed.createWorkItem({ id: "pr:7", prNumber: 7, ciStatus: "running" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -171,7 +176,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("emits review:changes_requested with reviewer", async () => {
-    db.createWorkItem({ id: "pr:8", prNumber: 8, reviewStatus: "none" });
+    seed.createWorkItem({ id: "pr:8", prNumber: 8, reviewStatus: "none" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -197,7 +202,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("no events when state hasn't changed", async () => {
-    db.createWorkItem({
+    seed.createWorkItem({
       id: "pr:20",
       prNumber: 20,
       prState: "open",
@@ -229,7 +234,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("handles fetch error gracefully", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
 
     const poller = new WorkItemPoller({
       db,
@@ -246,7 +251,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("caches repo detection across polls", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
 
     let detectCount = 0;
     const poller = new WorkItemPoller({
@@ -283,7 +288,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("maps draft PRs correctly", async () => {
-    db.createWorkItem({ id: "pr:15", prNumber: 15, prState: "open" });
+    seed.createWorkItem({ id: "pr:15", prNumber: 15, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -296,15 +301,15 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    const item = db.getWorkItem("pr:15");
+    const item = seed.getWorkItem("pr:15");
     expect(item?.prState).toBe("draft");
     // No pr:opened event for draft transition
     expect(events.some((e) => e.type === "pr:opened")).toBe(false);
   });
 
   test("handles multiple PRs in single poll", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1, prState: "open" });
-    db.createWorkItem({ id: "pr:2", prNumber: 2, prState: "open" });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1, prState: "open" });
+    seed.createWorkItem({ id: "pr:2", prNumber: 2, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -320,14 +325,14 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    expect(db.getWorkItem("pr:1")?.prState).toBe("merged");
-    expect(db.getWorkItem("pr:2")?.prState).toBe("closed");
+    expect(seed.getWorkItem("pr:1")?.prState).toBe("merged");
+    expect(seed.getWorkItem("pr:2")?.prState).toBe("closed");
     expect(events).toContainEqual({ type: "pr:merged", prNumber: 1, mergeSha: null });
     expect(events).toContainEqual({ type: "pr:closed", prNumber: 2 });
   });
 
   test("concurrency guard prevents overlapping polls", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
 
     let concurrentCalls = 0;
     let maxConcurrent = 0;
@@ -352,7 +357,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("stopped flag prevents DB writes during shutdown", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1, prState: "open" });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1, prState: "open" });
 
     const poller = new WorkItemPoller({
       db,
@@ -367,12 +372,12 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
     // PR state should NOT have been updated because stop() was called
-    const item = db.getWorkItem("pr:1");
+    const item = seed.getWorkItem("pr:1");
     expect(item?.prState).toBe("open");
   });
 
   test("detectRepo failure caches after 3 attempts", async () => {
-    db.createWorkItem({ id: "pr:1", prNumber: 1 });
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
 
     let detectCalls = 0;
     const poller = new WorkItemPoller({
@@ -398,7 +403,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("review status ignores COMMENTED after APPROVED", async () => {
-    db.createWorkItem({ id: "pr:9", prNumber: 9, reviewStatus: "none" });
+    seed.createWorkItem({ id: "pr:9", prNumber: 9, reviewStatus: "none" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -420,13 +425,13 @@ describe("WorkItemPoller", () => {
     await poller.poll();
 
     // Should be approved, not pending — COMMENTED doesn't override APPROVED
-    const item = db.getWorkItem("pr:9");
+    const item = seed.getWorkItem("pr:9");
     expect(item?.reviewStatus).toBe("approved");
     expect(events).toContainEqual({ type: "review:approved", prNumber: 9 });
   });
 
   test("checks:started event has no runId", async () => {
-    db.createWorkItem({ id: "pr:11", prNumber: 11, ciStatus: "none" });
+    seed.createWorkItem({ id: "pr:11", prNumber: 11, ciStatus: "none" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -449,7 +454,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pollNow triggers an immediate poll cycle", async () => {
-    db.createWorkItem({ id: "pr:50", prNumber: 50, prState: "open" });
+    seed.createWorkItem({ id: "pr:50", prNumber: 50, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -467,7 +472,7 @@ describe("WorkItemPoller", () => {
     expect(poller.pollCount).toBe(1);
 
     // Reset state so the next poll sees a change
-    db.updateWorkItem("pr:50", { prState: "open" });
+    seed.updateWorkItem("pr:50", { prState: "open" });
     events.length = 0;
 
     poller.pollNow();
@@ -494,7 +499,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("EXPECTED status maps to pending, not running", async () => {
-    db.createWorkItem({ id: "pr:12", prNumber: 12, ciStatus: "none" });
+    seed.createWorkItem({ id: "pr:12", prNumber: 12, ciStatus: "none" });
 
     const poller = new WorkItemPoller({
       db,
@@ -505,14 +510,14 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
 
-    const item = db.getWorkItem("pr:12");
+    const item = seed.getWorkItem("pr:12");
     expect(item?.ciStatus).toBe("pending");
   });
 
   // ── Merge state (#1581) ──
 
   test("emits pr:merge_state_changed on first poll (null → UNKNOWN transition)", async () => {
-    db.createWorkItem({ id: "pr:30", prNumber: 30, mergeStateStatus: null });
+    seed.createWorkItem({ id: "pr:30", prNumber: 30, mergeStateStatus: null });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -528,11 +533,11 @@ describe("WorkItemPoller", () => {
     expect(events).toContainEqual(
       expect.objectContaining({ type: "pr:merge_state_changed", prNumber: 30, from: null, to: "UNKNOWN" }),
     );
-    expect(db.getWorkItem("pr:30")?.mergeStateStatus).toBe("UNKNOWN");
+    expect(seed.getWorkItem("pr:30")?.mergeStateStatus).toBe("UNKNOWN");
   });
 
   test("emits pr:merge_state_changed on BEHIND→CLEAN transition", async () => {
-    db.createWorkItem({ id: "pr:31", prNumber: 31, mergeStateStatus: "BEHIND" });
+    seed.createWorkItem({ id: "pr:31", prNumber: 31, mergeStateStatus: "BEHIND" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -561,11 +566,11 @@ describe("WorkItemPoller", () => {
       expect(evt.to).toBe("CLEAN");
       expect(evt.cascadeHead).toBe(31); // only armed PR, CLEAN
     }
-    expect(db.getWorkItem("pr:31")?.mergeStateStatus).toBe("CLEAN");
+    expect(seed.getWorkItem("pr:31")?.mergeStateStatus).toBe("CLEAN");
   });
 
   test("no pr:merge_state_changed when status unchanged", async () => {
-    db.createWorkItem({ id: "pr:32", prNumber: 32, mergeStateStatus: "CLEAN" });
+    seed.createWorkItem({ id: "pr:32", prNumber: 32, mergeStateStatus: "CLEAN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -589,7 +594,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead is null when no PR has auto-merge enabled", async () => {
-    db.createWorkItem({ id: "pr:33", prNumber: 33, mergeStateStatus: "BEHIND" });
+    seed.createWorkItem({ id: "pr:33", prNumber: 33, mergeStateStatus: "BEHIND" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -607,8 +612,8 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead selects earliest CLEAN auto-merge PR across multi-PR poll", async () => {
-    db.createWorkItem({ id: "pr:40", prNumber: 40, mergeStateStatus: "UNKNOWN" });
-    db.createWorkItem({ id: "pr:41", prNumber: 41, mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:40", prNumber: 40, mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:41", prNumber: 41, mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -648,8 +653,8 @@ describe("WorkItemPoller", () => {
   test("cascadeHead is null on non-actionable DIRTY transition even when other PR is CLEAN/BEHIND", async () => {
     // PR 50 starts BEHIND, transitions to DIRTY (non-actionable)
     // PR 51 is CLEAN with auto-merge — would normally be the cascade head
-    db.createWorkItem({ id: "pr:50", prNumber: 50, mergeStateStatus: "BEHIND" });
-    db.createWorkItem({ id: "pr:51", prNumber: 51, mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:50", prNumber: 50, mergeStateStatus: "BEHIND" });
+    seed.createWorkItem({ id: "pr:51", prNumber: 51, mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -673,9 +678,9 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead is null on null→UNKNOWN transition", async () => {
-    db.createWorkItem({ id: "pr:52", prNumber: 52 });
+    seed.createWorkItem({ id: "pr:52", prNumber: 52 });
     // Add a CLEAN armed PR to ensure cascadeHead would be non-null if not gated
-    db.createWorkItem({ id: "pr:53", prNumber: 53, mergeStateStatus: "BEHIND" });
+    seed.createWorkItem({ id: "pr:53", prNumber: 53, mergeStateStatus: "BEHIND" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -699,8 +704,8 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead is null on HAS_HOOKS transition", async () => {
-    db.createWorkItem({ id: "pr:54", prNumber: 54, mergeStateStatus: "BEHIND" });
-    db.createWorkItem({ id: "pr:55", prNumber: 55, mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:54", prNumber: 54, mergeStateStatus: "BEHIND" });
+    seed.createWorkItem({ id: "pr:55", prNumber: 55, mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -724,7 +729,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead is null on UNSTABLE transition", async () => {
-    db.createWorkItem({ id: "pr:56", prNumber: 56, mergeStateStatus: "CLEAN" });
+    seed.createWorkItem({ id: "pr:56", prNumber: 56, mergeStateStatus: "CLEAN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -745,7 +750,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("cascadeHead is non-null when PR transitions to BEHIND with auto-merge", async () => {
-    db.createWorkItem({ id: "pr:57", prNumber: 57, mergeStateStatus: "UNKNOWN" });
+    seed.createWorkItem({ id: "pr:57", prNumber: 57, mergeStateStatus: "UNKNOWN" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -768,7 +773,7 @@ describe("WorkItemPoller", () => {
   // ── Phase 2 enrichment (#1576) ──
 
   test("pr:opened carries branch, base, commits, srcChurn", async () => {
-    db.createWorkItem({ id: "pr:60", prNumber: 60, prState: "draft" });
+    seed.createWorkItem({ id: "pr:60", prNumber: 60, prState: "draft" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -807,7 +812,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pr:merged carries mergeSha", async () => {
-    db.createWorkItem({ id: "pr:61", prNumber: 61, prState: "open" });
+    seed.createWorkItem({ id: "pr:61", prNumber: 61, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -829,7 +834,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pr:pushed emits when headRefOid changes on open PR", async () => {
-    db.createWorkItem({ id: "pr:62", prNumber: 62, prState: "open" });
+    seed.createWorkItem({ id: "pr:62", prNumber: 62, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     let pollCount = 0;
@@ -872,7 +877,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pr:pushed detects force-push when commitCount decreases but OID changes", async () => {
-    db.createWorkItem({ id: "pr:64", prNumber: 64, prState: "open" });
+    seed.createWorkItem({ id: "pr:64", prNumber: 64, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     let pollCount = 0;
@@ -902,7 +907,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pr:pushed not emitted when OID stays the same", async () => {
-    db.createWorkItem({ id: "pr:63", prNumber: 63, prState: "open" });
+    seed.createWorkItem({ id: "pr:63", prNumber: 63, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     const poller = new WorkItemPoller({
@@ -919,7 +924,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("pr:pushed sets filesTruncated when files list was truncated", async () => {
-    db.createWorkItem({ id: "pr:65", prNumber: 65, prState: "open" });
+    seed.createWorkItem({ id: "pr:65", prNumber: 65, prState: "open" });
 
     const events: WorkItemEvent[] = [];
     let pollCount = 0;
@@ -955,7 +960,7 @@ describe("WorkItemPoller", () => {
   }
 
   test("onCiEvent receives ci.started + ci.running on first poll with in-progress checks", async () => {
-    db.createWorkItem({ id: "#10", prNumber: 10, ciStatus: "none" });
+    seed.createWorkItem({ id: "#10", prNumber: 10, ciStatus: "none" });
 
     const ciEvents: CiEvent[] = [];
     const poller = new WorkItemPoller({
@@ -980,7 +985,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("onCiEvent receives ci.finished when all checks become COMPLETED", async () => {
-    db.createWorkItem({ id: "#11", prNumber: 11, ciStatus: "none" });
+    seed.createWorkItem({ id: "#11", prNumber: 11, ciStatus: "none" });
 
     let pollNum = 0;
     const ciEvents: CiEvent[] = [];
@@ -1021,7 +1026,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("re-polling finished checks does NOT re-emit ci.started", async () => {
-    db.createWorkItem({ id: "#12", prNumber: 12, ciStatus: "none" });
+    seed.createWorkItem({ id: "#12", prNumber: 12, ciStatus: "none" });
 
     const completedChecks = [ciCheck("check", "COMPLETED", "SUCCESS")];
     const ciEvents: CiEvent[] = [];
@@ -1049,7 +1054,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("new suiteId triggers a new ci.started (re-run detection)", async () => {
-    db.createWorkItem({ id: "#13", prNumber: 13, ciStatus: "none" });
+    seed.createWorkItem({ id: "#13", prNumber: 13, ciStatus: "none" });
 
     let pollNum = 0;
     const ciEvents: CiEvent[] = [];
@@ -1091,7 +1096,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("onCiEvent is not called when ciChecks is empty", async () => {
-    db.createWorkItem({ id: "#15", prNumber: 15, ciStatus: "none" });
+    seed.createWorkItem({ id: "#15", prNumber: 15, ciStatus: "none" });
 
     const ciEvents: CiEvent[] = [];
     const poller = new WorkItemPoller({
@@ -1107,7 +1112,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("CI state survives poller restart — no duplicate ci.started, correct observedDurationMs", async () => {
-    db.createWorkItem({ id: "#20", prNumber: 20, prState: "open", ciStatus: "running" });
+    seed.createWorkItem({ id: "#20", prNumber: 20, prState: "open", ciStatus: "running" });
 
     const T0 = 1_000_000;
     const ciEvents1: CiEvent[] = [];
@@ -1163,7 +1168,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("CI state cleaned up on PR merge", async () => {
-    db.createWorkItem({ id: "#14", prNumber: 14, prState: "open", ciStatus: "none" });
+    seed.createWorkItem({ id: "#14", prNumber: 14, prState: "open", ciStatus: "none" });
 
     let pollNum = 0;
     const ciEvents: CiEvent[] = [];
@@ -1206,7 +1211,7 @@ describe("WorkItemPoller", () => {
   });
 
   test("stale ciRunStates are purged when tracked items drops to zero", async () => {
-    const item = db.createWorkItem({ id: "#30", prNumber: 30, prState: "open", ciStatus: "running" });
+    const item = seed.createWorkItem({ id: "#30", prNumber: 30, prState: "open", ciStatus: "running" });
 
     let pollCount = 0;
     const poller = new WorkItemPoller({
@@ -1226,24 +1231,32 @@ describe("WorkItemPoller", () => {
 
     await poller.poll();
     pollCount++;
-    expect(db.loadCiRunStates().size).toBe(1);
+    expect(seed.loadCiRunStates().size).toBe(1);
 
     // Remove the work item so tracked becomes empty
-    db.deleteWorkItem(item.id);
+    seed.deleteWorkItem(item.id);
 
     await poller.poll();
     pollCount++;
-    expect(db.loadCiRunStates().size).toBe(0);
+    expect(seed.loadCiRunStates().size).toBe(0);
   });
 
   test("upsertCiRunState is not called when CI state is unchanged across polls", async () => {
-    db.createWorkItem({ id: "#31", prNumber: 31, prState: "open", ciStatus: "none" });
+    seed.createWorkItem({ id: "#31", prNumber: 31, prState: "open", ciStatus: "none" });
 
+    // Spy on the seam production uses: the poller writes through `db.forRow(item)`, which
+    // returns a FRESH scoped handle per row, so patching any single instance would count
+    // zero and silently assert nothing.
     let upsertCount = 0;
-    const origUpsert = db.upsertCiRunState.bind(db);
-    db.upsertCiRunState = (pr, state) => {
-      upsertCount++;
-      return origUpsert(pr, state);
+    const origForRow = db.forRow.bind(db);
+    db.forRow = (item) => {
+      const scoped = origForRow(item);
+      const origUpsert = scoped.upsertCiRunState.bind(scoped);
+      scoped.upsertCiRunState = (pr, state) => {
+        upsertCount++;
+        return origUpsert(pr, state);
+      };
+      return scoped;
     };
 
     const ciEvents: CiEvent[] = [];
@@ -1268,5 +1281,107 @@ describe("WorkItemPoller", () => {
     // Second poll — same checks, same suiteId, state already emitted both flags
     await poller.poll();
     expect(upsertCount).toBe(1);
+  });
+});
+
+/**
+ * The regression this repair exists for (#3037 review round 2).
+ *
+ * The poller used to be handed `forDomain(resolveDomainScope(db, process.cwd()))`. Writers
+ * scope per request from the caller's cwd, so an item tracked from a project directory landed
+ * in that project's partition while the poller sat in whichever partition the daemon woke up
+ * in. `listWorkItems()` returned `[]` — no PR state, no CI events, no automation, for every
+ * tracked item, reported as an empty list rather than an error.
+ *
+ * These drive the real WorkItemPoller over a real database. Seeding uses a scoped handle,
+ * exactly as a caller writes; nothing tells the poller where to look.
+ */
+describe("WorkItemPoller — ring 0 sees every domain (#3037)", () => {
+  let sqlDb: Database;
+
+  afterEach(() => {
+    sqlDb?.close();
+  });
+
+  function check(name: string, status: string, conclusion: string | null, suiteId = 100): CiCheck {
+    return { name, status, conclusion, checkSuiteId: suiteId };
+  }
+
+  function setup() {
+    sqlDb = new Database(":memory:");
+    const wdb = new WorkItemDb(sqlDb);
+    return { ring0: wdb.acrossDomains(), alpha: wdb.forDomain(1), beta: wdb.forDomain(2) };
+  }
+
+  test("polls items written by callers in domains the daemon was never told about", async () => {
+    const { ring0, alpha, beta } = setup();
+    alpha.createWorkItem({ issueNumber: 1, prNumber: 11, prState: "open", ciStatus: "none" });
+    beta.createWorkItem({ issueNumber: 2, prNumber: 22, prState: "open", ciStatus: "none" });
+
+    const requested: number[] = [];
+    const poller = new WorkItemPoller({
+      db: ring0,
+      logger: SILENT_LOGGER,
+      fetchPRs: async (_repo, prNumbers) => {
+        requested.push(...prNumbers);
+        return [];
+      },
+      detectRepo: async () => TEST_REPO,
+    });
+
+    await poller.poll();
+
+    // Pre-fix this was [] — the poller asked GitHub about nothing at all.
+    expect(requested.sort()).toEqual([11, 22]);
+  });
+
+  test("writes land in the row's own domain, not a partition the daemon guessed", async () => {
+    const { ring0, alpha, beta } = setup();
+    alpha.createWorkItem({ issueNumber: 1, prNumber: 7, prState: "open", ciStatus: "none" });
+    beta.createWorkItem({ issueNumber: 2, prNumber: 8, prState: "open", ciStatus: "none" });
+
+    const poller = new WorkItemPoller({
+      db: ring0,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({ number: 7, ciState: "SUCCESS" }),
+        makePRStatus({ number: 8, ciState: "FAILURE" }),
+      ],
+      detectRepo: async () => TEST_REPO,
+    });
+
+    await poller.poll();
+
+    expect(alpha.getWorkItemByPr(7)?.ciStatus).toBe("passed");
+    expect(beta.getWorkItemByPr(8)?.ciStatus).toBe("failed");
+    // Neither write leaked into the sentinel partition the daemon used to bind to.
+    expect(ring0.listWorkItems().every((i) => i.domainId !== 0)).toBe(true);
+  });
+
+  test("two domains each holding PR #7 keep separate CI run state", async () => {
+    const { ring0, alpha, beta } = setup();
+    alpha.createWorkItem({ issueNumber: 1, prNumber: 7, prState: "open", ciStatus: "none" });
+    beta.createWorkItem({ issueNumber: 2, prNumber: 7, prState: "open", ciStatus: "none" });
+
+    const poller = new WorkItemPoller({
+      db: ring0,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [
+        makePRStatus({
+          number: 7,
+          ciState: "SUCCESS",
+          ciChecks: [check("build", "COMPLETED", "SUCCESS", 600)],
+        }),
+      ],
+      detectRepo: async () => TEST_REPO,
+      now: () => 2000,
+    });
+
+    await poller.poll();
+
+    // One row per domain. Keyed by PR number alone, one would have overwritten the other.
+    expect(alpha.loadCiRunStates().get(7)).toBeDefined();
+    expect(beta.loadCiRunStates().get(7)).toBeDefined();
+    expect(ring0.loadCiRunStates().size).toBe(2);
   });
 });

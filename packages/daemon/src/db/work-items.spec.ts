@@ -4,7 +4,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, type WorkItem } from "@mcp-cli/core";
-import { type DomainWorkItems, StaleUpdateError, WorkItemDb } from "./work-items";
+import { type DomainWorkItems, StaleUpdateError, WorkItemDb, ciRunStateKey, parseCiRunStateKey } from "./work-items";
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -1019,6 +1019,116 @@ describe("WorkItemDb", () => {
       expect(() => db.forDomain(Number.NaN)).toThrow(/non-negative integer/);
       expect(db.forDomain(NO_DOMAIN_ID).domainId).toBe(NO_DOMAIN_ID);
       raw.close();
+    });
+  });
+
+  /**
+   * Ring 0 — the daemon's own readers (#3037 review round 2).
+   *
+   * This wiring had ZERO coverage, which is exactly why a regression this severe passed CI:
+   * readers were bound at startup to `forDomain(resolveDomainId(db, process.cwd()))` while
+   * every writer scoped per request, so the daemon read an empty partition and reported "no
+   * tracked items" instead of an error.
+   */
+  describe("acrossDomains (ring 0)", () => {
+    function threeDomains() {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      const db = new WorkItemDb(raw);
+      return { raw, db, unassigned: db.forDomain(NO_DOMAIN_ID), alpha: db.forDomain(1), beta: db.forDomain(2) };
+    }
+
+    test("sees every domain's items, including the unassigned partition", () => {
+      const { db, unassigned, alpha, beta } = threeDomains();
+      unassigned.createWorkItem({ issueNumber: 1 });
+      alpha.createWorkItem({ issueNumber: 2 });
+      beta.createWorkItem({ issueNumber: 3 });
+
+      const all = db.acrossDomains().listWorkItems();
+      expect(all.map((i: WorkItem) => i.issueNumber).sort()).toEqual([1, 2, 3]);
+      expect(all.map((i: WorkItem) => i.domainId).sort()).toEqual([0, 1, 2]);
+    });
+
+    test("a scoped reader would have seen NOTHING — the regression this replaces", () => {
+      const { db, alpha } = threeDomains();
+      alpha.createWorkItem({ issueNumber: 42, prNumber: 7 });
+
+      // What the daemon did when bound at startup to a partition nobody wrote to.
+      expect(db.forDomain(NO_DOMAIN_ID).listWorkItems()).toEqual([]);
+      // What it does now.
+      expect(db.acrossDomains().listWorkItems()).toHaveLength(1);
+    });
+
+    test("phase and archive filters still apply, across domains", () => {
+      const { db, alpha, beta } = threeDomains();
+      alpha.createWorkItem({ issueNumber: 1, phase: "impl" });
+      beta.createWorkItem({ issueNumber: 2, phase: "qa" });
+
+      expect(
+        db
+          .acrossDomains()
+          .listWorkItems({ phase: "qa" })
+          .map((i: WorkItem) => i.issueNumber),
+      ).toEqual([2]);
+      expect(db.acrossDomains().listWorkItems({ excludeArchived: true })).toHaveLength(2);
+    });
+
+    test("a per-domain key returns EVERY match, not an arbitrary one", () => {
+      const { db, alpha, beta } = threeDomains();
+      const a = alpha.createWorkItem({ issueNumber: 42, branch: "fix/foo", prNumber: 7 });
+      const b = beta.createWorkItem({ issueNumber: 42, branch: "fix/foo", prNumber: 7 });
+      const ring0 = db.acrossDomains();
+
+      expect(
+        ring0
+          .findByPr(7)
+          .map((i: WorkItem) => i.id)
+          .sort(),
+      ).toEqual([a.id, b.id].sort());
+      expect(ring0.findByBranch("fix/foo")).toHaveLength(2);
+      expect(ring0.findByIssue(42)).toHaveLength(2);
+      // Ordered by domain so the "first match" a single-valued caller takes is deterministic.
+      expect(ring0.findByPr(7).map((i: WorkItem) => i.domainId)).toEqual([1, 2]);
+    });
+
+    test("getWorkItem is unambiguous — id is the global primary key", () => {
+      const { db, alpha } = threeDomains();
+      const a = alpha.createWorkItem({ id: "#42", issueNumber: 42 });
+      expect(db.acrossDomains().getWorkItem(a.id)?.domainId).toBe(1);
+      // The unqualified spelling is NOT a row id once a domain is registered.
+      expect(db.acrossDomains().getWorkItem("#42")).toBeNull();
+    });
+
+    test("forRow writes into the row's own partition, never the reader's", () => {
+      const { db, alpha, beta } = threeDomains();
+      const a = alpha.createWorkItem({ issueNumber: 42, phase: "impl" });
+      beta.createWorkItem({ issueNumber: 42, phase: "impl" });
+      const ring0 = db.acrossDomains();
+
+      ring0.forRow(a).updateWorkItem(a.id, { phase: "qa" });
+
+      expect(alpha.getWorkItemByIssue(42)?.phase).toBe("qa");
+      // The neighbour's identically-numbered item is untouched.
+      expect(beta.getWorkItemByIssue(42)?.phase).toBe("impl");
+    });
+
+    test("CI run states are keyed per domain — two PR #7s do not clobber each other", () => {
+      const { db, alpha, beta } = threeDomains();
+      alpha.upsertCiRunState(7, { suiteId: 11, startedAt: 1, emittedStarted: true, emittedFinished: false });
+      beta.upsertCiRunState(7, { suiteId: 22, startedAt: 2, emittedStarted: false, emittedFinished: false });
+
+      const states = db.acrossDomains().loadCiRunStates();
+      // Keyed by prNumber alone this Map would hold ONE entry and silently lose a domain.
+      expect(states.size).toBe(2);
+      expect(states.get(ciRunStateKey(1, 7))?.suiteId).toBe(11);
+      expect(states.get(ciRunStateKey(2, 7))?.suiteId).toBe(22);
+    });
+
+    test("ciRunStateKey round-trips through parseCiRunStateKey", () => {
+      expect(parseCiRunStateKey(ciRunStateKey(3, 7))).toEqual({ domainId: 3, prNumber: 7 });
+      expect(parseCiRunStateKey(ciRunStateKey(0, 1135))).toEqual({ domainId: 0, prNumber: 1135 });
     });
   });
 });

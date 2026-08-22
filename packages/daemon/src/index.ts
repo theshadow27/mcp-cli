@@ -444,6 +444,26 @@ export async function resolveHeadBranch(cwd: string): Promise<string | null> {
  * Start the daemon and return a handle for lifecycle management.
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
+/**
+ * Pick one row when a ring-0 lookup legitimately matched several domains.
+ *
+ * A PR/branch/issue number is unique **per domain**, so a cross-domain lookup can return
+ * more than one row. Callers whose interface is single-valued take the first — but say so,
+ * because a silently-chosen row is the ambiguity #3034 removed from the schema creeping back
+ * in at the consumer. Per-domain dispatch removes the choice entirely (#3022).
+ */
+function firstOf<T extends { domainId: number }>(matches: T[], label: string, warn: (msg: string) => void): T | null {
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    warn(
+      `[mcpd] ${label} matches ${matches.length} work items across domains (${matches
+        .map((m) => m.domainId)
+        .join(", ")}); acting on domain ${matches[0].domainId}. Per-domain dispatch is #3022.`,
+    );
+  }
+  return matches[0];
+}
+
 export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
   // Allow env-based override for subprocess integration tests
   const skipVirtualServers = opts?.skipVirtualServers ?? process.env.MCP_DAEMON_SKIP_VIRTUAL_SERVERS === "1";
@@ -859,10 +879,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
   let automationDispatcher: AutomationDispatcher | null = null;
   {
-    // The daemon's own domain: whichever one owns the directory mcpd was started in.
-    // One daemon still serves one project's automation — epic B (#3022) gives each domain
-    // its own worker; until then this is the honest scope, named rather than implied.
-    const workItemDb = new WorkItemDb(db.getDatabase()).forDomain(resolveDomainId(db, process.cwd()));
+    // Ring 0: the dispatcher's work-item lookups span every domain. It must not be bound to
+    // "the daemon's domain" — mcpd is auto-started by whichever mcx call needed it, sometimes
+    // with no cwd, so a startup-time binding partitions it by process ancestry (see
+    // WorkItemDb.acrossDomains).
+    const workItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
+    // KNOWN GAP, not an oversight: the automation manifest and its lockfile are still read
+    // from the daemon's cwd, so which project's automation runs depends on where mcpd was
+    // started. This is the same class of defect the ring-0 change above removes from the
+    // work-item readers, but it cannot be fixed the same way: automation is inherently
+    // per-project, so the fix is one dispatcher per domain (epic B / #3022), not one
+    // dispatcher reading across domains. Tracked separately; deliberately NOT bundled into
+    // #3037. The startup log below names the root it bound to so the choice is visible
+    // rather than implied.
     let manifestResult: ReturnType<typeof loadManifest> | null = null;
     try {
       manifestResult = loadManifest(process.cwd());
@@ -905,14 +934,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             const item = workItemDb.getWorkItem(workItemId);
             return item?.automationOverrides ?? undefined;
           },
-          resolveWorkItemId: (prNumber) => {
-            const item = workItemDb.getWorkItemByPr(prNumber);
-            return item?.id ?? undefined;
-          },
-          getWorkItemByBranch: (branch) => workItemDb.getWorkItemByBranch(branch),
-          getWorkItemByIssue: (issueNumber) => workItemDb.getWorkItemByIssue(issueNumber),
+          // The dispatcher's callbacks are single-valued, but a PR/branch/issue number can
+          // name one item per domain. Take the first and SAY SO when there are more, rather
+          // than silently picking one — this restores the pre-#3037 behaviour (these reads
+          // were unscoped) while making the ambiguity visible instead of implicit. Per-domain
+          // dispatch is #3022.
+          resolveWorkItemId: (prNumber) => firstOf(workItemDb.findByPr(prNumber), `PR #${prNumber}`, logger.warn)?.id,
+          getWorkItemByBranch: (branch) => firstOf(workItemDb.findByBranch(branch), `branch ${branch}`, logger.warn),
+          getWorkItemByIssue: (issueNumber) =>
+            firstOf(workItemDb.findByIssue(issueNumber), `issue #${issueNumber}`, logger.warn),
           updateWorkItem: (id, patch) => {
-            workItemDb.updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
+            const item = workItemDb.getWorkItem(id);
+            if (!item) return;
+            // Write into the row's OWN partition, not a partition the daemon guessed.
+            workItemDb.forRow(item).updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
           },
           getWorkItem: (workItemId) => {
             const item = workItemDb.getWorkItem(workItemId);
@@ -962,15 +997,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                   logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
                 }
               }
-              try {
-                workItemDb.updateWorkItem(workItemId, { phase: "done" });
-              } catch {
-                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
-              }
-              try {
-                workItemDb.deleteWorkItem(workItemId);
-              } catch {
-                logger.warn(`[automation] failed to untrack ${workItemId}`);
+              const owning = workItemDb.getWorkItem(workItemId);
+              if (owning) {
+                const rowScoped = workItemDb.forRow(owning);
+                try {
+                  rowScoped.updateWorkItem(workItemId, { phase: "done" });
+                } catch {
+                  logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
+                }
+                try {
+                  rowScoped.deleteWorkItem(workItemId);
+                } catch {
+                  logger.warn(`[automation] failed to untrack ${workItemId}`);
+                }
               }
             },
           },
@@ -978,7 +1017,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         automationDispatcher.load(manifestResult.manifest.automation, automations);
         automationDispatcher.start();
         logger.info(
-          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"})`,
+          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"}) — manifest root ${automationRepoRoot} (from daemon cwd; per-domain dispatch is #3022)`,
         );
       }
     }
@@ -1291,17 +1330,40 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       (async () => {
         try {
           const workItems = new WorkItemDb(db.database);
-          // Daemon-wide consumers (pollers, derived events, ctx.workItem resolution) watch
-          // the domain mcpd was started in. The MCP server below is NOT bound here: it
-          // scopes per call, from the caller's cwd.
-          const daemonDomain = resolveDomainScope(db, process.cwd());
-          const workItemDb = workItems.forDomain(daemonDomain.id);
+          // Ring 0 (see WorkItemDb.acrossDomains): the pollers, derived events and
+          // ctx.workItem resolution are daemon-internal machinery and read EVERY domain.
+          // They used to bind to resolveDomainScope(db, process.cwd()) here, which meant the
+          // daemon read whichever partition it happened to wake up in while every writer
+          // scoped per request — so listWorkItems() returned [] and PR state, CI events and
+          // automation silently stopped for every tracked item.
+          //
+          // The MCP server below is deliberately NOT ring 0: it is a caller-facing surface
+          // and scopes per call, from the caller's cwd.
+          const workItemDb = workItems.acrossDomains();
+
+          /**
+           * Domain name for a work-item event, resolved PER EVENT from the row it concerns.
+           *
+           * Previously a single name captured at startup from the daemon's cwd, which was
+           * wrong for every item outside that partition — and the daemon has no cwd of its
+           * own worth trusting. `null` when the item is unassigned or unknown; never a guess.
+           */
+          const domainNameFor = (event: import("@mcp-cli/core").WorkItemEvent): string | null => {
+            const item =
+              "itemId" in event
+                ? workItemDb.getWorkItem(event.itemId)
+                : "prNumber" in event
+                  ? firstOf(workItemDb.findByPr(event.prNumber), `PR #${event.prNumber}`, logger.warn)
+                  : null;
+            if (!item || item.domainId === NO_DOMAIN_ID) return null;
+            return db.getDomainById(item.domainId)?.name ?? null;
+          };
 
           // Create the poller first so we can pass pollNow to the server
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, daemonDomain.name),
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, domainNameFor(event)),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
@@ -1322,7 +1384,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 Bun.sleep(RESOLVE_TIMEOUT_MS).then(() => null),
               ]);
               if (!resolved) return null;
-              const item = workItemDb.getWorkItemByBranch(resolved);
+              const item = firstOf(workItemDb.findByBranch(resolved), `branch ${resolved}`, logger.warn);
               if (!item) return null;
               return {
                 id: item.id,

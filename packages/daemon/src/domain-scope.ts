@@ -11,14 +11,24 @@
  *
  * - A path inside a registered domain resolves to that domain (longest prefix wins).
  * - A path outside every domain, an absent path, or an unusable one resolves to
- *   `NO_DOMAIN_ID` — the same partition every row written before domains existed lives in.
- *   That is what makes this change a no-op for an installation with no domains registered,
- *   which is every installation until someone runs `mcx domain add`.
+ *   `NO_DOMAIN_ID` — the same partition every row written before domains existed lives in,
+ *   so an installation that genuinely has no domains sees no behaviour change.
+ *
+ * **Do not read that as "no domains is the default".** `importLegacyState` runs on every
+ * daemon start and registers a domain per `~/.mcp-cli/scopes/*.json` sidecar, with no user
+ * action — and `mcx domain add` does not exist yet (#3035). Any box that ever used
+ * `mcx scope` already has domains. Code that assumes otherwise is wrong on the boxes that
+ * matter most.
  *
  * `NO_DOMAIN_ID` here is a *fallback for reads and writes of daemon-owned state*, not the
  * "never a guess" case from `docs/domains.md`. That rule governs `-d <domain>` on a command
  * the user typed, where guessing would act on the wrong project; the sentinel partition is
  * the honest home for state whose owner is genuinely unknown.
+ *
+ * **This resolver is for CALLER-facing surfaces only** — a request that arrives with a cwd.
+ * Daemon-internal readers must NOT resolve a domain from `process.cwd()` at startup: mcpd is
+ * auto-started by whichever `mcx` invocation needed it, so that binds the daemon's view to an
+ * accident of process ancestry. Those readers are ring 0 — see `WorkItemDb.acrossDomains`.
  */
 
 import { type Domain, NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";

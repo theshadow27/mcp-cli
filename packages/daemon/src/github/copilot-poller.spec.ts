@@ -11,7 +11,7 @@ import {
   REVIEW_COMMENTED,
   REVIEW_STICKY_UPDATED,
 } from "@mcp-cli/core";
-import { type DomainWorkItems, WorkItemDb } from "../db/work-items";
+import { type CrossDomainWorkItems, type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import {
   CopilotPoller,
   type CopilotPollerOptions,
@@ -76,12 +76,17 @@ function makeIssueComment(overrides: Partial<IssueComment> & { id: number }): Is
 
 describe("CopilotPoller", () => {
   let rawDb: Database;
-  let workItemDb: DomainWorkItems;
+  /** Ring-0 handle handed to the poller — the thing under test. */
+  let workItemDb: CrossDomainWorkItems;
+  /** Scoped handle used only to ARRANGE rows. */
+  let seed: DomainWorkItems;
   let stateDb: ReturnType<typeof createCopilotStateDb>;
 
   beforeEach(() => {
     rawDb = new Database(":memory:");
-    workItemDb = new WorkItemDb(rawDb).forDomain(NO_DOMAIN_ID);
+    const wdb = new WorkItemDb(rawDb);
+    workItemDb = wdb.acrossDomains();
+    seed = wdb.forDomain(NO_DOMAIN_ID);
     stateDb = createCopilotStateDb(rawDb);
   });
 
@@ -110,7 +115,7 @@ describe("CopilotPoller", () => {
 
   describe("diff computation", () => {
     test("empty: no comments yields no events", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () => okResult([]),
       });
@@ -122,7 +127,7 @@ describe("CopilotPoller", () => {
     });
 
     test("all-new: first poll with comments emits event for each author", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const comments = [
         makeComment({ id: 1001, path: "src/a.ts", line: 5 }),
         makeComment({ id: 1002, path: "src/b.ts", line: 10 }),
@@ -144,7 +149,7 @@ describe("CopilotPoller", () => {
     });
 
     test("partial-new: only emits diff after seen IDs populated", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller, events } = makePoller({
@@ -165,7 +170,7 @@ describe("CopilotPoller", () => {
     });
 
     test("no diff: all comments already seen yields no events", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenCommentIds(42, [1001, 1002]);
 
       const { poller, events } = makePoller({
@@ -182,7 +187,7 @@ describe("CopilotPoller", () => {
 
   describe("per-author grouping", () => {
     test("emits separate events per author", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([
@@ -212,7 +217,7 @@ describe("CopilotPoller", () => {
 
   describe("persistence", () => {
     test("seen IDs survive across polls", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
         fetchRepoComments: async () => {
@@ -235,7 +240,7 @@ describe("CopilotPoller", () => {
     });
 
     test("persists full union of IDs to SQLite", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenCommentIds(42, [1001]);
 
       const { poller } = makePoller({
@@ -256,7 +261,7 @@ describe("CopilotPoller", () => {
 
   describe("firstLine format", () => {
     test("uses path basename and line number", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001, path: "packages/daemon/src/poller.ts", line: 143 })]),
@@ -268,7 +273,7 @@ describe("CopilotPoller", () => {
     });
 
     test("falls back to original_line when line is null", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001, path: "src/foo.ts", line: null, original_line: 50 })]),
@@ -294,7 +299,7 @@ describe("CopilotPoller", () => {
     });
 
     test("stop prevents further polls", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () => okResult([makeComment({ id: 1001 })]),
       });
@@ -324,8 +329,8 @@ describe("CopilotPoller", () => {
     });
 
     test("repo-scoped fetch error skips inline comments but reviews still work", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchRepoComments: async () => {
@@ -348,7 +353,7 @@ describe("CopilotPoller", () => {
 
   describe("rate limit", () => {
     test("rateLimitLow sets backoff, successful poll clears it", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller } = makePoller({
         fetchRepoComments: async () => {
@@ -370,7 +375,7 @@ describe("CopilotPoller", () => {
     });
 
     test("repo-scoped rateLimitLow logs warning with remaining count", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const warnMessages: string[] = [];
       const logger = {
         info() {},
@@ -397,7 +402,7 @@ describe("CopilotPoller", () => {
     });
 
     test("primary rate-limit error (remaining==0) does not set lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchRepoComments: async () => {
           throw new Error("GitHub API rate limit exhausted (403)");
@@ -410,7 +415,7 @@ describe("CopilotPoller", () => {
     });
 
     test("secondary rate-limit error (retry-after) does not set lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchRepoComments: async () => {
           throw new Error("GitHub API secondary rate limit (403): retry after 60s");
@@ -423,7 +428,7 @@ describe("CopilotPoller", () => {
     });
 
     test("auth/scope 403 does NOT trigger backoff and sets lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchRepoComments: async () => {
           throw new Error("GitHub API auth/scope error (403): Forbidden");
@@ -436,7 +441,7 @@ describe("CopilotPoller", () => {
     });
 
     test("auth/scope error on reviews sets lastError without backoff", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchReviews: async () => {
           throw new Error("GitHub API auth/scope error (403): Resource not accessible by personal access token");
@@ -449,7 +454,7 @@ describe("CopilotPoller", () => {
     });
 
     test("401 auth failure sets lastError without backoff", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller } = makePoller({
         fetchRepoComments: async () => {
           throw new Error("GitHub API auth failed (401) — token cache cleared");
@@ -462,7 +467,7 @@ describe("CopilotPoller", () => {
     });
 
     test("auth/scope error clears after next successful poll", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller } = makePoller({
         fetchRepoComments: async () => {
@@ -484,7 +489,7 @@ describe("CopilotPoller", () => {
 
   describe("coalesced burst", () => {
     test("two comments in quick succession produce one event per author", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
@@ -506,8 +511,8 @@ describe("CopilotPoller", () => {
 
   describe("active-only filtering", () => {
     test("skips work items with phase=done", async () => {
-      workItemDb.createWorkItem({ id: "wi:done", prNumber: 10, prState: "open", phase: "done" });
-      workItemDb.createWorkItem({ id: "wi:active", prNumber: 11, prState: "open" });
+      seed.createWorkItem({ id: "wi:done", prNumber: 10, prState: "open", phase: "done" });
+      seed.createWorkItem({ id: "wi:active", prNumber: 11, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([makeComment({ id: 1000, prNumber: 10 }), makeComment({ id: 1100, prNumber: 11 })]),
@@ -520,8 +525,8 @@ describe("CopilotPoller", () => {
     });
 
     test("skips work items with prState=merged", async () => {
-      workItemDb.createWorkItem({ id: "wi:merged", prNumber: 20, prState: "merged" });
-      workItemDb.createWorkItem({ id: "wi:open", prNumber: 21, prState: "open" });
+      seed.createWorkItem({ id: "wi:merged", prNumber: 20, prState: "merged" });
+      seed.createWorkItem({ id: "wi:open", prNumber: 21, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([makeComment({ id: 2000, prNumber: 20 }), makeComment({ id: 2100, prNumber: 21 })]),
@@ -535,7 +540,7 @@ describe("CopilotPoller", () => {
     });
 
     test("skips work items with prState=closed", async () => {
-      workItemDb.createWorkItem({ id: "wi:closed", prNumber: 30, prState: "closed" });
+      seed.createWorkItem({ id: "wi:closed", prNumber: 30, prState: "closed" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () => okResult([makeComment({ id: 3000, prNumber: 30 })]),
       });
@@ -551,7 +556,7 @@ describe("CopilotPoller", () => {
 
   describe("in_reply_to_id filtering", () => {
     test("threaded replies are excluded from events", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([
@@ -568,7 +573,7 @@ describe("CopilotPoller", () => {
     });
 
     test("all-reply comments yield no events", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenCommentIds(42, [1001]);
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
@@ -588,7 +593,7 @@ describe("CopilotPoller", () => {
 
   describe("edge cases", () => {
     test("user: null in comment uses 'unknown' as author", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () => okResult([makeComment({ id: 1001, user: null })]),
       });
@@ -600,7 +605,7 @@ describe("CopilotPoller", () => {
     });
 
     test("repo-scoped fetch error is transient: lastError stays null", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchRepoComments: async () => {
@@ -616,7 +621,7 @@ describe("CopilotPoller", () => {
     });
 
     test("fetchReviews error surfaces in lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller } = makePoller({
         fetchReviews: async () => {
@@ -631,7 +636,7 @@ describe("CopilotPoller", () => {
     });
 
     test("fetchIssueComments error on PR item surfaces in lastError", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
 
       const { poller } = makePoller({
         fetchIssueComments: async () => {
@@ -646,7 +651,7 @@ describe("CopilotPoller", () => {
     });
 
     test("fetchIssueComments error on issue-only item surfaces in lastError", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
 
       const { poller } = makePoller({
         fetchIssueComments: async () => {
@@ -665,8 +670,8 @@ describe("CopilotPoller", () => {
 
   describe("repo-scoped batching", () => {
     test("groups comments by pull_request_url to correct PRs", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([
@@ -687,7 +692,7 @@ describe("CopilotPoller", () => {
     });
 
     test("comments without pull_request_url are silently dropped", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([
@@ -703,7 +708,7 @@ describe("CopilotPoller", () => {
     });
 
     test("comments for untracked PRs are ignored", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([makeComment({ id: 1001, prNumber: 42 }), makeComment({ id: 9001, prNumber: 999 })]),
@@ -716,7 +721,7 @@ describe("CopilotPoller", () => {
     });
 
     test("since parameter passes last repo poll timestamp", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const sinceValues: Array<string | null> = [];
       const { poller } = makePoller({
         fetchRepoComments: async (_repo, since) => {
@@ -768,7 +773,7 @@ describe("CopilotPoller", () => {
 
   describe("PR reviews", () => {
     test("new review emits review.approved for APPROVED state", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () =>
           okReviewResult([makeReview({ id: 5001, state: "APPROVED", user: { login: "reviewer1" } })]),
@@ -785,7 +790,7 @@ describe("CopilotPoller", () => {
     });
 
     test("new review emits review.changes_requested for CHANGES_REQUESTED state", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () =>
           okReviewResult([makeReview({ id: 5002, state: "CHANGES_REQUESTED", body: "Fix these issues" })]),
@@ -800,7 +805,7 @@ describe("CopilotPoller", () => {
     });
 
     test("new review emits review.commented for COMMENTED state", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 5003, state: "COMMENTED" })]),
       });
@@ -813,7 +818,7 @@ describe("CopilotPoller", () => {
     });
 
     test("PENDING reviews are skipped", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 5004, state: "PENDING" })]),
       });
@@ -827,7 +832,7 @@ describe("CopilotPoller", () => {
     });
 
     test("already-seen reviews are not re-emitted", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenReviewIds(42, [5001]);
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 5001, state: "APPROVED" })]),
@@ -840,7 +845,7 @@ describe("CopilotPoller", () => {
     });
 
     test("review state transitions: first APPROVED, then CHANGES_REQUESTED", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
         fetchReviews: async () => {
@@ -869,7 +874,7 @@ describe("CopilotPoller", () => {
 
   describe("sticky-comment detection", () => {
     test("identical body on subsequent poll does not emit sticky_updated", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const review = makeReview({ id: 6001, body: "Summary: all good" });
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([review]),
@@ -883,7 +888,7 @@ describe("CopilotPoller", () => {
     });
 
     test("changed body emits review.sticky_updated with new hash", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
         fetchReviews: async () => {
@@ -911,7 +916,7 @@ describe("CopilotPoller", () => {
     });
 
     test("non-bot reviews do not trigger sticky detection", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
         fetchReviews: async () => {
@@ -931,7 +936,7 @@ describe("CopilotPoller", () => {
     });
 
     test("review with empty body does not trigger sticky detection", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 6003, body: "" })]),
       });
@@ -948,7 +953,7 @@ describe("CopilotPoller", () => {
 
   describe("top-level PR comments", () => {
     test("new PR comment emits pr.comment", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       const { poller, events } = makePoller({
         fetchIssueComments: async () =>
           okIssueCommentResult([makeIssueComment({ id: 7001, user: { login: "reviewer" } })]),
@@ -965,7 +970,7 @@ describe("CopilotPoller", () => {
     });
 
     test("already-seen PR comments are not re-emitted", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       stateDb.updateSeenPRCommentIds(42, [7001]);
       const { poller, events } = makePoller({
         fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 7001 })]),
@@ -978,7 +983,7 @@ describe("CopilotPoller", () => {
     });
 
     test("PR comment IDs survive across polls", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let callCount = 0;
       const { poller, events } = makePoller({
         fetchIssueComments: async () => {
@@ -1007,7 +1012,7 @@ describe("CopilotPoller", () => {
 
   describe("issue comments", () => {
     test("new issue comment emits issue.comment", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
       const { poller, events } = makePoller({
         fetchIssueComments: async () =>
           okIssueCommentResult([makeIssueComment({ id: 8001, user: { login: "contributor" } })]),
@@ -1024,7 +1029,7 @@ describe("CopilotPoller", () => {
     });
 
     test("issue-only items are polled (no prNumber)", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
       const fetched: number[] = [];
       const { poller } = makePoller({
         fetchIssueComments: async (_repo, num) => {
@@ -1039,7 +1044,7 @@ describe("CopilotPoller", () => {
     });
 
     test("already-seen issue comments are not re-emitted", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
       stateDb.updateSeenIssueCommentIds(99, [8001]);
       const { poller, events } = makePoller({
         fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 8001 })]),
@@ -1051,7 +1056,7 @@ describe("CopilotPoller", () => {
     });
 
     test("issue comments are not polled for PR-based work items", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open", issueNumber: 99 });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open", issueNumber: 99 });
       const fetchedIssueNums: number[] = [];
       const { poller } = makePoller({
         fetchIssueComments: async (_repo, num) => {
@@ -1069,7 +1074,7 @@ describe("CopilotPoller", () => {
     });
 
     test("done-phase issue items are not polled", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
       const fetched: number[] = [];
       const { poller } = makePoller({
         fetchIssueComments: async (_repo, num) => {
@@ -1088,7 +1093,7 @@ describe("CopilotPoller", () => {
 
   describe("copilot state cleanup", () => {
     test("merged PR state row is deleted on next poll", async () => {
-      workItemDb.createWorkItem({ id: "wi:1", prNumber: 42, prState: "merged" });
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "merged" });
       stateDb.updateSeenCommentIds(42, [1001, 1002, 1003]);
       stateDb.updateSeenReviewIds(42, [5001]);
 
@@ -1100,7 +1105,7 @@ describe("CopilotPoller", () => {
     });
 
     test("closed PR state row is deleted on next poll", async () => {
-      workItemDb.createWorkItem({ id: "wi:2", prNumber: 55, prState: "closed" });
+      seed.createWorkItem({ id: "wi:2", prNumber: 55, prState: "closed" });
       stateDb.updateSeenCommentIds(55, [2001]);
 
       const { poller } = makePoller();
@@ -1110,7 +1115,7 @@ describe("CopilotPoller", () => {
     });
 
     test("done-phase PR state row is deleted on next poll", async () => {
-      workItemDb.createWorkItem({ id: "wi:done-pr", prNumber: 88, prState: "open", phase: "done" });
+      seed.createWorkItem({ id: "wi:done-pr", prNumber: 88, prState: "open", phase: "done" });
       stateDb.updateSeenCommentIds(88, [4001]);
 
       const { poller } = makePoller();
@@ -1120,7 +1125,7 @@ describe("CopilotPoller", () => {
     });
 
     test("open PR state is preserved (dedup still works)", async () => {
-      workItemDb.createWorkItem({ id: "wi:3", prNumber: 77, prState: "open" });
+      seed.createWorkItem({ id: "wi:3", prNumber: 77, prState: "open" });
       stateDb.updateSeenCommentIds(77, [3001]);
 
       const { poller } = makePoller({
@@ -1135,7 +1140,7 @@ describe("CopilotPoller", () => {
     });
 
     test("done-phase issue state is deleted on next poll", async () => {
-      workItemDb.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
+      seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
       stateDb.updateSeenIssueCommentIds(99, [8001, 8002]);
 
       const { poller } = makePoller();
@@ -1145,7 +1150,7 @@ describe("CopilotPoller", () => {
     });
 
     test("active issue state is preserved", async () => {
-      workItemDb.createWorkItem({ id: "#50", issueNumber: 50, prNumber: null, prState: null, phase: "impl" });
+      seed.createWorkItem({ id: "#50", issueNumber: 50, prNumber: null, prState: null, phase: "impl" });
       stateDb.updateSeenIssueCommentIds(50, [9001]);
 
       const { poller } = makePoller({
