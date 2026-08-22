@@ -378,7 +378,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(result.totalCopied).toBe(0);
     // The marker must NOT be sealed over a failed import.
     expect(markerOf(ws.legacyPath)).toBeNull();
-    expect(logs.some((l) => l.includes("ROLLED BACK"))).toBe(true);
+    expect(logs.some((l) => l.includes("ROLLED BACK — nothing was imported."))).toBe(true);
   });
 
   test("B2: a failed import retries on the next start instead of being sealed forever", () => {
@@ -894,5 +894,228 @@ describe("legacy handle contention (#3034 review Y7)", () => {
     legacy.exec("PRAGMA busy_timeout = 3000");
     expect(legacy.query<{ timeout: number }, []>("PRAGMA busy_timeout").get()?.timeout).toBe(3000);
     legacy.close();
+  });
+});
+
+describe("cleanup cannot poison the shared connection (#3143 stacked-PR review)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function ws() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-detach-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db") };
+  }
+
+  test("the handle is left usable and out of a transaction after a FAILED import", () => {
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = freshTargetDb(w.targetPath);
+    open.push(state);
+    state.database.run("DROP TABLE notes"); // force the rollback path
+
+    importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: join(w.dir, "scopes"),
+      log: () => {},
+    });
+
+    // DETACH while a transaction is open SUCCEEDS silently on bun's SQLite, so the
+    // failure mode is a shared handle stuck mid-transaction rather than a thrown error.
+    expect(state.database.inTransaction).toBe(false);
+    // The daemon's only connection must still work, and `legacy` must be released.
+    expect(() => state.setState("after", "ok")).not.toThrow();
+    expect(state.getState("after")).toBe("ok");
+    expect(() => state.database.run("ATTACH DATABASE ? AS legacy", [w.legacyPath])).not.toThrow();
+    state.database.run("DETACH DATABASE legacy");
+  });
+
+  test("the handle is left usable and out of a transaction after a SUCCESSFUL import", () => {
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = freshTargetDb(w.targetPath);
+    open.push(state);
+
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: join(w.dir, "scopes"),
+      log: () => {},
+    });
+    expect(result.sealed).toBe(true);
+    expect(state.database.inTransaction).toBe(false);
+    expect(() => state.database.run("ATTACH DATABASE ? AS legacy", [w.legacyPath])).not.toThrow();
+    state.database.run("DETACH DATABASE legacy");
+  });
+});
+
+describe("every write is inside the transaction boundary (#3143 enumeration)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  /** Full content fingerprint of a database: every table and its row count. */
+  function fingerprint(path: string): Record<string, number> {
+    const db = new Database(path, { readonly: true });
+    const out: Record<string, number> = {};
+    for (const t of db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+      .all()) {
+      out[t.name] = db.query<{ n: number }, []>(`SELECT count(*) AS n FROM "${t.name}"`).get()?.n ?? 0;
+    }
+    db.close();
+    return out;
+  }
+
+  test("a failed import leaves BOTH databases exactly as it found them", () => {
+    // This is the enumeration expressed as a property rather than a list. Every mutating
+    // statement in the import — domains, the 17 table copies, the derived cursor, the
+    // marker and its row count (both in the LEGACY db), and the writability probe's
+    // temp table — must be undone or never have landed. A future write added outside the
+    // BEGIN fails here without anyone remembering to extend a list.
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-boundary-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    const targetPath = join(dir, "mcx.db");
+    const scopesDir = join(dir, "scopes");
+    writeLegacyDb(legacyPath);
+    mkdirSync(scopesDir, { recursive: true });
+    writeFileSync(join(scopesDir, "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+
+    const state = freshTargetDb(targetPath);
+    open.push(state);
+    state.database.run("DROP TABLE notes"); // one table fails => the whole import rolls back
+
+    const legacyBefore = fingerprint(legacyPath);
+    const targetBefore = fingerprint(targetPath);
+
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath,
+      targetPath,
+      scopesDir,
+      log: () => {},
+    });
+
+    expect(result.sealed).toBe(false);
+    expect(result.failedTables).toContain("notes");
+    // The legacy database must be untouched — no marker, no row count, no probe table.
+    expect(fingerprint(legacyPath)).toEqual(legacyBefore);
+    // ...and the target must hold nothing: no copied rows, no domains, no cursor.
+    expect(fingerprint(targetPath)).toEqual(targetBefore);
+  });
+
+  test("a successful import writes the marker AND the row count, both in the legacy db", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-boundary2-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    const targetPath = join(dir, "mcx.db");
+    writeLegacyDb(legacyPath);
+    const state = freshTargetDb(targetPath);
+    open.push(state);
+
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath,
+      targetPath,
+      scopesDir: join(dir, "scopes"),
+      log: () => {},
+    });
+    expect(result.sealed).toBe(true);
+
+    const legacy = new Database(legacyPath, { readonly: true });
+    const keys = legacy
+      .query<{ key: string }, []>("SELECT key FROM daemon_state WHERE key LIKE 'mcx_domain_import%' ORDER BY key")
+      .all()
+      .map((r) => r.key);
+    // No leftover probe table on the success path either.
+    const probe = legacy
+      .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE name = 'mcx_import_write_probe'")
+      .get()?.n;
+    legacy.close();
+
+    expect(keys).toEqual([IMPORT_MARKER_KEY, "mcx_domain_import_rows"]);
+    expect(probe).toBe(0);
+  });
+});
+
+describe("clampDerivedCursor bounds on the LEGACY range (#3143 stacked-PR blocker)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  test("live events above the imported range are NOT skipped", () => {
+    // The two maxima must differ or the test cannot fail: legacy holds seq 1-5, the
+    // target already holds seq 100-190. Reading main. parks the cursor at 190 and
+    // permanently skips 90 live events; reading legacy. parks it at 5, which is exactly
+    // the imported history and nothing more.
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-clamp-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    const targetPath = join(dir, "mcx.db");
+
+    const legacy = new Database(legacyPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE monitor_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, src TEXT NOT NULL, event TEXT NOT NULL,
+        category TEXT NOT NULL, work_item_id TEXT, session_id TEXT, pr_number INTEGER, payload TEXT NOT NULL
+      );
+    `);
+    for (let i = 1; i <= 5; i++) {
+      legacy.run(
+        "INSERT INTO monitor_events (seq, ts, src, event, category, payload) VALUES (?, ?, 'legacy', 'e', 'server', '{}')",
+        [i, `2026-01-0${i}T00:00:00.000Z`],
+      );
+    }
+    legacy.close();
+
+    const state = freshTargetDb(targetPath);
+    open.push(state);
+    // Live events already in the target, in a disjoint, higher seq range.
+    for (let i = 100; i <= 190; i++) {
+      state.database.run(
+        "INSERT INTO monitor_events (seq, ts, src, event, category, payload) VALUES (?, ?, 'live', 'e', 'server', '{}')",
+        [i, "2026-02-01T00:00:00.000Z"],
+      );
+    }
+
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath,
+      targetPath,
+      scopesDir: join(dir, "scopes"),
+      log: () => {},
+    });
+    expect(result.failedTables).toEqual([]);
+
+    const cursor = state.database
+      .query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor WHERE id = 'derived_publisher'")
+      .get();
+    expect(cursor?.last_seq).toBe(5);
+    // Sanity: the two maxima really are distinguishable, so this test can fail.
+    expect(state.database.query<{ m: number }, []>("SELECT MAX(seq) AS m FROM monitor_events").get()?.m).toBe(190);
   });
 });

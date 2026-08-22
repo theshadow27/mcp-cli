@@ -226,7 +226,13 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
     log(`[domain-import] import failed: ${errText(err)}`);
     return declined(`import failed: ${errText(err)}`);
   } finally {
-    legacy.close();
+    // Same hazard as the DETACH below: a throw in a `finally` replaces whatever the try
+    // block returned, so a cleanup failure would erase the real result on the way out.
+    try {
+      legacy.close();
+    } catch (err) {
+      log(`[domain-import] could not close the legacy database handle: ${errText(err)}`);
+    }
   }
 }
 
@@ -288,15 +294,15 @@ function copyEverything(
       const result = summarize(tables, failedTables, domains);
 
       if (aborted !== null || !target.inTransaction) {
-        safeRollback(target);
-        log(`[domain-import] ${aborted ?? "the transaction is no longer active"} — nothing was imported`);
+        const undone = safeRollback(target);
+        log(`[domain-import] ${aborted ?? "the transaction is no longer active"} — ${undoneNote(undone)}`);
         return { ...result, ran: false, sealed: false, reason: aborted ?? "transaction aborted" };
       }
 
       if (failedTables.length > 0) {
-        safeRollback(target);
+        const undone = safeRollback(target);
         log(
-          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ROLLED BACK — nothing was imported and the legacy database is unmarked, so the import will be retried on the next start.`,
+          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} The legacy database is unmarked, so the import will be retried on the next start.`,
         );
         return result;
       }
@@ -315,13 +321,13 @@ function copyEverything(
       // Roll back in its own try so a rollback failure cannot replace the real error —
       // an aborted transaction makes ROLLBACK itself throw "no transaction is active",
       // which is how a disk-full error got reported as a rollback error.
-      safeRollback(target);
+      const undone = safeRollback(target);
       // Return what actually happened rather than rethrowing into declined()'s zeros:
       // `ran:false, totalCopied:0` for a run that copied and rolled back 17 tables is
       // the same false report this whole finding is about. The caller must be able to
       // tell a failure from an empty import.
       const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
-      log(`[domain-import] import failed and was rolled back: ${errText(err)}`);
+      log(`[domain-import] import failed: ${errText(err)} — ${undoneNote(undone)}`);
       return {
         ...summarize(tables, failedTables, domains),
         ran: false,
@@ -330,7 +336,34 @@ function copyEverything(
       };
     }
   } finally {
+    detachLegacy(target, log);
+  }
+}
+
+/**
+ * Close out the ATTACH without letting cleanup damage the caller.
+ *
+ * Two hazards, and the measured behaviour is not the obvious one. `DETACH` while a
+ * transaction is still open does **not** throw on bun's SQLite — it silently succeeds and
+ * leaves the shared handle mid-transaction, so every later query on the daemon's only
+ * connection runs inside a transaction nobody knows is open. That is worse than a throw,
+ * because nothing surfaces. So: force the transaction closed first, then detach, and
+ * swallow only the detach's own error so it can never replace the real one on the way out
+ * of a `finally`.
+ *
+ * Reachable at startup today; #3160's `mcx domain import --force` makes it reachable at
+ * runtime on a daemon holding live sessions, and this repair makes rollback the routine
+ * failure path rather than an exotic one.
+ */
+function detachLegacy(target: Database, log: (msg: string) => void): void {
+  if (target.inTransaction) {
+    log("[domain-import] transaction still open at detach — rolling back before releasing the legacy database");
+    safeRollback(target);
+  }
+  try {
     target.run("DETACH DATABASE legacy");
+  } catch (err) {
+    log(`[domain-import] could not detach the legacy database: ${errText(err)}`);
   }
 }
 
@@ -358,6 +391,16 @@ function logUnimportedLegacyTables(target: Database, log: (msg: string) => void)
   }
 }
 
+/**
+ * "sealed:false means nothing landed" is the invariant. On the rare path where the
+ * rollback itself did not take, say so at maximum volume rather than repeating the claim.
+ */
+function undoneNote(undone: boolean): string {
+  return undone
+    ? "ROLLED BACK — nothing was imported."
+    : "WARNING: the ROLLBACK did not take and a transaction is still open — the target database may hold partial data. Stop the daemon and inspect it before continuing.";
+}
+
 function summarize(
   tables: TableImportResult[],
   failedTables: string[],
@@ -375,12 +418,22 @@ function summarize(
   };
 }
 
-function safeRollback(db: Database): void {
+/**
+ * Roll back, and report whether the transaction is actually closed afterwards.
+ *
+ * Returns a boolean rather than swallowing, because every caller uses it to justify the
+ * claim "nothing was imported" — and a rollback that silently failed would make
+ * `sealed:false` mean the one thing this whole repair exists to rule out. A ROLLBACK that
+ * throws because SQLite already aborted the transaction is success (nothing is left to
+ * undo); a transaction still open afterwards is not.
+ */
+function safeRollback(db: Database): boolean {
   try {
     if (db.inTransaction) db.run("ROLLBACK");
   } catch {
-    // Already aborted by SQLite — there is nothing left to undo.
+    // Typically "no transaction is active" — SQLite already aborted it for us.
   }
+  return !db.inTransaction;
 }
 
 /**
@@ -437,12 +490,19 @@ function importedDataMissing(target: Database, expected: number | null): boolean
 }
 
 function clampDerivedCursor(target: Database, log: (msg: string) => void): void {
+  // Read the LEGACY side, not main. This runs inside the ATTACH and after the copies, so
+  // `main.monitor_events` holds the imported rows PLUS anything the target already had —
+  // and parking the cursor at that maximum permanently skips live events that were never
+  // processed. The events this clamp exists to suppress are exactly the imported ones, so
+  // the bound is the legacy maximum. On a virgin target the two are equal, which is why
+  // the startup path is unaffected either way.
+  //
   // Tolerant: if monitor_events or derived_cursor is absent there is nothing to replay,
   // and copyTable has already flagged the missing table as `failed` so the marker is
   // withheld regardless. This must not abort the other sixteen copies.
   try {
     const row = target
-      .query<{ max_seq: number | null }, []>("SELECT MAX(seq) AS max_seq FROM main.monitor_events")
+      .query<{ max_seq: number | null }, []>("SELECT MAX(seq) AS max_seq FROM legacy.monitor_events")
       .get();
     const maxSeq = row?.max_seq ?? null;
     if (maxSeq === null || maxSeq <= 0) return;
