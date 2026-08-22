@@ -100,7 +100,10 @@ inner work, do not register the inner one.
 
 The asymmetry is worth knowing about precisely because it reads like a bug from the
 outside — it is the one place where "which domain owns this path?" and "which sessions
-are in this domain?" do not compose.
+are in this domain?" do not compose. Concretely: `mcx domain which ~/github/mcp-cli`
+answers `mcp-cli` by walking **up** to the innermost match, while `mcx claude ls -d
+github` compares a stored id and does **not** walk **down**. Both are correct; they are
+answering different questions, and only one of them is a partition.
 
 ## `mcx machine` — deferred
 
