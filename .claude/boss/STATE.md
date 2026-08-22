@@ -69,10 +69,12 @@ I did that on #3063 and #3116 landed mid-review.
 
 ## Open operational items
 
-- **DAEMON RELOAD PENDING.** #3116 (containment on stdio) is merged but **not live** — the
-  running daemon predates it. Until `bun run build && mcx daemon reload`, **every worker runs
-  unsandboxed**. `reload` refuses to orphan live sessions, so it needs a drain window. Alice
-  will report zero active workers. **Caveat: `restoreSessions()` does not persist permission
+- **DAEMON RELOAD PENDING — deferred to the sprint-78 boundary.** #3116 (containment on
+  stdio) is merged but **not live**; the running daemon predates it, so **every worker runs
+  unsandboxed** until `bun run build && mcx daemon reload`. `reload` refuses to orphan *any*
+  live session, and sprint 78 has ~8 with hours to run — so this waits for sprint 78 to drain,
+  not sprint 77. Corrected 2026-08-22: I had told Alice to signal at zero workers, which was
+  wrong; a per-sprint drain is not a daemon-wide drain. **Caveat: `restoreSessions()` does not persist permission
   strategy**, so sessions restored after a restart come back as `auto`/blanket-allow — reload
   at true zero.
 - **#3034 not yet pushed.** Committed locally as `7e5708f4` in
