@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -715,6 +717,80 @@ describe("import hardening: a bad record must never wedge or double the store", 
     expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
   });
 
+  // ── the post-COMMIT park window ──────────────────────────────────────
+
+  /**
+   * Both tests below drive the same real window. `withDbTx` parks each staging
+   * file *after* `commitWithRetry` returns, so process A holds no write lock
+   * while its `.importing.<nonce>` path is still on disk. Process B can take
+   * the lock, list the directory, see A's path, and have it vanish underneath.
+   *
+   * The timing is forced rather than raced: the corrupt-line sink fires from
+   * inside the import loop, which is exactly where B stands, and the hook does
+   * the same `link(2)` + `unlink(2)` park that A would.
+   */
+  const stagingPath = (nonce: string) => join(dir, `transitions.jsonl.importing.9999999999999-${nonce}`);
+
+  test("a staging file parked by its owner mid-scan is skipped, not treated as unimportable", () => {
+    // ENOENT is not a busy error, so the vanished path was routed to
+    // quarantineStagingFile, whose link(2) threw ENOENT in turn — uncaught, out
+    // through the rollback, and out of withDbTx. That failed reads as well as
+    // writes: openForRead escalates to a write transaction whenever it sees a
+    // staging file and only swallows contention.
+    appendTransitionLog(log, { ts: "t1", workItemId: "#7", from: null, to: "impl", status: "committed" });
+
+    // Sorts first, so it is imported first and its corrupt line is our hook.
+    const ours = stagingPath("aaaa0001");
+    const owners = stagingPath("bbbb0002");
+    writeFileSync(ours, valid("t2", "triage", "impl") + jsonlLine({ foo: 1 }), "utf-8");
+    // The owner's file holds only what the owner already committed above —
+    // which is the state the real race is in by the time the park runs.
+    writeFileSync(owners, valid("t1", "impl"), "utf-8");
+
+    let parks = 0;
+    const onCorrupt = () => {
+      if (parks++ > 0) return;
+      linkSync(owners, `${log}.migrated.9999999999999-bbbb0002`);
+      unlinkSync(owners);
+    };
+
+    expect(readAllTransitions(log, { onCorrupt }).map((e) => e.ts)).toEqual(["t1", "t2"]);
+    expect(parks).toBe(1);
+
+    // Nothing was quarantined, nothing is left to replay, and the store still
+    // takes reads and writes.
+    expect(readdirSync(dir).some((n) => n.includes(".unimportable"))).toBe(false);
+    expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
+    appendTransitionLog(log, { ts: "t3", workItemId: "#7", from: "triage", to: "review", status: "committed" });
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage", "review"]);
+  });
+
+  test("a genuine import failure on a path its owner parked still reports the real error", () => {
+    // The other half of the same window: B reads the file *before* A parks it,
+    // then the import fails for an unrelated, non-contention reason, and by the
+    // time B quarantines the path it is gone. quarantineStagingFile's link(2)
+    // threw ENOENT and masked the actual failure with a spurious filesystem
+    // error, which is strictly worse than the one error the quarantine exists
+    // to cost. A caller-supplied corrupt-line sink that throws is the smallest
+    // faithful stand-in for "any unexpected failure during import".
+    const staging = stagingPath("aaaa0001");
+    writeFileSync(staging, valid("t1", "impl") + jsonlLine({ foo: 1 }), "utf-8");
+
+    const onCorrupt = () => {
+      linkSync(staging, `${log}.migrated.9999999999999-aaaa0001`);
+      unlinkSync(staging);
+      throw new Error("sink blew up");
+    };
+
+    expect(() => readAllTransitions(log, { onCorrupt })).toThrow("sink blew up");
+
+    // And it self-heals rather than replaying: the path is gone, so the next
+    // open has nothing to reclaim.
+    expect(readdirSync(dir).some((n) => n.includes(".importing."))).toBe(false);
+    appendTransitionLog(log, { ts: "t2", workItemId: "#7", from: null, to: "impl", status: "committed" });
+    expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl"]);
+  });
+
   // ── 🔴2: content-addressed dedupe ────────────────────────────────────
 
   test("restoring the parked .migrated file does not double the history", () => {
@@ -734,14 +810,21 @@ describe("import hardening: a bad record must never wedge or double the store", 
     expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage", "review"]);
   });
 
-  test("a mixed-binary rollout that regenerates the jsonl does not duplicate entries", () => {
-    // Guaranteed trigger: an old jsonl-era binary finds no transitions.jsonl
-    // (renamed away), validates against an EMPTY history, and writes a fresh
-    // file; the new binary then imports it under a new nonce with no dedupe.
+  // Deliberately NOT a test of the mixed-binary rollout, despite looking like
+  // one. An old jsonl-era binary that regenerates the file validates against an
+  // EMPTY history, so the transition it writes carries a *new* ts — and a new
+  // row is imported verbatim, by design, out of order and ungated. Neither
+  // dedupe layer addresses that; it is a gap in the migration strategy, tracked
+  // in #2980. What this proves is only the row-dedupe layer.
+  test("a re-derived entry the store already holds is skipped at row level, not re-imported", () => {
+    // The content hash cannot catch this one: the second file's bytes are a
+    // strict prefix of the first's, so it hashes differently and reaches
+    // insertImportedEntries, where the row check is what keeps t1 single.
     writeFileSync(log, valid("t1", "impl") + valid("t2", "triage", "impl"), "utf-8");
     expect(readAllTransitions(log)).toHaveLength(2);
 
-    // The old binary re-derives the same first transition from scratch.
+    // A byte-identical re-derivation of the first transition — same ts, so the
+    // row key matches.
     writeFileSync(log, valid("t1", "impl"), "utf-8");
 
     expect(historyTargets(readTransitionHistory(log, "#7"))).toEqual(["impl", "triage"]);

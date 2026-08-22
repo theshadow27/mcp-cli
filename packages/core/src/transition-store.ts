@@ -423,8 +423,15 @@ interface StagedImport {
  *
  * A content key makes a byte-identical restore a no-op. `insertImportedEntries`
  * then dedupes at row level, which covers the case a content key cannot: a file
- * that is *partly* new, such as the regenerated jsonl above. Both are needed —
- * the hash is the cheap exact-match path, the row check is the correct one.
+ * whose bytes differ but whose *entries* were already imported — a truncated or
+ * re-serialised copy of history the store has already seen. Both are needed —
+ * the hash is the cheap exact-match path, the row check is the broader one.
+ *
+ * Neither covers the mixed-binary rollout above once the old binary appends a
+ * transition the store has never seen: that row is genuinely new, so it is
+ * imported verbatim, out of order and validated against an empty history. That
+ * is a gap in the migration strategy rather than in the dedupe, and is tracked
+ * separately in #2980.
  *
  * Exactly-once across a crash still holds: the `imported_content` row is written
  * in the same transaction as the entries, so a crash before COMMIT rolls the
@@ -432,9 +439,31 @@ interface StagedImport {
  * after COMMIT but before the park leaves the row behind, so the retry inserts
  * nothing and only parks the file. The data is never in neither place, and never
  * in both.
+ *
+ * Returns null when the staging path has already vanished — see below.
  */
-function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLine): ImportResult {
-  const bytes = readFileSync(staging);
+function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLine): ImportResult | null {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(staging);
+  } catch (err) {
+    // ENOENT: the process that claimed this path committed its import and then
+    // parked the file, in the gap between our directory scan and this read.
+    // That gap is real — the park happens *after* COMMIT, so the owner no
+    // longer holds the write lock while it runs — and the file's entries are
+    // already in the DB by the time the name disappears. Same reasoning as
+    // `parkStagingFile`'s ENOENT branch: the owner has handled it, and there is
+    // nothing here to import or to park.
+    //
+    // This must not fall through to the caller's quarantine, either: ENOENT is
+    // not a busy error, so `claim` would route a vanished path to
+    // `quarantineStagingFile`, whose `link(2)` throws ENOENT in turn — out
+    // through the rollback and out of `withDbTx`, failing not just this write
+    // but every *read*, since `openForRead` drives a write transaction whenever
+    // it sees a staging file and only swallows contention.
+    if (errnoCode(err) === "ENOENT") return null;
+    throw err;
+  }
   const contentHash = createHash("sha256").update(bytes).digest("hex");
   const already = db
     .query<{ content_hash: string }, [string]>("SELECT content_hash FROM imported_content WHERE content_hash = ?")
@@ -507,8 +536,12 @@ function parkStagingFile(staging: string, logPath: string): string | null {
  * a regular file (which is one of the ways import fails in the first place) falls
  * back to `rename`. That fallback can only ever replace a nonce'd name minted a
  * moment earlier, and one that by definition holds no importable log data.
+ *
+ * Returns null when the staging path is already gone — there is nothing left to
+ * move aside, and throwing here would turn a benign race into the permanent
+ * denial of service this function exists to prevent.
  */
-function quarantineStagingFile(staging: string, logPath: string): string {
+function quarantineStagingFile(staging: string, logPath: string): string | null {
   for (;;) {
     // Built from `logPath`, NOT from `staging`: appending to the staging name
     // would leave the result still prefixed with `IMPORTING_SUFFIX`, so
@@ -520,6 +553,10 @@ function quarantineStagingFile(staging: string, logPath: string): string {
     } catch (err) {
       const code = errnoCode(err);
       if (code === "EEXIST") continue;
+      // ENOENT: the owner of this claim parked it while we were deciding to
+      // quarantine it. Nothing to move aside — and the import it held has
+      // already committed.
+      if (code === "ENOENT") return null;
       if (code === "EPERM" || code === "EISDIR" || code === "EXDEV" || code === "ENOTSUP") {
         renameSync(staging, dest);
         return dest;
@@ -570,11 +607,17 @@ function findAbandonedStagingFiles(logPath: string): string[] {
 function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptLine): StagedImport[] {
   const staged: StagedImport[] = [];
 
-  // Every staging file seen here is genuinely abandoned: this runs under the
-  // write lock, and a live import holds that lock for its whole duration.
+  // Nearly every staging file seen here is genuinely abandoned: this runs under
+  // the write lock, and a live import holds that lock for all of its *database*
+  // work. The one exception is the tail of another process's claim — it parks
+  // the file after COMMIT, so between that COMMIT and that park the lock is
+  // free and the staging path is still on disk. `importStagingFile` returns
+  // null for a path that vanishes in exactly that window; there is nothing to
+  // import (its entries are committed) and nothing to park.
   const claim = (staging: string): void => {
     try {
-      staged.push({ path: staging, result: importStagingFile(db, staging, onCorrupt) });
+      const result = importStagingFile(db, staging, onCorrupt);
+      if (result !== null) staged.push({ path: staging, result });
     } catch (err) {
       // Contention is not the file's fault — leave it in place to be replayed
       // once the lock is free. Anything else is quarantined so it cannot deny
