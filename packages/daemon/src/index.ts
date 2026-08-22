@@ -77,9 +77,10 @@ import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
+import { importLegacyState } from "./db/import-legacy";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
-import { DerivedEventPublisher } from "./derived-events";
+import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
@@ -503,6 +504,26 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Open SQLite database
   const db = new StateDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
+
+  // One-shot best-effort import from the pre-domain state.db (#3034). Runs before
+  // anything else reads mcx.db so reapers and sweeps below see the imported rows.
+  // The other schema consumers migrate first: their tables have to exist to be
+  // imported into, and both are constructed again later (migrations are idempotent).
+  new WorkItemDb(db.getDatabase());
+  new EventLog(db.getDatabase());
+  migrateDerivedCursor(db.getDatabase());
+  // The import logs its own diagnostics — including the loud warning for "marker set but
+  // mcx.db is empty", which is the one decline that means the daemon is booting without
+  // the user's data. Route its sink at warn so that message cannot be swallowed by a log
+  // level, and only whisper about the ordinary "nothing to import" case.
+  const importResult = importLegacyState({ db: db.getDatabase(), log: (msg) => logger.warn(msg) });
+  if (importResult.ran && !importResult.sealed) {
+    logger.warn(
+      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will retry on the next start`,
+    );
+  } else if (!importResult.ran) {
+    logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
+  }
 
   // Clean up DB records for sessions whose processes are dead.
   // Alive processes are preserved for restoreActiveSessions() to pick up.

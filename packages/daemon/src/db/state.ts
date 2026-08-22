@@ -13,14 +13,21 @@ import { resolve } from "node:path";
 import {
   type AliasType,
   type BudgetConfig,
+  type Domain,
   type MailMessage,
   type MonitorAliasMetadata,
+  NO_DOMAIN_ID,
   type Span,
   type SpanRow,
   type ToolInfo,
   type UsageStat,
+  canonicalizeDomainPath,
   hardenFile,
+  isValidDomainHost,
+  isValidDomainName,
+  listPartitionedTables,
   options,
+  resolveDomainForPath,
   resolveRealpath,
 } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -64,8 +71,11 @@ export class StateDb {
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
     hardenFile(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
+    // busy_timeout FIRST: `journal_mode = WAL` itself takes a lock, so setting the
+    // timeout after it leaves a concurrent open able to die with SQLITE_BUSY inside the
+    // constructor. The daemon's flock covers the daemon, not tests or a direct opener.
     this.db.exec("PRAGMA busy_timeout = 3000");
+    this.db.exec("PRAGMA journal_mode = WAL");
     this.migrate();
   }
 
@@ -135,6 +145,7 @@ export class StateDb {
             ["repo_root", "TEXT"],
             ["pid_start_time", "INTEGER"],
             ["name", "TEXT"],
+            ["domain_id", "INTEGER NOT NULL DEFAULT 0"],
           ] as const) {
             if (!cols.has(col)) {
               this.db.exec(`ALTER TABLE agent_sessions ADD COLUMN ${col} ${def}`);
@@ -315,8 +326,39 @@ export class StateDb {
     }
   }
 
+  /**
+   * The v1 schema.
+   *
+   * **Do not add columns or tables to this method, or to any historical `if (version < N)`
+   * branch, in a later PR.** #3034 could write `domain_id` directly into these because
+   * `mcx.db` did not exist yet, so every database was fresh. From PR 2 of this arc
+   * onwards that is no longer true: an edit here silently no-ops on every already-created
+   * `mcx.db`, because `CREATE TABLE IF NOT EXISTS` finds the old shape and keeps it.
+   * New columns get a new `if (version < N)` step with `addColumnIfMissing`.
+   */
   private applyV1Schema(): void {
     this.db.exec(`
+      -- Domains: mcx's DNS. A name bound to a location, and nothing else (#3034).
+      -- No state column, deliberately: a domain can resolve while its machine is down,
+      -- and a machine can be up while its loop is off. See docs/domains.md.
+      -- AUTOINCREMENT, not bare INTEGER PRIMARY KEY: without it SQLite reuses the rowid
+      -- of a deleted domain, and any row still carrying that domain_id is silently
+      -- adopted by the next domain created — a new project inheriting a dead one's work
+      -- items, mail and PR watermarks (#3034 review B6).
+      CREATE TABLE IF NOT EXISTS domains (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        host       TEXT,
+        path       TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+
+      -- One domain per location. COALESCE because SQLite treats NULLs as distinct in a
+      -- UNIQUE index, which would let two local domains share a path and make
+      -- resolveDomainForPath's longest-prefix rule ambiguous.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_location
+        ON domains(COALESCE(host, ''), path);
+
       CREATE TABLE IF NOT EXISTS tool_cache (
         server_name TEXT NOT NULL,
         tool_name TEXT NOT NULL,
@@ -380,8 +422,14 @@ export class StateDb {
         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
+      -- Partitioned by domain, PK included (#3034 review B5). Phases are stored as
+      -- aliases, so every mcx project has impl/qa/review — a bare "name TEXT PRIMARY KEY"
+      -- means the second domain to run "mcx phase install" overwrites the first domain's
+      -- bundled_js. domain_id must be in the KEY, not merely in a column and a
+      -- non-unique index.
       CREATE TABLE IF NOT EXISTS aliases (
-        name TEXT PRIMARY KEY,
+        domain_id INTEGER NOT NULL DEFAULT 0,
+        name TEXT NOT NULL,
         description TEXT,
         file_path TEXT NOT NULL,
         alias_type TEXT NOT NULL DEFAULT 'freeform',
@@ -395,7 +443,8 @@ export class StateDb {
         scope TEXT,
         monitor_definitions_json TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (domain_id, name)
       );
 
       CREATE TABLE IF NOT EXISTS server_logs (
@@ -416,11 +465,16 @@ export class StateDb {
         body TEXT,
         reply_to INTEGER REFERENCES mail(id),
         read INTEGER NOT NULL DEFAULT 0,
+        domain_id INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
+
+      -- No domain index on mail yet, for the same reason event-log.ts declines one on
+      -- monitor_events: insertMail has no domainId parameter until #3038, so every row
+      -- is 0 and the index is write amplification for something nothing can use.
 
       CREATE TABLE IF NOT EXISTS notes (
         server_name TEXT NOT NULL,
@@ -430,13 +484,16 @@ export class StateDb {
         PRIMARY KEY (server_name, tool_name)
       );
 
+      -- alias_state's (repo_root, namespace, key) is the precedent domain_id generalizes:
+      -- it was already a per-project partition, just keyed by a path instead of a domain.
       CREATE TABLE IF NOT EXISTS alias_state (
+        domain_id INTEGER NOT NULL DEFAULT 0,
         repo_root TEXT NOT NULL,
         namespace TEXT NOT NULL,
         key TEXT NOT NULL,
         value_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (repo_root, namespace, key)
+        PRIMARY KEY (domain_id, repo_root, namespace, key)
       );
 
       CREATE TABLE IF NOT EXISTS session_metrics (
@@ -460,8 +517,12 @@ export class StateDb {
         total_tokens INTEGER NOT NULL DEFAULT 0,
         spawned_at   TEXT NOT NULL DEFAULT (datetime('now')),
         ended_at     TEXT,
-        transport    TEXT
+        transport    TEXT,
+        domain_id    INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_sessions_domain
+        ON agent_sessions(domain_id, spawned_at DESC);
 
       CREATE TABLE IF NOT EXISTS spans (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -485,15 +546,20 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_spans_exported ON spans(exported_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_spans_daemon ON spans(daemon_id);
 
+      -- Same isolation bug as work_items: pr_number was globally unique, so two
+      -- projects could not both have a PR #42. Keyed per domain now (#3034).
+      -- pr_number = 0 is the per-domain repo-level poll watermark sentinel.
       CREATE TABLE IF NOT EXISTS copilot_comment_state (
-        pr_number              INTEGER PRIMARY KEY,
+        domain_id              INTEGER NOT NULL DEFAULT 0,
+        pr_number              INTEGER NOT NULL,
         seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
         seen_review_ids        TEXT NOT NULL DEFAULT '[]',
         seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
         seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
         last_sticky_body_hash  TEXT,
         last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now')),
-        repo_poll_ts           TEXT
+        repo_poll_ts           TEXT,
+        PRIMARY KEY (domain_id, pr_number)
       );
     `);
   }
@@ -838,7 +904,7 @@ export class StateDb {
 
   // -- Aliases --
 
-  listAliases(): Array<{
+  listAliases(domainId: number = NO_DOMAIN_ID): Array<{
     name: string;
     description: string;
     filePath: string;
@@ -869,11 +935,11 @@ export class StateDb {
           scope: string | null;
           monitor_definitions_json: string | null;
         },
-        [number]
+        [number, number]
       >(
-        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE expires_at IS NULL OR expires_at > ? ORDER BY name",
+        "SELECT name, description, file_path, updated_at, alias_type, input_schema_json, output_schema_json, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE domain_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY name",
       )
-      .all(Date.now())
+      .all(domainId, Date.now())
       .map((row) => ({
         name: row.name,
         description: row.description ?? "",
@@ -893,7 +959,10 @@ export class StateDb {
       }));
   }
 
-  getAlias(name: string):
+  getAlias(
+    name: string,
+    domainId: number = NO_DOMAIN_ID,
+  ):
     | {
         name: string;
         description: string;
@@ -923,11 +992,11 @@ export class StateDb {
           scope: string | null;
           monitor_definitions_json: string | null;
         },
-        [string]
+        [number, string]
       >(
-        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE name = ?",
+        "SELECT name, description, file_path, alias_type, bundled_js, source_hash, expires_at, run_count, last_run_at, scope, monitor_definitions_json FROM aliases WHERE domain_id = ? AND name = ?",
       )
-      .get(name);
+      .get(domainId, name);
     if (!row) return undefined;
     return {
       name: row.name,
@@ -961,14 +1030,17 @@ export class StateDb {
     scopeProvided = true,
     monitorDefinitionsJson?: string,
     monitorDefsProvided = true,
+    domainId: number = NO_DOMAIN_ID,
   ): void {
     // If the caller is saving an ephemeral alias (expiresAt set), refuse to
     // overwrite an existing permanent alias (expires_at IS NULL). This prevents
     // auto-save hash collisions from clobbering user-curated aliases.
     if (expiresAt != null) {
       const existing = this.db
-        .query<{ expires_at: number | null }, [string]>("SELECT expires_at FROM aliases WHERE name = ?")
-        .get(name);
+        .query<{ expires_at: number | null }, [number, string]>(
+          "SELECT expires_at FROM aliases WHERE domain_id = ? AND name = ?",
+        )
+        .get(domainId, name);
       if (existing && existing.expires_at === null) {
         // Permanent alias exists — do not overwrite
         return;
@@ -976,9 +1048,9 @@ export class StateDb {
     }
 
     this.db.run(
-      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, scope, monitor_definitions_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-       ON CONFLICT(name) DO UPDATE SET
+      `INSERT INTO aliases (name, file_path, description, alias_type, input_schema_json, output_schema_json, bundled_js, source_hash, expires_at, scope, monitor_definitions_json, domain_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?14, unixepoch(), unixepoch())
+       ON CONFLICT(domain_id, name) DO UPDATE SET
          file_path = excluded.file_path,
          description = excluded.description,
          alias_type = excluded.alias_type,
@@ -1004,29 +1076,30 @@ export class StateDb {
         monitorDefinitionsJson ?? null, // ?11 — monitor_definitions_json value
         scopeProvided ? 1 : 0, // ?12 — scopeProvided flag for CASE WHEN
         monitorDefsProvided ? 1 : 0, // ?13 — monitorDefsProvided flag for CASE WHEN
+        domainId, // ?14
       ],
     );
   }
 
-  deleteAlias(name: string): void {
-    this.db.run("DELETE FROM aliases WHERE name = ?", [name]);
+  deleteAlias(name: string, domainId: number = NO_DOMAIN_ID): void {
+    this.db.run("DELETE FROM aliases WHERE domain_id = ? AND name = ?", [domainId, name]);
   }
 
   /** Increment run_count and set last_run_at. Returns the new run count. */
-  recordAliasRun(name: string): number {
+  recordAliasRun(name: string, domainId: number = NO_DOMAIN_ID): number {
     const row = this.db
-      .query<{ run_count: number }, [string]>(
-        "UPDATE aliases SET run_count = run_count + 1, last_run_at = unixepoch() WHERE name = ? RETURNING run_count",
+      .query<{ run_count: number }, [number, string]>(
+        "UPDATE aliases SET run_count = run_count + 1, last_run_at = unixepoch() WHERE domain_id = ? AND name = ? RETURNING run_count",
       )
-      .get(name);
+      .get(domainId, name);
     return row?.run_count ?? 0;
   }
 
   /** Reset the TTL on an ephemeral alias (called when re-run). */
-  touchAliasExpiry(name: string, expiresAt: number): void {
+  touchAliasExpiry(name: string, expiresAt: number, domainId: number = NO_DOMAIN_ID): void {
     this.db.run(
-      "UPDATE aliases SET expires_at = ?, updated_at = unixepoch() WHERE name = ? AND expires_at IS NOT NULL",
-      [expiresAt, name],
+      "UPDATE aliases SET expires_at = ?, updated_at = unixepoch() WHERE domain_id = ? AND name = ? AND expires_at IS NOT NULL",
+      [expiresAt, domainId, name],
     );
   }
 
@@ -1674,17 +1747,23 @@ export class StateDb {
 
   // -- Alias state --
 
-  getAliasState(repoRoot: string, namespace: string, key: string): unknown {
+  getAliasState(repoRoot: string, namespace: string, key: string, domainId: number = NO_DOMAIN_ID): unknown {
     const row = this.db
-      .query<{ value_json: string }, [string, string, string]>(
-        "SELECT value_json FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?",
+      .query<{ value_json: string }, [number, string, string, string]>(
+        "SELECT value_json FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ? AND key = ?",
       )
-      .get(repoRoot, namespace, key);
+      .get(domainId, repoRoot, namespace, key);
     if (!row) return undefined;
     return safeParseStateValue(row.value_json, `${repoRoot}/${namespace}/${key}`);
   }
 
-  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void {
+  setAliasState(
+    repoRoot: string,
+    namespace: string,
+    key: string,
+    value: unknown,
+    domainId: number = NO_DOMAIN_ID,
+  ): void {
     // `undefined` would serialise to the string `"null"` and then readers
     // could not tell "set to null" from "never set" — reject it up front.
     if (value === undefined) {
@@ -1700,29 +1779,28 @@ export class StateDb {
       throw new Error(`alias state value exceeds max size of ${ALIAS_STATE_MAX_VALUE_BYTES} bytes`);
     }
     this.db.run(
-      `INSERT INTO alias_state (repo_root, namespace, key, value_json, updated_at)
-       VALUES (?, ?, ?, ?, unixepoch())
-       ON CONFLICT(repo_root, namespace, key) DO UPDATE SET
+      `INSERT INTO alias_state (domain_id, repo_root, namespace, key, value_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, unixepoch())
+       ON CONFLICT(domain_id, repo_root, namespace, key) DO UPDATE SET
          value_json = excluded.value_json, updated_at = excluded.updated_at`,
-      [repoRoot, namespace, key, json],
+      [domainId, repoRoot, namespace, key, json],
     );
   }
 
-  deleteAliasState(repoRoot: string, namespace: string, key: string): boolean {
-    const result = this.db.run("DELETE FROM alias_state WHERE repo_root = ? AND namespace = ? AND key = ?", [
-      repoRoot,
-      namespace,
-      key,
-    ]);
+  deleteAliasState(repoRoot: string, namespace: string, key: string, domainId: number = NO_DOMAIN_ID): boolean {
+    const result = this.db.run(
+      "DELETE FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ? AND key = ?",
+      [domainId, repoRoot, namespace, key],
+    );
     return result.changes > 0;
   }
 
-  listAliasState(repoRoot: string, namespace: string): Record<string, unknown> {
+  listAliasState(repoRoot: string, namespace: string, domainId: number = NO_DOMAIN_ID): Record<string, unknown> {
     const rows = this.db
-      .query<{ key: string; value_json: string }, [string, string]>(
-        "SELECT key, value_json FROM alias_state WHERE repo_root = ? AND namespace = ?",
+      .query<{ key: string; value_json: string }, [number, string, string]>(
+        "SELECT key, value_json FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ?",
       )
-      .all(repoRoot, namespace);
+      .all(domainId, repoRoot, namespace);
     const out: Record<string, unknown> = {};
     for (const row of rows) {
       const parsed = safeParseStateValue(row.value_json, `${repoRoot}/${namespace}/${row.key}`);
@@ -1732,142 +1810,251 @@ export class StateDb {
   }
 
   // -- Copilot comment state (#1578) --
+  //
+  // Partitioned by domain (#3034): pr_number alone was globally unique, so two
+  // projects could not both track PR #42. Every accessor takes a trailing
+  // `domainId` that defaults to NO_DOMAIN_ID, so callers that have not been
+  // domain-scoped yet keep operating on the unassigned partition.
 
-  getSeenCommentIds(prNumber: number): number[] {
-    const row = this.db
-      .query<{ seen_comment_ids: string }, [number]>(
-        "SELECT seen_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
+  // `query()` rather than `prepare()`: bun caches the prepared statement, and these run
+  // inside the copilot poll loop.
+  private getCopilotColumn(column: string, prNumber: number, domainId: number): unknown {
+    return this.db
+      .query<{ v: unknown }, [number, number]>(
+        `SELECT ${column} AS v FROM copilot_comment_state WHERE domain_id = ? AND pr_number = ?`,
       )
-      .get(prNumber);
-    return row ? safeJsonParse<number[]>(row.seen_comment_ids, []) : [];
+      .get(domainId, prNumber)?.v;
   }
 
-  updateSeenCommentIds(prNumber: number, ids: number[]): void {
+  private setCopilotColumn(column: string, prNumber: number, value: string | null, domainId: number): void {
     this.db
-      .query(
-        `INSERT INTO copilot_comment_state (pr_number, seen_comment_ids, last_poll_ts)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(pr_number) DO UPDATE SET
-           seen_comment_ids = excluded.seen_comment_ids,
+      .query<void, [number, number, string | null]>(
+        `INSERT INTO copilot_comment_state (domain_id, pr_number, ${column}, last_poll_ts)
+         VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(domain_id, pr_number) DO UPDATE SET
+           ${column} = excluded.${column},
            last_poll_ts = excluded.last_poll_ts`,
       )
-      .run(prNumber, JSON.stringify(ids));
+      .run(domainId, prNumber, value);
+  }
+
+  getSeenCommentIds(prNumber: number, domainId: number = NO_DOMAIN_ID): number[] {
+    const raw = this.getCopilotColumn("seen_comment_ids", prNumber, domainId);
+    return typeof raw === "string" ? safeJsonParse<number[]>(raw, []) : [];
+  }
+
+  updateSeenCommentIds(prNumber: number, ids: number[], domainId: number = NO_DOMAIN_ID): void {
+    this.setCopilotColumn("seen_comment_ids", prNumber, JSON.stringify(ids), domainId);
   }
 
   // -- Review IDs (#1579) --
 
-  getSeenReviewIds(prNumber: number): number[] {
-    const row = this.db
-      .query<{ seen_review_ids: string }, [number]>(
-        "SELECT seen_review_ids FROM copilot_comment_state WHERE pr_number = ?",
-      )
-      .get(prNumber);
-    return row ? safeJsonParse<number[]>(row.seen_review_ids, []) : [];
+  getSeenReviewIds(prNumber: number, domainId: number = NO_DOMAIN_ID): number[] {
+    const raw = this.getCopilotColumn("seen_review_ids", prNumber, domainId);
+    return typeof raw === "string" ? safeJsonParse<number[]>(raw, []) : [];
   }
 
-  updateSeenReviewIds(prNumber: number, ids: number[]): void {
-    this.db
-      .query(
-        `INSERT INTO copilot_comment_state (pr_number, seen_review_ids, last_poll_ts)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(pr_number) DO UPDATE SET
-           seen_review_ids = excluded.seen_review_ids,
-           last_poll_ts = excluded.last_poll_ts`,
-      )
-      .run(prNumber, JSON.stringify(ids));
+  updateSeenReviewIds(prNumber: number, ids: number[], domainId: number = NO_DOMAIN_ID): void {
+    this.setCopilotColumn("seen_review_ids", prNumber, JSON.stringify(ids), domainId);
   }
 
   // -- Top-level PR comment IDs (#1579) --
 
-  getSeenPRCommentIds(prNumber: number): number[] {
-    const row = this.db
-      .query<{ seen_pr_comment_ids: string }, [number]>(
-        "SELECT seen_pr_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
-      )
-      .get(prNumber);
-    return row ? safeJsonParse<number[]>(row.seen_pr_comment_ids, []) : [];
+  getSeenPRCommentIds(prNumber: number, domainId: number = NO_DOMAIN_ID): number[] {
+    const raw = this.getCopilotColumn("seen_pr_comment_ids", prNumber, domainId);
+    return typeof raw === "string" ? safeJsonParse<number[]>(raw, []) : [];
   }
 
-  updateSeenPRCommentIds(prNumber: number, ids: number[]): void {
-    this.db
-      .query(
-        `INSERT INTO copilot_comment_state (pr_number, seen_pr_comment_ids, last_poll_ts)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(pr_number) DO UPDATE SET
-           seen_pr_comment_ids = excluded.seen_pr_comment_ids,
-           last_poll_ts = excluded.last_poll_ts`,
-      )
-      .run(prNumber, JSON.stringify(ids));
+  updateSeenPRCommentIds(prNumber: number, ids: number[], domainId: number = NO_DOMAIN_ID): void {
+    this.setCopilotColumn("seen_pr_comment_ids", prNumber, JSON.stringify(ids), domainId);
   }
 
   // -- Issue comment IDs (#1579) --
 
-  getSeenIssueCommentIds(issueNumber: number): number[] {
-    const row = this.db
-      .query<{ seen_issue_comment_ids: string }, [number]>(
-        "SELECT seen_issue_comment_ids FROM copilot_comment_state WHERE pr_number = ?",
-      )
-      .get(issueNumber);
-    return row ? safeJsonParse<number[]>(row.seen_issue_comment_ids, []) : [];
+  getSeenIssueCommentIds(issueNumber: number, domainId: number = NO_DOMAIN_ID): number[] {
+    const raw = this.getCopilotColumn("seen_issue_comment_ids", issueNumber, domainId);
+    return typeof raw === "string" ? safeJsonParse<number[]>(raw, []) : [];
   }
 
-  updateSeenIssueCommentIds(issueNumber: number, ids: number[]): void {
-    this.db
-      .query(
-        `INSERT INTO copilot_comment_state (pr_number, seen_issue_comment_ids, last_poll_ts)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(pr_number) DO UPDATE SET
-           seen_issue_comment_ids = excluded.seen_issue_comment_ids,
-           last_poll_ts = excluded.last_poll_ts`,
-      )
-      .run(issueNumber, JSON.stringify(ids));
+  updateSeenIssueCommentIds(issueNumber: number, ids: number[], domainId: number = NO_DOMAIN_ID): void {
+    this.setCopilotColumn("seen_issue_comment_ids", issueNumber, JSON.stringify(ids), domainId);
   }
 
   // -- Sticky body hash (#1579) --
 
-  getStickyBodyHash(prNumber: number): string | null {
-    const row = this.db
-      .query<{ last_sticky_body_hash: string | null }, [number]>(
-        "SELECT last_sticky_body_hash FROM copilot_comment_state WHERE pr_number = ?",
-      )
-      .get(prNumber);
-    return row?.last_sticky_body_hash ?? null;
+  getStickyBodyHash(prNumber: number, domainId: number = NO_DOMAIN_ID): string | null {
+    const raw = this.getCopilotColumn("last_sticky_body_hash", prNumber, domainId);
+    return typeof raw === "string" ? raw : null;
   }
 
-  updateStickyBodyHash(prNumber: number, hash: string | null): void {
-    this.db
-      .query(
-        `INSERT INTO copilot_comment_state (pr_number, last_sticky_body_hash, last_poll_ts)
-         VALUES (?, ?, datetime('now'))
-         ON CONFLICT(pr_number) DO UPDATE SET
-           last_sticky_body_hash = excluded.last_sticky_body_hash,
-           last_poll_ts = excluded.last_poll_ts`,
-      )
-      .run(prNumber, hash);
+  updateStickyBodyHash(prNumber: number, hash: string | null, domainId: number = NO_DOMAIN_ID): void {
+    this.setCopilotColumn("last_sticky_body_hash", prNumber, hash, domainId);
   }
 
-  deleteCopilotCommentState(workItemNumber: number): boolean {
+  deleteCopilotCommentState(workItemNumber: number, domainId: number = NO_DOMAIN_ID): boolean {
     if (workItemNumber === 0) return false;
-    const result = this.db.run("DELETE FROM copilot_comment_state WHERE pr_number = ?", [workItemNumber]);
+    const result = this.db.run("DELETE FROM copilot_comment_state WHERE domain_id = ? AND pr_number = ?", [
+      domainId,
+      workItemNumber,
+    ]);
     return result.changes > 0;
   }
 
-  getLastRepoPollTs(): string | null {
+  getLastRepoPollTs(domainId: number = NO_DOMAIN_ID): string | null {
     const row = this.db
-      .query<{ repo_poll_ts: string | null }, []>("SELECT repo_poll_ts FROM copilot_comment_state WHERE pr_number = 0")
-      .get();
+      .query<{ repo_poll_ts: string | null }, [number]>(
+        "SELECT repo_poll_ts FROM copilot_comment_state WHERE domain_id = ? AND pr_number = 0",
+      )
+      .get(domainId);
     return row?.repo_poll_ts ?? null;
   }
 
-  updateLastRepoPollTs(isoTs: string): void {
+  updateLastRepoPollTs(isoTs: string, domainId: number = NO_DOMAIN_ID): void {
     this.db
       .query(
-        `INSERT INTO copilot_comment_state (pr_number, repo_poll_ts)
-         VALUES (0, ?)
-         ON CONFLICT(pr_number) DO UPDATE SET
+        `INSERT INTO copilot_comment_state (domain_id, pr_number, repo_poll_ts)
+         VALUES (?, 0, ?)
+         ON CONFLICT(domain_id, pr_number) DO UPDATE SET
            repo_poll_ts = excluded.repo_poll_ts`,
       )
-      .run(isoTs);
+      .run(domainId, isoTs);
+  }
+
+  // -- Domains (#3034) --
+
+  /**
+   * Register a domain. Throws on a duplicate name or a duplicate `[host:]path` location.
+   *
+   * A **local** path is canonicalized (absolute, symlinks resolved) so the resolver
+   * compares like with like — #1526 and #1684 were both this bug in other tables.
+   * A **host-bound** path is stored verbatim: it names a directory on another machine,
+   * so normalizing it against this filesystem is meaningless and `~/work` there is that
+   * host's home, not ours.
+   */
+  createDomain(name: string, path: string, host: string | null = null): Domain {
+    if (!isValidDomainName(name)) {
+      throw new Error(`invalid domain name "${name}": must be alphanumeric, hyphens, or underscores`);
+    }
+    // The local/remote branch is `host === null`, so an empty-ish host took the REMOTE
+    // path — stored verbatim, never canonicalized, absoluteness never checked — while
+    // COALESCE(host,'') in idx_domains_location treated it as LOCAL for uniqueness. It
+    // was simultaneously both (#3034 review Y6). Use null for local; anything else must
+    // be a real hostname.
+    if (host !== null && !isValidDomainHost(host)) {
+      throw new Error(`invalid domain host ${JSON.stringify(host)}: use null for a local domain`);
+    }
+    const storedPath = host === null ? canonicalizeDomainPath(path) : path;
+    const row = this.db
+      .query<RawDomainRow, [string, string | null, string]>(
+        `INSERT INTO domains (name, host, path, created_at)
+         VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         RETURNING id, name, host, path, created_at`,
+      )
+      .get(name, host, storedPath);
+    if (!row) throw new Error(`failed to create domain "${name}"`);
+    return toDomain(row);
+  }
+
+  listDomains(): Domain[] {
+    return this.db
+      .query<RawDomainRow, []>("SELECT id, name, host, path, created_at FROM domains ORDER BY name")
+      .all()
+      .map(toDomain);
+  }
+
+  getDomainByName(name: string): Domain | null {
+    const row = this.db
+      .query<RawDomainRow, [string]>("SELECT id, name, host, path, created_at FROM domains WHERE name = ?")
+      .get(name);
+    return row ? toDomain(row) : null;
+  }
+
+  getDomainById(id: number): Domain | null {
+    const row = this.db
+      .query<RawDomainRow, [number]>("SELECT id, name, host, path, created_at FROM domains WHERE id = ?")
+      .get(id);
+    return row ? toDomain(row) : null;
+  }
+
+  renameDomain(oldName: string, newName: string): boolean {
+    if (!isValidDomainName(newName)) {
+      throw new Error(`invalid domain name "${newName}": must be alphanumeric, hyphens, or underscores`);
+    }
+    return this.db.run("UPDATE domains SET name = ? WHERE name = ?", [newName, oldName]).changes > 0;
+  }
+
+  /**
+   * Every table in this database that carries a `domain_id`, derived from the schema.
+   *
+   * Deliberately NOT a hand-maintained constant. The same list previously existed in
+   * four places with nothing tying them together, so a later PR that adds a partitioned
+   * table and updates none of them got green tests and a `deleteDomain` that silently
+   * under-counted. A list a future PR can forget to update is prose; a derivation it
+   * cannot forget is a function — which is the principle this whole epic is built on.
+   */
+  listPartitionedTables(): string[] {
+    return listPartitionedTables(this.db);
+  }
+
+  /** Per-table counts of rows currently bound to `domainId`. Only non-zero entries. */
+  countDomainDependents(domainId: number): Array<{ table: string; rows: number }> {
+    const out: Array<{ table: string; rows: number }> = [];
+    for (const table of this.listPartitionedTables()) {
+      const row = this.db
+        .query<{ n: number }, [number]>(`SELECT count(*) AS n FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`)
+        .get(domainId);
+      if ((row?.n ?? 0) > 0) out.push({ table, rows: row?.n ?? 0 });
+    }
+    return out;
+  }
+
+  /**
+   * Delete a domain row. **Refuses by default** while anything still references it;
+   * `{ cascade: true }` deletes the dependents with it.
+   *
+   * Refusing is the default deliberately: a domain is a name bound to a location — pure
+   * routing data (`docs/domains.md`). Un-registering a route is not a statement that the
+   * project's work items, mail and PR watermarks should be destroyed, and a silent
+   * cascade makes an unrecoverable deletion the response to a typo. The error names the
+   * per-table counts so the caller can decide. `mcx domain rm` (#3035) surfaces this as
+   * a refusal plus an explicit `--cascade`.
+   *
+   * `AUTOINCREMENT` on `domains.id` is the other half: even if a row is orphaned some
+   * other way, that id is never handed to a future domain, so nothing gets adopted.
+   */
+  deleteDomain(name: string, opts?: { cascade?: boolean }): boolean {
+    const domain = this.getDomainByName(name);
+    if (!domain) return false;
+
+    // Counted INSIDE the transaction: counting first and deleting after let a row
+    // inserted into a table that counted zero survive the cascade as an orphan.
+    return this.db.transaction(() => {
+      const dependents = this.countDomainDependents(domain.id);
+      if (dependents.length > 0 && !opts?.cascade) {
+        const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
+        const total = dependents.reduce((n, d) => n + d.rows, 0);
+        throw new Error(
+          `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
+        );
+      }
+      for (const { table } of dependents) {
+        this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
+      }
+      return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
+    })();
+  }
+
+  /**
+   * Which domain owns `path`? Longest registered prefix wins; `null` outside every
+   * domain. Callers turn `null` into an error, never a guess — see
+   * {@link resolveDomainForPath}, which holds the rule so it can be unit-tested
+   * without a database.
+   *
+   * Canonicalizes `path` first so a symlinked cwd (every `.claude/worktrees/` path)
+   * matches the canonical form stored by {@link createDomain}.
+   */
+  resolveDomain(path: string): Domain | null {
+    return resolveDomainForPath(canonicalizeDomainPath(path), this.listDomains());
   }
 
   close(): void {
@@ -1876,6 +2063,14 @@ export class StateDb {
 }
 
 // -- Helpers --
+
+/**
+ * Quote a SQL identifier. These come from `sqlite_master`, never from user input, but
+ * interpolation into SQL is quoted unconditionally rather than trusted case by case.
+ */
+function quoteSqlIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
 
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
 function formatSqliteDatetime(ms: number): string {
@@ -1911,6 +2106,18 @@ function safeJsonParse<T>(json: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+interface RawDomainRow {
+  id: number;
+  name: string;
+  host: string | null;
+  path: string;
+  created_at: string;
+}
+
+function toDomain(row: RawDomainRow): Domain {
+  return { id: row.id, name: row.name, host: row.host, path: row.path, createdAt: row.created_at };
 }
 
 interface RawSessionRow {

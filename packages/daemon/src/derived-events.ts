@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
+import { type MonitorEvent, type MonitorEventInput, NO_DOMAIN_ID } from "@mcp-cli/core";
 import type { WorkItemDb } from "./db/work-items";
 import { isDerivedPending } from "./derived-rules";
 import type { DerivedRule } from "./derived-rules";
@@ -14,7 +14,31 @@ const MAX_DERIVED_DEPTH = 4;
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
 
-const CURSOR_ID = "derived_publisher";
+/**
+ * Cursor row id for the derived-event publisher. Exported so the one-shot legacy import
+ * (#3034) can park the cursor at the newest imported event without a second copy of the
+ * literal drifting from this one.
+ */
+export const DERIVED_CURSOR_ID = "derived_publisher";
+const CURSOR_ID = DERIVED_CURSOR_ID;
+
+/**
+ * Create the derived-events cursor table.
+ *
+ * Exported so the one-shot legacy import (#3034) can guarantee the table exists
+ * before copying rows into it, without a second copy of the DDL drifting from
+ * this one. The cursor is per-domain: each domain reduces its own event stream.
+ */
+export function migrateDerivedCursor(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS derived_cursor (
+      domain_id INTEGER NOT NULL DEFAULT 0,
+      id        TEXT    NOT NULL,
+      last_seq  INTEGER NOT NULL,
+      PRIMARY KEY (domain_id, id)
+    )
+  `);
+}
 
 export class DerivedEventPublisher {
   private readonly bus: EventBus;
@@ -193,25 +217,26 @@ export class DerivedEventPublisher {
   }
 
   private migrateCursor(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS derived_cursor (
-        id       TEXT    PRIMARY KEY,
-        last_seq INTEGER NOT NULL
-      )
-    `);
+    migrateDerivedCursor(this.db);
   }
 
   private loadCursor(): number {
     const row = this.db
-      .query<{ last_seq: number }, [string]>("SELECT last_seq FROM derived_cursor WHERE id = ?")
-      .get(CURSOR_ID);
+      .query<{ last_seq: number }, [number, string]>(
+        "SELECT last_seq FROM derived_cursor WHERE domain_id = ? AND id = ?",
+      )
+      .get(NO_DOMAIN_ID, CURSOR_ID);
     return row?.last_seq ?? 0;
   }
 
   private saveCursor(seq: number): void {
     const effectiveSeq = this.reconcileTarget !== null ? Math.min(seq, this.reconcileTarget) : seq;
     if (effectiveSeq <= this.cursor) return;
-    this.db.run("INSERT OR REPLACE INTO derived_cursor (id, last_seq) VALUES (?, ?)", [CURSOR_ID, effectiveSeq]);
+    this.db.run("INSERT OR REPLACE INTO derived_cursor (domain_id, id, last_seq) VALUES (?, ?, ?)", [
+      NO_DOMAIN_ID,
+      CURSOR_ID,
+      effectiveSeq,
+    ]);
     this.cursor = effectiveSeq;
   }
 }
