@@ -21,6 +21,7 @@ import { CloneCache } from "./cache";
 import { computeDepth } from "./clone";
 import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
+import { ProgressReporter, type VfsProgressSink, estimateTotal } from "./progress";
 
 export interface PullOptions {
   /** Root directory of the cloned repo. */
@@ -29,6 +30,8 @@ export interface PullOptions {
   provider: RemoteProvider;
   /** Progress callback. */
   onProgress?: (message: string) => void;
+  /** Structured progress sink, forwarded to the daemon event bus by the CLI (#1249). */
+  onEvent?: VfsProgressSink;
   /** Force full sync instead of incremental. */
   full?: boolean;
   /** Maximum hierarchy depth. 0 = unlimited (deepens shallow clones). */
@@ -77,7 +80,16 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       throw new Error("No scope found in cache. Was this repo cloned with mcx vfs clone?");
     }
 
-    log(opts, `Pulling ${provider.name}/${scope.key}...`);
+    // The scope key only becomes known here (it lives in the cache), so the
+    // reporter — and with it the vfs.started event — is built after the lookup.
+    const progress = new ProgressReporter({
+      operation: "pull",
+      provider: provider.name,
+      scope: scope.key,
+      log: (msg) => log(opts, msg),
+      onEvent: opts.onEvent,
+    });
+    progress.start();
 
     // ── Decide depth ─────────────────────────────────────────
     // If user specifies --depth, use it. Otherwise, use the stored clone depth.
@@ -111,12 +123,12 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     if (canIncremental) {
       try {
-        await incrementalPull(opts, cache, scope, lastSynced, result, effectiveDepth);
+        await incrementalPull(opts, cache, scope, lastSynced, result, effectiveDepth, progress);
       } catch (err) {
         if (err instanceof TruncatedChangesError) {
           log(opts, `  ${err.message}`);
           result.incremental = false;
-          await fullPull(opts, cache, scope, result, effectiveDepth);
+          await fullPull(opts, cache, scope, result, effectiveDepth, progress);
         } else {
           throw err;
         }
@@ -125,7 +137,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       if (!full && !forceFullForDeepen && lastSynced) {
         log(opts, "Provider doesn't support incremental sync, falling back to full sync.");
       }
-      await fullPull(opts, cache, scope, result, effectiveDepth);
+      await fullPull(opts, cache, scope, result, effectiveDepth, progress);
     }
 
     // ── Update stored depth if it changed ─────────────────────
@@ -181,6 +193,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         .join(", ");
       log(opts, `\nPull complete. ${summary}.`);
     }
+    progress.finish(totalChanges);
   } finally {
     cache.close();
   }
@@ -196,6 +209,7 @@ async function incrementalPull(
   since: string,
   result: PullResult,
   effectiveDepth = 0,
+  progress?: ProgressReporter,
 ): Promise<void> {
   const { repoDir, provider } = opts;
   result.incremental = true;
@@ -241,8 +255,14 @@ async function incrementalPull(
     }
   }
 
+  // Ticked at the top of the loop (several branches `continue`), so the count is
+  // "changes reached", which for a throttled bar is indistinguishable from
+  // "changes applied".
+  let reached = 0;
   for (const change of changes) {
     const { entry } = change;
+    reached++;
+    progress?.tick("content", reached, changes.length);
 
     if (change.type === "deleted") {
       const cached = cachedById.get(entry.id);
@@ -320,6 +340,7 @@ async function fullPull(
   scope: ResolvedScope,
   result: PullResult,
   effectiveDepth = 0,
+  progress?: ProgressReporter,
 ): Promise<void> {
   const { repoDir, provider } = opts;
 
@@ -333,13 +354,15 @@ async function fullPull(
   const remoteContentMap = new Map<string, string>();
   let fetched = 0;
 
+  const listTotal = await estimateTotal(provider, scope);
+
   for await (const entry of provider.list(scope)) {
     remoteEntries.push(entry);
     if (entry.content != null) {
       remoteContentMap.set(entry.id, entry.content);
     }
     fetched++;
-    if (fetched % 100 === 0) log(opts, `  ${fetched} pages...`);
+    progress?.tick("list", fetched, listTotal);
   }
 
   log(opts, `  → ${remoteEntries.length} remote pages`);
@@ -416,6 +439,7 @@ async function fullPull(
   if (needsFetch.length > 0) {
     log(opts, `Fetching content for ${needsFetch.length} pages...`);
     const BATCH_SIZE = 10;
+    let contentFetched = 0;
     for (let i = 0; i < needsFetch.length; i += BATCH_SIZE) {
       const batch = needsFetch.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
@@ -426,7 +450,9 @@ async function fullPull(
       );
       for (const r of results) {
         remoteContentMap.set(r.id, r.content);
+        contentFetched++;
       }
+      progress?.tick("content", contentFetched, needsFetch.length);
     }
   }
 

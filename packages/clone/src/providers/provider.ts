@@ -91,6 +91,15 @@ export interface RemoteProvider {
   /** List items changed since a timestamp. Falls back to full list if not supported. */
   changes?(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent>;
 
+  /**
+   * Estimate how many items `list` will yield, for progress reporting (#1249).
+   *
+   * Best-effort: return `undefined` when the remote can't be asked cheaply.
+   * Callers treat a throw the same as `undefined` — a clone must never fail
+   * because the progress denominator was unavailable.
+   */
+  count?(scope: ResolvedScope): Promise<number | undefined>;
+
   // ── Content ────────────────────────────────────────────────
 
   /** Fetch a single item's content as markdown. */

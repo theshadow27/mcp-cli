@@ -21,7 +21,7 @@ import {
   pull,
   push,
 } from "@mcp-cli/clone";
-import type { CloneResult, McpToolCaller } from "@mcp-cli/clone";
+import type { CloneResult, McpToolCaller, VfsProgressSink } from "@mcp-cli/clone";
 import { ipcCall } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
@@ -46,6 +46,24 @@ export interface VfsDeps {
     providerName: string;
   };
   preflightCheck: (providerName: string) => Promise<void>;
+  /** Progress sink for clone/pull. Defaults to the daemon event bus (#1249). */
+  onEvent?: VfsProgressSink;
+}
+
+/**
+ * Forward clone/pull progress onto the daemon event bus, so `mcx monitor` can
+ * follow a long clone running in another terminal.
+ *
+ * Fire-and-forget on purpose: the daemon may be down, and a clone must neither
+ * stall on nor fail over its own telemetry. Updates are already throttled by the
+ * engine's reporter, so this is a handful of calls per phase, not one per page.
+ */
+export function makeProgressPublisher(ipc: typeof ipcCall = ipcCall): VfsProgressSink {
+  return ({ event, ...fields }) => {
+    void Promise.resolve(ipc("publishEvent", { src: "cli.vfs", event, category: "vfs", extra: { ...fields } })).catch(
+      () => {},
+    );
+  };
 }
 
 export function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
@@ -131,6 +149,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
     resolveProvider: (name: string, tuning?: ProviderTuning) => resolveProvider(name, tuning),
     resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
     preflightCheck: (name: string) => preflightCheck(name),
+    onEvent: makeProgressPublisher(),
   };
   const sub = args[0];
 
@@ -205,6 +224,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       limit,
       depth,
       onProgress: log,
+      onEvent: deps.onEvent,
     });
   } catch (err) {
     if (err instanceof VfsError) {
@@ -257,7 +277,7 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   await deps.preflightCheck(providerName);
 
   try {
-    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log });
+    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log, onEvent: deps.onEvent });
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (err instanceof VfsError) {
@@ -368,6 +388,13 @@ Options:
                       not persisted — later pulls start from the default again)
   --full              Force full sync instead of incremental
   --create            Create new remote items from local files (push only)
+
+Progress:
+  clone and pull print live progress to stderr ("Fetching FOO... 250/5000 pages
+  (5%)") and publish vfs.started / vfs.progress / vfs.completed on the daemon
+  event bus — follow a long clone from another terminal with: mcx monitor
+  The percentage needs a provider that can count its scope up front (confluence);
+  others report a bare item count.
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo

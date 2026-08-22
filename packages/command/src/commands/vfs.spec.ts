@@ -3,8 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloneCache, VfsError } from "@mcp-cli/clone";
+import { VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
 import type { VfsDeps } from "./vfs";
-import { cmdVfs, makeToolCaller, onRetry, preflightCheck, resolveProvider, resolveProviderFromCache } from "./vfs";
+import {
+  cmdVfs,
+  makeProgressPublisher,
+  makeToolCaller,
+  onRetry,
+  preflightCheck,
+  resolveProvider,
+  resolveProviderFromCache,
+} from "./vfs";
 
 class ExitError extends Error {
   code: number;
@@ -501,6 +510,79 @@ describe("makeToolCaller", () => {
     await caller("asana", "getTask", {}, 5000);
 
     expect(capturedOpts).toEqual({ timeoutMs: 5000 });
+  });
+});
+
+describe("makeProgressPublisher (#1249)", () => {
+  type IpcCall = { method: string; params: Record<string, unknown> };
+
+  function fakeIpc(calls: IpcCall[], impl?: () => Promise<unknown>) {
+    return (async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      return impl ? await impl() : { ok: true, seq: 1 };
+    }) as unknown as Parameters<typeof makeProgressPublisher>[0];
+  }
+
+  test("publishes a flat vfs event on the daemon event bus", () => {
+    const calls: IpcCall[] = [];
+    makeProgressPublisher(fakeIpc(calls))({
+      event: VFS_PROGRESS,
+      operation: "clone",
+      provider: "confluence",
+      scope: "FOO",
+      phase: "list",
+      current: 250,
+      total: 5000,
+      percent: 5,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("publishEvent");
+    expect(calls[0].params).toEqual({
+      src: "cli.vfs",
+      event: VFS_PROGRESS,
+      category: "vfs",
+      // Flat, per the envelope contract — `event` is lifted out, nothing nests.
+      extra: {
+        operation: "clone",
+        provider: "confluence",
+        scope: "FOO",
+        phase: "list",
+        current: 250,
+        total: 5000,
+        percent: 5,
+      },
+    });
+  });
+
+  test("swallows IPC failures — a clone must not die over telemetry", async () => {
+    const calls: IpcCall[] = [];
+    const publish = makeProgressPublisher(
+      fakeIpc(calls, async () => {
+        throw new Error("daemon not running");
+      }),
+    );
+
+    expect(() =>
+      publish({ event: VFS_STARTED, operation: "clone", provider: "confluence", scope: "FOO", current: 0 }),
+    ).not.toThrow();
+    // Let the rejected publish settle; an unhandled rejection here would fail the run.
+    await Promise.resolve();
+    expect(calls).toHaveLength(1);
+  });
+
+  test("cmdVfs passes the progress sink through to clone", async () => {
+    let seen: unknown;
+    const deps = makeDeps({
+      onEvent: () => {},
+      clone: async (opts) => {
+        seen = opts.onEvent;
+        return { path: "/tmp/t", pageCount: 0, stubCount: 0, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
+      },
+    });
+
+    await cmdVfs(["clone", "confluence", "FOO"], undefined, deps);
+    expect(seen).toBe(deps.onEvent);
   });
 });
 

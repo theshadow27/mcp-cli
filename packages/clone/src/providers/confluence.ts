@@ -315,6 +315,21 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
       } while (cursor);
     },
 
+    /**
+     * Page count for the space, via a CQL search asking for a single result —
+     * `totalSize` is the count of matches, not of returned rows, so one cheap
+     * request yields the denominator for the whole listing (#1249).
+     */
+    async count(scope: ResolvedScope): Promise<number | undefined> {
+      const cql = `space = "${scope.key}" AND type = page`;
+      const resp = (await callAtlassian("searchConfluenceUsingCql", {
+        cloudId: scope.cloudId,
+        cql,
+        limit: 1,
+      })) as { totalSize?: number };
+      return typeof resp?.totalSize === "number" ? resp.totalSize : undefined;
+    },
+
     async fetch(scope: ResolvedScope, id: string): Promise<FetchResult> {
       const resp = (await callAtlassian("getConfluencePage", {
         cloudId: scope.cloudId,

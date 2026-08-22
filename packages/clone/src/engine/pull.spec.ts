@@ -3,10 +3,12 @@ import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VFS_COMPLETED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { injectFrontmatter, stripFrontmatter } from "./frontmatter";
+import type { VfsProgressEvent } from "./progress";
 import { pull } from "./pull";
 
 // Use os.tmpdir() so git's upward .git search can never reach the project
@@ -552,6 +554,73 @@ describe("pull", () => {
       const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8", env: cleanEnv() });
       expect(log).toContain("Pull test/TEST (full)");
       expect(log).toContain("2 new");
+    });
+  });
+
+  describe("progress reporting (#1249)", () => {
+    test("full pull emits started, list progress and completed", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const entries = Array.from({ length: 40 }, (_, i) =>
+        makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 1, content: `body ${i}` }),
+      );
+      const provider = makeProvider({
+        count: async () => 40,
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: (e) => events.push(e) });
+
+      expect(result.created).toBe(40);
+      expect(events[0]).toMatchObject({ event: VFS_STARTED, operation: "pull", provider: "test", scope: "TEST" });
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+      expect(listing).toHaveLength(20); // one per 5% of 40 pages
+      expect(listing.at(-1)).toMatchObject({ current: 40, total: 40, percent: 100 });
+      expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, current: 40 });
+    });
+
+    test("incremental pull reports progress over the change set", async () => {
+      cache.upsert("test", scope, makeEntry({ id: "p0", title: "Page 0" }), "Page 0.md", "h0");
+      cache.updateLastSynced("test", scope.key);
+      cache.close();
+
+      const events: VfsProgressEvent[] = [];
+      const changes: ChangeEvent[] = Array.from({ length: 20 }, (_, i) => ({
+        entry: makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 2, content: `body ${i}` }),
+        type: "updated" as const,
+      }));
+      const provider = makeProvider({
+        changes: async function* () {
+          for (const c of changes) yield c;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: (e) => events.push(e) });
+
+      expect(result.incremental).toBe(true);
+      const content = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "content");
+      expect(content.at(-1)).toMatchObject({ current: 20, total: 20, percent: 100 });
+    });
+
+    test("pull without a counting provider still reports, without percentages", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const entries = Array.from({ length: 60 }, (_, i) =>
+        makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 1, content: `body ${i}` }),
+      );
+      const provider = makeProvider({
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      await pull({ repoDir, provider, onProgress: () => {}, onEvent: (e) => events.push(e) });
+
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+      expect(listing.map((e) => e.current)).toEqual([50]);
+      expect(listing[0].percent).toBeUndefined();
     });
   });
 });

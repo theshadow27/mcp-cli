@@ -16,6 +16,7 @@ import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../provi
 import { CloneCache } from "./cache";
 import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
+import { ProgressReporter, type VfsProgressSink, estimateTotal } from "./progress";
 
 export interface CloneOptions {
   /** Target directory to clone into. */
@@ -26,6 +27,8 @@ export interface CloneOptions {
   scope: Scope;
   /** Progress callback. */
   onProgress?: (message: string) => void;
+  /** Structured progress sink, forwarded to the daemon event bus by the CLI (#1249). */
+  onEvent?: VfsProgressSink;
   /** Maximum pages to fetch (for testing/debugging). 0 = unlimited. */
   limit?: number;
   /** Maximum hierarchy depth to clone. 0 = unlimited. Depth 1 = root pages only. */
@@ -99,7 +102,20 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   // ── Step 2: Fetch all pages ────────────────────────────────
   // Providers that support inline content (e.g., Confluence) return content
   // with the listing, avoiding N+1 individual fetch calls.
-  log(opts, "Fetching pages...");
+  //
+  // Ask the provider for a page count first so progress has a denominator; a
+  // provider without `count()` (or one whose count call fails) still reports,
+  // just without a percentage. See #1249.
+  const progress = new ProgressReporter({
+    operation: "clone",
+    provider: provider.name,
+    scope: scope.key,
+    log: (msg) => log(opts, msg),
+    onEvent: opts.onEvent,
+  });
+  const listTotal = await estimateTotal(provider, resolved, limit);
+  progress.start(listTotal);
+
   const entries: RemoteEntry[] = [];
   const contentMap = new Map<string, string>();
   let fetched = 0;
@@ -110,7 +126,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
       contentMap.set(entry.id, entry.content);
     }
     fetched++;
-    if (fetched % 50 === 0) log(opts, `  ${fetched} pages...`);
+    progress.tick("list", fetched, listTotal);
     if (limit > 0 && fetched >= limit) break;
   }
 
@@ -153,9 +169,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
         if (idx >= 0) includedEntries[idx] = r.entry;
         contentFetched++;
       }
-      if (contentFetched % 50 === 0 || contentFetched === missingContent.length) {
-        log(opts, `  fetched ${contentFetched}/${missingContent.length} pages`);
-      }
+      progress.tick("content", contentFetched, missingContent.length);
     }
   }
 
@@ -183,6 +197,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
     mkdirSync(dirname(absPath), { recursive: true });
     writeFileSync(absPath, withFrontmatter, "utf-8");
     written++;
+    progress.tick("write", written, includedEntries.length);
   }
 
   // Write stubs for depth-excluded pages
@@ -269,6 +284,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   log(opts, `  → remote "origin" set to ${remoteUrl}`);
 
   log(opts, `\nDone! Cloned ${includedEntries.length} pages${stubNote} to ${absTarget}`);
+  progress.finish(includedEntries.length);
 
   return {
     path: absTarget,

@@ -54,6 +54,7 @@ export const MONITOR_CATEGORIES = [
   "cost",
   "quota",
   "automation",
+  "vfs",
 ] as const;
 
 export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
@@ -150,6 +151,42 @@ export const AUTOMATION_FIRED = "automation.fired" as const;
 export const AUTOMATION_SKIPPED = "automation.skipped" as const;
 export const AUTOMATION_ERRORED = "automation.errored" as const;
 export const AUTOMATION_ESCALATED = "automation.escalated" as const;
+
+// ── VFS clone/pull progress event names (#1249) ──
+
+export const VFS_STARTED = "vfs.started" as const;
+export const VFS_PROGRESS = "vfs.progress" as const;
+export const VFS_COMPLETED = "vfs.completed" as const;
+
+/** The long-running vfs operations that report progress. */
+export type VfsOperation = "clone" | "pull";
+
+/**
+ * Stage of a vfs operation. `list` walks the remote index, `content` fetches
+ * bodies for entries whose listing had none, `write` lands files on disk.
+ */
+export type VfsPhase = "list" | "content" | "write";
+
+/**
+ * Flat payload fields carried by `vfs.*` events. Spread at the top level of the
+ * envelope — see the envelope contract in the file header, the fields never nest
+ * under `payload`.
+ */
+export interface VfsProgressFields {
+  operation: VfsOperation;
+  /** Provider name, e.g. "confluence". */
+  provider: string;
+  /** Scope key, e.g. a Confluence space key. */
+  scope: string;
+  /** Stage this update belongs to. Absent on `vfs.completed`. */
+  phase?: VfsPhase;
+  /** Items processed so far in `phase`. */
+  current: number;
+  /** Total items expected, when the provider can estimate one up front. */
+  total?: number;
+  /** `current`/`total` as a 0-100 integer. Present only when `total` is known. */
+  percent?: number;
+}
 
 // ── Alias supervisor event names (#1924) ──
 
@@ -542,8 +579,34 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), mod, reason);
   },
 
+  [VFS_STARTED]: (e) => join(vfsTarget(e), vfsCount(e)),
+
+  [VFS_PROGRESS]: (e) => {
+    const phase = typeof e.phase === "string" ? e.phase : "";
+    return join(vfsTarget(e), phase, vfsCount(e));
+  },
+
+  [VFS_COMPLETED]: (e) => join(vfsTarget(e), vfsCount(e)),
+
   [HEARTBEAT]: (e) => `seq:${e.seq}`,
 };
+
+/** `clone confluence/FOO` — which operation is running against which scope. */
+function vfsTarget(e: MonitorEventBase): string {
+  const op = typeof e.operation === "string" ? e.operation : "vfs";
+  const provider = typeof e.provider === "string" ? e.provider : "";
+  const scope = typeof e.scope === "string" ? e.scope : "";
+  return join(op, provider && scope ? `${provider}/${scope}` : provider || scope);
+}
+
+/** `250/5000 (5%)`, degrading to `250` when the provider can't estimate a total. */
+function vfsCount(e: MonitorEventBase): string {
+  if (typeof e.current !== "number") return "";
+  const total = typeof e.total === "number" ? e.total : undefined;
+  if (total === undefined) return `${e.current}`;
+  const pct = typeof e.percent === "number" ? ` (${e.percent}%)` : "";
+  return `${e.current}/${total}${pct}`;
+}
 
 /**
  * Format a MonitorEvent as a human-readable one-liner (≤200 chars).
@@ -631,9 +694,12 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [SESSION_SPAWN_OVERRIDE]: "notable",
   [AUTOMATION_FIRED]: "notable",
   [AUTOMATION_SKIPPED]: "notable",
+  [VFS_COMPLETED]: "notable",
 
   // info — telemetry / chatter (also the default for unmapped types)
   [HEARTBEAT]: "info",
+  [VFS_STARTED]: "info",
+  [VFS_PROGRESS]: "info",
   [SESSION_TOOL_USE]: "info",
   [SESSION_RESPONSE]: "info",
   [MAIL_SENT]: "info",

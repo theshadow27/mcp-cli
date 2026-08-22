@@ -8,6 +8,7 @@ export * from "./providers/resilient-caller";
 export * from "./engine/cache";
 export * from "./engine/clone";
 export * from "./engine/frontmatter";
+export * from "./engine/progress";
 export * from "./engine/pull";
 export * from "./engine/push";
 export * from "./engine/remote-protocol";
