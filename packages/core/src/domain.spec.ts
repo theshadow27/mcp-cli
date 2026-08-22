@@ -335,3 +335,43 @@ describe("resolveDomainLocation (#3035)", () => {
     expect(resolveDomainLocation("/tmp/a:b", env)).toEqual({ host: null, path: "/tmp/a:b" });
   });
 });
+
+describe("resolveDomainLocation — malformed specs (#3160 review finding 3)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("rejects a colon form that yields only one half, instead of expanding it to garbage", () => {
+    // Each of these used to become an absolute-looking path under cwd — e.g.
+    // ":/tmp/foo" -> "/home/tester/repo/:/tmp/foo" — which normalizeDomainPath accepts and
+    // nothing downstream rejects, because a domain path need not exist.
+    for (const spec of [":/tmp/foo", "boxen:", ":"]) {
+      expect(() => resolveDomainLocation(spec, env)).toThrow(/malformed location/);
+    }
+  });
+
+  test("rejects a host that is not a hostname", () => {
+    expect(() => resolveDomainLocation("  spacey:/tmp/x", env)).toThrow(/invalid host/);
+    expect(() => resolveDomainLocation("a b:/tmp/x", env)).toThrow(/invalid host/);
+  });
+
+  test("accepts real hostnames, including dotted and hyphenated", () => {
+    expect(resolveDomainLocation("box-1.lan:/srv/x", env)).toEqual({ host: "box-1.lan", path: "/srv/x" });
+  });
+
+  test("a colon AFTER a separator is still an ordinary local path", () => {
+    expect(resolveDomainLocation("/tmp/a:b", env)).toEqual({ host: null, path: "/tmp/a:b" });
+    expect(resolveDomainLocation("~/a:b", env)).toEqual({ host: null, path: "/home/tester/a:b" });
+    expect(resolveDomainLocation("sub/a:b", env)).toEqual({ host: null, path: "/home/tester/repo/sub/a:b" });
+  });
+
+  test("no accepted spec ever expands to a path containing a bare colon segment", () => {
+    // The property, not the cases: whatever survives is either host-bound (stored verbatim)
+    // or an absolute local path whose first segment is not a `host:` fragment.
+    for (const spec of ["/tmp/x", "~/x", "sub/x", "/tmp/a:b", "boxen0010:~/work"]) {
+      const loc = resolveDomainLocation(spec, env);
+      if (loc.host === null) {
+        expect(isAbsolute(loc.path)).toBe(true);
+        expect(loc.path.split("/").filter(Boolean)[0]).not.toContain(":");
+      }
+    }
+  });
+});
