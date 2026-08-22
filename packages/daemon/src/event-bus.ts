@@ -56,20 +56,46 @@ export class EventBus {
   /**
    * Which domain owns this event?
    *
-   * A producer that was handed a domain says so and is believed. Everyone else knows a
-   * `repoRoot`, which goes through the one resolution rule. Neither → `NO_DOMAIN_ID`,
-   * which is the honest answer for the genuinely daemon-wide events (mail, quota,
-   * heartbeat) rather than a shrug: an un-domained event is excluded by a `-d` filter,
-   * so a wrong guess here would silently attribute daemon state to one project.
+   * Resolved in a fixed precedence, most-authoritative first:
+   *
+   *   1. `domainId` — the producer was handed a domain and says so. Believed outright.
+   *   2. `repoRoot` — the producer supplied its own path.
+   *   3. `sessionId` — the domain of the session the event is about, read off that
+   *      session's own row.
+   *
+   * Step 3 exists because steps 1 and 2 alone left the feature almost entirely inert
+   * (#3040 review R3). Measured against a real 7-day event log on this box: 98 of 25,536
+   * rows carried a `repoRoot`, i.e. 0.4%, while 20,449 — 80% — carried a `sessionId`.
+   * `repoRoot` is set at exactly one of the ~20 session-event emission sites and by none
+   * of the metric producers, so deriving the partition from it alone meant `-d` filtered
+   * correctly over a rounding error of the traffic.
+   *
+   * Nothing here guesses. A session's domain is a fact recorded on its own row, so step 3
+   * is a join on an identity the event already carries. Falling through all three yields
+   * `NO_DOMAIN_ID`, which is the honest answer for genuinely daemon-wide events (mail,
+   * quota, heartbeat): an un-domained event is excluded by a `-d` filter, so inventing a
+   * domain here would silently attribute daemon state to one project.
+   *
+   * Not resolvable yet: work-item and CI events keyed only by `workItemId`/`prNumber`.
+   * `work_items` has neither a repo column nor a `domain_id` writer — that is #3036/#3037.
+   * The daemon-local producers that poll a single known repo declare `repoRoot` instead,
+   * which covers them via step 2 until those land.
    */
   private stampDomain(input: MonitorEventInput): { domainId: number; domain?: string } {
-    const domainId =
-      typeof input.domainId === "number"
-        ? input.domainId
-        : this.domains.idForPath(typeof input.repoRoot === "string" ? input.repoRoot : undefined);
+    const domainId = this.resolveDomainId(input);
     if (domainId === NO_DOMAIN_ID) return { domainId };
     const name = this.domains.nameForId(domainId);
     return name === null ? { domainId } : { domainId, domain: name };
+  }
+
+  private resolveDomainId(input: MonitorEventInput): number {
+    if (typeof input.domainId === "number") return input.domainId;
+    if (typeof input.repoRoot === "string") {
+      const fromPath = this.domains.idForPath(input.repoRoot);
+      if (fromPath !== NO_DOMAIN_ID) return fromPath;
+    }
+    if (typeof input.sessionId === "string") return this.domains.idForSession(input.sessionId);
+    return NO_DOMAIN_ID;
   }
 
   publish(rawInput: MonitorEventInput): MonitorEvent {

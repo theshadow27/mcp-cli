@@ -595,6 +595,22 @@ describe("EventBus with EventLog", () => {
   });
 });
 
+/** A resolver that can answer by session id, mirroring the daemon's real wiring. */
+function sessionAwareResolver() {
+  const roots: Record<string, string | null> = {
+    "s-phoenix": "/tmp/phoenix/pkg",
+    "s-clrg": "/tmp/clrg",
+    "s-rootless": null,
+  };
+  return createDomainResolver({
+    listDomains: () => [
+      { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
+    ],
+    getSessionRepoRoot: (id: string) => roots[id] ?? null,
+  });
+}
+
 // ── Domain stamping (#3040) ──
 
 describe("EventBus domain stamping", () => {
@@ -665,6 +681,44 @@ describe("EventBus domain stamping", () => {
     bus.subscribe((e) => seen.push({ domainId: e.domainId, domain: e.domain }));
     bus.publish({ ...sessionEvent(), repoRoot: "/tmp/clrg" });
     expect(seen).toEqual([{ domainId: 7, domain: "clrg" }]);
+  });
+
+  // #3040 review R3: deriving the domain from repoRoot alone left the feature inert —
+  // 98 of 25,536 rows on a real 7-day log carried a repoRoot (0.4%), while 80% carried a
+  // sessionId. These assert the identity fallback, and each fails without it.
+  test("an event with only a sessionId resolves through that session's recorded root", () => {
+    const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
+    const event = bus.publish({
+      src: "daemon.metric",
+      event: "metric.session.footprint",
+      category: "session",
+      sessionId: "s-phoenix",
+    });
+    expect(event.domainId).toBe(3);
+    expect(event.domain).toBe("phoenix");
+  });
+
+  test("the precedence is domainId > repoRoot > sessionId", () => {
+    const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
+    // explicit id beats both
+    expect(
+      bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", sessionId: "s-clrg", domainId: 7 }).domainId,
+    ).toBe(7);
+    // repoRoot beats sessionId
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", sessionId: "s-clrg" }).domainId).toBe(3);
+    // sessionId is the fallback
+    expect(bus.publish({ ...sessionEvent(), sessionId: "s-clrg" }).domainId).toBe(7);
+  });
+
+  test("an unresolvable repoRoot falls through to the session rather than stopping at the sentinel", () => {
+    const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/var/elsewhere", sessionId: "s-phoenix" });
+    expect(event.domainId).toBe(3);
+  });
+
+  test("a session with no domain still yields the sentinel — no invention", () => {
+    const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
+    expect(bus.publish({ ...sessionEvent(), sessionId: "s-rootless" }).domainId).toBe(NO_DOMAIN_ID);
   });
 
   test("the serialized copy handed to subscribers carries the domain", () => {

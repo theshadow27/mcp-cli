@@ -18,6 +18,7 @@ import { StateDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
 import { createDomainResolver } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
+import { WorkItemsServer } from "../work-items-server";
 import { WorkItemHandlers } from "./work-item";
 
 const ctx = {} as never;
@@ -169,5 +170,65 @@ describe("alias_state is partitioned by domain", () => {
     expect(
       db.getDatabase().query<{ domain_id: number }, []>("SELECT domain_id FROM alias_state").get()?.domain_id,
     ).toBe(phoenix.id);
+  });
+});
+
+// ── R1: _work_items phase_state_* and ctx.state must be the SAME rows ──
+
+describe("phase_state_* and ctx.state share one partition (#3040 review R1)", () => {
+  /**
+   * The bug this locks down: `PhaseStateStore` declared three-parameter signatures while
+   * `StateDb` had a defaulted fourth, so StateDb still satisfied the interface and
+   * `_work_items` wrote domain 0 while the `ctx.state` IPC handlers resolved a real
+   * domain. Same repo_root, same `workitem:<id>` namespace, different rows — a
+   * split-brain the compiler was silent about.
+   *
+   * This drives BOTH real surfaces against one database and asserts they agree. It fails
+   * against the pre-fix code, where the read returns undefined.
+   */
+  test("a value written via _work_items is visible to ctx.state, and vice versa", async () => {
+    const { db, map, phoenixPath, phoenix } = setup();
+    const server = new WorkItemsServer(new WorkItemDb(db.getDatabase()), {
+      phaseState: { store: db, domainIdFor: (repoRoot) => createDomainResolver(db).idForPath(repoRoot) },
+    });
+    const { client } = await server.start();
+    try {
+      await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 } });
+
+      // Write through the _work_items MCP surface.
+      await client.callTool({
+        name: "phase_state_set",
+        arguments: { workItemId: "issue:42", repoRoot: phoenixPath, key: "round", value: 7 },
+      });
+
+      // Read through the ctx.state IPC surface — the other half of the split brain.
+      const viaCtx = (await invoke(map, "aliasStateGet")(
+        { repoRoot: phoenixPath, namespace: "workitem:issue:42", key: "round" },
+        ctx,
+      )) as { value: unknown };
+      expect(viaCtx.value).toBe(7);
+
+      // And the reverse direction.
+      await invoke(map, "aliasStateSet")(
+        { repoRoot: phoenixPath, namespace: "workitem:issue:42", key: "phase", value: "qa" },
+        ctx,
+      );
+      const viaTool = await client.callTool({
+        name: "phase_state_get",
+        arguments: { workItemId: "issue:42", repoRoot: phoenixPath, key: "phase" },
+      });
+      expect(JSON.parse((viaTool.content as Array<{ text: string }>)[0].text).value).toBe("qa");
+
+      // Exactly one partition holds them — not one row at 0 and one at phoenix.id.
+      const partitions = db
+        .getDatabase()
+        .query<{ domain_id: number; n: number }, []>(
+          "SELECT domain_id, count(*) AS n FROM alias_state GROUP BY domain_id",
+        )
+        .all();
+      expect(partitions).toEqual([{ domain_id: phoenix.id, n: 2 }]);
+    } finally {
+      await server.stop?.();
+    }
   });
 });

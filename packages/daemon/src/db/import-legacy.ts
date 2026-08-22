@@ -293,11 +293,23 @@ function copyEverything(
         tables.push(copyTable(target, table, log));
       }
 
+      // The domain stamp runs INSIDE the guarded region, next to the cursor clamp and
+      // BEFORE the failure checks below (#3040 review R4). It used to sit after them,
+      // immediately before writeMarker — which meant a stamp that failed on one table
+      // and succeeded on another was COMMITted with sealed:true and no signal anywhere
+      // in ImportResult, landing the user in a split partition having done nothing
+      // wrong. This file was just repaired to be seal-or-nothing; the stamp has to hold
+      // that property too rather than be excused from it.
+      let stampFailures: string[] = [];
       if (aborted === null && target.inTransaction) {
         clampDerivedCursor(target, log);
+        stampFailures = stampImportedDomainIds(target, log);
       }
 
-      const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
+      // Stamp failures join the copy failures, so the existing rollback-and-retry path
+      // covers them and ImportResult names them. A row copied into the wrong partition
+      // is not a successful import.
+      const failedTables = [...new Set([...tables.filter((t) => t.failed).map((t) => t.table), ...stampFailures])];
       const result = summarize(tables, failedTables, domains);
 
       if (aborted !== null || !target.inTransaction) {
@@ -313,11 +325,6 @@ function copyEverything(
         );
         return result;
       }
-
-      // Past every rollback path, so this only ever stamps rows that are about to be
-      // sealed — a domain mapping computed for a copy that then rolls back is wasted
-      // work on the one code path where the user is already having a bad day (#3040).
-      stampImportedDomainIds(target, log);
 
       // Inside the transaction, in the legacy database, on this connection.
       writeMarker(target, result.totalCopied);
@@ -621,14 +628,14 @@ function copyTable(
  * a failure here must roll the whole import back rather than leave a half-stamped table.
  * Collisions cannot arise because the import only ever runs into an empty `mcx.db`.
  */
-function stampImportedDomainIds(target: Database, log: (msg: string) => void): void {
+function stampImportedDomainIds(target: Database, log: (msg: string) => void): string[] {
   const domains = target
     .query<{ id: number; name: string; host: string | null; path: string; created_at: string }, []>(
       "SELECT id, name, host, path, created_at FROM domains",
     )
     .all()
     .map((r): Domain => ({ id: r.id, name: r.name, host: r.host, path: r.path, createdAt: r.created_at }));
-  if (domains.length === 0) return;
+  if (domains.length === 0) return [];
 
   const idFor = (root: string): number => {
     try {
@@ -639,6 +646,8 @@ function stampImportedDomainIds(target: Database, log: (msg: string) => void): v
       return NO_DOMAIN_ID;
     }
   };
+
+  const failures: string[] = [];
 
   for (const { table, rootExpr } of [
     { table: "alias_state", rootExpr: "repo_root" },
@@ -662,11 +671,17 @@ function stampImportedDomainIds(target: Database, log: (msg: string) => void): v
       }
       if (stamped > 0) log(`[domain-import] ${table}: stamped ${stamped} row(s) with a domain`);
     } catch (err) {
-      // A table the copy already flagged as failed (the marker is withheld either way).
-      // Must not abort the stamping of the other one.
+      // Reported, NOT swallowed (#3040 review R4). This used to log-and-continue, which
+      // let one table stamp and another not, and the run still sealed. The caller folds
+      // this into failedTables so the whole import rolls back and retries — the same
+      // treatment a failed copy gets. Collecting rather than throwing means the second
+      // table is still attempted, so the log names every problem, not just the first.
+      failures.push(table);
       log(`[domain-import] ${table}: could not stamp domain ids — ${errText(err)}`);
     }
   }
+
+  return failures;
 }
 
 /**

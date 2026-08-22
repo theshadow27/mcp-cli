@@ -273,6 +273,10 @@ export class EventStreamServer {
     // which is the worst possible failure for a monitoring surface.
     const domainName = url.searchParams.get("domain");
     let replayDomainId: number | undefined;
+    // Replay overlays the domain NAME from the id, because the filter matches on the
+    // name and rows stamped by the import have only the id (#3040 review R2).
+    const resolver = this.eventBus?.domainResolver;
+    const nameForId = resolver ? (id: number) => resolver.nameForId(id) : undefined;
     if (domainName !== null && domainName !== "") {
       const resolved = this.eventBus?.domainResolver.idForName(domainName) ?? null;
       if (resolved === null) {
@@ -417,7 +421,7 @@ export class EventStreamServer {
               let cursor = sinceSeq;
               const batchSize = EventStreamServer.BACKFILL_BATCH_SIZE;
               while (true) {
-                const batch = eventLog.getSince(cursor, batchSize, { domainId: replayDomainId });
+                const batch = eventLog.getSince(cursor, batchSize, { domainId: replayDomainId, nameForId });
                 for (const event of batch) {
                   highWaterMark = event.seq;
                   if (!shouldDeliver(event)) continue;
@@ -626,7 +630,7 @@ export class EventStreamServer {
           liveBuffer = [];
           let cursor = sinceSeq;
           while (true) {
-            const batch = eventLog.getSince(cursor, 1000, { domainId: replayDomainId });
+            const batch = eventLog.getSince(cursor, 1000, { domainId: replayDomainId, nameForId });
             for (const event of batch) {
               highWaterMark = event.seq;
               if (!shouldDeliverFallback(event as Record<string, unknown>)) continue;

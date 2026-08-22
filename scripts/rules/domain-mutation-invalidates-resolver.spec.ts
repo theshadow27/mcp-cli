@@ -42,6 +42,57 @@ return { domain };`),
     expect(violations).toHaveLength(0);
   });
 
+  // ── Bypasses that used to report clean (#3040 review R5) ──
+
+  it("an UNRELATED receiver's .invalidate() does not silence the rule", () => {
+    // The exact reported reproduction: file-wide boolean, no receiver check → 0 violations.
+    const violations = evaluate(makeFile("db.createDomain(a, b);\nunrelatedCache.invalidate();"));
+    expect(violations).toHaveLength(1);
+  });
+
+  it("invalidating BEFORE the mutation does not count — the memo is stale again after", () => {
+    const violations = evaluate(makeFile("domains.invalidate();\ndb.createDomain(a, b);"));
+    expect(violations).toHaveLength(1);
+  });
+
+  it("an invalidate in a DIFFERENT function does not cover this mutation", () => {
+    const violations = evaluate(
+      makeFile(`export function add(name: string, path: string) {
+  db.createDomain(name, path);
+}
+export function unrelated() {
+  domains.invalidate();
+}`),
+    );
+    expect(violations).toHaveLength(1);
+  });
+
+  it("accepts a resolver-named receiver invalidating after, in the same function", () => {
+    for (const receiver of ["domains", "domainResolver", "this.domains", "this.domainResolver"]) {
+      const violations = evaluate(
+        makeFile(`export function add(n: string, p: string) {
+  db.createDomain(n, p);
+  ${receiver}.invalidate();
+}`),
+      );
+      expect(violations, receiver).toHaveLength(0);
+    }
+  });
+
+  it("flags only the uncovered mutation when a file has both", () => {
+    const violations = evaluate(
+      makeFile(`export function good(n: string, p: string) {
+  db.createDomain(n, p);
+  domains.invalidate();
+}
+export function bad(n: string) {
+  db.deleteDomain(n);
+}`),
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].snippet).toContain("deleteDomain");
+  });
+
   it("says nothing about a file that never touches the domains table", () => {
     expect(evaluate(makeFile("const id = this.domains.idForPath(repoRoot);"))).toHaveLength(0);
   });

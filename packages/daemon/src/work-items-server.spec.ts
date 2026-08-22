@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
@@ -1159,7 +1160,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1185,7 +1186,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 20 } });
@@ -1208,7 +1209,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-"));
@@ -1241,7 +1242,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-inv-"));
@@ -1274,7 +1275,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 99 } });
@@ -1292,7 +1293,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, raw, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 10 } });
@@ -1310,7 +1311,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1342,7 +1343,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
@@ -1360,7 +1361,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 } });
@@ -1389,7 +1390,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 7 } });
@@ -1419,7 +1420,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 8 } });
@@ -1437,7 +1438,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const result = await client.callTool({
@@ -1472,7 +1473,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
@@ -1492,7 +1493,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 6 } });
@@ -1510,7 +1511,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 9 } });
@@ -1533,7 +1534,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
@@ -1557,7 +1558,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 101 } });
@@ -1576,7 +1577,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 102 } });
@@ -1594,7 +1595,7 @@ describe("phase_state tools", () => {
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 103 } });

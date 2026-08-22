@@ -708,7 +708,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // One resolver for the whole daemon (#3040): the EventBus stamps every event with it
   // and the IPC server partitions alias_state with it, so "which domain owns this path"
   // has a single answer and a single memo to invalidate.
-  const domainResolver = createDomainResolver(db);
+  // The daemon serves exactly one repo today — detected from its startup cwd. Named once
+  // here so the several producers that need to state their domain all cite the same value
+  // rather than each recomputing `resolve(process.cwd())` under a different name.
+  // Epic B (domain servers) is what makes this per-domain rather than per-daemon.
+  const daemonRepoRoot = resolveRealpath(resolve(process.cwd()));
+
+  const domainResolver = createDomainResolver({
+    listDomains: () => db.listDomains(),
+    // 80% of the daemon's events carry a sessionId and almost none carry a repoRoot
+    // (#3040 review R3), so the session's own recorded root is what actually partitions
+    // the traffic. Becomes a direct `agent_sessions.domain_id` read once #3038 lands.
+    getSessionRepoRoot: (sessionId) => db.getSession(sessionId)?.repoRoot ?? null,
+  });
   const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
 
@@ -816,7 +828,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
+      const automationRepoRoot = daemonRepoRoot;
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
@@ -950,7 +962,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
-  claudeServer.onMonitorEvent = (input) => mailEventBus.publish(input);
+  // Work-item and CI events from the daemon's own pollers carry only a prNumber/branch:
+  // `work_items` has no repo column and no domain_id writer yet (#3036/#3037), so there
+  // is nothing on the event to resolve. The daemon polls exactly one repo, so it declares
+  // that root here rather than leaving ~19% of the traffic un-domained (#3040 review R3).
+  // A producer that already said which repo it means is left alone.
+  claudeServer.onMonitorEvent = (input) =>
+    mailEventBus.publish(
+      input.repoRoot === undefined &&
+        input.sessionId === undefined &&
+        (input.category === "work_item" || input.category === "ci")
+        ? { ...input, repoRoot: daemonRepoRoot }
+        : input,
+    );
   if (codexServer) {
     codexServer.onActivity = () => resetIdleTimer();
   }
@@ -1222,7 +1246,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           });
 
           workItemsServer = new WorkItemsServer(workItemDb, {
-            stateDb: db,
+            // Bundled with the resolver so `_work_items` phase_state_* partitions on the
+            // same domain `ctx.state` does. These were split-brain until #3040 review R1.
+            phaseState: { store: db, domainIdFor: (repoRoot) => domainResolver.idForPath(repoRoot) },
             onTrack: () => workItemPoller?.pollNow(),
             loadManifest: (repoRoot) => {
               try {
@@ -1266,7 +1292,18 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             workItemDb,
             stateDb: db,
             logger,
-            onEvent: (event) => {
+            onEvent: (rawEvent) => {
+              // Same reasoning as the work-item poller: these are repo-scoped events
+              // (review, issue, PR comments) from a poller bound to the daemon's one
+              // repo, and they key only on prNumber — so the producer states its root
+              // rather than publishing un-domained (#3040 review R3).
+              // Only when the event names no other identity: `repoRoot` outranks `sessionId`
+              // in the bus's precedence, so stamping over a session-bearing event could
+              // attribute it to the wrong domain.
+              const event =
+                rawEvent.repoRoot === undefined && rawEvent.sessionId === undefined
+                  ? { ...rawEvent, repoRoot: daemonRepoRoot }
+                  : rawEvent;
               if (event.event === PR_REVIEW_COMMENT_POSTED) {
                 const key = `${event.event}:${event.prNumber}:${event.author}`;
                 mailEventBus.publishCoalesced(event, key, {
@@ -1318,6 +1355,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       category: "ci" as const,
       prNumber: event.prNumber,
       workItemId: event.workItemId,
+      // The producer states its own domain rather than leaving it to be inferred
+      // (#3040 review R3). CI events key only on prNumber/workItemId, and `work_items`
+      // has no repo column or domain_id writer yet (#3036/#3037) — so until it does,
+      // the daemon's own root is the honest answer: this poller polls exactly one repo,
+      // detected from the daemon's cwd at startup.
+      repoRoot: daemonRepoRoot,
     };
     const coalesceKey = `ci:${event.prNumber}`;
 

@@ -97,18 +97,116 @@ describe("createDomainResolver", () => {
     expect(r.idForName("late")).toBe(7);
   });
 
-  test("the memo is bounded — unbounded distinct paths do not grow it without limit", () => {
-    const src = countingSource([domain(3, "phoenix", "/tmp/phoenix")]);
-    const r = createDomainResolver(src);
-    // 1024 is the cap; 2000 distinct paths must not wedge or leak.
-    for (let i = 0; i < 2000; i++) r.idForPath(`/tmp/phoenix/p${i}`);
+  // The previous version of this test looped 2000 paths and then asserted
+  // idForPath(...) === 3, which passes identically with the cap deleted, set to 1, or
+  // the memo removed entirely — it asserted the conclusion, not the premise
+  // (#3040 review R6). These drive the bound and observe it.
+  test("the memo never exceeds the configured cap", () => {
+    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 4 });
+    for (let i = 0; i < 40; i++) {
+      r.idForPath(`/tmp/phoenix/p${i}`);
+      expect(r.memoSize()).toBeLessThanOrEqual(4);
+    }
+  });
+
+  test("the memo actually grows before it is cleared — the cap is doing something", () => {
+    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 4 });
+    expect(r.memoSize()).toBe(0);
+    r.idForPath("/tmp/phoenix/a");
+    r.idForPath("/tmp/phoenix/b");
+    expect(r.memoSize()).toBe(2);
+    r.idForPath("/tmp/phoenix/c");
+    r.idForPath("/tmp/phoenix/d");
+    expect(r.memoSize()).toBe(4);
+    // Fifth distinct path trips the cap: cleared, then the new entry recorded.
+    r.idForPath("/tmp/phoenix/e");
+    expect(r.memoSize()).toBe(1);
+  });
+
+  test("answers stay correct across an overflow clear", () => {
+    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 2 });
+    for (let i = 0; i < 20; i++) r.idForPath(`/tmp/phoenix/p${i}`);
     expect(r.idForPath("/tmp/phoenix/p0")).toBe(3);
+    expect(r.idForPath("/var/outside")).toBe(NO_DOMAIN_ID);
+  });
+
+  test("invalidate() empties the memo observably", () => {
+    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] });
+    r.idForPath("/tmp/phoenix/a");
+    expect(r.memoSize()).toBeGreaterThan(0);
+    r.invalidate();
+    expect(r.memoSize()).toBe(0);
+  });
+});
+
+describe("createDomainResolver — session identity (#3040 review R3)", () => {
+  const DOMAINS = [domain(3, "phoenix", "/tmp/phoenix"), domain(7, "clrg", "/tmp/clrg")];
+
+  function withSessions(sessions: Record<string, string | null>) {
+    let lookups = 0;
+    return {
+      listDomains: () => DOMAINS,
+      getSessionRepoRoot: (id: string) => {
+        lookups++;
+        return sessions[id] ?? null;
+      },
+      get lookups() {
+        return lookups;
+      },
+    };
+  }
+
+  test("resolves a session to the domain of the root that session recorded", () => {
+    const r = createDomainResolver(withSessions({ s1: "/tmp/phoenix/pkg", s2: "/tmp/clrg" }));
+    expect(r.idForSession("s1")).toBe(3);
+    expect(r.idForSession("s2")).toBe(7);
+  });
+
+  test("an unknown or rootless session is the sentinel, not a guess", () => {
+    const r = createDomainResolver(withSessions({ s1: null }));
+    expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
+    expect(r.idForSession("never-seen")).toBe(NO_DOMAIN_ID);
+    expect(r.idForSession(undefined)).toBe(NO_DOMAIN_ID);
+    expect(r.idForSession("")).toBe(NO_DOMAIN_ID);
+  });
+
+  test("a session whose root is outside every domain is the sentinel", () => {
+    const r = createDomainResolver(withSessions({ s1: "/var/elsewhere" }));
+    expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
+  });
+
+  test("session lookups are memoized — one DB read per session, not per event", () => {
+    const src = withSessions({ s1: "/tmp/phoenix" });
+    const r = createDomainResolver(src);
+    for (let i = 0; i < 25; i++) r.idForSession("s1");
+    expect(src.lookups).toBe(1);
+  });
+
+  test("a source with no session lookup degrades to the sentinel rather than throwing", () => {
+    const r = createDomainResolver({ listDomains: () => DOMAINS });
+    expect(() => r.idForSession("s1")).not.toThrow();
+    expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
+  });
+
+  test("invalidate() clears session memo too", () => {
+    const sessions: Record<string, string | null> = { s1: null };
+    const r = createDomainResolver({
+      listDomains: () => DOMAINS,
+      getSessionRepoRoot: (id: string) => sessions[id] ?? null,
+    });
+    expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
+    sessions.s1 = "/tmp/phoenix";
+    expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID); // memoized
+    r.invalidate();
+    expect(r.idForSession("s1")).toBe(3);
   });
 });
 
 describe("NULL_DOMAIN_RESOLVER", () => {
   test("answers the sentinel for everything, so a daemon with no domain table is well-defined", () => {
     expect(NULL_DOMAIN_RESOLVER.idForPath("/tmp/anything")).toBe(NO_DOMAIN_ID);
+    expect(NULL_DOMAIN_RESOLVER.idForSession("s1")).toBe(NO_DOMAIN_ID);
+    expect(NULL_DOMAIN_RESOLVER.memoSize()).toBe(0);
     expect(NULL_DOMAIN_RESOLVER.idForName("phoenix")).toBeNull();
     expect(NULL_DOMAIN_RESOLVER.nameForId(3)).toBeNull();
     expect(() => NULL_DOMAIN_RESOLVER.invalidate()).not.toThrow();

@@ -37,6 +37,44 @@ const MUTATORS = new Set(["createDomain", "renameDomain", "deleteDomain"]);
 const INVALIDATORS = new Set(["invalidate"]);
 
 /**
+ * Does this receiver plausibly name a domain resolver?
+ *
+ * A file-wide "someone called .invalidate() somewhere" is not a check — it silenced the
+ * rule on the exact input it exists to catch (#3040 review R5): `db.createDomain(a, b)`
+ * next to an unrelated `someCache.invalidate()` reported clean. The receiver has to look
+ * like the thing whose memo is stale, which in this codebase is spelled `domains`,
+ * `domainResolver`, or `this.domains`.
+ */
+function isResolverReceiver(expr: ts.Expression, sf: ts.SourceFile): boolean {
+  const text = expr.getText(sf).toLowerCase();
+  return text.includes("domain") || text.includes("resolver");
+}
+
+/**
+ * The function body enclosing `node`, or the SourceFile for a top-level statement.
+ *
+ * Used so an `invalidate()` in a *different* function does not count as covering a
+ * mutation over here — "somewhere in this file" is not the same claim as "on this path".
+ */
+function enclosingScope(node: ts.Node): ts.Node {
+  let cur: ts.Node | undefined = node.parent;
+  while (cur) {
+    if (
+      ts.isFunctionDeclaration(cur) ||
+      ts.isFunctionExpression(cur) ||
+      ts.isArrowFunction(cur) ||
+      ts.isMethodDeclaration(cur) ||
+      ts.isConstructorDeclaration(cur) ||
+      ts.isSourceFile(cur)
+    ) {
+      return cur;
+    }
+    cur = cur.parent;
+  }
+  return node.getSourceFile();
+}
+
+/**
  * The resolver itself and the `db/` layer are where these methods are *defined*; the
  * rule is about *callers* elsewhere in the daemon.
  */
@@ -66,22 +104,33 @@ const rule: CheckRule = {
     if (isExempt(file.relPath)) return;
     checked();
 
-    const calls = ast.find(ts.isCallExpression);
+    const sf = ast.sourceFile;
     const mutations: ts.CallExpression[] = [];
-    let invalidates = false;
+    const invalidations: ts.CallExpression[] = [];
 
-    for (const call of calls) {
+    for (const call of ast.find(ts.isCallExpression)) {
       if (!ts.isPropertyAccessExpression(call.expression)) continue;
       const name = call.expression.name.text;
-      if (MUTATORS.has(name)) mutations.push(call);
-      if (INVALIDATORS.has(name)) invalidates = true;
+      if (MUTATORS.has(name)) {
+        mutations.push(call);
+      } else if (INVALIDATORS.has(name) && isResolverReceiver(call.expression.expression, sf)) {
+        invalidations.push(call);
+      }
     }
 
-    if (mutations.length === 0 || invalidates) return;
+    if (mutations.length === 0) return;
 
-    for (const call of mutations) {
-      const { line, column } = ast.positionOf(call);
-      violated(line, column, call.getText(ast.sourceFile).split("\n")[0] ?? "");
+    for (const mutation of mutations) {
+      const scope = enclosingScope(mutation);
+      // Must be a resolver-looking receiver, in the same function, AFTER the mutation.
+      // Ordering matters: invalidating and then mutating leaves the memo just as stale.
+      const covered = invalidations.some(
+        (inv) => enclosingScope(inv) === scope && inv.getStart(sf) > mutation.getStart(sf),
+      );
+      if (covered) continue;
+
+      const { line, column } = ast.positionOf(mutation);
+      violated(line, column, mutation.getText(sf).split("\n")[0] ?? "");
     }
   },
 };

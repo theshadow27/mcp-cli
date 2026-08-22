@@ -112,6 +112,30 @@ describe("GET /events domain scoping", () => {
     expect(got.map((e) => e.domainId)).toEqual([3, 7, NO_DOMAIN_ID]);
   });
 
+  // #3040 review R2: getSince overlaid the id but not the NAME, and shouldDeliver matches
+  // on the name. So a row whose domain_id was set by UPDATE (everything the import stamps)
+  // passed the SQL filter and was then silently dropped by the name matcher. This test
+  // fails without the name overlay: the stream yields nothing.
+  test("a row stamped by UPDATE — id but no name — still reaches a -d subscriber", async () => {
+    const { server, bus } = setup();
+    const db = dbs[dbs.length - 1];
+    if (!db) throw new Error("expected a database");
+
+    // Publish un-domained, then stamp the domain the way the import does: by UPDATE.
+    // The payload JSON therefore has no `domain` name anywhere in it.
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item" });
+    db.run("UPDATE monitor_events SET domain_id = 3");
+    const stored = db.query<{ payload: string }, []>("SELECT payload FROM monitor_events").get();
+    expect(JSON.parse(stored?.payload ?? "{}").domain).toBeUndefined();
+
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?since=0&domain=phoenix"));
+    expect(res.status).toBe(200);
+    const got = await drain(res, 1);
+    expect(got.map((e) => e.event)).toEqual(["pr.merged"]);
+    expect(got[0]?.domain).toBe("phoenix");
+    expect(got[0]?.domainId).toBe(3);
+  });
+
   test("live events are filtered by domain too, not just replay", async () => {
     const { server, bus } = setup();
     const res = server.handleEventsNDJSON(new URL("http://localhost/events?domain=clrg"));

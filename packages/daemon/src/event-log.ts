@@ -118,7 +118,11 @@ export class EventLog {
    * cost a scan of every other domain's events, and it is the query
    * `idx_monitor_events_domain(domain_id, seq)` exists to serve.
    */
-  getSince(afterSeq: number, limit = 1000, opts?: { events?: readonly string[]; domainId?: number }): MonitorEvent[] {
+  getSince(
+    afterSeq: number,
+    limit = 1000,
+    opts?: { events?: readonly string[]; domainId?: number; nameForId?: (id: number) => string | null },
+  ): MonitorEvent[] {
     const where: string[] = ["seq > ?"];
     const params: (string | number)[] = [afterSeq];
 
@@ -142,14 +146,30 @@ export class EventLog {
     // Overlay the authoritative seq and domain_id from the DB columns — the payload
     // stores a seq=0 placeholder, and rows written before #3040 have no domainId in
     // their JSON at all, so the column is the only honest source for both.
+    //
+    // The NAME must be overlaid alongside the id (#3040 review R2). The server-side
+    // filter matches on `event.domain`, the name — so a row whose domain_id was set by
+    // an UPDATE rather than by EventBus.publish (everything stampImportedDomainIds
+    // touches) has the id and no name, passes the SQL domain filter, and is then
+    // silently dropped by the name matcher. Overlaying both keeps the two representations
+    // from disagreeing about the same row.
+    //
     // Enrich on read so rows written before summary/severity existed still satisfy the contract.
-    return rows.map((r) =>
-      enrichMonitorEvent({
-        ...(JSON.parse(r.payload) as MonitorEvent),
+    const nameForId = opts?.nameForId;
+    return rows.map((r) => {
+      const parsed = JSON.parse(r.payload) as MonitorEvent;
+      // When a resolver is supplied it is authoritative for the name: it fills one in for
+      // rows stamped by UPDATE (which have none) and drops a stale one left by a rename.
+      // Without a resolver the payload's name is left untouched — an overlay that cannot
+      // resolve must not destroy the only copy of the information it was meant to correct.
+      const overlay = nameForId ? { domain: nameForId(r.domain_id) ?? undefined } : {};
+      return enrichMonitorEvent({
+        ...parsed,
         seq: r.seq,
         domainId: r.domain_id,
-      }),
-    );
+        ...overlay,
+      });
+    });
   }
 
   prune(olderThan: Date): number {
