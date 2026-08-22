@@ -1,7 +1,7 @@
 /**
  * Phase transition graph enforcement (issue #1293).
  *
- * Pure validator + append-only transition log. Given a manifest and the
+ * Pure validator over an append-only transition log. Given a manifest and the
  * history of transitions for a work item, decides whether a proposed
  * `from → target` move is allowed, and classifies failures into three
  * specific errors instead of one generic "invalid transition":
@@ -13,60 +13,43 @@
  * `--force <message>` bypasses (2) and (3) but never (1). The message is
  * required (enforced by the caller) and recorded in the log entry so the
  * reasoning is preserved alongside the transition itself.
+ *
+ * Storage lives in `./transition-store` (SQLite, see #1328/#1372/#1375) and is
+ * re-exported here so callers keep a single import site.
  */
 
-import { randomBytes } from "node:crypto";
-import {
-  appendFileSync,
-  closeSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-  writeSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
 import type { Manifest } from "./manifest";
+import {
+  type OnCorruptLine,
+  type TransitionLogEntry,
+  appendTransitionLog,
+  isCommitted,
+  withTransitionWriter,
+} from "./transition-store";
 
-/**
- * Lifecycle status of a transition log entry.
- *
- * - `"attempted"`: intent was logged but the phase handler has not (yet)
- *   committed. Written before branch-guard / handler dispatch so attempts
- *   from feature branches or crashed handlers leave an audit trail.
- *   IGNORED by regression / graph-walk checks.
- * - `"committed"`: the phase handler ran to completion and the transition
- *   is now part of the work item's authoritative history.
- *
- * Legacy entries (written before issue #1381 re-entry fix) omit `status`;
- * readers treat missing `status` as `"committed"` for back-compat so old
- * logs continue to gate transitions the same way.
- */
-export type TransitionStatus = "attempted" | "committed";
-
-/** One record in the transition log. JSONL on disk. */
-export interface TransitionLogEntry {
-  /** ISO-8601 UTC timestamp. */
-  ts: string;
-  /** Work-item identifier, or null if transitioning outside a work item. */
-  workItemId: string | null;
-  /** Source phase; null for the very first transition (initial). */
-  from: string | null;
-  /** Target phase (guaranteed to be a declared phase). */
-  to: string;
-  /** When `--force` was used, the justification text. */
-  forceMessage?: string;
-  /** Two-phase commit status. Missing → "committed" (legacy). */
-  status?: TransitionStatus;
-}
-
-/** True when `entry` should gate future transitions (committed or legacy). */
-export function isCommitted(entry: TransitionLogEntry): boolean {
-  return entry.status !== "attempted";
-}
+export {
+  type MigrationReport,
+  type OnCorruptLine,
+  type OnMigrate,
+  type OnWarn,
+  type ReadAllOptions,
+  type ReadHistoryOptions,
+  type StoreOptions,
+  type TransitionLogEntry,
+  type TransitionStatus,
+  type TransitionWriter,
+  TransitionLockBusyError,
+  appendTransitionLog,
+  defaultOnCorruptLine,
+  defaultOnMigrate,
+  defaultOnWarn,
+  isCommitted,
+  pruneStaleHistory,
+  readAllTransitions,
+  readTransitionHistory,
+  transitionDbPath,
+  withTransitionWriter,
+} from "./transition-store";
 
 export class UnknownPhaseError extends Error {
   constructor(
@@ -233,148 +216,9 @@ export function validateTransition(input: ValidateTransitionInput): {
   return { from, target, forced: false };
 }
 
-/**
- * Called once per corrupt JSONL line encountered. `lineNumber` is 1-based.
- * Default: warn to stderr so silent log rot is visible (issue #1328).
- */
-export type OnCorruptLine = (lineNumber: number, line: string, err: unknown) => void;
-
-function defaultOnCorruptLine(logPath: string): OnCorruptLine {
-  return (lineNumber, line, err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    const preview = line.length > 80 ? `${line.slice(0, 77)}...` : line;
-    process.stderr.write(`warn: corrupt transition log line ${logPath}:${lineNumber} (${msg}): ${preview}\n`);
-  };
-}
-
-/**
- * Read all transition log entries for a work item from a JSONL file.
- * Missing file → empty array. Malformed lines are passed to `onCorrupt`
- * (default: warn to stderr with line number) so corruption is visible
- * rather than silently swallowed.
- */
-export function readTransitionHistory(
-  logPath: string,
-  workItemId: string | null,
-  onCorrupt: OnCorruptLine = defaultOnCorruptLine(logPath),
-): TransitionLogEntry[] {
-  let text: string;
-  try {
-    text = readFileSync(logPath, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
-    throw err;
-  }
-  const out: TransitionLogEntry[] = [];
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line) as TransitionLogEntry;
-      if (entry && entry.workItemId === workItemId) out.push(entry);
-    } catch (err) {
-      onCorrupt(i + 1, line, err);
-    }
-  }
-  return out;
-}
-
-/**
- * Read every transition log entry from a JSONL file, oldest first.
- * Missing file → empty array. Malformed lines are warned to stderr and skipped.
- */
-export function readAllTransitions(logPath: string): TransitionLogEntry[] {
-  let text: string;
-  try {
-    text = readFileSync(logPath, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
-    throw err;
-  }
-  const out: TransitionLogEntry[] = [];
-  const lines = text.split("\n");
-  const onCorrupt = defaultOnCorruptLine(logPath);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    try {
-      out.push(JSON.parse(line) as TransitionLogEntry);
-    } catch (err) {
-      onCorrupt(i + 1, line, err);
-    }
-  }
-  return out;
-}
-
-/**
- * Replace `path` with `content` atomically: write to a temp file in the
- * same directory, then `rename(2)` over the target. Readers see either the
- * old file or the new file, never a truncated/partial write (issue #2685).
- *
- * `writeFn` is injectable for crash-mid-write tests (DI, not mock.module).
- */
-export function atomicWriteFileSync(
-  path: string,
-  content: string,
-  writeFn: (path: string, content: string, encoding: "utf-8") => void = writeFileSync,
-): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmpPath = join(dirname(path), `.tmp-${randomBytes(6).toString("hex")}`);
-  try {
-    writeFn(tmpPath, content, "utf-8");
-    renameSync(tmpPath, path);
-  } catch (err) {
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // best effort — temp may not exist
-    }
-    throw err;
-  }
-}
-
-/**
- * Remove stale transition log entries for a work item whose incarnation
- * predates `cutoff`. Used by `mcx track` to clear history from prior
- * sprints so a re-tracked item starts with a clean slate (issue #2463).
- *
- * Returns the number of entries pruned. Acquires `withTransitionLock` so
- * concurrent phase runs can't race with the rewrite.
- */
-export function pruneStaleHistory(logPath: string, workItemId: string, cutoff: Date): number {
-  return withTransitionLock(logPath, () => {
-    const all = readAllTransitions(logPath);
-    if (all.length === 0) return 0;
-
-    const cutoffMs = cutoff.getTime();
-    const kept: TransitionLogEntry[] = [];
-    let pruned = 0;
-    for (const entry of all) {
-      if (entry.workItemId === workItemId && new Date(entry.ts).getTime() < cutoffMs) {
-        pruned++;
-      } else {
-        kept.push(entry);
-      }
-    }
-
-    if (pruned === 0) return 0;
-
-    const content = kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length > 0 ? "\n" : "");
-    atomicWriteFileSync(logPath, content);
-    return pruned;
-  });
-}
-
 /** Return the `to` field of every history entry, oldest first. */
 export function historyTargets(entries: readonly TransitionLogEntry[]): string[] {
   return entries.map((e) => e.to);
-}
-
-/** Append one transition entry to the JSONL log. Creates parent dir if needed. */
-export function appendTransitionLog(logPath: string, entry: TransitionLogEntry): void {
-  mkdirSync(dirname(logPath), { recursive: true });
-  appendFileSync(logPath, `${JSON.stringify(entry)}\n`, "utf-8");
 }
 
 /**
@@ -408,96 +252,6 @@ export function appendAttempt(
   return entry;
 }
 
-/**
- * Acquire an exclusive lockfile sidecar for `logPath`, run `fn`, then release.
- *
- * Uses O_EXCL to atomically create `<logPath>.lock`. If contended, polls
- * with jittered backoff up to `timeoutMs`. Stale locks (older than
- * `staleMs`) are reaped to survive crashed holders.
- *
- * Scope: wraps the full read-validate-append cycle so concurrent
- * `mcx phase run` invocations for the same work item can't interleave
- * (issue #1328).
- */
-export function withTransitionLock<T>(
-  logPath: string,
-  fn: () => T,
-  opts: { timeoutMs?: number; staleMs?: number } = {},
-): T {
-  const timeoutMs = opts.timeoutMs ?? 5000;
-  const staleMs = opts.staleMs ?? 30_000;
-  const lockPath = `${logPath}.lock`;
-  mkdirSync(dirname(logPath), { recursive: true });
-
-  // Nonce written into the lock body so we can verify ownership before unlinking.
-  // Prevents our finally from deleting a lock acquired by another process if fn()
-  // runs longer than staleMs and our lock was reaped while we were inside fn().
-  const nonce = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-
-  const deadline = Date.now() + timeoutMs;
-  let fd: number | null = null;
-  while (fd === null) {
-    try {
-      fd = openSync(lockPath, "wx");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
-      try {
-        const age = Date.now() - statSync(lockPath).mtimeMs;
-        if (age > staleMs) {
-          try {
-            unlinkSync(lockPath);
-          } catch {
-            // lost the race; fall through and retry
-          }
-          continue;
-        }
-      } catch (statErr) {
-        if ((statErr as NodeJS.ErrnoException)?.code !== "ENOENT") throw statErr;
-        // lock disappeared between EEXIST and stat; retry
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `could not acquire transition lock ${lockPath} within ${timeoutMs}ms — another phase run is in progress`,
-        );
-      }
-      const sleep = 10 + Math.floor(Math.random() * 40);
-      Bun.sleepSync(sleep);
-    }
-  }
-
-  // Write nonce so we can verify ownership in finally.
-  try {
-    writeSync(fd, nonce);
-  } catch {
-    // write failed; proceed — lock is held but we can't verify in finally
-  }
-
-  try {
-    const result = fn();
-    if (result instanceof Promise) {
-      // Lock would be released before the async work completes. Reject loudly.
-      throw new Error("withTransitionLock: fn must be synchronous (returned a Promise)");
-    }
-    return result;
-  } finally {
-    try {
-      closeSync(fd);
-    } catch {
-      // best effort
-    }
-    // Only unlink if the lock still belongs to us. If fn() took longer than
-    // staleMs another process may have reaped our lock and written their nonce.
-    try {
-      if (readFileSync(lockPath, "utf-8") === nonce) {
-        unlinkSync(lockPath);
-      }
-    } catch {
-      // best effort — stale lock will be reaped by the next waiter
-    }
-  }
-}
-
 export interface CommitTransitionInput {
   manifest: Manifest;
   /** Explicit `from`; if null, inferred from the tail of the history. */
@@ -508,11 +262,9 @@ export interface CommitTransitionInput {
   manifestPath?: string;
   /** Timestamp supplier; defaults to `new Date()`. */
   now?: () => Date;
-  /** Lock timeout passthrough. */
+  /** How long to wait for a contended write lock before failing. */
   timeoutMs?: number;
-  /** Stale-lock reaping threshold passthrough. */
-  staleMs?: number;
-  /** Corrupt-line sink, passed through to `readTransitionHistory`. */
+  /** Corrupt-line sink for the one-time legacy jsonl import. */
   onCorrupt?: OnCorruptLine;
 }
 
@@ -524,22 +276,25 @@ export interface CommitTransitionResult {
 }
 
 /**
- * Atomic read-validate-append. Holds an exclusive lock around the full
- * cycle so concurrent invocations can't observe the same history snapshot
- * and double-append (issue #1328).
+ * Atomic read-validate-append.
+ *
+ * The whole cycle runs inside one SQLite write transaction, so two concurrent
+ * invocations for the same work item cannot both validate against the same
+ * history snapshot and double-append (issue #1328). The second writer blocks on
+ * the write lock and then sees the first writer's entry.
  *
  * Callers that only need validation with no side effects should use
  * `validateTransition` directly.
  */
 export function commitTransition(logPath: string, input: CommitTransitionInput): CommitTransitionResult {
-  const { manifest, target, workItemId, force = null, manifestPath, now, timeoutMs, staleMs, onCorrupt } = input;
+  const { manifest, target, workItemId, force = null, manifestPath, now, timeoutMs, onCorrupt } = input;
 
-  return withTransitionLock(
+  return withTransitionWriter(
     logPath,
-    () => {
+    (writer) => {
       // Validation considers only committed entries; "attempted" entries
       // are audit-only and must not gate future transitions (#1407).
-      const history = readTransitionHistory(logPath, workItemId, onCorrupt).filter(isCommitted);
+      const history = writer.history(workItemId).filter(isCommitted);
       const targets = historyTargets(history);
 
       let from = input.from;
@@ -566,10 +321,10 @@ export function commitTransition(logPath: string, input: CommitTransitionInput):
         status: "committed",
         ...(force ? { forceMessage: force.message } : {}),
       };
-      appendTransitionLog(logPath, entry);
+      writer.insert(entry);
 
       return { from: decision.from, target: decision.target, forced: decision.forced, entry };
     },
-    { timeoutMs, staleMs },
+    { ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...(onCorrupt !== undefined ? { onCorrupt } : {}) },
   );
 }
