@@ -155,6 +155,18 @@ export const SITE_TOOLS: SiteToolDef[] = [
             "'cookie' routes the fetch through the browser page context so cookies are included automatically. " +
             "'auto' tries bearer first, falls back to cookie when the vault is empty.",
         },
+        retryOn: {
+          type: "object",
+          properties: {
+            status: { type: "array", items: { type: "number" } },
+            responseHeaderPresent: { type: "string" },
+          },
+          description:
+            "Response signals beyond 401 that trigger wiggle + retry; omit for 401-only. " +
+            "When both fields are set, both must match. " +
+            'e.g. {"status":[500],"responseHeaderPresent":"x-owa-error"} for APIs that answer ' +
+            "stale session headers with a 5xx.",
+        },
       },
       required: ["site", "name", "url"],
     },

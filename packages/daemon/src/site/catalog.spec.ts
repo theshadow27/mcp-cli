@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
-import { loadCatalog, removeCall, upsertCall } from "./catalog";
+import { loadCatalog, normalizeRetryOn, removeCall, upsertCall } from "./catalog";
 
 let tmp: string;
 
@@ -43,5 +43,47 @@ describe("catalog", () => {
     upsertCall("persist", { name: "two", method: "POST", url: "https://persist.example/b" });
     const cat = loadCatalog("persist");
     expect(Object.keys(cat).sort()).toEqual(["one", "two"]);
+  });
+
+  test("retryOn survives an upsert round-trip", () => {
+    upsertCall("demo", {
+      name: "stale_prone",
+      method: "POST",
+      url: "https://demo.example/service.svc",
+      retryOn: { status: [500], responseHeaderPresent: "x-owa-error" },
+    });
+    expect(loadCatalog("demo").stale_prone?.retryOn).toEqual({
+      status: [500],
+      responseHeaderPresent: "x-owa-error",
+    });
+  });
+});
+
+describe("normalizeRetryOn", () => {
+  test("passes through a well-formed retryOn", () => {
+    expect(normalizeRetryOn({ status: [500], responseHeaderPresent: "x-owa-error" })).toEqual({
+      status: [500],
+      responseHeaderPresent: "x-owa-error",
+    });
+  });
+
+  test("accepts either field alone", () => {
+    expect(normalizeRetryOn({ status: [500, 503] })).toEqual({ status: [500, 503] });
+    expect(normalizeRetryOn({ responseHeaderPresent: "x-stale" })).toEqual({ responseHeaderPresent: "x-stale" });
+  });
+
+  test("returns undefined for absent or unusable input", () => {
+    expect(normalizeRetryOn(undefined)).toBeUndefined();
+    expect(normalizeRetryOn(null)).toBeUndefined();
+    expect(normalizeRetryOn({})).toBeUndefined();
+    expect(normalizeRetryOn("500")).toBeUndefined();
+    expect(normalizeRetryOn({ status: [], responseHeaderPresent: "" })).toBeUndefined();
+  });
+
+  test("drops malformed fields that would throw inside the retry predicate", () => {
+    // A bare number would reach retryReason as `retryOn.status.includes(...)` → TypeError.
+    expect(normalizeRetryOn({ status: 500 })).toBeUndefined();
+    expect(normalizeRetryOn({ status: ["500", null], responseHeaderPresent: 7 })).toBeUndefined();
+    expect(normalizeRetryOn({ status: [500, "503"] })).toEqual({ status: [500] });
   });
 });

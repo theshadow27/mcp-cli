@@ -47,6 +47,7 @@ import {
   removeCall as catalogRemoveCall,
   upsertCall as catalogUpsertCall,
   loadCatalog,
+  normalizeRetryOn,
 } from "./site/catalog";
 import {
   type SiteConfig,
@@ -345,6 +346,7 @@ function handleAddCall(args: Record<string, unknown>): ToolResult {
     headers: args.headers as Record<string, string> | undefined,
     audHints: args.audHints as string[] | undefined,
     authMode: args.authMode as AuthMode | undefined,
+    retryOn: normalizeRetryOn(args.retryOn),
   };
   catalogUpsertCall(site.name, call, site.seed ?? site.name);
   return ok({ ok: true, call });
