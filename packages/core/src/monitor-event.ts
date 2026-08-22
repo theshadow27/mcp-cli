@@ -327,7 +327,13 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [SESSION_SPAWN_OVERRIDE]: (e) => {
     const binary = typeof e.binaryPath === "string" ? cap(e.binaryPath, 60) : "";
     const bypassed = typeof e.bypassedReason === "string" ? `bypassed: ${cap(e.bypassedReason, 60)}` : "";
-    return join(wi(e), sid(e), binary, bypassed);
+    // Spawn-profile NAME and source only (#935) — never a key, never a value.
+    // Without this the event reached `monitor_events` but `mcx monitor` rendered
+    // a bare sid with empty columns, so the one record of which credentials a
+    // session ran under was invisible in the view built to show it.
+    const profile = typeof e.profile === "string" ? `profile: ${cap(e.profile, 64)}` : "";
+    const source = typeof e.profileSource === "string" ? `(${cap(e.profileSource, 16)})` : "";
+    return join(wi(e), sid(e), binary, bypassed, profile, source);
   },
 
   [SESSION_GH_CREDENTIALS]: (e) => {

@@ -71,7 +71,19 @@ describe("resolveSpawnProfile", () => {
     expect(resolveSpawnProfile({ flag: " bedrock\n" })).toEqual({ name: "bedrock", source: "flag" });
   });
 
-  test("is pure — it never throws, even on a name the loader would reject", () => {
+  test("deselect-only is enforced at RUNTIME, not by the type", () => {
+    // The interface says `manifest?: null`, but TypeScript erases: a cast walks
+    // straight past it. Round 1 claimed the type mechanized the operator ruling;
+    // it did not. This is the guard that actually does, and this test fails if
+    // it is removed — which the type-level claim never could.
+    expect(() => resolveSpawnProfile({ manifest: "prod" as unknown as null })).toThrow(SpawnProfileError);
+    expect(() => resolveSpawnProfile({ manifest: "prod" as unknown as null, config: "c" })).toThrow(/deselect-only/);
+    // The two legal manifest values still work.
+    expect(resolveSpawnProfile({ manifest: null, config: "c" })).toEqual({ name: null, source: "manifest" });
+    expect(resolveSpawnProfile({ manifest: undefined, config: "c" })).toEqual({ name: "c", source: "config" });
+  });
+
+  test("is pure for every legal input — it never throws on a name the loader would reject", () => {
     expect(resolveSpawnProfile({ flag: "../../etc/passwd" })).toEqual({
       name: "../../etc/passwd",
       source: "flag",

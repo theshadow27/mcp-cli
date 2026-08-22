@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Logger, type MonitorEventInput, options, scanSecrets } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
@@ -272,11 +272,20 @@ describe("spawnClaude with a profile (#935)", () => {
 
 /**
  * A daemon restart is the project's own standard recovery action, and it was the
- * one that silently stripped the profile: `restoreSessions` rebuilt the session
- * config without it, `reviveSession` never re-resolved, and the respawn produced
- * output byte-identical to a correct one. These pin the fix at both ends —
- * the name survives the restart, and any path that arrives without one resolves
- * rather than assuming "none".
+ * one that silently stripped the profile.
+ *
+ * What these pin — stated precisely, because the round-1 version of this block
+ * claimed "the name survives the restart" and it does not: the session row has
+ * no column for the profile, so a restored session's original choice is simply
+ * NOT RECOVERABLE here. The property under test is therefore that the daemon
+ * REFUSES TO GUESS. Re-resolving from today's config would not restore the
+ * operator's choice, it would substitute one — turning a `--no-profile` session
+ * into a billed-credentials session, which is worse than the fail-open bug it
+ * replaced.
+ *
+ * A new session whose caller passed no flag is a different case and still
+ * resolves normally; that distinction is what `profileSource: "unrecorded"`
+ * carries.
  */
 describe("spawnClaude profile resolution on restore/revive (#935)", () => {
   let server: ClaudeWsServer | undefined;
@@ -308,7 +317,12 @@ describe("spawnClaude profile resolution on restore/revive (#935)", () => {
     ]);
   }
 
-  test("a revived session RE-RESOLVES its profile rather than respawning bare", async () => {
+  test("refuses to revive rather than SUBSTITUTE a profile the session never had", async () => {
+    // The N1 repro, as a property. Round 1's version of this test wrote
+    // `defaultProfile: "bedrock"` and asserted bedrock came back — pinning the
+    // config layer while the flag layer happened to agree, which proves nothing
+    // about restoring a choice. Here the config default deliberately DISAGREES
+    // with what the session was spawned with, which is the only interesting case.
     using _opts = testOptions();
     writeProfile("bedrock", `AWS_BEARER_TOKEN_BEDROCK=${SECRET_TOKEN}\n`);
     writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({ defaultProfile: "bedrock" }));
@@ -320,9 +334,89 @@ describe("spawnClaude profile resolution on restore/revive (#935)", () => {
 
     const sessionId = crypto.randomUUID();
     restoreOne(server, sessionId); // the session row carries no profile
-    server.reviveSession(sessionId, "continue");
+    expect(() => server?.reviveSession(sessionId, "continue")).toThrow(/cannot be revived/);
 
-    expect(mock.env().AWS_BEARER_TOKEN_BEDROCK).toBe(SECRET_TOKEN);
+    // The critical half: a session spawned with --no-profile must NOT come back
+    // holding billed cloud credentials it was explicitly denied.
+    expect(mock.env().AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
+    // And the refusal must name the escape hatch, or it is just a wedge.
+    let message = "";
+    try {
+      server.reviveSession(sessionId, "continue");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      message = (err as Error).message;
+    }
+    expect(message).toContain("--profile");
+    expect(message).toContain("--no-profile");
+  });
+
+  test("a failed revive leaves the session revivable — it does not wedge the state machine", async () => {
+    // N2: reviveSession calls state.reconnect() before spawnClaude, and the
+    // repair made spawnClaude throw for operator-fixable reasons. Without the
+    // rollback the session sits in `connecting` forever and the guard rejects
+    // every retry — so fixing config.json would not help, for the daemon's life.
+    using _opts = testOptions();
+    writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({ defaultProfile: "ghost" }));
+
+    const capture = makeCapture();
+    const mock = recordingSpawn();
+    server = makeServer(capture, mock.spawn);
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    restoreOne(server, sessionId);
+    expect(() => server?.reviveSession(sessionId, "continue")).toThrow();
+
+    // Second attempt must fail for the SAME reason, not "state is connecting".
+    expect(() => server?.reviveSession(sessionId, "continue")).not.toThrow(/only disconnected sessions/);
+
+    // And once the operator fixes the cause, revive works.
+    writeProfile("ghost", "AWS_REGION=us-east-1\n");
+    writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({}));
+    server.reviveSession(sessionId, "continue");
+    expect(mock.env().AWS_REGION).toBeUndefined();
+  });
+
+  test("a clear that fails to respawn does not latch the reentrancy flag", async () => {
+    // N3: `clearing = true` … `spawnClaude()` … `clearing = false`. Before #935
+    // the only throw on that path was set at construction; the profile load made
+    // it reachable at runtime. A latched flag turns every later `/clear` into a
+    // silent SUCCESSFUL no-op on a session whose child was already killed.
+    using _opts = testOptions();
+    writeProfile("bedrock", `AWS_BEARER_TOKEN_BEDROCK=${SECRET_TOKEN}\n`);
+
+    const capture = makeCapture();
+    const mock = recordingSpawn();
+    server = makeServer(capture, mock.spawn);
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "stdio", profile: "bedrock" });
+    server.spawnClaude(sessionId);
+
+    // Credential rotation deletes the file out from under a live session.
+    rmSync(join(options.PROFILES_DIR, "bedrock.env"));
+
+    await expect(server.clearSession(sessionId)).rejects.toThrow(/not found/);
+    // The property: a second clear still REPORTS the failure rather than
+    // returning successfully having done nothing.
+    await expect(server.clearSession(sessionId)).rejects.toThrow(/not found/);
+  });
+
+  test("a restored session revives normally when no layer would select anything", async () => {
+    // The refusal is narrow: with no defaultProfile there is nothing to
+    // substitute, so bare is unambiguously correct and revive is untouched.
+    using _opts = testOptions();
+
+    const capture = makeCapture();
+    const mock = recordingSpawn();
+    server = makeServer(capture, mock.spawn);
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    restoreOne(server, sessionId);
+    expect(() => server?.reviveSession(sessionId, "continue")).not.toThrow();
   });
 
   test("a spawn path that never resolved a profile still gets the config default", async () => {

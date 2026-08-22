@@ -22,9 +22,16 @@
  * `resolveSpawnProfile` is the single source of truth for
  *   `--profile` flag  >  `defaultProfile` config  >  none,
  * with the repo `.mcx.yaml` able to opt OUT (`profile: null`) but never to
- * select — see `SpawnProfileSources.manifest`. Call sites supply the layers;
- * they do not re-implement the ordering. A precedence order described in a doc
- * is one a future caller reorders by accident.
+ * select. Call sites supply the layers; they do not re-implement the ordering.
+ * A precedence order described in a doc is one a future caller reorders by
+ * accident.
+ *
+ * Deselect-only is enforced in two places, both at RUNTIME, because a type
+ * cannot enforce anything a caller can cast past:
+ *   - `readManifestProfileKey` ignores a named `profile:` and warns, and
+ *   - `resolveSpawnProfile` throws if handed one anyway.
+ * `SpawnProfileSources.manifest?: null` documents the contract; it does not
+ * enforce it.
  *
  * ── Containment is an allowlist ──
  * A profile may only set `AWS_*` / `ANTHROPIC_*` / `CLAUDE_CODE_*`-shaped
@@ -108,7 +115,11 @@ export interface SpawnProfileSources {
    * *select* a profile would let a third-party checkout pick which credentials an
    * auto-approving agent spawns with. Opting out is safe in the other direction —
    * the worst a hostile repo achieves is a session on the bare daemon env.
-   * `findManifestProfile` enforces this and warns on an ignored named value.
+   *
+   * This annotation is DOCUMENTATION, not enforcement — types erase, and a cast
+   * defeats it. The rule is enforced at runtime by `findManifestProfile` (which
+   * ignores a named value and warns) and by `resolveSpawnProfile` (which throws
+   * if one reaches it anyway).
    */
   manifest?: null;
   /** `defaultProfile` from `~/.mcp-cli/config.json`. */
@@ -125,12 +136,25 @@ export interface ResolvedSpawnProfile {
 /**
  * Resolve which profile a spawn uses.
  *
- * Pure and total: no filesystem, no throw, no name validation (an unknown or
- * malformed name is the loader's problem, and failing there gives a better
- * message than failing here). This is the ONLY place the precedence order
- * exists — see the module header.
+ * No filesystem, no name validation (an unknown or malformed name is the
+ * loader's problem, and failing there gives a better message than failing here).
+ * This is the ONLY place the precedence order exists — see the module header.
+ *
+ * Throws in exactly one case: a caller handing the manifest layer a profile
+ * NAME. That is a programming error, not bad input — `findManifestProfile` can
+ * never produce it — and it is the runtime half of deselect-only enforcement.
  */
 export function resolveSpawnProfile(sources: SpawnProfileSources): ResolvedSpawnProfile {
+  // Deselect-only, enforced at RUNTIME. `manifest?: null` in the interface is a
+  // hint, not a guarantee — TypeScript types erase, so `{manifest: "prod" as
+  // unknown as null}` would otherwise resolve to `{name: "prod", source:
+  // "manifest"}` and hand repo content the credential choice the operator ruling
+  // took away from it. An invariant a caller can cast past is prose.
+  if (typeof sources.manifest === "string") {
+    throw new SpawnProfileError(
+      "the manifest layer is deselect-only: a repo `.mcx.yaml` may pass null (opt out) or undefined, never a profile name — see findManifestProfile, which ignores named values and warns",
+    );
+  }
   const layers: Array<[Exclude<SpawnProfileSource, "none">, string | null | undefined]> = [
     ["flag", sources.flag],
     ["manifest", sources.manifest],
@@ -556,7 +580,7 @@ function readManifestProfileKey(path: string, onWarn?: SpawnProfileWarn): null |
     return undefined;
   }
   onWarn?.(
-    `${path}: \`profile: ${safeName(value.trim())}\` is ignored — a repo file may only opt OUT (\`profile: null\`), never select credentials. Set it with \`mcx config set defaultProfile <name>\` or pass \`--profile\`.`,
+    `${path}: \`profile: ${safeName(value.trim())}\` is ignored — a repo file may only opt OUT (\`profile: null\`), never select credentials. Set it with \`mcx config set default-profile <name>\` or pass \`--profile\`.`,
   );
   return undefined;
 }

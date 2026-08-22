@@ -203,12 +203,22 @@ export interface SessionConfig {
    *                 made a revived session (`restoreSessions` → `reviveSession`)
    *                 silently drop its profile and respawn on the daemon env —
    *                 on the daemon-restart recovery this feature exists to serve.
+   *
+   * `undefined` means two very different things, and they must not be conflated
+   * — see `profileSource === "unrecorded"`.
    */
   profile?: string | null;
   /**
    * Which layer chose `profile`. Diagnostics only — emitted, never a value.
+   *
+   * `"unrecorded"` is not a layer: it marks a session restored from the DB after
+   * a daemon restart, whose original profile is *unknowable* because the session
+   * row has no column for it. That is categorically different from a new session
+   * whose caller simply passed no flag — there, re-resolving is the desired
+   * "an internal call site cannot forget" behaviour; here, re-resolving would
+   * SUBSTITUTE a profile rather than restore one. `spawnClaude` refuses instead.
    */
-  profileSource?: SpawnProfileSource;
+  profileSource?: SpawnProfileSource | "unrecorded";
 }
 
 export interface TranscriptEntry {
@@ -867,14 +877,15 @@ export class ClaudeWsServer {
         router,
         ws: null,
         transcript: [],
-        // `profile` is deliberately ABSENT here, i.e. unresolved — not `null`.
-        // The session row carries no profile name (there is no column for it;
-        // `agent_sessions` belongs to #3034 this sprint), so spawnClaude
-        // re-resolves at revive time rather than reading a restored session as
-        // "chose no profile" and respawning on the bare daemon env. That silent
-        // downgrade fired on daemon restart — the very recovery action spawn
-        // profiles exist to make unnecessary (#935).
-        config: { prompt: "", worktree: s.worktree ?? undefined },
+        // `profile` is ABSENT and explicitly marked UNRECORDED (#935). The
+        // session row has no column for it (`agent_sessions` belongs to #3034
+        // this sprint), so what this session was spawned with is not knowable
+        // here — and the two wrong answers are wrong in opposite directions:
+        // spawning bare drops a profile the operator chose, while re-resolving
+        // from today's config SUBSTITUTES one, which would put a `--no-profile`
+        // session onto billed credentials it was explicitly denied. spawnClaude
+        // refuses to guess rather than pick a direction.
+        config: { prompt: "", worktree: s.worktree ?? undefined, profileSource: "unrecorded" },
         name: s.name ?? null,
         pid: s.pid,
         pidStartTime: s.pidStartTime ?? null,
@@ -944,7 +955,19 @@ export class ClaudeWsServer {
     // (sends session.config.prompt) rather than a WS reconnect (which skips the initial message).
     session.state.reconnect();
 
-    return this.spawnClaude(sessionId);
+    try {
+      return this.spawnClaude(sessionId);
+    } catch (err) {
+      // spawnClaude can now throw for reasons the operator can fix — a missing
+      // or malformed profile file, a `defaultProfile` typo, an unrecorded
+      // profile on a restored session (#935). Leaving the machine in
+      // `connecting` would make the guard at the top of this method reject every
+      // retry, so fixing config.json would not help: the session would be wedged
+      // for the daemon's lifetime. Roll the transition back so the failure is
+      // merely a failure.
+      session.state.state = "disconnected";
+      throw err;
+    }
   }
 
   /**
@@ -1028,31 +1051,58 @@ export class ClaudeWsServer {
    * (see `defaultSpawn`). Each concern owns one block and contributes only its
    * own keys.
    */
+  /**
+   * Settle `session.config.profile` before a spawn, or refuse (#935).
+   *
+   * Two callers arrive with it unresolved and they mean opposite things:
+   *
+   *  - **A new session whose caller passed no flag.** Applying the config layer
+   *    is exactly right — it is the whole reason `defaultProfile` exists, so a
+   *    phase script or a raw `callTool` cannot land on the bare daemon env by
+   *    forgetting an argument.
+   *  - **A session restored after a daemon restart** (`profileSource:
+   *    "unrecorded"`). What it was spawned with is not recorded anywhere, so
+   *    re-resolving does not *restore* the operator's choice — it SUBSTITUTES
+   *    today's `defaultProfile` for it. That is not a smaller version of the
+   *    original bug, it is a different one: a session started with
+   *    `--no-profile` would come back on billed cloud credentials it was
+   *    explicitly denied, and a session started with `--profile alpha` would
+   *    come back billing `beta`. So: refuse, and say exactly how to proceed.
+   *
+   * The refusal is narrow on purpose. When no layer would select anything the
+   * answer is unambiguous — bare is bare — so revive keeps working untouched on
+   * any box without a `defaultProfile`.
+   */
+  private resolveSessionProfile(sessionId: string, session: WsSession): void {
+    if (session.config.profile !== undefined) return;
+
+    const warn = (m: string) => this.logger.warn(`[_claude] ${m}`);
+    const resolved = resolveSpawnProfile({
+      manifest: findManifestProfile(session.config.cwd, warn),
+      config: readCliConfig(warn).defaultProfile,
+    });
+
+    if (session.config.profileSource === "unrecorded" && resolved.name !== null) {
+      throw new Error(
+        `session ${sessionId} cannot be revived: it was spawned before this daemon restarted and the profile it ran under is not recorded (the session row has no column for it). ` +
+          `Reviving now would apply "${resolved.name}" (source=${resolved.source}), which is a guess — if this session was spawned with --no-profile it would come back on credentials it was explicitly denied, and if it used a different profile it would bill a different account. ` +
+          `Start a fresh session with an explicit choice instead: \`mcx claude spawn --profile <name> --resume ${sessionId}\`, or \`mcx claude spawn --no-profile --resume ${sessionId}\`.`,
+      );
+    }
+
+    session.config.profile = resolved.name;
+    session.config.profileSource = resolved.source;
+    this.logger.info(
+      `[_claude] session ${sessionId} had no resolved profile; resolved to ${resolved.name ?? "none"} (source=${resolved.source})`,
+    );
+  }
+
   private buildSpawnEnv(
     sessionId: string,
     session: WsSession,
     opts: { useStdio: boolean; traceparent?: string },
   ): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = {};
-
-    // Resolve the profile if no caller has (#935). Every spawn reaches the child
-    // through here — `handlePrompt`, `reviveSession` after a daemon restart, a
-    // respawn after `clear` — so this is the one place that can *guarantee* the
-    // answer came from `resolveSpawnProfile` rather than from whoever remembered
-    // to pass a flag. A path that forgets now inherits the config/manifest layers
-    // instead of silently landing on the bare daemon env.
-    if (session.config.profile === undefined) {
-      const warn = (m: string) => this.logger.warn(`[_claude] ${m}`);
-      const resolved = resolveSpawnProfile({
-        manifest: findManifestProfile(session.config.cwd, warn),
-        config: readCliConfig(warn).defaultProfile,
-      });
-      session.config.profile = resolved.name;
-      session.config.profileSource = resolved.source;
-      this.logger.info(
-        `[_claude] session ${sessionId} arrived with no resolved profile (restored session, or a caller that skipped the resolver); re-resolved to ${resolved.name ?? "none"} (source=${resolved.source}). NOTE: a profile chosen with --profile before a daemon restart is not recoverable — the session row does not carry it — so a restored session lands on the default-profile config.`,
-      );
-    }
 
     // Spawn profile FIRST: every daemon-derived override below outranks it (#935).
     // A profile cannot set those anyway — the allowlist in parseSpawnProfileEnv
@@ -1206,6 +1256,14 @@ export class ClaudeWsServer {
     // write tool to fall back on — it self-denies its own writes loudly instead of
     // writing outside the trust boundary silently.
     const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
+
+    // Resolve the profile before assembling the env (#935). Every spawn reaches
+    // the child through here — `handlePrompt`, `reviveSession` after a daemon
+    // restart, a respawn after `clear` — so this is the one place that can
+    // *guarantee* the answer came from `resolveSpawnProfile` rather than from
+    // whoever remembered to pass a flag. It mutates `session.config`, which is
+    // why it sits here rather than inside `buildSpawnEnv`.
+    this.resolveSessionProfile(sessionId, session);
 
     const envOverrides = this.buildSpawnEnv(sessionId, session, { useStdio, traceparent });
     // Line-buffer child stderr and forward each complete line keyed by session
@@ -1860,6 +1918,13 @@ export class ClaudeWsServer {
     // Reentrancy guard — if already clearing (e.g. rapid /clear), skip.
     // The in-flight clear will respawn once the process exits.
     if (session.clearing) return;
+
+    // Settle the profile BEFORE anything destructive (#935). The respawn below
+    // can throw on a missing/malformed profile or an unrecorded one, and by then
+    // the old child is already dead — so a clear that was going to fail should
+    // fail here, with the session intact, rather than after the kill.
+    this.resolveSessionProfile(sessionId, session);
+
     session.clearing = true;
     session.workCompleted = false;
     session.lastResult = null;
@@ -1925,8 +1990,17 @@ export class ClaudeWsServer {
     session.transcript.length = 0;
 
     // Respawn — reuse stored traceparent to maintain trace continuity across clears
-    this.spawnClaude(sessionId, session.traceparent ?? undefined);
-    session.clearing = false;
+    try {
+      this.spawnClaude(sessionId, session.traceparent ?? undefined);
+    } finally {
+      // Never leave the reentrancy flag latched. The guard at the top of this
+      // method would then turn every later `/clear` into a silent *successful*
+      // no-op — on a session whose child is already dead, killed above — and
+      // would suppress the state transition too. Before #935 the only throw on
+      // this path was set at construction; the profile load made it reachable at
+      // runtime, so the flag needs to survive a failure (#935 N3).
+      session.clearing = false;
+    }
   }
 
   /** Send a set_model control request to change the session's model. */
