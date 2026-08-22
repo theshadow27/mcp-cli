@@ -118,6 +118,21 @@ export function defaultOnCorruptLine(logPath: string): OnCorruptLine {
 }
 
 /**
+ * Called for a staging-file anomaly the store survives but must not hide.
+ *
+ * Distinct from `OnCorruptLine`, which is per-record and per-line. This one
+ * fires when a *whole claimed file* is skipped or disappears — cases where the
+ * store deliberately chooses availability over certainty, and the operator is
+ * the only party who can tell whether anything was actually lost.
+ */
+export type OnWarn = (message: string) => void;
+
+/** Default anomaly sink: one stderr line, injectable for tests. */
+export function defaultOnWarn(out: { write: (s: string) => void } = process.stderr): OnWarn {
+  return (message) => out.write(`warn: ${message}\n`);
+}
+
+/**
  * Raised when the write lock could not be acquired. Distinguishes real
  * contention from a programming error so callers can retry or report
  * "another phase run is in progress".
@@ -379,6 +394,28 @@ function insertImportedEntries(
   return { inserted, skipped };
 }
 
+/**
+ * Drop a staging *name* whose content is already linked elsewhere, tolerating a
+ * peer having dropped it first.
+ *
+ * The invariant this exists to serve: **every operation on a peer-visible
+ * staging path must tolerate ENOENT**. A staging path is visible to every
+ * process that scans the directory, and the window in which one is claimed but
+ * not yet parked is not covered by the write lock — the park runs after COMMIT.
+ * So any syscall naming one can lose the race, and the only two syscalls here
+ * that remove a name are these.
+ *
+ * Callers must only reach this after the content is reachable under another
+ * name, which is why a vanished path is a no-op rather than an error.
+ */
+function unlinkQuietly(staging: string): void {
+  try {
+    unlinkSync(staging);
+  } catch (err) {
+    if (errnoCode(err) !== "ENOENT") throw err;
+  }
+}
+
 /** Candidate park name: the plain `.migrated`, else a nonce-suffixed sibling. */
 function migratedPath(logPath: string): string {
   const first = `${logPath}.migrated`;
@@ -442,18 +479,28 @@ interface StagedImport {
  *
  * Returns null when the staging path has already vanished — see below.
  */
-function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLine): ImportResult | null {
+function importStagingFile(
+  db: Database,
+  staging: string,
+  onCorrupt: OnCorruptLine,
+  onWarn: OnWarn,
+): ImportResult | null {
   let bytes: Buffer;
   try {
     bytes = readFileSync(staging);
   } catch (err) {
-    // ENOENT: the process that claimed this path committed its import and then
-    // parked the file, in the gap between our directory scan and this read.
-    // That gap is real — the park happens *after* COMMIT, so the owner no
-    // longer holds the write lock while it runs — and the file's entries are
-    // already in the DB by the time the name disappears. Same reasoning as
-    // `parkStagingFile`'s ENOENT branch: the owner has handled it, and there is
-    // nothing here to import or to park.
+    // ENOENT: the path vanished between our directory scan and this read. The
+    // *expected* cause is a peer that claimed it, committed its import, and
+    // then parked the file — that gap is real, because the park happens after
+    // COMMIT and the owner no longer holds the write lock while it runs.
+    //
+    // Treat that as the explanation, but do not assert it as fact: we never
+    // read the bytes, so we have no hash to test against `imported_content` and
+    // no way to confirm the entries reached the DB. Anything else that unlinks
+    // a staging path — an operator, a stray cleanup script, a dangling symlink —
+    // is indistinguishable from here, and in those cases uncommitted
+    // transitions are genuinely gone. Hence the warning: skipping is the right
+    // availability trade, but it must not be silent.
     //
     // This must not fall through to the caller's quarantine, either: ENOENT is
     // not a busy error, so `claim` would route a vanished path to
@@ -461,7 +508,10 @@ function importStagingFile(db: Database, staging: string, onCorrupt: OnCorruptLi
     // through the rollback and out of `withDbTx`, failing not just this write
     // but every *read*, since `openForRead` drives a write transaction whenever
     // it sees a staging file and only swallows contention.
-    if (errnoCode(err) === "ENOENT") return null;
+    if (errnoCode(err) === "ENOENT") {
+      onWarn(`staging file vanished before it could be imported: ${staging} (assuming a concurrent park)`);
+      return null;
+    }
     throw err;
   }
   const contentHash = createHash("sha256").update(bytes).digest("hex");
@@ -509,14 +559,27 @@ function parkStagingFile(staging: string, logPath: string): string | null {
       if (code === "EEXIST") continue;
       throw err;
     }
-    unlinkSync(staging);
+    // Same window as the `link` above, half a syscall later: a peer that hashed
+    // to the same `imported_content` row stages the same path, so both
+    // processes park it, and whichever unlinks second finds the name already
+    // gone. Throwing here would report a *committed* transition as a failure —
+    // this runs after `commitWithRetry`, so `rollbackQuietly` is a no-op and the
+    // error escapes `withDbTx` as a hard failure that `phase.ts` does not retry
+    // (it only retries `TransitionLockBusyError`), by which point the handler
+    // has already pushed the branch and opened the PR.
+    //
+    // Nothing is lost by tolerating it: `dest` is our own hardlink to the same
+    // content, so the park is complete either way. Only the name we were about
+    // to remove disappeared.
+    unlinkQuietly(staging);
     return dest;
   }
 }
 
 /**
  * Move a staging file that cannot be imported out of the replay set, returning
- * its new path.
+ * its new path, or null if the path vanished first. Callers are expected to
+ * announce that path — it is the only way an operator can find the file again.
  *
  * Belt to `toEntry`'s braces. Validation removes the *known* way one bad record
  * wedged the store, but any unexpected non-contention failure during import has
@@ -557,13 +620,30 @@ function quarantineStagingFile(staging: string, logPath: string): string | null 
       // quarantine it. Nothing to move aside — and the import it held has
       // already committed.
       if (code === "ENOENT") return null;
-      if (code === "EPERM" || code === "EISDIR" || code === "EXDEV" || code === "ENOTSUP") {
-        renameSync(staging, dest);
+      // EXDEV is deliberately NOT in this list. `dest` is built from `logPath`
+      // and `staging` is always `${logPath}${IMPORTING_SUFFIX}*`, so the two are
+      // by construction in the same directory and `link` cannot report a
+      // cross-device failure. Even if it somehow did, `rename(2)` fails EXDEV on
+      // exactly the same condition, so the fallback could only ever replace one
+      // error with a worse one.
+      if (code === "EPERM" || code === "EISDIR" || code === "ENOTSUP") {
+        try {
+          renameSync(staging, dest);
+        } catch (renameErr) {
+          // Same peer-park race as the `link` above, one syscall later.
+          if (errnoCode(renameErr) === "ENOENT") return null;
+          throw renameErr;
+        }
         return dest;
       }
       throw err;
     }
-    unlinkSync(staging);
+    // Critically ENOENT-tolerant here, not just tidy: this runs inside `claim`'s
+    // catch block, so a throw would *replace* the import error that sent us here
+    // with a spurious filesystem one — destroying the diagnosis this quarantine
+    // exists to preserve, which is verbatim the harm the `link` guard above
+    // prevents.
+    unlinkQuietly(staging);
     return dest;
   }
 }
@@ -604,7 +684,7 @@ function findAbandonedStagingFiles(logPath: string): string[] {
  * the imported history — leaving the log out of insertion order and the second
  * process's transition validated against an empty history.
  */
-function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptLine): StagedImport[] {
+function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptLine, onWarn: OnWarn): StagedImport[] {
   const staged: StagedImport[] = [];
 
   // Nearly every staging file seen here is genuinely abandoned: this runs under
@@ -616,13 +696,20 @@ function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptL
   // import (its entries are committed) and nothing to park.
   const claim = (staging: string): void => {
     try {
-      const result = importStagingFile(db, staging, onCorrupt);
+      const result = importStagingFile(db, staging, onCorrupt, onWarn);
       if (result !== null) staged.push({ path: staging, result });
     } catch (err) {
       // Contention is not the file's fault — leave it in place to be replayed
       // once the lock is free. Anything else is quarantined so it cannot deny
       // service to the store forever.
-      if (!isBusyError(err)) quarantineStagingFile(staging, logPath);
+      if (!isBusyError(err)) {
+        // Announced, not just moved. The quarantined file may be the only copy
+        // of the log, and its new name is the only way an operator can find it;
+        // discarding this return value left `docs/phases.md` and this
+        // function's own docstring both claiming a report that never happened.
+        const quarantined = quarantineStagingFile(staging, logPath);
+        if (quarantined !== null) onWarn(`could not import ${staging} — moved aside to ${quarantined}`);
+      }
       throw err;
     }
   };
@@ -635,8 +722,25 @@ function migrateLegacyJsonl(db: Database, logPath: string, onCorrupt: OnCorruptL
   try {
     renameSync(logPath, staging);
   } catch (err) {
-    // ENOENT: another process claimed the jsonl first — it owns the import.
-    if (errnoCode(err) === "ENOENT") return staged;
+    // NOT the same ENOENT as the abandoned-scan path above, and it must not get
+    // the same silent treatment.
+    //
+    // This rename runs under `BEGIN IMMEDIATE`, and `migrateLegacyJsonl` is only
+    // ever reached from inside that transaction, so no peer can be between its
+    // own `existsSync` and its own claiming rename — the mutual exclusion the
+    // abandoned-scan path lacks is present here. (The "another process claimed
+    // it first" reasoning this comment used to give was inherited from a design
+    // where claiming happened *outside* the lock. It no longer applies.)
+    //
+    // So ENOENT means `transitions.jsonl` was unlinked by something outside this
+    // store between `existsSync` a few lines up and here: an operator, a cleanup
+    // script, a restore gone wrong. Continuing is still correct — there is
+    // nothing to import and wedging the store helps nobody — but the operator's
+    // log just disappeared and that cannot be inferred from a successful run.
+    if (errnoCode(err) === "ENOENT") {
+      onWarn(`legacy transition log disappeared before it could be claimed: ${logPath} (nothing was imported)`);
+      return staged;
+    }
     throw err;
   }
   claim(staging);
@@ -775,6 +879,8 @@ export interface StoreOptions {
   onCorrupt?: OnCorruptLine;
   /** Migration announcement sink. Defaults to one stderr line per migration. */
   onMigrate?: OnMigrate;
+  /** Staging-file anomaly sink. Defaults to one stderr line per anomaly. */
+  onWarn?: OnWarn;
 }
 
 /**
@@ -870,7 +976,12 @@ function withDbTx<T>(logPath: string, fn: (db: Database) => T, opts: StoreOption
     try {
       // Inside the lock: the imported history is guaranteed to precede anything
       // `fn` inserts, and `fn` validates against the full history.
-      const staged = migrateLegacyJsonl(db, logPath, opts.onCorrupt ?? defaultOnCorruptLine(logPath));
+      const staged = migrateLegacyJsonl(
+        db,
+        logPath,
+        opts.onCorrupt ?? defaultOnCorruptLine(logPath),
+        opts.onWarn ?? defaultOnWarn(),
+      );
       const result = fn(db);
       if (result instanceof Promise) {
         // The transaction would commit before the async work completed, so the

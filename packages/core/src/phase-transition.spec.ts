@@ -26,6 +26,7 @@ import {
   appendTransitionLog,
   commitTransition,
   defaultOnMigrate,
+  defaultOnWarn,
   historyTargets,
   isCommitted,
   levenshtein,
@@ -702,11 +703,20 @@ describe("import hardening: a bad record must never wedge or double the store", 
     const t0 = { ts: "t0", workItemId: "#7", from: null, to: "impl", status: "committed" } as const;
 
     // One error, from whichever operation touches the store first...
-    expect(() => appendTransitionLog(log, t0)).toThrow();
+    const warnings: string[] = [];
+    const onWarn = (m: string) => warnings.push(m);
+    expect(() => appendTransitionLog(log, t0, { onWarn })).toThrow();
+
+    // ...and it is *announced*, not silently moved. The quarantined file may be
+    // the only copy of the log, so the nonce'd name it now lives under is the
+    // only way back to it — `docs/phases.md` promises this line, and the call
+    // site used to discard the path that makes it possible.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(".unimportable.");
 
     // ...and then it self-heals: the unimportable staging path has been moved
     // aside, so reads and writes both work instead of replaying the failure.
-    appendTransitionLog(log, t0);
+    appendTransitionLog(log, t0, { onWarn });
     expect(readAllTransitions(log).map((e) => e.ts)).toEqual(["t0"]);
     appendTransitionLog(log, { ts: "t1", workItemId: "#7", from: "impl", to: "qa", status: "committed" });
     expect(readAllTransitions(log)).toHaveLength(2);
@@ -754,8 +764,17 @@ describe("import hardening: a bad record must never wedge or double the store", 
       unlinkSync(owners);
     };
 
-    expect(readAllTransitions(log, { onCorrupt }).map((e) => e.ts)).toEqual(["t1", "t2"]);
+    const warnings: string[] = [];
+    const onWarn = (m: string) => warnings.push(m);
+    expect(readAllTransitions(log, { onCorrupt, onWarn }).map((e) => e.ts)).toEqual(["t1", "t2"]);
     expect(parks).toBe(1);
+
+    // Skipping it must not be silent: the store never read the bytes, so it
+    // cannot actually confirm the owner committed them, and an operator is the
+    // only party who can tell a park from an unexplained deletion.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(owners);
+    expect(warnings[0]).toContain("vanished");
 
     // Nothing was quarantined, nothing is left to replay, and the store still
     // takes reads and writes.
@@ -876,6 +895,12 @@ describe("import hardening: a bad record must never wedge or double the store", 
     expect(written[0].endsWith("\n")).toBe(true);
     expect(written[0]).toContain("migrated 7");
     expect(written[0]).toContain("transitions.jsonl.migrated");
+  });
+
+  test("the default anomaly sink writes one warn-prefixed line to stderr", () => {
+    const written: string[] = [];
+    defaultOnWarn({ write: (s) => written.push(s) })("staging file vanished: /x/.mcx/transitions.jsonl.importing.1-a");
+    expect(written).toEqual(["warn: staging file vanished: /x/.mcx/transitions.jsonl.importing.1-a\n"]);
   });
 
   // ── 🟡6: non-object lines ────────────────────────────────────────────

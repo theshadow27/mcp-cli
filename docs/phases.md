@@ -445,9 +445,16 @@ Recovery affordances, all of which are safe to use more than once:
 - **Restoring a parked file** (`cp transitions.jsonl.migrated transitions.jsonl`)
   re-imports it, and is idempotent: dedupe is keyed on a content hash of the
   file plus a row-level check, so entries already in the store are skipped
-  rather than duplicated. Only genuinely new records are added — which is also
-  what makes a mixed-binary rollout safe, where an older binary regenerates a
-  jsonl the new one then imports.
+  rather than duplicated. Only genuinely new records are added.
+- **A mixed-binary rollout is NOT made safe by that dedupe.** If an older
+  jsonl-era binary runs after the migration it finds no `transitions.jsonl`,
+  validates against an *empty* history, and writes a transition the store has
+  never seen. That record is genuinely new, so both dedupe layers correctly
+  decline to reject it and it is imported verbatim — out of order, and
+  gate-checked against nothing. Where the revisited phase is a declared
+  back-edge the result is accepted silently, with no `RegressionError` to
+  notice. Upgrade every binary that touches a repo before the first migrating
+  run. Tracked in #2980.
 - **Records that are valid JSON but not valid entries** are reported as corrupt
   lines and skipped. They cannot abort the import, and the original bytes remain
   in the parked file.
