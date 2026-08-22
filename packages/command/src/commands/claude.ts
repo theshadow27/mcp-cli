@@ -1516,11 +1516,28 @@ async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Prom
     d.exit(1);
   }
 
-  const toolArgs: Record<string, unknown> = {};
-  if (!allDomains) {
-    if (domain) toolArgs.domain = domain;
-    else toolArgs.domainCwd = process.cwd();
-  }
+  // Through `buildSessionScope`, like `ls` and `wait`. This path was the one bulk caller
+  // left OUTSIDE that builder, and the divergence is exactly what it exists to prevent:
+  // `ls` also sends `repoRoot`, so a cwd outside every domain still narrows to the repo,
+  // while `bye` sent `domainCwd` ALONE.
+  const scope = buildSessionScope({
+    domain,
+    all: allDomains,
+    cwd: process.cwd(),
+    repoScoped: true,
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+
+  // `requireScope` is the whole fix for #3199, and it belongs HERE rather than as a local
+  // guard: this is the one caller that cannot survive an unscoped answer, so it is the one
+  // caller that says so. The daemon can distinguish "asked and got nothing" from "did not
+  // ask" and refuses the former for us. A guard written inline instead would have fixed
+  // this verb and left the next destructive caller to rediscover it.
+  //
+  // Not sent for `--all-domains`: that IS the explicit "no scope" spelling, and it has to
+  // be typed in full.
+  const toolArgs: Record<string, unknown> = allDomains ? { ...scope.args } : { ...scope.args, requireScope: true };
 
   const listResult = await d.callTool("claude_session_list", toolArgs);
   const text = formatToolResult(listResult);

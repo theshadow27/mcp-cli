@@ -3,10 +3,11 @@ import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
 import {
   type DomainLookup,
   UnknownDomainError,
+  UnresolvedDomainScopeError,
   applyDomainScope,
   classifyAgentTool,
   domainIdForPath,
-  resolveFilterDomainId,
+  resolveDomainFilter,
   resolveSpawnDomainId,
 } from "./session-domain";
 
@@ -146,38 +147,108 @@ describe("resolveSpawnDomainId", () => {
   });
 });
 
-// ── resolveFilterDomainId ──
+// ── resolveDomainFilter ──
 
-describe("resolveFilterDomainId", () => {
-  test("no scoping argument means no filter — this is how --all is spelled", () => {
-    expect(resolveFilterDomainId(db, {})).toBeUndefined();
+describe("resolveDomainFilter", () => {
+  test('no scoping argument is "none" — this is how --all is spelled', () => {
+    expect(resolveDomainFilter(db, {})).toEqual({ kind: "none" });
   });
 
   test("does NOT fall back to a spawn-style cwd/repoRoot argument", () => {
-    // Only `domain` and `domainCwd` scope a listing. If `cwd` also did, `--all`
-    // would need a second flag to switch scoping back off.
-    expect(resolveFilterDomainId(db, { cwd: "/foo/bar", repoRoot: "/foo/bar" })).toBeUndefined();
+    // Only `domain` and `domainCwd` scope a listing. If `cwd` also did, `--all` would
+    // need a second flag to switch scoping back off.
+    expect(resolveDomainFilter(db, { cwd: "/foo/bar", repoRoot: "/foo/bar" })).toEqual({ kind: "none" });
   });
 
-  test("domainCwd scopes to the domain owning that directory", () => {
-    expect(resolveFilterDomainId(db, { domainCwd: "/home/u/github/phoenix/src" })).toBe(PHOENIX.id);
+  test("domainCwd inside a domain resolves to that domain", () => {
+    expect(resolveDomainFilter(db, { domainCwd: "/home/u/github/phoenix/src" })).toEqual({
+      kind: "domain",
+      id: PHOENIX.id,
+    });
   });
 
-  test("a domainCwd outside every domain is no filter, not a filter on domain 0", () => {
-    expect(resolveFilterDomainId(db, { domainCwd: "/nowhere" })).toBeUndefined();
+  test('a domainCwd outside every domain is "unresolved" — NOT "none"', () => {
+    // THE #3199 BUG. These two collapsed into one `undefined`, so a bulk bye read
+    // "I asked for a scope and did not get one" as "I asked for no scope" and ended
+    // every session on the machine. They must be distinguishable.
+    const outside = resolveDomainFilter(db, { domainCwd: "/nowhere" });
+    expect(outside).toEqual({ kind: "unresolved", requested: "/nowhere" });
+    expect(outside.kind).not.toBe("none");
+    expect(resolveDomainFilter(db, {}).kind).toBe("none");
   });
 
   test("an explicit name works from anywhere and outranks domainCwd", () => {
-    expect(resolveFilterDomainId(db, { domain: "phoenix", domainCwd: "/foo/bar" })).toBe(PHOENIX.id);
+    expect(resolveDomainFilter(db, { domain: "phoenix", domainCwd: "/foo/bar" })).toEqual({
+      kind: "domain",
+      id: PHOENIX.id,
+    });
   });
 
-  test("an unregistered name throws rather than silently showing everything", () => {
-    expect(() => resolveFilterDomainId(db, { domain: "nope" })).toThrow(UnknownDomainError);
+  test("an unregistered name throws — never 'unresolved', that is a caller error", () => {
+    expect(() => resolveDomainFilter(db, { domain: "nope" })).toThrow(UnknownDomainError);
   });
 
   test("sibling-prefix directories select different domains", () => {
-    expect(resolveFilterDomainId(db, { domainCwd: "/foo/barbaz/src" })).toBe(BARBAZ.id);
-    expect(resolveFilterDomainId(db, { domainCwd: "/foo/bar/src" })).toBe(BAR.id);
+    expect(resolveDomainFilter(db, { domainCwd: "/foo/barbaz/src" })).toEqual({ kind: "domain", id: BARBAZ.id });
+    expect(resolveDomainFilter(db, { domainCwd: "/foo/bar/src" })).toEqual({ kind: "domain", id: BAR.id });
+  });
+});
+
+// ── requireScope: the destructive-caller contract ──
+
+describe("requireScope (#3199)", () => {
+  test("a listing degrades to unscoped, as it always did — read-only, so widening is safe", () => {
+    expect(applyDomainScope(db, "_claude", "claude_session_list", { domainCwd: "/nowhere" }, undefined)).toEqual({});
+  });
+
+  test("but a caller that REQUIRES a scope is refused rather than silently widened", () => {
+    // `mcx claude bye --all` from a directory outside every registered domain. Pre-fix
+    // this returned {} and the bulk loop ended every session in every domain.
+    expect(() =>
+      applyDomainScope(db, "_claude", "claude_session_list", { domainCwd: "/nowhere", requireScope: true }, undefined),
+    ).toThrow(UnresolvedDomainScopeError);
+  });
+
+  test("repoRoot counts as a scope, so a bulk bye inside a repo still works", () => {
+    // The common case, and refusing it would be a serious regression.
+    const out = applyDomainScope(
+      db,
+      "_claude",
+      "claude_session_list",
+      { domainCwd: "/nowhere", repoRoot: "/some/repo", requireScope: true },
+      undefined,
+    );
+    expect(out).toEqual({ repoRoot: "/some/repo" });
+  });
+
+  test("a resolved domain satisfies requireScope", () => {
+    const out = applyDomainScope(
+      db,
+      "_claude",
+      "claude_session_list",
+      { domainCwd: "/home/u/github/phoenix", requireScope: true },
+      undefined,
+    );
+    expect(out).toEqual({ domainId: PHOENIX.id });
+  });
+
+  test("requireScope never reaches a worker", () => {
+    const out = applyDomainScope(
+      db,
+      "_claude",
+      "claude_session_list",
+      { domain: "phoenix", requireScope: true },
+      undefined,
+    );
+    expect(out).not.toHaveProperty("requireScope");
+  });
+
+  test("requireScope with NO scoping argument at all is still refused", () => {
+    // "I require a scope" plus "I gave you nothing to scope by" is a caller error, and
+    // for a destructive verb it must not silently mean everything.
+    expect(() =>
+      applyDomainScope(db, "_claude", "claude_session_list", { domainCwd: "/nowhere", requireScope: true }, undefined),
+    ).toThrow(/did not resolve/);
   });
 });
 

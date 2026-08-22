@@ -185,6 +185,10 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
           "description": "Scope to whichever registered domain owns this directory. Omit for no domain filter; \`domain\` overrides it.",
           "type": "string",
         },
+        "requireScope": {
+          "description": "Fail with an error if the requested scope does not resolve, instead of returning everything.",
+          "type": "boolean",
+        },
         "sessionId": {
           "description": "Session ID to wait on (omit for any session)",
           "type": "string",

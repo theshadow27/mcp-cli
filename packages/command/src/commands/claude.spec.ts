@@ -2273,16 +2273,16 @@ describe("mcx claude bye — bulk scoping (P1: --all silently ended every sessio
   });
 
   test("--all with no -d scopes to the caller's domain", async () => {
-    expect(await byeArgs(["bye", "--all"])).toEqual({ domainCwd: process.cwd() });
+    expect(await byeArgs(["bye", "--all"])).toEqual({ domainCwd: process.cwd(), requireScope: true });
   });
 
   test("--all -d <domain> SCOPES the bye — the chosen repair shape", async () => {
     // Pre-fix this emitted {} and ended everything on the machine.
-    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual({ domain: "phoenix" });
+    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual({ domain: "phoenix", requireScope: true });
   });
 
   test("-a -d <domain> scopes identically", async () => {
-    expect(await byeArgs(["bye", "-a", "-d", "phoenix"])).toEqual({ domain: "phoenix" });
+    expect(await byeArgs(["bye", "-a", "-d", "phoenix"])).toEqual({ domain: "phoenix", requireScope: true });
   });
 
   test("--all-domains is the ONLY unscoped form, and it must be asked for by name", async () => {
@@ -2297,6 +2297,51 @@ describe("mcx claude bye — bulk scoping (P1: --all silently ended every sessio
     const deps = makeDeps({ callTool: mock(async () => toolResult([])), printError, exit });
     await expect(cmdClaude(["bye", "--all-domains", "-d", "phoenix"], deps)).rejects.toThrow(ExitError);
     expect(printError).toHaveBeenCalledWith(expect.stringContaining("contradictory"));
+  });
+
+  test("#3199: the bulk path ALWAYS demands a scope — no flags needed to reach the hazard", async () => {
+    // The second path to machine-wide destruction: `bye --all` from a cwd outside every
+    // registered domain (which this repo's own checkout is). `domainCwd` alone was the
+    // only scoping arg sent; the daemon strips it once it resolves to nothing, handing the
+    // worker `{}` — so the bulk loop ended every session in every domain on the machine.
+    // Every non---all-domains bulk bye must now carry requireScope, which makes the daemon
+    // refuse rather than widen.
+    for (const argv of [
+      ["bye", "--all"],
+      ["bye", "-a"],
+      ["bye", "--all", "-d", "phoenix"],
+    ]) {
+      const sent = await byeArgs(argv);
+      expect(sent?.requireScope).toBe(true);
+    }
+  });
+
+  test("#3199: --all-domains is the ONLY form that may go unscoped, and it never claims otherwise", async () => {
+    const sent = await byeArgs(["bye", "--all-domains"]);
+    expect(sent).toEqual({});
+    expect(sent).not.toHaveProperty("requireScope");
+  });
+
+  test("#3199: a bulk bye in a git repo still sends repoRoot, so it narrows even outside a domain", async () => {
+    // `ls` survived this bug only because it also sent repoRoot. The bulk bye now does
+    // too — routed through the same buildSessionScope rather than assembling its own args.
+    // With a git root present the daemon has a real scope even when the cwd is in no
+    // domain, so requireScope is satisfied and the bye narrows to the repo.
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, args: Record<string, unknown>) => {
+      calls.push([tool, args]);
+      return toolResult([]);
+    });
+    const deps = makeDeps({ callTool, getGitRoot: mock(() => "/repo/a") });
+    const origErr = console.error;
+    console.error = mock(() => {});
+    try {
+      await cmdClaude(["bye", "--all"], deps);
+    } finally {
+      console.error = origErr;
+    }
+    const sent = calls.find(([t]) => t === "claude_session_list")?.[1];
+    expect(sent).toEqual({ domainCwd: process.cwd(), repoRoot: "/repo/a", requireScope: true });
   });
 
   test("a malformed -d is refused on the bulk path too", async () => {

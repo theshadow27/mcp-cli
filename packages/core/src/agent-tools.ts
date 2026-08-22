@@ -109,6 +109,19 @@ const domainNameProp: JsonSchemaProperty = {
  * it happened to know it, `--all` would need a second, opposite flag to undo it —
  * and a filter you have to remember to switch off is one that will be left on.
  */
+/**
+ * Opt-in fail-closed for callers that must not act on an unscoped result.
+ *
+ * When set, a scoping request that resolves to nothing is an ERROR rather than a silent
+ * widening. Read-only listings do not set it — degrading to a coarser filter is fine when
+ * nothing is destroyed. A bulk `bye` does, because "I asked to be scoped and was not"
+ * must never become "end everything on the machine" (#3199).
+ */
+const requireScopeProp: JsonSchemaProperty = {
+  type: "boolean",
+  description: "Fail with an error if the requested scope does not resolve, instead of returning everything.",
+};
+
 const domainCwdProp: JsonSchemaProperty = {
   type: "string",
   description:
@@ -361,6 +374,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
           timeout: timeoutProp,
           domain: domainNameProp,
           domainCwd: domainCwdProp,
+          requireScope: requireScopeProp,
           ...ov("wait")?.extraProperties,
         }),
       },

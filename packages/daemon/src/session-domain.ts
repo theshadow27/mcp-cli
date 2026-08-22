@@ -27,7 +27,7 @@
 
 import { isAbsolute } from "node:path";
 import type { Domain } from "@mcp-cli/core";
-import { NO_DOMAIN_ID, getAllProviders, toDomainFilter } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, getAllProviders, isDomainScoped } from "@mcp-cli/core";
 
 /**
  * The slice of `StateDb` this module needs. Narrow on purpose: domain scoping is
@@ -36,6 +36,30 @@ import { NO_DOMAIN_ID, getAllProviders, toDomainFilter } from "@mcp-cli/core";
 export interface DomainLookup {
   getDomainByName(name: string): Domain | null;
   resolveDomain(path: string): Domain | null;
+}
+
+/**
+ * Thrown when a caller REQUIRED a scope and none resolved.
+ *
+ * The bug this exists for: `domainCwd` is a *request* for a scope, not a scope. When it
+ * resolved to nothing it was simply stripped, so by the time a worker decided what to act
+ * on, "scoping was requested and did not resolve" and "no scoping was requested" were the
+ * same bytes. For a listing that is harmless — it degrades to the coarser filter. For a
+ * bulk `bye` it meant ending every session in every domain on the machine, from a plain
+ * `mcx claude bye --all`, with no flags and no confirmation (#3199).
+ *
+ * The fix is not to guess better. It is that the boundary can now REPRESENT its own
+ * failure state, and a caller that cannot tolerate an unscoped answer says so with
+ * `requireScope`. A control that cannot express "I failed" fails open, which is exactly
+ * backwards for a destructive verb.
+ */
+export class UnresolvedDomainScopeError extends Error {
+  constructor(requested: string) {
+    super(
+      `refusing to act unscoped: ${requested} did not resolve to a registered domain, and no other scope was supplied. Pass an explicit -d <domain>, or the explicit machine-wide flag if that is what you meant.`,
+    );
+    this.name = "UnresolvedDomainScopeError";
+  }
 }
 
 /** Thrown when a caller names a domain that is not registered. */
@@ -141,25 +165,57 @@ export function resolveSpawnDomainId(
 }
 
 /**
- * The domain a `session_list` / `wait` call should be restricted to, or
- * `undefined` for "do not filter by domain".
+ * What scoping a `session_list` / `wait` call should apply.
  *
- * Driven entirely by arguments the caller supplied — `domain` (a name) or
- * `domainCwd` (a directory to resolve one from). It deliberately does **not**
- * fall back to whatever cwd the transport happened to carry: "no scoping
- * argument" is how `--all` has always been spelled, and a filter that switches
- * itself on would need a second flag to switch it back off.
+ * A DISCRIMINATED RESULT, not `number | undefined`, and that is the whole point. The
+ * previous shape collapsed two genuinely different conditions into one `undefined`:
  *
- * `undefined` also comes back when the supplied directory is outside every
- * registered domain — including the state this repo is in until domains are
- * actually registered. Filtering on the unassigned sentinel would hide every
- * session instead, so `toDomainFilter` refuses to treat it as a domain.
+ *   - "no scoping was requested"                    (`--all`, or no scoping args)
+ *   - "scoping WAS requested and did not resolve"   (a cwd outside every domain)
+ *
+ * Nothing downstream could tell them apart, so a bulk `bye` from a directory outside every
+ * registered domain — which this repo's own checkout is — read "unresolved" as "unscoped"
+ * and ended every session in every domain on the machine, from a plain `mcx claude bye
+ * --all`, no flags, no confirmation (#3199).
+ *
+ * A guard inside `claudeByeAll` would have fixed that one caller and left the collapse
+ * standing for the next. Two conditions sharing one answer is the same shape as a test
+ * that passes whether or not the code works: the information needed to be right is simply
+ * not present. So the states are separated here, at the only place that knows the
+ * difference, and each caller decides what "unresolved" means for it.
  */
-export function resolveFilterDomainId(db: DomainLookup, args: Record<string, unknown>): number | undefined {
+export type DomainFilter =
+  /** No scoping asked for. Everything passes. */
+  | { kind: "none" }
+  /** Scoping asked for, nothing matched. NOT the same as "none" — callers choose. */
+  | { kind: "unresolved"; requested: string }
+  /** Scope to exactly this domain. */
+  | { kind: "domain"; id: number };
+
+/**
+ * Resolve the scoping a filter call asked for, preserving WHY the answer is what it is.
+ *
+ * Driven entirely by arguments the caller supplied — `domain` (a name) or `domainCwd` (a
+ * directory). It deliberately does not fall back to the transport's cwd: "no scoping
+ * argument" is how `--all` has always been spelled, and a filter that switches itself on
+ * would need a second flag to switch back off.
+ *
+ * An explicitly named domain that is not registered still throws — that is never
+ * "unresolved", it is a caller error, and answering it with someone else's sessions is the
+ * worst available outcome.
+ */
+export function resolveDomainFilter(db: DomainLookup, args: Record<string, unknown>): DomainFilter {
   const named = namedDomainId(db, args);
-  if (named !== null) return toDomainFilter(named);
+  if (named !== null) {
+    // `namedDomainId` throws on an unregistered name, so reaching here means it resolved.
+    return { kind: "domain", id: named };
+  }
+
   const domainCwd = typeof args.domainCwd === "string" ? args.domainCwd : undefined;
-  return toDomainFilter(domainIdForPath(db, domainCwd));
+  if (domainCwd === undefined) return { kind: "none" };
+
+  const id = domainIdForPath(db, domainCwd);
+  return isDomainScoped(id) ? { kind: "domain", id } : { kind: "unresolved", requested: domainCwd };
 }
 
 /**
@@ -225,7 +281,9 @@ export function applyDomainScope(
   // From here the server IS ours, so stripping is safe: no third-party tool can be
   // reached through this path, and an agent tool must never receive a raw name or a
   // caller-supplied id — including the unscoped ones like `claude_bye`.
-  const { domain: _name, domainCwd: _cwd, domainId: _id, ...rest } = args;
+  const { domain: _name, domainCwd: _cwd, domainId: _id, requireScope: _req, ...rest } = args;
+  // Boundary-only: never forwarded, so a worker cannot be handed a half-honoured promise.
+  const requireScope = args.requireScope === true;
 
   const kind = classifyAgentTool(serverName, toolName);
   if (kind === null) return rest;
@@ -234,6 +292,19 @@ export function applyDomainScope(
     return { ...rest, domainId: resolveSpawnDomainId(db, args, callerCwd) };
   }
 
-  const filter = resolveFilterDomainId(db, args);
-  return filter === undefined ? rest : { ...rest, domainId: filter };
+  const filter = resolveDomainFilter(db, args);
+
+  if (filter.kind === "domain") return { ...rest, domainId: filter.id };
+
+  // `unresolved` is where a destructive caller and a listing legitimately DIFFER, which is
+  // exactly why the two states are no longer one. A listing degrades to whatever coarser
+  // scoping it already had; a bulk `bye` refuses, because failing OPEN on a destructive
+  // operation is backwards. `repoRoot` still counts as a scope — it is the pre-domain
+  // filter and it genuinely narrows — so this only fires when NOTHING would restrict the
+  // worker at all.
+  if (requireScope && filter.kind === "unresolved" && rest.repoRoot === undefined) {
+    throw new UnresolvedDomainScopeError(filter.requested);
+  }
+
+  return rest;
 }
