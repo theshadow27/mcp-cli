@@ -48,6 +48,18 @@ export interface AgentSessionInfo {
   worktree: string | null;
   /** Git repo root the session was spawned in (null if unknown). */
   repoRoot: string | null;
+  /**
+   * The domain that owns this session, resolved from its spawn directory
+   * (`NO_DOMAIN_ID` when the spawn directory is outside every registered domain).
+   *
+   * **Required, not optional, deliberately.** `agent_sessions` is a partitioned
+   * table and a partition column that only some writers populate is worse than
+   * none: it reads as "no sessions here" rather than "not recorded". Making the
+   * field required means every provider's `getInfo()` fails to compile until it
+   * supplies one — the invariant is a type a caller cannot cast past rather than
+   * a sentence in a doc. See `docs/domains.md`.
+   */
+  domainId: number;
   /** Whether the agent process is still alive. */
   processAlive: boolean;
   /** Whether the session is currently rate-limited by the API. */

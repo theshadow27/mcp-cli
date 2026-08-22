@@ -52,6 +52,16 @@ export interface AgentSessionRow {
   endedAt: string | null;
   claudeSessionId: string | null;
   transport: string | null;
+  /**
+   * Domain that owns this session, or `NO_DOMAIN_ID` when it was spawned outside
+   * every registered domain (#3039).
+   *
+   * Read back, not just written: `claude-server.ts` rebuilds the worker's live
+   * sessions from these rows after a daemon restart, and a restored session with
+   * no domain disappears from every domain-scoped `mcx claude ls` — at exactly
+   * the moment nobody is watching.
+   */
+  domainId: number;
 }
 
 /** @deprecated Use AgentSessionRow instead. */
@@ -1346,11 +1356,22 @@ export class StateDb {
     repoRoot?: string;
     claudeSessionId?: string;
     transport?: "ws" | "stdio";
+    /**
+     * Domain that owns this session (#3039), resolved daemon-side from the spawn
+     * directory. Omit on a follow-up upsert — every other field here is COALESCEd
+     * so a partial update cannot erase what a previous one set, and `domain_id`
+     * has to behave the same way. It is `NOT NULL DEFAULT 0`, so the *stored*
+     * value is never null; the bind is nullable purely to mean "not supplied",
+     * which is why the parameter is COALESCEd on both branches rather than being
+     * allowed to write a 0 over a resolved domain.
+     */
+    domainId?: number;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport, domain_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?13, 0))
        ON CONFLICT(session_id) DO UPDATE SET
+         domain_id = COALESCE(?13, agent_sessions.domain_id),
          name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
          pid = COALESCE(excluded.pid, agent_sessions.pid),
@@ -1375,6 +1396,7 @@ export class StateDb {
         session.repoRoot ?? null,
         session.claudeSessionId ?? null,
         session.transport ?? null,
+        session.domainId ?? null, // ?13 — null means "not supplied", never "domain 0"
       ],
     );
   }
@@ -1400,7 +1422,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1410,7 +1432,7 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -2139,6 +2161,7 @@ interface RawSessionRow {
   ended_at: string | null;
   claude_session_id: string | null;
   transport: string | null;
+  domain_id: number;
 }
 
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
@@ -2159,6 +2182,7 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
     endedAt: row.ended_at,
     claudeSessionId: row.claude_session_id,
     transport: row.transport,
+    domainId: row.domain_id,
   };
 }
 

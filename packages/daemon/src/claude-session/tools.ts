@@ -50,10 +50,6 @@ export const CLAUDE_TOOLS = buildAgentTools({
           description:
             "Filter sessions to those belonging to this repo root (sessions with null repoRoot pass through)",
         },
-        scopeRoot: {
-          type: "string",
-          description: "Filter sessions to those whose cwd is under this scope root directory (prefix match on cwd)",
-        },
       },
     },
     session_status: {
@@ -90,10 +86,6 @@ export const CLAUDE_TOOLS = buildAgentTools({
           type: "string",
           description:
             "Filter results to sessions belonging to this repo root (sessions with null repoRoot pass through)",
-        },
-        scopeRoot: {
-          type: "string",
-          description: "Filter results to sessions whose cwd is under this scope root directory (prefix match on cwd)",
         },
       },
     },

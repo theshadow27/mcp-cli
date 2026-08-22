@@ -27,6 +27,7 @@ import {
   CHECKS_STARTED,
   CONTAINMENT_WRITE_TOOLS,
   ContainmentGuard,
+  NO_DOMAIN_ID,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
@@ -177,6 +178,16 @@ export interface SessionConfig {
   resumeSessionId?: string;
   /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
   repoRoot?: string;
+  /**
+   * Domain that owns this session (#3039), already resolved by the daemon —
+   * `NO_DOMAIN_ID` when the spawn directory is outside every registered domain.
+   *
+   * A number, never a name or a path: the domains table lives in the daemon, so
+   * this worker has no way to resolve one and no business trying. Comparing ids
+   * is all session filtering does now, which is what retired `scopeRoot`'s
+   * per-worker string-prefix match.
+   */
+  domainId?: number;
   /**
    * Per-spawn transport override: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
    * Set by `mcx claude spawn --transport`. When omitted, prepareSession falls
@@ -875,6 +886,13 @@ export class ClaudeWsServer {
       spawnedAt?: string | null;
       claudeSessionId?: string | null;
       transport?: "ws" | "stdio";
+      /**
+       * Persisted `agent_sessions.domain_id` (#3039). Restoring this is not
+       * optional polish: a daemon restart that drops it puts every surviving
+       * session back in domain 0, where no domain-scoped `mcx claude ls` will
+       * ever show it again — and a restart is precisely when nobody is looking.
+       */
+      domainId?: number;
     }>,
   ): number {
     let restored = 0;
@@ -919,7 +937,12 @@ export class ClaudeWsServer {
         // from today's config SUBSTITUTES one, which would put a `--no-profile`
         // session onto billed credentials it was explicitly denied. spawnClaude
         // refuses to guess rather than pick a direction.
-        config: { prompt: "", worktree: s.worktree ?? undefined, profileSource: "unrecorded" },
+        config: {
+          prompt: "",
+          worktree: s.worktree ?? undefined,
+          profileSource: "unrecorded",
+          domainId: s.domainId ?? NO_DOMAIN_ID,
+        },
         name: s.name ?? null,
         pid: s.pid,
         pidStartTime: s.pidStartTime ?? null,
@@ -3317,6 +3340,7 @@ export class ClaudeWsServer {
       pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
       repoRoot: s.config.repoRoot ?? null,
+      domainId: s.config.domainId ?? NO_DOMAIN_ID,
       processAlive: s.spawnAlive,
       rateLimited: s.state.rateLimited,
       createdAt: s.createdAt,

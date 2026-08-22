@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { checkDeprecatedName } from "./deprecation";
-import { extractFullFlag, extractJqFlag, extractJsonFlag, extractTimeoutFlag } from "./parse";
+import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag, extractTimeoutFlag } from "./parse";
 
 describe("checkDeprecatedName", () => {
   let stderrOutput: string[] = [];
@@ -138,5 +138,34 @@ describe("cmdCall flag extraction chain", () => {
     const result = extractCallFlags(["server", "tool", "@/tmp/data.json", "--jq", ".foo", "--json"]);
     expect(result.rest).toEqual(["server", "tool", "@/tmp/data.json"]);
     expect(result.jqFilter).toBe(".foo");
+  });
+});
+
+describe("extractDomainFlag", () => {
+  test("-d and --domain both take the next arg as the name", () => {
+    expect(extractDomainFlag(["-d", "phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"] });
+    expect(extractDomainFlag(["--domain", "phoenix"])).toEqual({ domain: "phoenix", rest: [] });
+  });
+
+  test("--domain=<name> form", () => {
+    expect(extractDomainFlag(["--domain=phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"] });
+  });
+
+  test("the value is consumed, so it cannot be mistaken for --all's -a or a positional", () => {
+    expect(extractDomainFlag(["-d", "phoenix", "--all"])).toEqual({ domain: "phoenix", rest: ["--all"] });
+    expect(extractDomainFlag(["-d", "-a"])).toEqual({ domain: "-a", rest: [] });
+  });
+
+  test("absent leaves args untouched", () => {
+    expect(extractDomainFlag(["ls", "--short"])).toEqual({ domain: undefined, rest: ["ls", "--short"] });
+    expect(extractDomainFlag([])).toEqual({ domain: undefined, rest: [] });
+  });
+
+  test("a trailing -d with no value is not treated as a flag", () => {
+    expect(extractDomainFlag(["ls", "-d"])).toEqual({ domain: undefined, rest: ["ls", "-d"] });
+  });
+
+  test("last one wins", () => {
+    expect(extractDomainFlag(["-d", "a", "-d", "b"])).toEqual({ domain: "b", rest: [] });
   });
 });

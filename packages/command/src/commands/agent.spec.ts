@@ -437,7 +437,7 @@ describe("agent codex ls", () => {
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
     await cmdAgent(["codex", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
+    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", { domainCwd: "/fake/cwd" });
   });
 
   test("outputs short format with --short", async () => {
@@ -464,8 +464,8 @@ describe("agent codex ls", () => {
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
     await cmdAgent(["codex", "ls", "-a"], deps);
-    // -a is not --all, so non-repoScoped providers just ignore it
-    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
+    // -a is not --all, so the caller's domain scope still applies
+    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", { domainCwd: "/fake/cwd" });
   });
 });
 
@@ -700,7 +700,7 @@ describe("agent codex wait", () => {
       callTool: mock(async () => toolResult({ event: "timeout" })),
     });
     await cmdAgent(["codex", "wait", "--timeout", "5000"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { timeout: 5000 });
+    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { timeout: 5000, domainCwd: "/fake/cwd" });
   });
 });
 
@@ -744,7 +744,7 @@ describe("agent copilot", () => {
       callTool: mock(async () => toolResult([])),
     });
     await cmdAgent(["copilot", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
+    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot", domainCwd: "/fake/cwd" });
   });
 });
 
@@ -767,7 +767,10 @@ describe("agent claude ls", () => {
       getGitRoot: mock(() => "/repo/root"),
     });
     await cmdAgent(["claude", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/root" });
+    expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {
+      repoRoot: "/repo/root",
+      domainCwd: "/fake/cwd",
+    });
   });
 
   test("--pr is gated by repoScoped feature flag", async () => {
@@ -1653,7 +1656,7 @@ describe("agent acp ls -a flag", () => {
     });
     await cmdAgent(["acp", "ls", "-a", "copilot"], deps);
     // Should pass agent filter, not set showAll
-    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
+    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot", domainCwd: "/fake/cwd" });
   });
 });
 
@@ -1936,7 +1939,7 @@ describe("agent codex wait output", () => {
       callTool: mock(async () => toolResult({ event: "session:result", seq: 5 })),
     });
     await cmdAgent(["codex", "wait", "--after", "3"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { afterSeq: 3 });
+    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { afterSeq: 3, domainCwd: "/fake/cwd" });
   });
 
   test("array fallback output (timeout: session list)", async () => {

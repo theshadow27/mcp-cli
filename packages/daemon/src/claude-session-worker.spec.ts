@@ -2,45 +2,49 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { SessionInfo } from "@mcp-cli/core";
 import { options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { handlePrompt, matchesRepoRoot, matchesScopeRoot } from "./claude-session-worker";
+import { handlePrompt, makeEventInScope, matchesRepoRoot } from "./claude-session-worker";
 import type { SpawnFn } from "./claude-session/ws-server";
 import { ClaudeWsServer } from "./claude-session/ws-server";
 
-// ── matchesScopeRoot ──
+// ── makeEventInScope ──
 
-describe("matchesScopeRoot", () => {
-  test("returns true when scopeRoot is undefined (no filter)", () => {
-    expect(matchesScopeRoot({ cwd: "/repo/a" }, undefined)).toBe(true);
-    expect(matchesScopeRoot(undefined, undefined)).toBe(true);
+describe("makeEventInScope", () => {
+  const session = (domainId: number, repoRoot: string) => ({
+    session: { domainId, repoRoot, cwd: repoRoot } as SessionInfo,
   });
 
-  test("returns false when session is undefined and scopeRoot is set", () => {
-    expect(matchesScopeRoot(undefined, "/repo/a")).toBe(false);
+  test("no domain and no repoRoot is no filter — everything wakes the caller", () => {
+    const inScope = makeEventInScope(undefined, undefined);
+    expect(inScope(session(7, "/repo/a"))).toBe(true);
+    expect(inScope({})).toBe(true);
   });
 
-  test("exact cwd match passes", () => {
-    expect(matchesScopeRoot({ cwd: "/repo/a" }, "/repo/a")).toBe(true);
+  test("a domain filter admits only that domain", () => {
+    const inScope = makeEventInScope(7, undefined);
+    expect(inScope(session(7, "/repo/a"))).toBe(true);
+    expect(inScope(session(8, "/repo/a"))).toBe(false);
   });
 
-  test("cwd under scopeRoot passes via prefix", () => {
-    expect(matchesScopeRoot({ cwd: "/repo/a/worktree" }, "/repo/a")).toBe(true);
-    expect(matchesScopeRoot({ cwd: "/repo/a/deep/nested" }, "/repo/a")).toBe(true);
+  test("an event with no session is dropped whenever a filter is active (#1308)", () => {
+    expect(makeEventInScope(7, undefined)({})).toBe(false);
+    expect(makeEventInScope(undefined, "/repo/a")({})).toBe(false);
   });
 
-  test("partial prefix without slash separator does not pass", () => {
-    // /repo/abc should not match /repo/a
-    expect(matchesScopeRoot({ cwd: "/repo/abc" }, "/repo/a")).toBe(false);
+  test("domain wins over repoRoot when both are set", () => {
+    // Same repo, different domain: the domain is the partition key, so this is
+    // out of scope even though the coarser repo filter would have admitted it.
+    const inScope = makeEventInScope(7, "/repo/a");
+    expect(inScope(session(8, "/repo/a"))).toBe(false);
+    expect(inScope(session(7, "/repo/a"))).toBe(true);
   });
 
-  test("different repo does not pass", () => {
-    expect(matchesScopeRoot({ cwd: "/repo/b" }, "/repo/a")).toBe(false);
-    expect(matchesScopeRoot({ cwd: "/repo/b/sub" }, "/repo/a")).toBe(false);
-  });
-
-  test("null cwd does not pass", () => {
-    expect(matchesScopeRoot({ cwd: null }, "/repo/a")).toBe(false);
+  test("falls back to repoRoot when no domain resolved", () => {
+    const inScope = makeEventInScope(undefined, "/repo/a");
+    expect(inScope(session(0, "/repo/a"))).toBe(true);
+    expect(inScope(session(0, "/repo/b"))).toBe(false);
   });
 });
 

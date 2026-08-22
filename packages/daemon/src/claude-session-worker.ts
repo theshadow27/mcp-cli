@@ -19,9 +19,11 @@ import {
   CLAUDE_SERVER_NAME,
   DEFAULT_TIMEOUT_MS,
   type LiveSpan,
+  NO_DOMAIN_ID,
   type SessionInfo,
   type WorkItemEvent,
   findManifestProfile,
+  matchesDomain,
   readCliConfig,
   resolveEffectiveTools,
   resolveSpawnProfile,
@@ -78,6 +80,8 @@ interface RestoreSessionsMessage {
     totalTokens: number;
     claudeSessionId?: string | null;
     transport?: "ws" | "stdio";
+    /** Persisted domain (#3039) — dropping it on restart re-homes the session to domain 0. */
+    domainId?: number;
   }>;
 }
 
@@ -292,6 +296,10 @@ export async function handlePrompt(
         model: (args.model as string | undefined) || undefined,
         resumeSessionId: args.resumeSessionId as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
+        // Resolved by the daemon before these args crossed the worker boundary
+        // (#3039). The worker cannot open the domains table, so an absent value
+        // is the unassigned sentinel and never a re-resolution attempt.
+        domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
         transport: transportOverride,
         binaryPath: binaryOverride,
         // `null` (not undefined) when no layer chose one: it records that the
@@ -319,6 +327,7 @@ export async function handlePrompt(
         cwd: args.cwd as string | undefined,
         worktree: args.worktree as string | undefined,
         repoRoot: args.repoRoot as string | undefined,
+        domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
         transport: sessionTransport,
       },
     });
@@ -365,20 +374,6 @@ export async function handlePrompt(
 }
 
 /**
- * Check if a session's cwd is within the scope root.
- * Returns true when scopeRoot is undefined (no filter).
- */
-export function matchesScopeRoot(
-  session: Pick<SessionInfo, "cwd"> | undefined,
-  scopeRoot: string | undefined,
-): boolean {
-  if (!scopeRoot) return true;
-  if (!session) return false;
-  const cwd = session.cwd;
-  return cwd !== null && cwd !== undefined && (cwd === scopeRoot || cwd.startsWith(`${scopeRoot}/`));
-}
-
-/**
  * Check if a session belongs to the given repo root.
  * Falls back to cwd prefix for sessions missing repoRoot (fixes #1242, #1308).
  * Returns true when repoRoot is undefined (no filter).
@@ -394,15 +389,54 @@ export function matchesRepoRoot(
   return cwd !== null && cwd !== undefined && (cwd === repoRoot || cwd.startsWith(`${repoRoot}/`));
 }
 
+/**
+ * The domain filter carried by a `claude_session_list` / `claude_wait` call.
+ *
+ * Always a number that the daemon already resolved — this worker cannot open the
+ * domains table, so it never sees a name or a path. `undefined` means the caller
+ * is outside every registered domain (or passed `--all`), in which case the
+ * coarser `repoRoot` filter still applies.
+ */
+function domainFilter(args: Record<string, unknown>): number | undefined {
+  return typeof args.domainId === "number" ? args.domainId : undefined;
+}
+
+/**
+ * The predicate deciding whether a wait wakeup belongs to the caller's scope.
+ *
+ * One function rather than the two identical copies `handleWait` and
+ * `handleAnyWait` used to carry: the rule "which sessions is this caller allowed
+ * to be woken by" is a containment boundary, and a boundary maintained in two
+ * places is a boundary that will eventually hold in one of them.
+ *
+ * Events with no session attached are dropped whenever a filter is active — they
+ * cannot be attributed, and letting them through is how cross-repo wakeups leaked
+ * before #1308.
+ */
+export function makeEventInScope(
+  domainId: number | undefined,
+  repoRoot: string | undefined,
+): (e: { session?: SessionInfo }) => boolean {
+  return (e) => {
+    if (domainId === undefined && !repoRoot) return true;
+    if (!e.session) return false;
+    if (domainId !== undefined) return matchesDomain(e.session, domainId);
+    return matchesRepoRoot(e.session, repoRoot);
+  };
+}
+
 function handleSessionList(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
 ): { content: Array<{ type: "text"; text: string }> } {
   let sessions = server.listSessions();
   const repoRoot = args.repoRoot as string | undefined;
-  const scopeRoot = args.scopeRoot as string | undefined;
-  if (scopeRoot) {
-    sessions = sessions.filter((s) => matchesScopeRoot(s, scopeRoot));
+  const domainId = domainFilter(args);
+  // Domain wins when one resolved: it is the partition key, and `repoRoot` is the
+  // coarser pre-domain fallback kept for callers (and installs) with no domains
+  // registered — without it, `mcx claude ls` in repo A would list repo B.
+  if (domainId !== undefined) {
+    sessions = sessions.filter((s) => matchesDomain(s, domainId));
   } else if (repoRoot) {
     sessions = sessions.filter((s) => matchesRepoRoot(s, repoRoot));
   }
@@ -504,19 +538,12 @@ async function handleWait(
   const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
   const repoRoot = args.repoRoot as string | undefined;
-  const scopeRoot = args.scopeRoot as string | undefined;
+  const domainId = domainFilter(args);
   const any = args.any === true;
   const prNumber = typeof args.pr === "number" ? args.pr : null;
   const checks = args.checks === true;
 
-  const eventInScope = (e: { session?: SessionInfo }): boolean => {
-    if (!scopeRoot && !repoRoot) return true;
-    // Events without session info can't be filtered — drop them when a filter is active
-    // rather than leaking cross-repo wakeups (fixes #1308).
-    if (!e.session) return false;
-    if (scopeRoot) return matchesScopeRoot(e.session, scopeRoot);
-    return matchesRepoRoot(e.session, repoRoot);
-  };
+  const eventInScope = makeEventInScope(domainId, repoRoot);
 
   // Work-item-only paths: --pr or --checks without --any
   if ((prNumber !== null || checks) && !any) {
@@ -525,11 +552,11 @@ async function handleWait(
 
   // --any: race session events against work item events
   if (any) {
-    return handleAnyWait(server, sessionId, prNumber, checks, timeoutMs, afterSeq, repoRoot, scopeRoot);
+    return handleAnyWait(server, sessionId, prNumber, checks, timeoutMs, afterSeq, repoRoot, domainId);
   }
 
   const deadline = Date.now() + timeoutMs;
-  const timeoutResponse = () => handleSessionList(server, { scopeRoot, repoRoot });
+  const timeoutResponse = () => handleSessionList(server, { domainId, repoRoot });
 
   // Cursor-based path: use waitForEventsSince. Re-subscribe with the advanced cursor
   // when all events in a batch are filtered out, so the wait respects the requested
@@ -619,14 +646,9 @@ async function handleAnyWait(
   timeoutMs: number,
   afterSeq: number | undefined,
   repoRoot: string | undefined,
-  scopeRoot: string | undefined,
+  domainId: number | undefined,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const eventInScope = (e: { session?: SessionInfo }): boolean => {
-    if (!scopeRoot && !repoRoot) return true;
-    if (!e.session) return false;
-    if (scopeRoot) return matchesScopeRoot(e.session, scopeRoot);
-    return matchesRepoRoot(e.session, repoRoot);
-  };
+  const eventInScope = makeEventInScope(domainId, repoRoot);
 
   // AbortController for cancelling the losing racer after Promise.race settles.
   // Without this, the loser's internal timeout timer fires and rejects an unobserved
