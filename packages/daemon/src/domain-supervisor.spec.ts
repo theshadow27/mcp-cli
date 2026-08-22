@@ -170,6 +170,37 @@ describe("DomainSupervisor.ensure", () => {
     await h.supervisor.stopAll();
   });
 
+  test("does not discard a restarting worker — the crash budget must survive", async () => {
+    // Mutation this must fail against: drop a `restarting` server in ensure()
+    // alongside stopped/failed/gone. `drop` -> `stop` clears crashTimestamps,
+    // so every crash restarted the count from zero, `shouldRestart` never
+    // reached its limit, and a worker that died every time restarted forever
+    // while the supervisor reported healthy. The backoff cannot fire if the
+    // budget it reads is reset by the caller.
+    const h = makeSupervisor([domain(1, "phoenix")], { autoReady: false });
+    const starting = h.supervisor.ensure(1);
+    await pollUntil(() => h.linksFor(1).length === 1);
+    h.linksFor(1)[0]?.sendReady();
+    const server = await starting;
+
+    h.linksFor(1)[0]?.die("worker panicked");
+    // The crash is recorded inside handleCrash *after* the state flips, so wait
+    // for the budget to actually carry a crash — that is the thing under test.
+    await pollUntil(() => server.state === "restarting" && server.crashCount > 0);
+    const crashesBefore = server.crashCount;
+    const linksBefore = h.linksFor(1).length;
+
+    const again = await h.supervisor.ensure(1);
+
+    expect(again).toBe(server);
+    expect(again.state).toBe("restarting");
+    // Same worker, same budget — not a fresh one with a zeroed counter.
+    expect(again.crashCount).toBe(crashesBefore);
+    expect(crashesBefore).toBeGreaterThan(0);
+    expect(h.linksFor(1).length).toBe(linksBefore);
+    await h.supervisor.stopAll();
+  });
+
   test("throws UnknownDomainError for a domain that was never registered", async () => {
     const h = makeSupervisor([domain(1, "phoenix")]);
     await expect(h.supervisor.ensure(42)).rejects.toThrow(UnknownDomainError);

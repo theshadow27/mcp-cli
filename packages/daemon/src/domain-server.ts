@@ -222,7 +222,12 @@ export class DomainServer {
    */
   async start(): Promise<void> {
     if (this.link) throw new Error(`DomainServer.start() called while domain ${this.snapshot.id} is already running`);
-    this.stopped = false;
+    // Third writer of the same invariant. This used to clear `stopped`
+    // unconditionally, which quietly un-stopped a terminated server: every
+    // legitimate caller (a first start, and the restart loop, which checks
+    // `stopped` before each attempt) already arrives with it false, so the
+    // assignment only ever had effect in the case it must not — resurrection.
+    if (this.stopped) throw new DomainServerStoppedError(this.snapshot.id, "start");
     this.failureReason = null;
     this.workerState = this.workerState === "restarting" ? "restarting" : "starting";
 
@@ -497,6 +502,13 @@ export class DomainServer {
   }
 
   private giveUp(reason: string): void {
+    // `stopped` is terminal, and this is the second writer that has to honour
+    // that — the first was start()'s catch. Reached from the crash path after
+    // two awaits, so an ordinary shutdown of a crash-looping worker lands here
+    // with stop() already resolved; without this the state flips `stopped` ->
+    // `failed` and a wrong `onPermanentlyFailed` fires for a worker nobody was
+    // trying to keep.
+    if (this.stopped) return;
     this.logger.error(`[domain-server:${this.snapshot.name}] ${reason}`);
     this.stopped = true;
     this.workerState = "failed";

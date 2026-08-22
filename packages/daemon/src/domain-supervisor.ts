@@ -180,10 +180,20 @@ export class DomainSupervisor {
       } else if (existing.state === "running") {
         if (!domainSnapshotEquals(existing.domain, snapshot)) existing.adoptRename(snapshot);
         return existing;
+      } else if (existing.state === "starting" || existing.state === "restarting") {
+        // Transient, and therefore NOT droppable. A mid-restart worker carries
+        // the crash budget that makes the backoff work, and `drop` -> `stop`
+        // clears `crashTimestamps`. Discarding it here meant every crash
+        // started counting from zero, `shouldRestart` never accumulated to
+        // `giveUp`, and a worker that died every time restarted forever while
+        // reporting healthy. The caller gets the existing server, whose
+        // `call()` fails fast with `retryable: true` — the honest answer, and
+        // the distinction the status union exists to carry.
+        return existing;
       } else {
-        // stopped / failed / gone / a starting server with no in-flight promise:
-        // none of these can serve a call, and leaving one in the map is how a
-        // `stopped` server got returned forever and never reaped.
+        // stopped / failed / gone: none of these can serve a call, and leaving
+        // one in the map is how a `stopped` server got returned forever and
+        // never reaped.
         this.drop(domainId, existing);
       }
     }

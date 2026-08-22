@@ -507,6 +507,64 @@ describe("stop() during start()", () => {
   });
 });
 
+describe("`stopped` is terminal at every writer", () => {
+  // Round-1 item 2 established this for start()'s catch. These are the other
+  // two writers, found by asking the same question the deleted guard in
+  // 7a59b17a answered: can a test distinguish this guard existing from not?
+
+  test("giveUp() does not overwrite a resolved stop, and fires no onPermanentlyFailed", async () => {
+    // Mutation this must fail against: delete `if (this.stopped) return;` from
+    // giveUp(). giveUp sits two awaits deep in the crash path, so an ordinary
+    // shutdown of a crash-looping worker reaches it with stop() already
+    // resolved and reports a permanent failure for a worker nobody was keeping.
+    //
+    // The interleaving has to be built precisely: stop() must complete while
+    // handleCrash is still parked, so each close() gets its own resolver and
+    // they are released in order.
+    const closes: Array<() => void> = [];
+    const failures: string[] = [];
+    const h = makeServer({
+      // maxCrashes 0 → the first crash exhausts the budget, so handleCrash goes
+      // straight for giveUp instead of looping.
+      restartPolicy: { maxCrashes: 0, crashWindowMs: 60_000, backoffDelaysMs: [0] },
+      onPermanentlyFailed: (reason) => failures.push(reason),
+      clientFactory: () =>
+        makeStubDomainClient({
+          close: () => new Promise<void>((resolve) => closes.push(resolve)),
+        }),
+    });
+    await h.server.start();
+
+    h.latest().die("worker panicked");
+    await pollUntil(() => closes.length === 1); // handleCrash is parked
+
+    const stopping = h.server.stop(); // sets `stopped` synchronously, then parks
+    await pollUntil(() => closes.length === 2);
+    closes[1]?.(); // let stop() finish first
+    await stopping;
+    expect(h.server.state).toBe("stopped");
+
+    closes[0]?.(); // now let the crash path run on to giveUp
+    // Bounded negative assertion: give the wrong outcome its chance to appear.
+    await pollUntil(() => failures.length > 0 || h.server.state === "failed", 400).catch(() => {});
+
+    expect(failures).toEqual([]);
+    expect(h.server.state).toBe("stopped");
+  });
+
+  test("start() refuses to resurrect a stopped server", async () => {
+    // Mutation this must fail against: restore `this.stopped = false;` at the
+    // top of start(). Every legitimate caller already arrives with it false, so
+    // the assignment only had effect in the case it must not.
+    const h = makeServer();
+    await h.server.start();
+    await h.server.stop();
+
+    await expect(h.server.start()).rejects.toThrow(DomainServerStoppedError);
+    expect(h.server.state).toBe("stopped");
+  });
+});
+
 describe("DomainServer.stop", () => {
   test("closes the link and is idempotent", async () => {
     const h = makeServer();
