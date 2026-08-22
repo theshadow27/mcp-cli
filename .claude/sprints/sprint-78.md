@@ -1,6 +1,6 @@
 # Sprint 78
 
-> Planned 2026-08-22. Target: 17 PRs (15 firm + 2 capacity-dependent).
+> Planned 2026-08-22. Started 2026-08-22T05:28Z. Target: 17 PRs (15 firm + 2 capacity-dependent).
 > First sprint of the #3019 arc — domain-scoped mcx.
 
 ## Goal
