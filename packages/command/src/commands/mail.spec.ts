@@ -25,6 +25,7 @@ function testDeps(overrides?: Partial<MailDeps>): MailDeps & { state: TestState 
     readStdin: async () => "",
     isTTY: true,
     defaultSender: "testuser",
+    cwd: "/test/cwd",
     exit: (code: number) => {
       state.exitCode = code;
       throw new Error(`exit(${code})`);
@@ -135,6 +136,26 @@ describe("parseMailArgs", () => {
     const args = parseMailArgs(["--from"]);
     expect(args.error).toBe("--from requires a sender name");
   });
+
+  // #3038
+  test("parses -d domain and --domain=name", () => {
+    expect(parseMailArgs(["-d", "phoenix", "-s", "hi", "boss"]).domain).toBe("phoenix");
+    expect(parseMailArgs(["--domain=phoenix", "-H"]).domain).toBe("phoenix");
+  });
+
+  test("domain is undefined when -d is absent — the daemon resolves cwd, not the CLI", () => {
+    expect(parseMailArgs(["-s", "hi", "boss"]).domain).toBeUndefined();
+  });
+
+  test("error on -d without value", () => {
+    expect(parseMailArgs(["-d"]).error).toBe("-d requires a domain name");
+  });
+
+  test("a user@domain recipient is passed through verbatim for the daemon to resolve", () => {
+    // The CLI does not parse the address: the domains table lives in the daemon, and
+    // splitting here would mean two implementations of the last-@ rule.
+    expect(parseMailArgs(["-s", "hi", "orchestrator@phoenix"]).recipient).toBe("orchestrator@phoenix");
+  });
 });
 
 describe("cmdMail", () => {
@@ -155,6 +176,8 @@ describe("cmdMail", () => {
       recipient: "manager",
       subject: "stuck",
       body: "stuck on type error",
+      cwd: "/test/cwd",
+      domain: undefined,
     });
     expect(d.state.stdout).toContain('"id":1');
   });
@@ -182,6 +205,7 @@ describe("cmdMail", () => {
       subject: "tests pass",
       body: "All green",
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: "2025-01-01 00:00:00",
     };
@@ -227,8 +251,77 @@ describe("cmdMail", () => {
       sender: "testuser",
       body: "looks good",
       subject: "approved",
+      cwd: "/test/cwd",
+      domain: undefined,
     });
     expect(d.state.stdout).toContain('"id":2');
+  });
+
+  // #3038 — every mail call carries a scope. A missing one is refused by the daemon, so
+  // a call site that forgot it is a silent no-scope call; these pin all five.
+  test("every mail IPC call carries the domain scope", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const msg: MailMessage = {
+      id: 1,
+      sender: "a",
+      recipient: "b",
+      subject: "s",
+      body: "b",
+      replyTo: null,
+      domainId: 0,
+      read: false,
+      createdAt: "2025-01-01 00:00:00",
+    };
+    const makeDeps = () =>
+      testDeps({
+        isTTY: false,
+        readStdin: async () => "body",
+        ipcCall: (async (method: IpcMethod, params?: unknown) => {
+          seen.push({ method, params: (params ?? {}) as Record<string, unknown> });
+          if (method === "readMail") return { messages: [msg] };
+          if (method === "waitForMail") return { message: msg };
+          return { id: 1 };
+        }) as MailDeps["ipcCall"],
+      });
+
+    await cmdMail(["-d", "phoenix", "-s", "x", "boss"], makeDeps()); // sendMail
+    await cmdMail(["-d", "phoenix", "-r", "1"], makeDeps()); // replyToMail
+    await cmdMail(["-d", "phoenix", "-H"], makeDeps()); // readMail (+ markRead)
+    await cmdMail(["-d", "phoenix", "--wait", "--timeout=1"], makeDeps()); // waitForMail
+
+    expect(seen.map((s) => s.method).sort()).toEqual(["readMail", "replyToMail", "sendMail", "waitForMail"]);
+    for (const { method, params } of seen) {
+      expect({ method, cwd: params.cwd, domain: params.domain }).toEqual({
+        method,
+        cwd: "/test/cwd",
+        domain: "phoenix",
+      });
+    }
+  });
+
+  test("markRead from read mode also carries the scope", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const msg: MailMessage = {
+      id: 9,
+      sender: "a",
+      recipient: "b",
+      subject: "s",
+      body: "unread body",
+      replyTo: null,
+      domainId: 0,
+      read: false,
+      createdAt: "2025-01-01 00:00:00",
+    };
+    const d = testDeps({
+      ipcCall: (async (method: IpcMethod, params?: unknown) => {
+        if (method === "markRead") seen.push((params ?? {}) as Record<string, unknown>);
+        if (method === "readMail") return { messages: [msg] };
+        return {};
+      }) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-d", "phoenix"], d);
+    expect(seen).toEqual([{ id: 9, cwd: "/test/cwd", domain: "phoenix" }]);
   });
 
   test("reply mode requires body", async () => {
@@ -249,6 +342,7 @@ describe("cmdMail", () => {
       subject: "go ahead",
       body: "create the PR",
       replyTo: null,
+      domainId: 0,
       read: true,
       createdAt: "2025-01-01 00:00:00",
     };

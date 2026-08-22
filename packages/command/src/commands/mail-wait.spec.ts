@@ -10,6 +10,7 @@ function makeMail(overrides: Partial<MailMessage> = {}): MailMessage {
     subject: "hello",
     body: "world",
     replyTo: null,
+    domainId: 0,
     read: false,
     createdAt: new Date(Date.now() + 60_000).toISOString(),
     ...overrides,

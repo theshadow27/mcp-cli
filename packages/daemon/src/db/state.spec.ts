@@ -3,9 +3,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_DOMAIN_ID } from "@mcp-cli/core";
-import { _restoreOptions, options } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, _restoreOptions, options } from "@mcp-cli/core";
 import { StateDb } from "./state";
+
+/** The unassigned mail partition — what every pre-#3038 mail test was implicitly using. */
+const D0 = NO_DOMAIN_ID;
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -980,10 +982,10 @@ describe("StateDb", () => {
   describe("mail", () => {
     test("insertMail and readMail round-trip", () => {
       const db = createDb();
-      const id = db.insertMail("wt-1", "manager", "done", "tests pass");
+      const id = db.insertMail(D0, "wt-1", "manager", "done", "tests pass");
       expect(id).toBeGreaterThan(0);
 
-      const messages = db.readMail();
+      const messages = db.readMail(D0);
       expect(messages).toHaveLength(1);
       expect(messages[0].sender).toBe("wt-1");
       expect(messages[0].recipient).toBe("manager");
@@ -995,10 +997,10 @@ describe("StateDb", () => {
 
     test("readMail filters by recipient", () => {
       const db = createDb();
-      db.insertMail("wt-1", "manager", "for manager");
-      db.insertMail("wt-1", "wt-2", "for wt-2");
+      db.insertMail(D0, "wt-1", "manager", "for manager");
+      db.insertMail(D0, "wt-1", "wt-2", "for wt-2");
 
-      const managerMail = db.readMail("manager");
+      const managerMail = db.readMail(D0, "manager");
       expect(managerMail).toHaveLength(1);
       expect(managerMail[0].subject).toBe("for manager");
       db.close();
@@ -1006,21 +1008,21 @@ describe("StateDb", () => {
 
     test("readMail includes broadcast messages", () => {
       const db = createDb();
-      db.insertMail("admin", "*", "broadcast");
-      db.insertMail("wt-1", "manager", "direct");
+      db.insertMail(D0, "admin", "*", "broadcast");
+      db.insertMail(D0, "wt-1", "manager", "direct");
 
-      const managerMail = db.readMail("manager");
+      const managerMail = db.readMail(D0, "manager");
       expect(managerMail).toHaveLength(2);
       db.close();
     });
 
     test("readMail filters unread only", () => {
       const db = createDb();
-      const id1 = db.insertMail("a", "b", "unread");
-      db.insertMail("a", "b", "also unread");
-      db.markMailRead(id1);
+      const id1 = db.insertMail(D0, "a", "b", "unread");
+      db.insertMail(D0, "a", "b", "also unread");
+      db.markMailRead(id1, D0);
 
-      const unread = db.readMail("b", true);
+      const unread = db.readMail(D0, "b", true);
       expect(unread).toHaveLength(1);
       expect(unread[0].subject).toBe("also unread");
       db.close();
@@ -1028,20 +1030,20 @@ describe("StateDb", () => {
 
     test("readMail respects limit", () => {
       const db = createDb();
-      db.insertMail("a", "b", "msg1");
-      db.insertMail("a", "b", "msg2");
-      db.insertMail("a", "b", "msg3");
+      db.insertMail(D0, "a", "b", "msg1");
+      db.insertMail(D0, "a", "b", "msg2");
+      db.insertMail(D0, "a", "b", "msg3");
 
-      const limited = db.readMail("b", false, 2);
+      const limited = db.readMail(D0, "b", false, 2);
       expect(limited).toHaveLength(2);
       db.close();
     });
 
     test("getMailById returns message", () => {
       const db = createDb();
-      const id = db.insertMail("x", "y", "test", "body text");
+      const id = db.insertMail(D0, "x", "y", "test", "body text");
 
-      const msg = db.getMailById(id);
+      const msg = db.getMailById(id, D0);
       expect(msg).toBeDefined();
       expect(msg?.id).toBe(id);
       expect(msg?.body).toBe("body text");
@@ -1050,64 +1052,64 @@ describe("StateDb", () => {
 
     test("getMailById returns undefined for missing id", () => {
       const db = createDb();
-      expect(db.getMailById(9999)).toBeUndefined();
+      expect(db.getMailById(9999, D0)).toBeUndefined();
       db.close();
     });
 
     test("getNextUnread returns oldest unread", () => {
       const db = createDb();
-      db.insertMail("a", "b", "first");
-      db.insertMail("a", "b", "second");
+      db.insertMail(D0, "a", "b", "first");
+      db.insertMail(D0, "a", "b", "second");
 
-      const next = db.getNextUnread("b");
+      const next = db.getNextUnread(D0, "b");
       expect(next?.subject).toBe("first");
       db.close();
     });
 
     test("getNextUnread filters by recipient", () => {
       const db = createDb();
-      db.insertMail("a", "other", "not for b");
-      db.insertMail("a", "b", "for b");
+      db.insertMail(D0, "a", "other", "not for b");
+      db.insertMail(D0, "a", "b", "for b");
 
-      const next = db.getNextUnread("b");
+      const next = db.getNextUnread(D0, "b");
       expect(next?.subject).toBe("for b");
       db.close();
     });
 
     test("getNextUnread returns undefined when all read", () => {
       const db = createDb();
-      const id = db.insertMail("a", "b", "read");
-      db.markMailRead(id);
+      const id = db.insertMail(D0, "a", "b", "read");
+      db.markMailRead(id, D0);
 
-      expect(db.getNextUnread("b")).toBeUndefined();
+      expect(db.getNextUnread(D0, "b")).toBeUndefined();
       db.close();
     });
 
     test("getNextUnread includes broadcast", () => {
       const db = createDb();
-      db.insertMail("admin", "*", "broadcast");
+      db.insertMail(D0, "admin", "*", "broadcast");
 
-      const next = db.getNextUnread("anyone");
+      const next = db.getNextUnread(D0, "anyone");
       expect(next?.subject).toBe("broadcast");
       db.close();
     });
 
     test("markMailRead marks message as read", () => {
       const db = createDb();
-      const id = db.insertMail("a", "b", "test");
+      const id = db.insertMail(D0, "a", "b", "test");
 
-      expect(db.getMailById(id)?.read).toBe(false);
-      db.markMailRead(id);
-      expect(db.getMailById(id)?.read).toBe(true);
+      expect(db.getMailById(id, D0)?.read).toBe(false);
+      db.markMailRead(id, D0);
+      expect(db.getMailById(id, D0)?.read).toBe(true);
       db.close();
     });
 
     test("insertMail with replyTo sets threading", () => {
       const db = createDb();
-      const original = db.insertMail("a", "b", "original");
-      const reply = db.insertMail("b", "a", "reply", "body", original);
+      const original = db.insertMail(D0, "a", "b", "original");
+      const reply = db.insertMail(D0, "b", "a", "reply", "body", original);
 
-      const msg = db.getMailById(reply);
+      const msg = db.getMailById(reply, D0);
       expect(msg?.replyTo).toBe(original);
       db.close();
     });
@@ -1116,29 +1118,30 @@ describe("StateDb", () => {
       const db = createDb();
 
       // 1. Worker sends mail to manager
-      const origId = db.insertMail("wt-262", "manager", "stopped", "tests pass");
+      const origId = db.insertMail(D0, "wt-262", "manager", "stopped", "tests pass");
 
       // 2. Manager reads and marks as read
-      const orig = db.getMailById(origId);
+      const orig = db.getMailById(origId, D0);
       expect(orig?.sender).toBe("wt-262");
       expect(orig?.recipient).toBe("manager");
-      db.markMailRead(origId);
+      db.markMailRead(origId, D0);
 
       // 3. Manager replies — recipient should be original sender
       const replyId = db.insertMail(
+        D0,
         "manager",
         orig?.sender ?? "",
         `Re: ${orig?.subject}`,
         "looks good, continue",
         origId,
       );
-      const reply = db.getMailById(replyId);
+      const reply = db.getMailById(replyId, D0);
       expect(reply?.sender).toBe("manager");
       expect(reply?.recipient).toBe("wt-262");
       expect(reply?.replyTo).toBe(origId);
 
       // 4. Worker polls for unread mail addressed to wt-262
-      const next = db.getNextUnread("wt-262");
+      const next = db.getNextUnread(D0, "wt-262");
       expect(next).toBeDefined();
       expect(next?.id).toBe(replyId);
       expect(next?.body).toBe("looks good, continue");
@@ -1148,9 +1151,9 @@ describe("StateDb", () => {
 
     test("insertMail with no optional fields", () => {
       const db = createDb();
-      const id = db.insertMail("a", "b");
+      const id = db.insertMail(D0, "a", "b");
 
-      const msg = db.getMailById(id);
+      const msg = db.getMailById(id, D0);
       expect(msg?.subject).toBeNull();
       expect(msg?.body).toBeNull();
       expect(msg?.replyTo).toBeNull();
@@ -1159,9 +1162,9 @@ describe("StateDb", () => {
 
     test("pruneExpiredMail deletes read messages older than TTL", () => {
       const db = createDb();
-      const id1 = db.insertMail("a", "b", "old-read");
-      const id2 = db.insertMail("a", "b", "old-unread");
-      const id3 = db.insertMail("a", "b", "recent-read");
+      const id1 = db.insertMail(D0, "a", "b", "old-read");
+      const id2 = db.insertMail(D0, "a", "b", "old-unread");
+      const id3 = db.insertMail(D0, "a", "b", "recent-read");
 
       // Backdate id1 and id2 to 2 days ago
       const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
@@ -1169,23 +1172,23 @@ describe("StateDb", () => {
       db["db"].run("UPDATE mail SET created_at = ? WHERE id IN (?, ?)", [twoDaysAgo, id1, id2]);
 
       // Mark id1 and id3 as read
-      db.markMailRead(id1);
-      db.markMailRead(id3);
+      db.markMailRead(id1, D0);
+      db.markMailRead(id3, D0);
 
       // Prune with 1-day TTL — should only delete id1 (read + old)
       const pruned = db.pruneExpiredMail(1 * 24 * 60 * 60 * 1000);
       expect(pruned).toBe(1);
 
       // id1 gone, id2 (unread) and id3 (recent) remain
-      expect(db.getMailById(id1)).toBeUndefined();
-      expect(db.getMailById(id2)).toBeDefined();
-      expect(db.getMailById(id3)).toBeDefined();
+      expect(db.getMailById(id1, D0)).toBeUndefined();
+      expect(db.getMailById(id2, D0)).toBeDefined();
+      expect(db.getMailById(id3, D0)).toBeDefined();
       db.close();
     });
 
     test("pruneExpiredMail never deletes unread messages", () => {
       const db = createDb();
-      const id = db.insertMail("a", "b", "ancient-unread");
+      const id = db.insertMail(D0, "a", "b", "ancient-unread");
 
       // Backdate to 30 days ago
       const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
@@ -1194,14 +1197,14 @@ describe("StateDb", () => {
 
       const pruned = db.pruneExpiredMail(1000);
       expect(pruned).toBe(0);
-      expect(db.getMailById(id)).toBeDefined();
+      expect(db.getMailById(id, D0)).toBeDefined();
       db.close();
     });
 
     test("pruneExpiredMail uses options.MAIL_TTL_MS by default", () => {
       const db = createDb();
-      const id = db.insertMail("a", "b", "old-read");
-      db.markMailRead(id);
+      const id = db.insertMail(D0, "a", "b", "old-read");
+      db.markMailRead(id, D0);
 
       // Backdate to 8 days ago (beyond default 7d TTL)
       const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
@@ -1220,23 +1223,122 @@ describe("StateDb", () => {
         const db = createDb();
 
         // Insert an old read message that should be pruned
-        const oldId = db.insertMail("a", "b", "old");
-        db.markMailRead(oldId);
+        const oldId = db.insertMail(D0, "a", "b", "old");
+        db.markMailRead(oldId, D0);
         const old = new Date(Date.now() - 5000).toISOString().replace("T", " ").slice(0, 19);
         // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
         db["db"].run("UPDATE mail SET created_at = ? WHERE id = ?", [old, oldId]);
 
         // Do 49 more insertMail calls (first one already counted)
         for (let i = 0; i < 49; i++) {
-          db.insertMail("a", "b", `msg-${i}`);
+          db.insertMail(D0, "a", "b", `msg-${i}`);
         }
 
         // At 50 ops the prune should have fired — old message gone
-        expect(db.getMailById(oldId)).toBeUndefined();
+        expect(db.getMailById(oldId, D0)).toBeUndefined();
         db.close();
       } finally {
         options.MAIL_TTL_MS = saved;
       }
+    });
+  });
+
+  // #3038. Each of these fails against the pre-#3038 methods, which took no domainId
+  // and predicated on none: every read below would have returned the other domain's row.
+  describe("mail domain partitioning", () => {
+    function twoDomains(db: StateDb): { alpha: number; beta: number } {
+      const root = mkdtempSync(join(tmpdir(), "mcx-mail-domains-"));
+      mkdirSync(join(root, "alpha"), { recursive: true });
+      mkdirSync(join(root, "beta"), { recursive: true });
+      return {
+        alpha: db.createDomain("alpha", join(root, "alpha")).id,
+        beta: db.createDomain("beta", join(root, "beta")).id,
+      };
+    }
+
+    test("readMail never returns another domain's mail", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      db.insertMail(alpha, "worker", "orchestrator", "alpha secret");
+      db.insertMail(beta, "worker", "orchestrator", "beta secret");
+
+      expect(db.readMail(alpha, "orchestrator").map((m) => m.subject)).toEqual(["alpha secret"]);
+      expect(db.readMail(beta, "orchestrator").map((m) => m.subject)).toEqual(["beta secret"]);
+      // And the unscoped-looking read (no recipient filter) is still partitioned.
+      expect(db.readMail(alpha)).toHaveLength(1);
+      db.close();
+    });
+
+    test("broadcast does not cross a domain boundary", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      db.insertMail(alpha, "admin", "*", "all hands, alpha");
+
+      expect(db.readMail(beta, "anyone")).toHaveLength(0);
+      expect(db.getNextUnread(beta, "anyone")).toBeUndefined();
+      expect(db.getNextUnread(alpha, "anyone")?.subject).toBe("all hands, alpha");
+      db.close();
+    });
+
+    test("getNextUnread does not wake on another domain's traffic", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      db.insertMail(beta, "worker", "orchestrator", "beta only");
+
+      expect(db.getNextUnread(alpha, "orchestrator")).toBeUndefined();
+      expect(db.getNextUnread(beta, "orchestrator")?.subject).toBe("beta only");
+      db.close();
+    });
+
+    test("getMailById reads another domain's id as not-found", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      const id = db.insertMail(alpha, "worker", "orchestrator", "alpha only", "body");
+
+      expect(db.getMailById(id, beta)).toBeUndefined();
+      expect(db.getMailById(id, D0)).toBeUndefined();
+      expect(db.getMailById(id, alpha)?.body).toBe("body");
+      db.close();
+    });
+
+    test("markMailRead cannot mark another domain's mail", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      const id = db.insertMail(alpha, "worker", "orchestrator", "alpha only");
+
+      expect(db.markMailRead(id, beta)).toBe(false);
+      expect(db.getMailById(id, alpha)?.read).toBe(false);
+      expect(db.markMailRead(id, alpha)).toBe(true);
+      expect(db.getMailById(id, alpha)?.read).toBe(true);
+      db.close();
+    });
+
+    test("insertMail persists the domain it was given", () => {
+      const db = createDb();
+      const { alpha } = twoDomains(db);
+      const id = db.insertMail(alpha, "worker", "orchestrator", "stamped");
+
+      expect(db.getMailById(id, alpha)?.domainId).toBe(alpha);
+      // The unassigned partition is a partition, not a wildcard.
+      const zero = db.insertMail(D0, "worker", "orchestrator", "unassigned");
+      expect(db.getMailById(zero, D0)?.domainId).toBe(D0);
+      expect(db.readMail(alpha, "orchestrator")).toHaveLength(1);
+      db.close();
+    });
+
+    test("pruneExpiredMail sweeps every partition — it is a janitor, not a read", () => {
+      const db = createDb();
+      const { alpha, beta } = twoDomains(db);
+      const a = db.insertMail(alpha, "x", "y", "old");
+      const b = db.insertMail(beta, "x", "y", "old");
+      db.markMailRead(a, alpha);
+      db.markMailRead(b, beta);
+      const old = new Date(Date.now() - 5000).toISOString().replace("T", " ").slice(0, 19);
+      // biome-ignore lint/complexity/useLiteralKeys: access private field for test backdating
+      db["db"].run("UPDATE mail SET created_at = ?", [old]);
+
+      expect(db.pruneExpiredMail(1000)).toBe(2);
+      db.close();
     });
   });
 

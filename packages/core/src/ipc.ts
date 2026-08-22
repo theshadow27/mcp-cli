@@ -377,38 +377,81 @@ export interface MailMessage {
   body: string | null;
   replyTo: number | null;
   read: boolean;
+  /** The domain partition this row lives in. `0` is the unassigned partition (`NO_DOMAIN_ID`). */
+  domainId: number;
   createdAt: string;
 }
 
-export const SendMailParamsSchema = z.object({
-  sender: z.string(),
-  recipient: z.string(),
-  subject: z.string().optional(),
-  body: z.string().optional(),
-  replyTo: z.number().optional(),
-});
+/**
+ * Every mail method is domain-scoped (#3038). The caller says which partition it is
+ * acting in, by supplying its own `cwd` (resolved through the domains table) or by
+ * naming a domain explicitly with `-d`.
+ *
+ * Both fields are optional individually but **at least one is required**, enforced by
+ * the refine below rather than by daemon-side convention: a mail call that forgot to say
+ * where it is fails at parse with an actionable message, instead of the daemon inventing
+ * an answer from its own `process.cwd()`. That is the closed direction — an unscoped
+ * mail call does nothing rather than reading or writing an arbitrary partition.
+ */
+const MAIL_SCOPE_SHAPE = {
+  /** The caller's working directory, resolved through the domains table. */
+  cwd: z.string().optional(),
+  /** An explicit domain name (`mcx mail -d <domain>`). Wins over `cwd`. */
+  domain: z.string().optional(),
+} as const;
 
-export const ReadMailParamsSchema = z.object({
-  recipient: z.string().optional(),
-  unreadOnly: z.boolean().optional(),
-  limit: z.number().optional(),
-});
+const MAIL_SCOPE_REQUIRED = {
+  message: "mail requires a domain scope: pass the caller's cwd, or name one with -d <domain>",
+} as const;
 
-export const WaitForMailParamsSchema = z.object({
-  recipient: z.string().optional(),
-  timeout: z.number().optional(),
-});
+function hasMailScope(v: { cwd?: string; domain?: string }): boolean {
+  return (v.cwd ?? "").trim().length > 0 || (v.domain ?? "").trim().length > 0;
+}
 
-export const ReplyToMailParamsSchema = z.object({
-  id: z.number(),
-  sender: z.string(),
-  body: z.string(),
-  subject: z.string().optional(),
-});
+export const SendMailParamsSchema = z
+  .object({
+    sender: z.string(),
+    recipient: z.string(),
+    subject: z.string().optional(),
+    body: z.string().optional(),
+    replyTo: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
 
-export const MarkReadParamsSchema = z.object({
-  id: z.number(),
-});
+export const ReadMailParamsSchema = z
+  .object({
+    recipient: z.string().optional(),
+    unreadOnly: z.boolean().optional(),
+    limit: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const WaitForMailParamsSchema = z
+  .object({
+    recipient: z.string().optional(),
+    timeout: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const ReplyToMailParamsSchema = z
+  .object({
+    id: z.number(),
+    sender: z.string(),
+    body: z.string(),
+    subject: z.string().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const MarkReadParamsSchema = z
+  .object({
+    id: z.number(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
 
 // -- Span schemas --
 

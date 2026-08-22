@@ -648,7 +648,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     legacy.saveTokens("atlassian", { access_token: "prod-tok", token_type: "Bearer" });
     legacy.setNote("srv", "tool", "a note");
     legacy.setAliasState("/repo", "ns", "k", { nested: [1, 2, 3] }, NO_DOMAIN_ID);
-    legacy.insertMail("alice", "bob", "subject", "body");
+    legacy.insertMail(NO_DOMAIN_ID, "alice", "bob", "subject", "body");
     legacy.upsertSession({ sessionId: "sess-1", provider: "claude", cwd: "/repo", state: "running" });
     legacy.saveAlias("impl", "/repo/.claude/phases/impl.ts", "the impl phase", "defineAlias");
     const legacyWi = new WorkItemDb(legacy.database).forDomain(NO_DOMAIN_ID);

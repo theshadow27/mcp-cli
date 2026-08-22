@@ -425,10 +425,73 @@ An unregistered domain name is an **error**, not an empty stream — for the sam
 Mail addressing is the domain table's other user:
 
 ```bash
-mcx mail send orchestrator          "..."   # local to this domain
-mcx mail send orchestrator@phoenix  "..."   # explicit domain
+mcx mail -s "..." orchestrator            # local to this domain
+mcx mail -s "..." orchestrator@phoenix    # explicit domain
+mcx mail -d phoenix -s "..." orchestrator # same thing, said the other way
 ```
 
 A bare name resolves within the sender's domain. `user@domain` resolves through the
 domains table, which is what makes the same syntax work unchanged when `phoenix`
 moves to another host.
+
+**The invariant** (#3038), enforced in `packages/daemon/src/mail-domain.ts` rather than
+here — this section describes it, that file is what an orchestrator cannot argue with:
+
+> A mail row belongs to exactly one domain partition, and no read, wait, reply or
+> mark-read ever observes a row outside the caller's partition. Crossing a partition
+> boundary requires an explicit `user@domain` recipient **and** a sender that itself
+> has a return address.
+
+### The parse rule
+
+An address splits on the **last** `@`. Local parts are free-form role-names and may
+contain `@`; domain names may not, so the trailing segment is unambiguous —
+`claude-a@b@phoenix` is the mailbox `claude-a@b` in domain `phoenix`. The cost of
+adopting the syntax is that the trailing segment is *always* read as a domain: a
+pre-existing mailbox literally named `claude-a@b` is now `claude-a` at domain `b`, and
+errors, because `b` is not registered. It fails loudly rather than delivering somewhere
+plausible.
+
+### What a bare name means
+
+The caller's own domain, resolved from the **caller's** cwd — never the daemon's, which
+is whatever directory `mcpd` happened to start in. `-d <domain>` overrides it.
+
+A cwd outside every registered domain is an **error** demanding `-d`, per the resolution
+rule above — with one carve-out: when the domains table is empty, it resolves to the
+unassigned partition (`domain_id = 0`). That is not a guess and not a wildcard. It is the
+single closed partition that means "no domain", and it is what makes `mcx mail` work
+before anyone has run `mcx domain add` — including the operator escape hatch this repo
+depends on during sprints. The moment one domain exists, the carve-out is gone, because
+dropping into partition 0 *alongside* a live partition would be silent misdelivery.
+
+### Cross-domain delivery
+
+`orchestrator@phoenix` is allowed, and it does not become an ambient channel that defeats
+the partition, because:
+
+- The row is written into the **recipient's** partition and is readable only there. No
+  query anywhere returns rows from more than one partition, so a domain can never
+  *observe* another domain's traffic — only receive a message a named sender addressed
+  to it.
+- The stored `sender` is rewritten to `local@sender-domain`, so the reply routes back
+  across the boundary instead of hitting a same-named mailbox at home.
+- A sender may only qualify itself with its own domain. Otherwise a caller could stamp a
+  message as coming from elsewhere and steer the reply into that domain.
+- A cross-domain send **from** the unassigned partition is refused: partition 0 has no
+  name, so there would be no return address, and a reply would be misdelivered to a
+  third party. Refusing is the closed direction.
+- An unknown domain in an address errors at **send** time, not as a row nobody reads.
+
+### Failure directions
+
+Every failure fails **closed** — the call throws and nothing is delivered or read. There
+is deliberately no branch that widens a query, drops the `domain_id` predicate, or falls
+back to a default domain: mail that degrades to "show everything" on an unresolved domain
+is worse than mail that refuses, because the failure is invisible to both parties.
+A message id from another domain reads as *not found*, indistinguishable from a
+nonexistent one, so probing sequential ids reports nothing about another domain.
+
+`pruneExpiredMail` is the one mail writer that is **not** partitioned, deliberately: it
+is the TTL janitor. It moves no bytes across a boundary and exposes nothing; scoping it
+would mean a partition whose last caller went away never gets swept.
