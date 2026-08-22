@@ -274,7 +274,7 @@ describe("formatMonitorEvent — lifecycle events", () => {
     expect(line).toContain("bypassed: version gate: upgrade required");
   });
 
-  test("vfs.progress shows the operation, target, phase and percent", () => {
+  test("vfs.progress shows the operation, target, stage and percent", () => {
     const line = formatMonitorEvent(
       event({
         event: VFS_PROGRESS,
@@ -282,7 +282,7 @@ describe("formatMonitorEvent — lifecycle events", () => {
         operation: "clone",
         provider: "confluence",
         scope: "FOO",
-        phase: "list",
+        stage: "list",
         current: 250,
         total: 5000,
         percent: 5,
@@ -303,7 +303,7 @@ describe("formatMonitorEvent — lifecycle events", () => {
         operation: "pull",
         provider: "asana",
         scope: "123",
-        phase: "list",
+        stage: "list",
         current: 50,
         unit: "tasks",
       }),

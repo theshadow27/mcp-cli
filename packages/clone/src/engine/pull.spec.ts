@@ -586,7 +586,7 @@ describe("pull", () => {
 
       expect(result.created).toBe(40);
       expect(events[0]).toMatchObject({ event: VFS_STARTED, operation: "pull", provider: "test", scope: "TEST" });
-      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
       expect(listing.map((e) => e.current)).toEqual([10, 20, 30, 40]); // 5% of 40, floored at 10
       expect(listing.at(-1)).toMatchObject({ current: 40, total: 40, percent: 100 });
       expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, current: 40 });
@@ -655,7 +655,7 @@ describe("pull", () => {
       const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
 
       expect(result.incremental).toBe(true);
-      const content = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "content");
+      const content = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "content");
       expect(content.at(-1)).toMatchObject({ current: 20, total: 20, percent: 100 });
     });
 
@@ -671,7 +671,7 @@ describe("pull", () => {
 
       await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
 
-      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
       expect(listing.map((e) => e.current)).toEqual([50]);
       expect(listing[0].percent).toBeUndefined();
     });

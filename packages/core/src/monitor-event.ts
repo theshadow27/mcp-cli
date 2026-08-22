@@ -163,10 +163,17 @@ export const VFS_FAILED = "vfs.failed" as const;
  * The terminal events of a vfs operation.
  *
  * Contract for subscribers: every `vfs.started` is followed by exactly one of
- * these, on both the success and the failure path. `mcx monitor --until` and
- * `ctx.waitForEvent` rely on it — without a terminal event on failure a hung
+ * these — on the success path, on the failure path, and on SIGINT/SIGTERM
+ * (Ctrl-C on a long clone is the likeliest way one ends, so the CLI installs a
+ * handler for it — see `guardInterrupts` in `commands/vfs.ts`). `mcx monitor
+ * --until` and `ctx.waitForEvent` rely on it: without a terminal event a hung
  * clone and a crashed one are indistinguishable, which is the very defect
  * #1249 exists to fix.
+ *
+ * The one gap that cannot be closed in-process: SIGKILL, a power cut, or a hard
+ * runtime crash leave the stream open. A subscriber that must survive those
+ * still needs its own ceiling — the contract removes the need for a *routine*
+ * timeout, not the need for a backstop.
  */
 export const VFS_TERMINAL_EVENTS = [VFS_COMPLETED, VFS_FAILED] as const;
 
@@ -175,10 +182,15 @@ export type VfsOperation = "clone" | "pull";
 
 /**
  * Stage of a vfs operation. `list` walks the remote index, `content` fetches
- * bodies for entries whose listing had none. Writing files is not a phase: it
+ * bodies for entries whose listing had none. Writing files is not a stage: it
  * is local `writeFileSync` calls, fast enough that nobody waits on it.
+ *
+ * Deliberately *not* called `phase`: the flat envelope already has a top-level
+ * `phase`, the work-item phase that `mcx monitor --phase` filters on
+ * (`event-filter.ts`). Two different meanings in one key is a trap for the next
+ * consumer that writes `event.phase as WorkItemPhase`.
  */
-export type VfsPhase = "list" | "content";
+export type VfsStage = "list" | "content";
 
 /**
  * Flat payload fields carried by `vfs.*` events. Spread at the top level of the
@@ -205,8 +217,8 @@ export interface VfsProgressFields {
    */
   repoRoot: string;
   /** Stage this update belongs to. Absent before the first tick. */
-  phase?: VfsPhase;
-  /** Items processed so far in `phase`. */
+  stage?: VfsStage;
+  /** Items processed so far in `stage`. */
   current: number;
   /** Total items expected, when the provider can estimate one up front. */
   total?: number;
@@ -614,8 +626,8 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [VFS_STARTED]: (e) => join(vfsTarget(e), vfsCount(e)),
 
   [VFS_PROGRESS]: (e) => {
-    const phase = typeof e.phase === "string" ? e.phase : "";
-    return join(vfsTarget(e), phase, vfsCount(e));
+    const stage = typeof e.stage === "string" ? e.stage : "";
+    return join(vfsTarget(e), stage, vfsCount(e));
   },
 
   [VFS_COMPLETED]: (e) => join(vfsTarget(e), vfsCount(e)),

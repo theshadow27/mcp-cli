@@ -350,7 +350,7 @@ describe("clone progress reporting (#1249)", () => {
     // longer delay the first sign of life by minutes.
     expect(events[0].total).toBeUndefined();
 
-    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
     expect(listing.map((e) => e.current)).toEqual([10, 20, 30, 40]); // 5% of 40, floored at 10
     expect(listing[0]).toMatchObject({ current: 10, total: 40, percent: 25 });
 
@@ -395,17 +395,35 @@ describe("clone progress reporting (#1249)", () => {
     expect(events.filter((e) => e.event === VFS_FAILED || e.event === VFS_COMPLETED)).toHaveLength(1);
   });
 
-  test("a failure before the operation starts emits nothing at all", async () => {
+  test("an expired token during scope resolution still closes the stream", async () => {
+    // The most common way `mcx vfs clone` fails. `resolveScope` is the first
+    // network call, so starting the stream after it meant this produced no
+    // events at all — nothing to watch, and nothing for `--until` to end on.
     const events: VfsProgressEvent[] = [];
     const provider = bulkProvider(5, {
       resolveScope: async () => {
-        throw new Error("space not found");
+        throw new Error("401 Unauthorized: token expired");
       },
     });
 
     await expect(
       clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) }),
-    ).rejects.toThrow("space not found");
+    ).rejects.toThrow("401 Unauthorized");
+
+    expect(events.map((e) => e.event)).toEqual([VFS_STARTED, VFS_FAILED]);
+    expect(events[1]).toMatchObject({ error: "401 Unauthorized: token expired", runId: events[0].runId });
+  });
+
+  test("a purely local precondition failure emits nothing — there is no run to report on", async () => {
+    // Not the same hole: these are `existsSync` checks that fail instantly,
+    // before any work exists to watch. No `vfs.started`, so no terminal owed.
+    mkdirSync(join(targetDir, ".git"), { recursive: true });
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(5, { count: async () => 5 });
+
+    await expect(
+      clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) }),
+    ).rejects.toThrow("already exists and is a git repo");
     expect(events).toEqual([]);
   });
 
@@ -434,7 +452,7 @@ describe("clone progress reporting (#1249)", () => {
 
     await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
-    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
     expect(listing.map((e) => e.current)).toEqual([50]); // default 50-item step
     expect(listing[0].total).toBeUndefined();
     expect(listing[0].percent).toBeUndefined();
@@ -464,7 +482,7 @@ describe("clone progress reporting (#1249)", () => {
       onEvent: sink(events),
     });
 
-    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "list");
+    const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
     expect(listing.at(-1)).toMatchObject({ current: 10, total: 10, percent: 100 });
   });
 
@@ -481,7 +499,7 @@ describe("clone progress reporting (#1249)", () => {
 
     await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
-    const content = events.filter((e) => e.event === VFS_PROGRESS && e.phase === "content");
+    const content = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "content");
     expect(content.at(-1)).toMatchObject({ current: 20, total: 20, percent: 100 });
   });
 
@@ -491,7 +509,7 @@ describe("clone progress reporting (#1249)", () => {
 
     await clone({ targetDir, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
 
-    expect(events.some((e) => e.phase !== undefined && e.phase !== "list" && e.phase !== "content")).toBe(false);
+    expect(events.some((e) => e.stage !== undefined && e.stage !== "list" && e.stage !== "content")).toBe(false);
   });
 
   test("clone works with no event sink attached", async () => {

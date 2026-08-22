@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
 import type { RemoteProvider, ResolvedScope } from "../providers/provider";
 import {
+  MAX_ERROR_CHARS,
   ProgressReporter,
   type ProgressReporterOptions,
   type VfsProgressEvent,
@@ -9,6 +10,8 @@ import {
   formatProgressLine,
   percentOf,
   shouldReport,
+  truncateError,
+  usableTotal,
 } from "./progress";
 
 const SCOPE: ResolvedScope = { key: "FOO", cloudId: "cloud-1", resolved: {} };
@@ -97,9 +100,14 @@ describe("shouldReport", () => {
     expect(shouldReport(5000, 5000, 4999)).toBe(true);
   });
 
-  test("overshooting a low estimate falls back to the step, not every item", () => {
+  test("an estimate the run has overshot is dropped, not stretched", () => {
+    // count() reads Confluence's CQL index, list() cursors the v2 content API;
+    // a stale index answering 100 for a 1000-page space must not turn into one
+    // update per 10 items for the whole overshoot.
     expect(shouldReport(5001, 5000, 5000)).toBe(false);
-    expect(shouldReport(5250, 5000, 5000)).toBe(true);
+    expect(shouldReport(5250, 5000, 5000)).toBe(true); // plain 50-item counting
+    expect(shouldReport(110, 100, 100)).toBe(false); // 10 items — would have reported before
+    expect(shouldReport(150, 100, 100)).toBe(true);
   });
 
   test("without a total, reports every 50 items by default", () => {
@@ -118,6 +126,38 @@ describe("shouldReport", () => {
     expect(shouldReport(19, 100, 0, { percentStep: 20 })).toBe(false);
     expect(shouldReport(5, undefined, 0, { countStep: 5 })).toBe(true);
     expect(shouldReport(2, 40, 0, { minStep: 1 })).toBe(true);
+  });
+});
+
+describe("usableTotal", () => {
+  test("keeps a total the run has not passed", () => {
+    expect(usableTotal(250, 5000)).toBe(5000);
+    expect(usableTotal(5000, 5000)).toBe(5000);
+  });
+
+  test("drops a total the run has already walked past", () => {
+    expect(usableTotal(5001, 5000)).toBeUndefined();
+  });
+
+  test("treats absent and zero totals as unknown", () => {
+    expect(usableTotal(10, undefined)).toBeUndefined();
+    expect(usableTotal(10, 0)).toBeUndefined();
+  });
+});
+
+describe("truncateError", () => {
+  test("passes an ordinary message through", () => {
+    expect(truncateError(new Error("401 token expired"))).toBe("401 token expired");
+  });
+
+  test("caps an HTML 500 body so it cannot sit in monitor_events for 7 days", () => {
+    const huge = truncateError(new Error("x".repeat(5000)));
+    expect(huge.length).toBe(MAX_ERROR_CHARS + 1); // + the ellipsis
+    expect(huge.endsWith("…")).toBe(true);
+  });
+
+  test("renders a non-Error throw", () => {
+    expect(truncateError("plain string")).toBe("plain string");
   });
 });
 
@@ -148,26 +188,26 @@ describe("formatProgressLine", () => {
   } as const;
 
   test("renders the count, total and percent", () => {
-    const line = formatProgressLine({ ...base, phase: "list", current: 250, total: 5000, percent: 5, unit: "pages" });
+    const line = formatProgressLine({ ...base, stage: "list", current: 250, total: 5000, percent: 5, unit: "pages" });
     expect(line).toBe("  Fetching FOO... 250/5000 pages (5%)");
   });
 
   test("degrades to a bare counter when the total is unknown", () => {
-    const line = formatProgressLine({ ...base, operation: "pull", phase: "list", current: 50, unit: "pages" });
+    const line = formatProgressLine({ ...base, operation: "pull", stage: "list", current: 50, unit: "pages" });
     expect(line).toBe("  Fetching FOO... 50 pages");
   });
 
   test("uses the provider's noun, so jira does not report pages", () => {
-    const line = formatProgressLine({ ...base, provider: "jira", phase: "list", current: 50, unit: "issues" });
+    const line = formatProgressLine({ ...base, provider: "jira", stage: "list", current: 50, unit: "issues" });
     expect(line).toBe("  Fetching FOO... 50 issues");
   });
 
   test("falls back to a neutral noun when the provider names none", () => {
-    expect(formatProgressLine({ ...base, phase: "list", current: 7 })).toBe("  Fetching FOO... 7 items");
+    expect(formatProgressLine({ ...base, stage: "list", current: 7 })).toBe("  Fetching FOO... 7 items");
   });
 
   test("labels the content phase distinctly", () => {
-    expect(formatProgressLine({ ...base, phase: "content", current: 1 })).toContain("Fetching content for FOO");
+    expect(formatProgressLine({ ...base, stage: "content", current: 1 })).toContain("Fetching content for FOO");
   });
 });
 
@@ -176,7 +216,7 @@ describe("ProgressReporter", () => {
     const { events, lines } = await runPhase(5000, 5000);
     expect(events).toHaveLength(20);
     expect(lines).toHaveLength(20);
-    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 250, total: 5000, percent: 5, phase: "list" });
+    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 250, total: 5000, percent: 5, stage: "list" });
     expect(events[19]).toMatchObject({ current: 5000, percent: 100 });
   });
 
@@ -229,7 +269,7 @@ describe("ProgressReporter", () => {
     await reporter.tick("list", 100, 100);
     // A fresh phase starts its own bar instead of inheriting `list`'s high mark.
     expect(await reporter.tick("content", 10, 10)).toBe(true);
-    expect(events.map((e) => e.phase)).toEqual(["list", "content"]);
+    expect(events.map((e) => e.stage)).toEqual(["list", "content"]);
   });
 
   test("start announces the operation without waiting for a denominator", async () => {
@@ -269,7 +309,7 @@ describe("ProgressReporter", () => {
       scope: "FOO",
       repoRoot: REPO_ROOT,
       unit: "pages",
-      phase: "list",
+      stage: "list",
       current: 40,
       total: 40,
       percent: 100,
@@ -298,7 +338,7 @@ describe("ProgressReporter", () => {
       event: VFS_FAILED,
       runId: RUN_ID,
       repoRoot: REPO_ROOT,
-      phase: "list",
+      stage: "list",
       current: 250,
       total: 5000,
       error: "401 token expired",
@@ -335,6 +375,56 @@ describe("ProgressReporter", () => {
     await reporter.start();
     await reporter.finish(1);
     expect(delivered).toBe(2);
+  });
+
+  test("a stale count() does not multiply updates or render a nonsense fraction", async () => {
+    // count() says 100; list() yields 1000. Measured before the fix: 100 events
+    // and stderr lines reading "990/100 pages (100%)".
+    const { reporter, events, lines } = makeReporter();
+    await reporter.start();
+    for (let i = 1; i <= 1000; i++) await reporter.tick("list", i, 100);
+
+    // 28: ten updates inside the estimate (5% of 100, floored at 10), then
+    // eighteen counting past it at the flat 50-item step. Was 100.
+    expect(events.filter((e) => e.event === VFS_PROGRESS)).toHaveLength(28);
+    // Past the estimate the bar stops claiming a denominator rather than lying.
+    expect(events.at(-1)).toMatchObject({ current: 1000 });
+    expect(events.at(-1)?.total).toBeUndefined();
+    expect(events.at(-1)?.percent).toBeUndefined();
+    expect(lines.at(-1)).toBe("  Fetching FOO... 1000 pages");
+    expect(lines.some((l) => l.includes("/100 pages (100%)") && !l.startsWith("  Fetching FOO... 100/100"))).toBe(
+      false,
+    );
+  });
+
+  test("an accurate count() is unaffected — still 20 updates, constant in n", async () => {
+    const { events } = await runPhase(1000, 1000);
+    expect(events).toHaveLength(20);
+  });
+
+  test("a sink that throws cannot fail the operation or swallow the terminal event", async () => {
+    // `terminated` latches before the await, so an unguarded throw from
+    // finish() would propagate into the engine's catch, find fail() already
+    // latched, and report a completed clone as a failure with no terminal event.
+    const seen: string[] = [];
+    const { reporter } = makeReporter({
+      onEvent: (e) => {
+        seen.push(e.event);
+        throw new Error("subscriber blew up");
+      },
+    });
+
+    await reporter.start();
+    await reporter.tick("list", 40, 40);
+    await expect(reporter.finish(40)).resolves.toBeUndefined();
+    expect(seen).toEqual([VFS_STARTED, VFS_PROGRESS, VFS_COMPLETED]);
+  });
+
+  test("caps the error it publishes", async () => {
+    const { reporter, events } = makeReporter();
+    await reporter.start();
+    await reporter.fail(new Error("y".repeat(5000)));
+    expect(String(events.at(-1)?.error).length).toBe(MAX_ERROR_CHARS + 1);
   });
 
   test("works with no event sink attached", async () => {

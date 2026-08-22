@@ -21,7 +21,8 @@ import {
   pull,
   push,
 } from "@mcp-cli/clone";
-import type { CloneResult, McpToolCaller, VfsProgressSink } from "@mcp-cli/clone";
+import type { CloneResult, McpToolCaller, VfsProgressEvent, VfsProgressSink } from "@mcp-cli/clone";
+import { VFS_COMPLETED, VFS_FAILED, VFS_STARTED, ipcCall as coreIpcCall } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
@@ -48,11 +49,14 @@ export interface VfsDeps {
   preflightCheck: (providerName: string) => Promise<void>;
   /** Progress sink for clone/pull. Defaults to the daemon event bus (#1249). */
   onEvent?: VfsProgressSink;
+  /** Signal hooks for the interrupt guard. Injected by tests so they never register real handlers. */
+  signals?: SignalHooks;
 }
 
 /**
- * Ceiling on one telemetry publish. `ipcCall`'s 60s default is sized for real
- * work; a wedged daemon must not be able to stall a clone on its own progress.
+ * Ceiling on one telemetry publish, enforced locally by
+ * {@link makeProgressPublisher}. A wedged daemon must not be able to stall a
+ * clone on its own progress.
  */
 export const PROGRESS_PUBLISH_TIMEOUT_MS = 2_000;
 
@@ -63,22 +67,126 @@ export const PROGRESS_PUBLISH_TIMEOUT_MS = 2_000;
  * Best-effort, which means *swallow the error* — not *skip the await*. `main()`
  * resolving calls `process.exit()`, which tears down the event loop before an
  * un-awaited socket write lands, so a fire-and-forget publish silently drops the
- * terminal `vfs.completed` / `vfs.failed` event (#2983). The await is bounded by
- * {@link PROGRESS_PUBLISH_TIMEOUT_MS} instead. Updates are throttled by the
- * engine's reporter, so this is a handful of calls per phase, not one per page.
+ * terminal `vfs.completed` / `vfs.failed` event (#2983).
+ *
+ * Two things this deliberately does *not* do:
+ *
+ * 1. **It does not call `daemon-lifecycle`'s `ipcCall`.** That one runs
+ *    `ensureDaemon()` first, which is outside `opts.timeoutMs` (#3151) and can
+ *    sit for ~15s on a daemon that holds its PID flock but does not answer its
+ *    socket — measured 15,212ms against a documented 2,000ms ceiling. Worse,
+ *    its wait path `unlink`s the daemon lock file, so routing telemetry through
+ *    it would mutate daemon-lifecycle state 20+ times per clone instead of once
+ *    per command, and could delete the lock out from under another `mcx`
+ *    inside its `O_EXCL` startup window. Telemetry must be strictly
+ *    observational: the core client talks to the socket and nothing else, and
+ *    "no daemon" is simply a rejection we swallow.
+ * 2. **It does not delegate the ceiling to the callee.** A constant named as a
+ *    bound has to bound the operation it names whatever the callee does, so the
+ *    race below is the guarantee — `timeoutMs` is passed as well, but it is
+ *    defence in depth rather than the mechanism.
  */
-export function makeProgressPublisher(ipc: typeof ipcCall = ipcCall): VfsProgressSink {
+export function makeProgressPublisher(
+  ipc: typeof coreIpcCall = coreIpcCall,
+  timeoutMs: number = PROGRESS_PUBLISH_TIMEOUT_MS,
+): VfsProgressSink {
   return async ({ event, ...fields }) => {
+    // Settled to `void` on both paths: once the race is lost nobody is awaiting
+    // this promise, and a late rejection would surface as an unhandled one.
+    const publish = Promise.resolve(
+      ipc("publishEvent", { src: "cli.vfs", event, category: "vfs", extra: { ...fields } }, { timeoutMs }),
+    ).then(
+      () => {},
+      () => {},
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await ipc(
-        "publishEvent",
-        { src: "cli.vfs", event, category: "vfs", extra: { ...fields } },
-        { timeoutMs: PROGRESS_PUBLISH_TIMEOUT_MS },
-      );
-    } catch {
-      // The daemon may be down or wedged; a clone does not fail over telemetry.
+      await Promise.race([
+        publish,
+        new Promise<void>((settle) => {
+          timer = setTimeout(settle, timeoutMs);
+        }),
+      ]);
+    } finally {
+      // Don't leave a 2s timer holding the loop open after a fast publish.
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
+}
+
+/** Process hooks the interrupt guard needs, injectable so tests never touch real signals. */
+export interface SignalHooks {
+  on: (signal: NodeJS.Signals, handler: () => void) => void;
+  off: (signal: NodeJS.Signals, handler: () => void) => void;
+  exit: (code: number) => void;
+}
+
+const PROCESS_SIGNALS: SignalHooks = {
+  on: (signal, handler) => {
+    process.on(signal, handler);
+  },
+  off: (signal, handler) => {
+    process.off(signal, handler);
+  },
+  exit: (code) => process.exit(code),
+};
+
+/** Shell convention: 128 + the signal number. */
+const EXIT_CODE_BY_SIGNAL: Record<string, number> = { SIGINT: 130, SIGTERM: 143 };
+
+/**
+ * Wrap a progress sink so a signal-terminated run still closes its event stream.
+ *
+ * Ctrl-C is the likeliest way a long clone ends — that is the premise of the
+ * whole feature — and without this the stream is `started, progress…` then
+ * silence forever, which is exactly the state `--until` and `ctx.waitForEvent`
+ * cannot distinguish from a hang.
+ *
+ * The seam is the sink rather than the reporter on purpose: every field a
+ * terminal event needs is already on the events flowing through here, so the
+ * engines stay free of process-level signal handling and `ProgressReporter`
+ * stays off the package's public surface.
+ */
+export function guardInterrupts(
+  publish: VfsProgressSink | undefined,
+  hooks: SignalHooks = PROCESS_SIGNALS,
+): { sink: VfsProgressSink | undefined; dispose: () => void } {
+  if (!publish) return { sink: undefined, dispose: () => {} };
+
+  let last: VfsProgressEvent | undefined;
+  let open = false;
+
+  const sink: VfsProgressSink = async (e) => {
+    if (e.event === VFS_STARTED) open = true;
+    else if (e.event === VFS_COMPLETED || e.event === VFS_FAILED) open = false;
+    last = e;
+    await publish(e);
+  };
+
+  const handlers: Array<[NodeJS.Signals, () => void]> = [];
+  const dispose = () => {
+    for (const [signal, handler] of handlers) hooks.off(signal, handler);
+    handlers.length = 0;
+  };
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const handler = () => {
+      void (async () => {
+        if (open && last) {
+          open = false;
+          const { event: _replaced, ...fields } = last;
+          await publish({ ...fields, event: VFS_FAILED, error: `interrupted by ${signal}` });
+        }
+        dispose();
+        hooks.exit(EXIT_CODE_BY_SIGNAL[signal] ?? 1);
+      })();
+    };
+    handlers.push([signal, handler]);
+    hooks.on(signal, handler);
+  }
+
+  return { sink, dispose };
 }
 
 export function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
@@ -165,6 +273,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
     resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
     preflightCheck: (name: string) => preflightCheck(name),
     onEvent: makeProgressPublisher(),
+    signals: PROCESS_SIGNALS,
   };
   const sub = args[0];
 
@@ -230,6 +339,8 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
   await deps.preflightCheck(providerName);
 
   const provider = deps.resolveProvider(providerName, { batchSize });
+  // Ctrl-C on a long clone still closes the event stream — see guardInterrupts.
+  const guard = guardInterrupts(deps.onEvent, deps.signals);
   let result: CloneResult;
   try {
     result = await deps.clone({
@@ -239,7 +350,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       limit,
       depth,
       onProgress: log,
-      onEvent: deps.onEvent,
+      onEvent: guard.sink,
     });
   } catch (err) {
     if (err instanceof VfsError) {
@@ -247,6 +358,8 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       deps.exit(1);
     }
     throw err;
+  } finally {
+    guard.dispose();
   }
 
   console.log(
@@ -291,8 +404,9 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
 
   await deps.preflightCheck(providerName);
 
+  const guard = guardInterrupts(deps.onEvent, deps.signals);
   try {
-    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log, onEvent: deps.onEvent });
+    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log, onEvent: guard.sink });
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (err instanceof VfsError) {
@@ -300,6 +414,8 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
       deps.exit(1);
     }
     throw err;
+  } finally {
+    guard.dispose();
   }
 }
 
@@ -407,8 +523,8 @@ Options:
 Progress:
   clone and pull print live progress to stderr ("Fetching FOO... 250/5000 pages
   (5%)") and publish vfs.started, vfs.progress, and exactly one terminal event
-  — vfs.completed or vfs.failed — on the daemon event bus. Follow a long clone
-  from another terminal with: mcx monitor
+  — vfs.completed or vfs.failed — on the daemon event bus, including on Ctrl-C.
+  Follow a long clone from another terminal with: mcx monitor
   Every event carries a runId (one run) and repoRoot (the target dir), so
   concurrent clones demultiplex and repo-scoped monitors stay unpolluted.
   The percentage needs a provider that can count its scope up front (confluence);

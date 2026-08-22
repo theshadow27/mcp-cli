@@ -115,6 +115,12 @@ async function runClone(opts: CloneOptions, progress: ProgressReporter): Promise
   }
 
   // ── Step 1: Resolve scope ──────────────────────────────────
+  // Announce before the first network call, not after it. `resolveScope()` is
+  // where an expired Atlassian token surfaces — the single most common way a
+  // clone fails — and starting the stream after it meant that failure produced
+  // no events at all: nothing to see, and nothing for `--until` to end on. The
+  // scope key is already known from argv, so there is nothing to wait for.
+  await progress.start();
   log(opts, `Resolving scope: ${provider.name}/${scope.key}...`);
   const resolved = await provider.resolveScope(scope);
   const spaceName = resolved.resolved.spaceName as string;
@@ -124,13 +130,12 @@ async function runClone(opts: CloneOptions, progress: ProgressReporter): Promise
   // Providers that support inline content (e.g., Confluence) return content
   // with the listing, avoiding N+1 individual fetch calls.
   //
-  // Announce first, *then* ask the provider for a page count: `count()` goes
-  // through the resilient caller (30s timeout, 4 retries), so on a rate-limited
-  // remote it can take minutes — exactly when the user most needs to see that
-  // the clone is alive. The denominator lands on the first progress line
-  // instead. A provider without `count()` (or one whose count call fails) still
-  // reports, just without a percentage. See #1249.
-  await progress.start();
+  // The denominator is resolved here rather than before `vfs.started`: `count()`
+  // goes through the resilient caller (30s timeout, 4 retries), so on a
+  // rate-limited remote it can take minutes — exactly when the user most needs
+  // to see that the clone is alive. It lands on the first progress line instead.
+  // A provider without `count()` (or one whose count call fails) still reports,
+  // just without a percentage. See #1249.
   const listTotal = await estimateTotal(provider, resolved, limit);
   progress.announceTotal(listTotal);
 
