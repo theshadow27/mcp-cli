@@ -59,6 +59,8 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
+import type { GhTokenSource } from "./gh-token";
+import { ghTokenRole, ghTokensPath, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -524,6 +526,10 @@ export class ClaudeWsServer {
   private readonly workItemWaiters: WorkItemWaiter[] = [];
   private readonly workItemBuffer: BufferedWorkItemEvent[] = [];
   private readonly spawn: SpawnFn;
+  /** Resolves the configured GitHub credential pair at spawn time (#1510). */
+  private readonly ghTokens: () => GhTokenSource;
+  /** Latches the single-token warning so it fires once per daemon, not once per spawn. */
+  private ghSingleTokenWarned = false;
   private readonly killTimeoutMs: number;
   private readonly portRetryCount: number;
   private readonly portRetryDelayMs: number;
@@ -612,6 +618,8 @@ export class ClaudeWsServer {
     spawnDisabledReason?: string | null;
     /** Transport for sessions without a per-spawn override. Default: `"ws"`. */
     defaultTransport?: "ws" | "stdio";
+    /** Source of the two-tier GitHub credential pair (#1510). Default: `~/.mcp-cli/tokens.json` + env. */
+    ghTokens?: () => GhTokenSource;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -633,6 +641,7 @@ export class ClaudeWsServer {
     this.binaryPath = deps?.binaryPath ?? "claude";
     this.spawnDisabledReason = deps?.spawnDisabledReason ?? null;
     this.defaultTransport = deps?.defaultTransport ?? "ws";
+    this.ghTokens = deps?.ghTokens ?? (() => loadGhTokens());
   }
 
   /** True when the server is running in TLS (wss://) mode. */
@@ -978,6 +987,61 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Compose the env overrides layered onto the child's inherited environment.
+   *
+   * The child is spawned with `{ ...process.env, ...overrides }`, so a key set
+   * to `undefined` here *unsets* the inherited value rather than doing nothing
+   * (see `defaultSpawn`). Each concern owns one block and contributes only its
+   * own keys.
+   */
+  private buildSpawnEnv(
+    sessionId: string,
+    session: WsSession,
+    opts: { useStdio: boolean; traceparent?: string },
+  ): Record<string, string | undefined> {
+    const env: Record<string, string | undefined> = {};
+
+    // Trace context — propagate this spawn's traceparent to the child.
+    if (opts.traceparent) env.TRACEPARENT = opts.traceparent;
+
+    // Worktree pin — keep the child's git plumbing inside its own worktree.
+    if (session.config.cwd && session.config.worktree) {
+      env.GIT_DIR = `${session.config.cwd}/.git`;
+      env.GIT_WORK_TREE = session.config.cwd;
+    }
+
+    // TLS — only needed for WS transport (sdk-url against a self-signed cert).
+    if (!opts.useStdio && this.tlsConfig) env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+    // GitHub credential tier (#1510) — gh-token.ts owns the allow/deny table.
+    Object.assign(env, this.resolveGhTokenEnv(sessionId, session));
+
+    return env;
+  }
+
+  /**
+   * Apply the two-tier GitHub credential policy to one spawn (#1510).
+   *
+   * Only the decision's `mode` and secret-free `reason` are logged — token
+   * material never reaches the daemon log ring, an event payload, or the DB.
+   */
+  private resolveGhTokenEnv(sessionId: string, session: WsSession): Record<string, string | undefined> {
+    const decision = resolveSpawnGhToken(ghTokenRole(session.config), this.ghTokens());
+    if (decision.warnSingleToken) {
+      // Warn once per daemon, not once per spawn — a sprint spawns many workers.
+      if (!this.ghSingleTokenWarned) {
+        this.ghSingleTokenWarned = true;
+        this.logger.warn(
+          `[_claude] ${decision.reason}. Configure a write-scoped worker token in ${ghTokensPath()} for least privilege.`,
+        );
+      }
+    } else if (decision.mode !== "inherited") {
+      this.logger.info(`[_claude] session ${sessionId} gh credentials: ${decision.mode} — ${decision.reason}`);
+    }
+    return decision.env;
+  }
+
+  /**
    * Spawn the Claude CLI process for a prepared session.
    * Returns the PID of the spawned process.
    * @param traceparent Optional W3C traceparent to propagate via TRACEPARENT env var.
@@ -1030,16 +1094,7 @@ export class ClaudeWsServer {
     // writing outside the trust boundary silently.
     const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
 
-    const envOverrides: Record<string, string | undefined> = {};
-    if (traceparent) envOverrides.TRACEPARENT = traceparent;
-    if (session.config.cwd && session.config.worktree) {
-      envOverrides.GIT_DIR = `${session.config.cwd}/.git`;
-      envOverrides.GIT_WORK_TREE = session.config.cwd;
-    }
-    // TLS env only needed for WS transport (sdk-url against self-signed cert)
-    if (!useStdio && this.tlsConfig) {
-      envOverrides.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-    }
+    const envOverrides = this.buildSpawnEnv(sessionId, session, { useStdio, traceparent });
     // Line-buffer child stderr and forward each complete line keyed by session
     // ID (#2738). Short-lived spawn failures may emit only a partial first line,
     // so the tail is flushed on exit below — never dropped.
