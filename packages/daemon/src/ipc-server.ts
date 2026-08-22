@@ -47,6 +47,7 @@ import { AuthHandlers } from "./handlers/auth";
 import { AutomationHandlers } from "./handlers/automation";
 import { BudgetHandlers } from "./handlers/budget";
 import { ConfigHandlers } from "./handlers/config";
+import { DomainHandlers } from "./handlers/domain";
 import { EventHandlers } from "./handlers/event";
 import { MailHandlers } from "./handlers/mail";
 import { NoteHandlers } from "./handlers/note";
@@ -445,6 +446,7 @@ export class IpcServer {
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
     new NoteHandlers(this.db).register(this.handlers);
+    new DomainHandlers(this.db).register(this.handlers);
     new PrThreadHandlers().register(this.handlers);
     new ToolHandlers(this.pool, this.db, deps.aliasServer, this.daemonId).register(this.handlers);
     new StatusHandler(this.pool, this.db, serveHandlers, this.serveInstances, this.getWsPortInfo).register(
@@ -561,7 +563,7 @@ export class IpcServer {
     });
 
     // Catch duplicate registrations (silently-overwritten handlers are invisible bugs).
-    const EXPECTED = 55;
+    const EXPECTED = 62;
     if (this.handlers.size !== EXPECTED) {
       throw new Error(
         `Handler count mismatch after registration: expected ${EXPECTED}, got ${this.handlers.size}. A handler was duplicated or omitted.`,

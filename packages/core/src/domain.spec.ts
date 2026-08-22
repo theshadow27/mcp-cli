@@ -1,11 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   type Domain,
   NO_DOMAIN_ID,
   canonicalizeDomainPath,
+  expandLocalDomainPath,
   formatDomainLocation,
   isDomainScoped,
   isPathWithin,
@@ -13,6 +14,7 @@ import {
   normalizeDomainPath,
   parseDomainLocation,
   resolveDomainForPath,
+  resolveDomainLocation,
 } from "./domain";
 
 function domain(name: string, path: string, host: string | null = null, id = 1): Domain {
@@ -262,5 +264,74 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
 
   test("still refuses a relative path", () => {
     expect(() => canonicalizeDomainPath("relative/path")).toThrow(/must be absolute/);
+  });
+});
+
+describe("expandLocalDomainPath (#3035)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("expands a bare tilde to home", () => {
+    expect(expandLocalDomainPath("~", env)).toBe("/home/tester");
+  });
+
+  test("expands ~/ to a path under home", () => {
+    expect(expandLocalDomainPath("~/github/phoenix", env)).toBe("/home/tester/github/phoenix");
+  });
+
+  test("resolves a relative path against the CALLER's cwd, not the daemon's", () => {
+    // The bug this prevents: a relative path stored verbatim resolves against whatever
+    // directory the daemon happened to start in, and only misbehaves after a restart.
+    expect(expandLocalDomainPath("packages/core", env)).toBe("/home/tester/repo/packages/core");
+    expect(expandLocalDomainPath(".", env)).toBe("/home/tester/repo");
+    expect(expandLocalDomainPath("../other", env)).toBe("/home/tester/other");
+  });
+
+  test("passes an absolute path through, normalized", () => {
+    expect(expandLocalDomainPath("/srv/app/", env)).toBe("/srv/app");
+    expect(expandLocalDomainPath("/srv/./app/../app", env)).toBe("/srv/app");
+  });
+
+  test("refuses ~user — another account's home is not ours to resolve", () => {
+    expect(() => expandLocalDomainPath("~alice/work", env)).toThrow(/only "~" for the current user/);
+  });
+
+  test("refuses an empty path", () => {
+    expect(() => expandLocalDomainPath("", env)).toThrow(/required/);
+  });
+
+  test("refuses to anchor on a relative cwd", () => {
+    expect(() => expandLocalDomainPath("sub", { home: "/home/u", cwd: "relative" })).toThrow(/cwd must be absolute/);
+  });
+
+  test("every expansion is absolute — the property the table depends on", () => {
+    for (const input of ["~", "~/x", ".", "..", "a/b", "/abs", "/abs/"]) {
+      expect(isAbsolute(expandLocalDomainPath(input, env))).toBe(true);
+    }
+  });
+});
+
+describe("resolveDomainLocation (#3035)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("the local and host forms are the same command, differing only in host", () => {
+    const local = resolveDomainLocation("~/github/phoenix", env);
+    const remote = resolveDomainLocation("boxen0010:~/github/phoenix", env);
+    expect(local).toEqual({ host: null, path: "/home/tester/github/phoenix" });
+    expect(remote.host).toBe("boxen0010");
+  });
+
+  test("a host-bound path is stored verbatim — its ~ is that host's home, not ours", () => {
+    expect(resolveDomainLocation("boxen0010:~/github/phoenix", env).path).toBe("~/github/phoenix");
+    expect(resolveDomainLocation("boxen0010:relative/path", env).path).toBe("relative/path");
+  });
+
+  test("round-trips through formatDomainLocation", () => {
+    for (const spec of ["/srv/app", "boxen0010:~/work"]) {
+      expect(formatDomainLocation(resolveDomainLocation(spec, env))).toBe(spec);
+    }
+  });
+
+  test("a colon after a separator is part of a local path, not a host", () => {
+    expect(resolveDomainLocation("/tmp/a:b", env)).toEqual({ host: null, path: "/tmp/a:b" });
   });
 });

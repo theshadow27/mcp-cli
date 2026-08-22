@@ -435,7 +435,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(warning).toContain(IMPORT_MARKER_KEY);
   });
 
-  test("B3: the documented recovery command actually re-arms the import", () => {
+  test("B3: clearing the marker by hand re-arms the import", () => {
     const ws = workspace();
     writeLegacyDb(ws.legacyPath);
     const first = target(ws.targetPath);
@@ -443,7 +443,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     first.close();
     open.pop();
 
-    // Exactly what RECOVERY_INSTRUCTIONS tells the user to do.
+    // The mechanism `mcx domain import --force` automates (see B3b).
     rmSync(ws.targetPath, { force: true });
     const legacy = new Database(ws.legacyPath, { readwrite: true, create: false });
     legacy.run("DELETE FROM daemon_state WHERE key = ?", [IMPORT_MARKER_KEY]);
@@ -459,6 +459,56 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(result.ran).toBe(true);
     expect(result.sealed).toBe(true);
     expect(result.totalCopied).toBeGreaterThan(0);
+  });
+
+  test("B3b: force actually re-arms the import (#3035)", () => {
+    // The mechanism behind `mcx domain import --force`. Asserting that the recovery
+    // *string* mentions the command would pass while the flag did nothing, so this drives
+    // `force: true` instead. The string↔mechanism tie-back lands with the guard, in the
+    // commit that makes `recoveryInstructions()` name the command.
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const first = target(ws.targetPath);
+    const initial = importLegacyState({
+      db: first.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(initial.sealed).toBe(true);
+    first.close();
+    open.pop();
+
+    // Only mcx.db is deleted — the marker stays set, exactly the state a user lands in
+    // when they "reset" by removing the database.
+    rmSync(ws.targetPath, { force: true });
+    const rebuilt = target(ws.targetPath);
+
+    const declined = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(declined.ran).toBe(false);
+
+    const forced = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      force: true,
+      log: () => {},
+    });
+    expect(forced.ran).toBe(true);
+    expect(forced.sealed).toBe(true);
+    expect(forced.totalCopied).toBeGreaterThan(0);
+
+    // The marker must not have been copied into mcx.db by the forced run — the row whose
+    // absence from mcx.db is the whole point of it living in the legacy DB.
+    const marker = rebuilt.database
+      .query<{ n: number }, [string]>("SELECT count(*) AS n FROM daemon_state WHERE key = ?")
+      .get(IMPORT_MARKER_KEY);
+    expect(marker?.n).toBe(0);
   });
 
   test("B4: an unwritable legacy DB copies NOTHING and says so accurately", () => {

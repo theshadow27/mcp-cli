@@ -68,13 +68,33 @@ loop is off. Both are normal.
 ```bash
 mcx domain add <name> [host:]<path>   # register
 mcx domain ls [--json]                # list
-mcx domain show <name>                # resolve to host + path
-mcx domain which [path]               # reverse lookup — which domain owns this path?
+mcx domain show <name> [--json]       # resolve to host + path
+mcx domain which [path] [--json]      # reverse lookup — which domain owns this path?
 mcx domain rename <old> <new>
-mcx domain rm <name>
+mcx domain rm <name> [--force]
+mcx domain import [--force]           # re-run the one-shot import from the legacy state.db
 ```
 
 Row: `id`, `name`, `host`, `path`, `created_at`. Nothing else.
+
+`~` and relative paths are expanded **at the CLI**, against the caller's home and cwd, and
+only for a local domain — a host-bound path names a directory on another machine, where
+this filesystem has no say, and is stored verbatim. The daemon rejects a relative local
+path at the IPC boundary rather than anchoring it on its own cwd, which is a different
+directory and would only misbehave after a restart.
+
+`add` refuses a duplicate name and a location another domain already owns, naming it.
+`rename` is a name change only: `id` and `path` are untouched, so every `domain_id`
+reference and every `which` answer survives it.
+
+`rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
+cascades. Silently orphaning a thousand work items because a name was typed twice is not a
+recoverable state, so the refusal is the default and the cascade is the flag.
+
+`import` re-runs the one-shot legacy import (#3034). Its marker lives in the **legacy**
+`state.db`, deliberately, so it outlives `mcx.db` — which is why deleting `mcx.db` is not a
+recovery and `mcx domain import --force` is. Without `--force` the import declines and says
+so, naming the marker.
 
 `host` is null for a local domain. When it is set, the daemon routes to a domain
 server on that host instead of a local worker — same control protocol either way.

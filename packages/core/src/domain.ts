@@ -11,7 +11,7 @@
  * orchestrator could rationalize past is a function, not prose.
  */
 
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { resolveRealpath } from "./fs";
 
 /** A registered domain: a name bound to `[host:]path`. */
@@ -200,4 +200,61 @@ export function listPartitionedTables(db: {
 /** Render a domain's location back to the `[host:]path` form `parseDomainLocation` accepts. */
 export function formatDomainLocation(location: DomainLocation): string {
   return location.host === null ? location.path : `${location.host}:${location.path}`;
+}
+
+/**
+ * The two pieces of ambient state a shell-style path is expanded against. Passed in
+ * rather than read from `process` so the expansion rule is a pure function — the CLI
+ * supplies its own `cwd`, which is *not* the daemon's.
+ */
+export interface PathExpansionEnv {
+  /** Absolute home directory, for `~`. */
+  home: string;
+  /** Absolute working directory, for a relative path. */
+  cwd: string;
+}
+
+/**
+ * Expand a **local** shell-style path into the absolute form the domains table stores.
+ *
+ * `~` and a relative path are resolved here, at the CLI, because this is the only place
+ * where "home" and "here" mean what the person typing them meant. A relative path that
+ * reached the table would resolve against whatever directory the *daemon* happened to
+ * start in — a latent bug that only fires the day the daemon is restarted from somewhere
+ * else, and by then the row looks fine.
+ *
+ * Throws rather than guessing on:
+ * - `~user/...` — another account's home is not ours to resolve, and silently treating it
+ *   as a relative path would register a domain at `<cwd>/~user/...`.
+ * - a non-absolute `home`/`cwd` — the expansion would be anchored on nothing.
+ *
+ * **Local only.** A host-bound path names a directory on another machine, where our home
+ * and our cwd have no say; {@link resolveDomainLocation} passes those through verbatim.
+ */
+export function expandLocalDomainPath(path: string, env: PathExpansionEnv): string {
+  if (path.length === 0) throw new Error("domain path is required");
+  if (!isAbsolute(env.cwd)) throw new Error(`cwd must be absolute, got ${JSON.stringify(env.cwd)}`);
+
+  if (path === "~" || path.startsWith("~/")) {
+    if (!isAbsolute(env.home)) throw new Error(`home must be absolute to expand "~", got ${JSON.stringify(env.home)}`);
+    return normalizeDomainPath(path === "~" ? env.home : join(env.home, path.slice(2)));
+  }
+  if (path.startsWith("~")) {
+    throw new Error(`cannot expand ${JSON.stringify(path)}: only "~" for the current user is supported`);
+  }
+
+  return normalizeDomainPath(isAbsolute(path) ? path : resolve(env.cwd, path));
+}
+
+/**
+ * Parse the `[host:]<path>` argument of `mcx domain add` into the row it becomes.
+ *
+ * Deliberately one function for both forms: `mcx domain add phoenix ~/github/phoenix` and
+ * `mcx domain add phoenix boxen0010:~/github/phoenix` differ only in whether `host` comes
+ * out null, which is what lets a domain move hosts later without a new verb.
+ */
+export function resolveDomainLocation(spec: string, env: PathExpansionEnv): DomainLocation {
+  const location = parseDomainLocation(spec);
+  if (location.host !== null) return location;
+  return { host: null, path: expandLocalDomainPath(location.path, env) };
 }

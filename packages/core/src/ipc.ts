@@ -8,6 +8,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod/v4";
 import type { AliasType, MonitorAliasMetadata } from "./alias-bundle-types";
+import type { Domain } from "./domain";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
@@ -70,7 +71,14 @@ export type IpcMethod =
   | "listAutomation"
   | "getAutomationLog"
   | "getAgentSession"
-  | "getPrThreadSnapshot";
+  | "getPrThreadSnapshot"
+  | "domainAdd"
+  | "domainList"
+  | "domainShow"
+  | "domainWhich"
+  | "domainRename"
+  | "domainRemove"
+  | "domainImport";
 
 // -- Request/Response --
 
@@ -854,6 +862,91 @@ export interface PrThreadSnapshot {
   truncated: boolean;
 }
 
+// -- Domains (#3035) --
+
+/**
+ * A local domain path arrives already absolute — `~` expanded, relative resolved — because
+ * only the *caller* knows what "here" and "home" mean. The daemon's cwd is not the user's,
+ * so anchoring a relative path daemon-side would be a guess. Rejecting it at the protocol
+ * boundary is the enforcement; `resolveDomainLocation()` in `domain.ts` is the caller's
+ * half. A host-bound path names a directory on another machine and is stored verbatim.
+ */
+export const DomainAddParamsSchema = z
+  .object({
+    name: z.string().min(1),
+    host: z.string().min(1).nullable().default(null),
+    path: z.string().min(1),
+  })
+  .refine((p) => p.host !== null || isAbsolute(p.path), {
+    message: "a local domain path must be absolute — expand ~ and resolve relative paths before sending",
+    path: ["path"],
+  });
+
+export const DomainShowParamsSchema = z.object({ name: z.string().min(1) });
+
+export const DomainWhichParamsSchema = z.object({
+  path: z.string().refine(isAbsolute, "path must be absolute"),
+});
+
+export const DomainRenameParamsSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+});
+
+export const DomainRemoveParamsSchema = z.object({
+  name: z.string().min(1),
+  /** Delete the dependent rows along with the domain. Without it, a domain with dependents is refused. */
+  cascade: z.boolean().optional().default(false),
+});
+
+export const DomainImportParamsSchema = z.object({
+  /** Re-run the one-shot legacy import even though the marker is already set. */
+  force: z.boolean().optional().default(false),
+});
+
+export interface DomainWhichResult {
+  domain: Domain | null;
+  /** Every registered domain name, so a miss can say what *is* registered instead of just "no". */
+  registered: string[];
+}
+
+/** Per-table count of rows bound to a domain — what `rm` reports when it refuses. */
+export interface DomainDependentCount {
+  table: string;
+  rows: number;
+}
+
+export interface DomainRemoveResult {
+  found: boolean;
+  removed: boolean;
+  /** Non-empty with `removed: false` means the removal was refused, not that nothing matched. */
+  dependents: DomainDependentCount[];
+}
+
+export interface DomainImportTableResult {
+  table: string;
+  copied: number;
+  notCopied: number;
+  failed: boolean;
+  reason?: string;
+}
+
+export interface DomainImportResult {
+  ran: boolean;
+  sealed: boolean;
+  reason?: string;
+  tables: DomainImportTableResult[];
+  failedTables: string[];
+  domainsImported: number;
+  domainsSkipped: number;
+  totalCopied: number;
+  totalNotCopied: number;
+  /** Key of the marker row in the legacy DB, so the decline message can name it. */
+  markerKey: string;
+  /** The importer's own diagnostics, forwarded verbatim for the CLI to print to stderr. */
+  log: string[];
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -912,6 +1005,13 @@ export interface IpcMethodResult {
   getAutomationLog: GetAutomationLogResult;
   getAgentSession: GetAgentSessionResult;
   getPrThreadSnapshot: PrThreadSnapshot;
+  domainAdd: Domain;
+  domainList: Domain[];
+  domainShow: Domain | null;
+  domainWhich: DomainWhichResult;
+  domainRename: Domain;
+  domainRemove: DomainRemoveResult;
+  domainImport: DomainImportResult;
 }
 
 // -- Error codes --

@@ -37,6 +37,7 @@ import { cmdAutomation } from "./commands/automation";
 import { cmdClaude } from "./commands/claude";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
+import { cmdDomain } from "./commands/domain";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
 import { cmdGc } from "./commands/gc";
@@ -435,6 +436,10 @@ async function main(): Promise<void> {
 
       case "vfs":
         await cmdVfs(cleanArgs.slice(1), { dryRun: _dryRun });
+        break;
+
+      case "domain":
+        await cmdDomain(cleanArgs.slice(1));
         break;
 
       case "scope":
@@ -1033,7 +1038,8 @@ Utility:
   mcx memory audit [--json]           Haiku-driven memory staleness + contradiction check
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
-  mcx scope <subcommand>              Directory scope management
+  mcx domain <subcommand>             Domains: names bound to [host:]path
+  mcx scope <subcommand>              Directory scope management (superseded by domain)
   mcx dump/metrics/spans              Diagnostics and observability
   mcx telemetry [on|off|status]       Control anonymous usage telemetry
   mcx version                         Version info
