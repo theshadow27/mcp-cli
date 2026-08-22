@@ -22,6 +22,7 @@ import {
   NO_DOMAIN_ID,
   type SessionInfo,
   type WorkItemEvent,
+  domainFilterArg,
   findManifestProfile,
   matchesDomain,
   readCliConfig,
@@ -390,18 +391,6 @@ export function matchesRepoRoot(
 }
 
 /**
- * The domain filter carried by a `claude_session_list` / `claude_wait` call.
- *
- * Always a number that the daemon already resolved — this worker cannot open the
- * domains table, so it never sees a name or a path. `undefined` means the caller
- * is outside every registered domain (or passed `--all`), in which case the
- * coarser `repoRoot` filter still applies.
- */
-function domainFilter(args: Record<string, unknown>): number | undefined {
-  return typeof args.domainId === "number" ? args.domainId : undefined;
-}
-
-/**
  * The predicate deciding whether a wait wakeup belongs to the caller's scope.
  *
  * One function rather than the two identical copies `handleWait` and
@@ -420,8 +409,7 @@ export function makeEventInScope(
   return (e) => {
     if (domainId === undefined && !repoRoot) return true;
     if (!e.session) return false;
-    if (domainId !== undefined) return matchesDomain(e.session, domainId);
-    return matchesRepoRoot(e.session, repoRoot);
+    return matchesDomain(e.session, domainId) && matchesRepoRoot(e.session, repoRoot);
   };
 }
 
@@ -429,18 +417,18 @@ function handleSessionList(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
 ): { content: Array<{ type: "text"; text: string }> } {
-  let sessions = server.listSessions();
+  const sessions = server.listSessions();
   const repoRoot = args.repoRoot as string | undefined;
-  const domainId = domainFilter(args);
-  // Domain wins when one resolved: it is the partition key, and `repoRoot` is the
-  // coarser pre-domain fallback kept for callers (and installs) with no domains
-  // registered — without it, `mcx claude ls` in repo A would list repo B.
-  if (domainId !== undefined) {
-    sessions = sessions.filter((s) => matchesDomain(s, domainId));
-  } else if (repoRoot) {
-    sessions = sessions.filter((s) => matchesRepoRoot(s, repoRoot));
-  }
-  return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }] };
+  const domainId = domainFilterArg(args);
+  // BOTH filters apply, not whichever is present (#3039 review 5). Domain used to
+  // WIN, which made `mcx claude ls` under a domain registered above the git root
+  // (`mcx domain add box ~/github` — the obvious first thing anyone types) list
+  // sibling repos' sessions, while `mcx claude wait` woke on them and then had the
+  // CLI's own repo pass silently drop the event — a wait loop spinning as fast as
+  // the busiest neighbouring repo. Each filter is a no-op when its input is absent,
+  // so ANDing them narrows correctly instead of picking a winner.
+  const scoped = sessions.filter((s) => matchesDomain(s, domainId) && matchesRepoRoot(s, repoRoot));
+  return { content: [{ type: "text", text: JSON.stringify(scoped, null, 2) }] };
 }
 
 function handleSessionStatus(
@@ -538,7 +526,7 @@ async function handleWait(
   const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
   const repoRoot = args.repoRoot as string | undefined;
-  const domainId = domainFilter(args);
+  const domainId = domainFilterArg(args);
   const any = args.any === true;
   const prNumber = typeof args.pr === "number" ? args.pr : null;
   const checks = args.checks === true;

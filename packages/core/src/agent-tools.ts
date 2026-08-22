@@ -85,19 +85,16 @@ const requestIdProp: JsonSchemaProperty = {
 };
 
 /**
- * `domainId` is defined here, in the shared builder, rather than in a per-provider
- * override, so that every provider gets one partition key and none can be added
- * later without it. It is **resolved by the daemon** — a caller passes `domain`
- * (a name) or nothing, and `packages/daemon/src/session-domain.ts` turns that into
- * the numeric id before the args reach a worker. Workers never resolve domains;
- * they only compare ids.
+ * The domain scoping a caller may ask for is a NAME or a DIRECTORY — never an id.
+ *
+ * There is deliberately no `domainId` property here. The resolved id is injected by
+ * `packages/daemon/src/session-domain.ts` *after* schema validation, so nothing needs
+ * it declared — and declaring it is what invites a caller to supply one. A supplied
+ * id was a second resolution path that bypassed `UnknownDomainError`, bypassed
+ * `toDomainFilter`, and could write a row against a `domains` id with no row behind
+ * it. Not advertising it is half the fix; `applyDomainScope` stripping it is the
+ * other half, because an undeclared property is not a rejected one.
  */
-const domainIdProp: JsonSchemaProperty = {
-  type: "number",
-  description:
-    "Resolved domain id. Injected by the daemon from `domain`/`domainCwd`/`cwd` — callers pass those, not this.",
-};
-
 const domainNameProp: JsonSchemaProperty = {
   type: "string",
   description: "Domain name to scope to (as registered with `mcx domain add`). Resolved daemon-side to a domain id.",
@@ -244,7 +241,6 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             timeout: timeoutProp,
             wait: { type: "boolean", description: "Block until result (default: false)" },
             domain: domainNameProp,
-            domainId: domainIdProp,
             ...ov("prompt")?.extraProperties,
           },
           ["prompt", ...(ov("prompt")?.extraRequired ?? [])],
@@ -263,7 +259,6 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
         ...schema("session_list", {
           domain: domainNameProp,
           domainCwd: domainCwdProp,
-          domainId: domainIdProp,
           ...ov("session_list")?.extraProperties,
         }),
       },
@@ -366,7 +361,6 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
           timeout: timeoutProp,
           domain: domainNameProp,
           domainCwd: domainCwdProp,
-          domainId: domainIdProp,
           ...ov("wait")?.extraProperties,
         }),
       },

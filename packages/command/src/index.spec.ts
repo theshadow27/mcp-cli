@@ -153,7 +153,13 @@ describe("extractDomainFlag", () => {
 
   test("the value is consumed, so it cannot be mistaken for --all's -a or a positional", () => {
     expect(extractDomainFlag(["-d", "phoenix", "--all"])).toEqual({ domain: "phoenix", rest: ["--all"] });
-    expect(extractDomainFlag(["-d", "-a"])).toEqual({ domain: "-a", rest: [] });
+  });
+
+  test("a flag-looking value is NOT swallowed as a domain name", () => {
+    // `mcx claude ls -d --json` used to send domain "--json" — failing on a domain
+    // nobody typed, while also eating the --json the caller did type.
+    expect(extractDomainFlag(["ls", "-d", "--json"])).toEqual({ domain: undefined, rest: ["ls", "-d", "--json"] });
+    expect(extractDomainFlag(["-d", "-a"])).toEqual({ domain: undefined, rest: ["-d", "-a"] });
   });
 
   test("absent leaves args untouched", () => {

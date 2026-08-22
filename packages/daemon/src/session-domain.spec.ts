@@ -44,8 +44,12 @@ const db = lookup([PHOENIX, BAR, BARBAZ]);
 
 describe("classifyAgentTool", () => {
   test("classifies every registered provider, not just claude", () => {
-    // The defect this guards against is a hand-maintained tool list that only
-    // ever learned about `_claude`, leaving four providers' sessions unpartitioned.
+    // NOTE: this asserts the CLASSIFIER only. It passed while four of five workers
+    // then threw the resolved id away on `wait` — the "asserts the column, not the
+    // constraint" shape. The enforcement half now lives in
+    // `session-domain-roundtrip.spec.ts`, which exercises each provider's real
+    // handleWait. Keep both: this one localizes a registry regression, that one
+    // catches a worker that stops honouring the partition.
     for (const [server, prefix] of [
       ["_claude", "claude"],
       ["_codex", "codex"],
@@ -95,14 +99,17 @@ describe("domainIdForPath", () => {
     expect(domainIdForPath(db, undefined)).toBe(NO_DOMAIN_ID);
   });
 
-  test("a resolver that throws yields the sentinel, not an exploded ls", () => {
+  test("a storage fault PROPAGATES rather than silently widening scope", () => {
+    // Swallowing this returned the sentinel, which toDomainFilter turns into "no
+    // filter" — a locked or corrupt DB degraded into listing every domain's sessions,
+    // output-identical to `--all`, with nothing said.
     const angry: DomainLookup = {
       getDomainByName: () => null,
       resolveDomain: () => {
-        throw new Error("boom");
+        throw new Error("database is locked");
       },
     };
-    expect(domainIdForPath(angry, "/foo/bar")).toBe(NO_DOMAIN_ID);
+    expect(() => domainIdForPath(angry, "/foo/bar")).toThrow(/database is locked/);
   });
 });
 
@@ -210,15 +217,60 @@ describe("applyDomainScope", () => {
     }
   });
 
-  test("an already-resolved numeric domainId is honoured without re-resolving", () => {
-    const out = applyDomainScope(db, "_claude", "claude_wait", { domainId: 99, domain: "phoenix" }, undefined);
-    expect(out.domainId).toBe(99);
+  test("a spawn with NO cwd argument still records the caller's domain", () => {
+    // The previous version of this file always supplied `cwd`, which is the one
+    // argument `mcx agent <provider> spawn` omitted — so it passed while every
+    // agent-CLI spawn booked into domain 0 and went invisible to its own `ls`.
+    // Drop the `cwd` and the caller cwd is all that is left to resolve from.
+    for (const prefix of ["claude", "codex", "opencode", "acp", "mock"] as const) {
+      const out = applyDomainScope(db, `_${prefix}`, `${prefix}_prompt`, { prompt: "hi" }, "/foo/bar/sub");
+      expect(out.domainId).toBe(BAR.id);
+    }
   });
 
-  test("tools that are neither spawn nor filter pass through byte-for-byte", () => {
-    const args = { sessionId: "abc", domain: "phoenix" };
-    expect(applyDomainScope(db, "_claude", "claude_bye", args, undefined)).toBe(args);
-    expect(applyDomainScope(db, "_aliases", "anything", args, undefined)).toBe(args);
+  test("with no cwd anywhere, a spawn records the sentinel rather than throwing", () => {
+    const out = applyDomainScope(db, "_codex", "codex_prompt", { prompt: "hi" }, undefined);
+    expect(out.domainId).toBe(NO_DOMAIN_ID);
+  });
+
+  test("a caller-supplied domainId is STRIPPED, never honoured", () => {
+    // This test used to assert the opposite and codified the bypass as intended
+    // behaviour. A raw id beat an explicit `-d` name, so `UnknownDomainError` never
+    // fired, `toDomainFilter` never got to veto 0, and a row could be written against
+    // a domains id with no row behind it.
+    const out = applyDomainScope(db, "_claude", "claude_wait", { domainId: 99, domain: "phoenix" }, undefined);
+    expect(out.domainId).toBe(PHOENIX.id);
+  });
+
+  test("a raw domainId cannot smuggle an unregistered domain past UnknownDomainError", () => {
+    expect(() =>
+      applyDomainScope(db, "_claude", "claude_session_list", { domain: "nope", domainId: 42 }, undefined),
+    ).toThrow(UnknownDomainError);
+  });
+
+  test("a raw domainId cannot ask the unaskable question (filter on domain 0)", () => {
+    const out = applyDomainScope(db, "_claude", "claude_session_list", { domainId: NO_DOMAIN_ID }, undefined);
+    expect(out).not.toHaveProperty("domainId");
+  });
+
+  test("a raw domainId cannot write a session into a domain that does not exist", () => {
+    const out = applyDomainScope(db, "_codex", "codex_prompt", { prompt: "x", domainId: 4242 }, "/foo/bar");
+    expect(out.domainId).toBe(BAR.id);
+  });
+
+  test("junk numeric ids (negative, fractional, Infinity) are stripped like any other", () => {
+    for (const junk of [-1, 1.5, Number.POSITIVE_INFINITY]) {
+      const out = applyDomainScope(db, "_claude", "claude_session_list", { domainId: junk }, undefined);
+      expect(out).not.toHaveProperty("domainId");
+    }
+  });
+
+  test("a non-scoped tool still has the raw scoping args stripped", () => {
+    // Previously these returned `args` untouched, so `claude_bye` forwarded the raw
+    // domain NAME to the worker — the seam through which a second key regrows.
+    const args = { sessionId: "abc", domain: "phoenix", domainCwd: "/foo/bar", domainId: 7 };
+    expect(applyDomainScope(db, "_claude", "claude_bye", args, undefined)).toEqual({ sessionId: "abc" });
+    expect(applyDomainScope(db, "_aliases", "anything", args, undefined)).toEqual({ sessionId: "abc" });
   });
 
   test("a listing with no scoping args is left unscoped (--all)", () => {

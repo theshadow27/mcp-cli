@@ -17,7 +17,12 @@
  * and got `/foo/barbaz` inside `/foo/bar` for its trouble.
  *
  * The prefix rule now exists exactly once, in `resolveDomainForPath`, and it is
- * segment-aware. There is no second path that also resolves.
+ * segment-aware. There is no second path that also resolves — and that sentence is
+ * held up by `applyDomainScope` stripping every caller-supplied `domain`,
+ * `domainCwd` and `domainId` before anything else happens, not by this comment.
+ * An earlier version honoured a caller-supplied numeric `domainId` as "already
+ * resolved", which made this paragraph false while it sat two screens above the
+ * branch that contradicted it.
  */
 
 import { isAbsolute } from "node:path";
@@ -85,11 +90,13 @@ export function classifyAgentTool(serverName: string, toolName: string): "spawn"
  */
 export function domainIdForPath(db: DomainLookup, path: string | undefined): number {
   if (!path || !isAbsolute(path)) return NO_DOMAIN_ID;
-  try {
-    return db.resolveDomain(path)?.id ?? NO_DOMAIN_ID;
-  } catch {
-    return NO_DOMAIN_ID;
-  }
+  // A LOOKUP FAILURE IS NOT AN ANSWER. This used to catch everything and return the
+  // sentinel, which `toDomainFilter` turns into "no filter" — so a locked, corrupt or
+  // mid-migration database degraded into showing every domain's sessions, identical in
+  // output to `--all` and with nothing said. The non-absolute case above is handled
+  // before we ever touch the DB, so anything thrown here is a real storage fault and
+  // propagates: an error the caller sees beats a silent widening of scope.
+  return db.resolveDomain(path)?.id ?? NO_DOMAIN_ID;
 }
 
 /**
@@ -162,14 +169,20 @@ function namedDomainId(db: DomainLookup, args: Record<string, unknown>): number 
  * Rewrite a `callTool` argument bag so a worker receives a resolved `domainId`
  * and never a domain name.
  *
- * `domain` and `domainCwd` are consumed here rather than forwarded: leaving them
- * in the args would leave a second thing a worker could key off, which is how
- * `scopeRoot` outlived the mechanism it duplicated. Args for tools that are
- * neither spawn nor filter are returned untouched.
+ * **Every** caller-supplied `domain`, `domainCwd` and `domainId` is stripped
+ * first, unconditionally, including on tools that are neither spawn nor filter.
+ * The daemon is then the only thing that can put a `domainId` back.
  *
- * An explicit numeric `domainId` already in the args is honoured as-is — that is
- * the path an internal daemon caller (which already resolved one) uses, and the
- * path a re-dispatch takes without re-resolving.
+ * A caller-supplied `domainId` used to be honoured as "already resolved". That
+ * was a second resolution path — the exact thing this module's header claims does
+ * not exist — and it was reachable by anything holding the socket, including
+ * every spawned agent session. It bypassed all three guards written to protect
+ * the partition: `UnknownDomainError` never fired for `{domain:"nope",
+ * domainId:42}`, `toDomainFilter` never got to veto `{domainId: 0}`, and a row
+ * could be written against a `domains` id that has no row behind it — invisible
+ * to every `-d` filter and to `countDomainDependents` forever. It had no callers:
+ * nothing in the daemon passes `domainId` to `callTool`. The hole was cut for a
+ * hypothetical, so it is closed rather than validated.
  */
 export function applyDomainScope(
   db: DomainLookup,
@@ -178,12 +191,13 @@ export function applyDomainScope(
   args: Record<string, unknown>,
   callerCwd: string | undefined,
 ): Record<string, unknown> {
+  // Strip before classifying, so a non-scoped tool (`claude_bye`) cannot carry a
+  // raw name or id through to a worker either. The old early return left `domain`
+  // on those args, contradicting the promise made three paragraphs up.
+  const { domain: _name, domainCwd: _cwd, domainId: _id, ...rest } = args;
+
   const kind = classifyAgentTool(serverName, toolName);
-  if (kind === null) return args;
-
-  const { domain: _name, domainCwd: _cwd, ...rest } = args;
-
-  if (typeof args.domainId === "number") return rest;
+  if (kind === null) return rest;
 
   if (kind === "spawn") {
     return { ...rest, domainId: resolveSpawnDomainId(db, args, callerCwd) };

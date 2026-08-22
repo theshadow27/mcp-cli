@@ -32,10 +32,6 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
           "description": "Domain name to scope to (as registered with \`mcx domain add\`). Resolved daemon-side to a domain id.",
           "type": "string",
         },
-        "domainId": {
-          "description": "Resolved domain id. Injected by the daemon from \`domain\`/\`domainCwd\`/\`cwd\` — callers pass those, not this.",
-          "type": "number",
-        },
         "model": {
           "description": "Model to use",
           "type": "string",
@@ -91,10 +87,6 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
         "domainCwd": {
           "description": "Scope to whichever registered domain owns this directory. Omit for no domain filter; \`domain\` overrides it.",
           "type": "string",
-        },
-        "domainId": {
-          "description": "Resolved domain id. Injected by the daemon from \`domain\`/\`domainCwd\`/\`cwd\` — callers pass those, not this.",
-          "type": "number",
         },
       },
       "type": "object",
@@ -192,10 +184,6 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
         "domainCwd": {
           "description": "Scope to whichever registered domain owns this directory. Omit for no domain filter; \`domain\` overrides it.",
           "type": "string",
-        },
-        "domainId": {
-          "description": "Resolved domain id. Injected by the daemon from \`domain\`/\`domainCwd\`/\`cwd\` — callers pass those, not this.",
-          "type": "number",
         },
         "sessionId": {
           "description": "Session ID to wait on (omit for any session)",

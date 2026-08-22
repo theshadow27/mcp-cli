@@ -112,7 +112,12 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
   return (tool, args) => {
     const needsLongTimeout = tool === `${p}_prompt` || tool === `${p}_wait`;
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: provider.serverName, tool, arguments: args }, { timeoutMs });
+    // See claude.ts: `cwd` is the spawn-domain fallback only, never read by filtering (#3039).
+    return ipcCall(
+      "callTool",
+      { server: provider.serverName, tool, arguments: args, cwd: process.cwd() },
+      { timeoutMs },
+    );
   };
 }
 
@@ -479,15 +484,17 @@ export function parseAgentSpawnArgs(
 }
 
 async function agentSpawn(
-  args: string[],
+  rawArgs: string[],
   provider: AgentProvider,
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
-  if (hasHelpFlag(args)) {
+  if (hasHelpFlag(rawArgs)) {
     printSpawnUsage(provider, agentOverride, d.log);
     return;
   }
+  // `*_prompt` advertises `domain` and `resolveSpawnDomainId` honours it (#3039).
+  const { domain: spawnDomain, rest: args } = extractDomainFlag(rawArgs);
   const parsed = parseAgentSpawnArgs(args, provider, agentOverride);
 
   if (parsed.error) {
@@ -578,7 +585,14 @@ async function agentSpawn(
   }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.allowOnly) toolArgs.allowOnly = true;
+  // Mirrors claude.ts (#1331): without a fallback the session inherits the daemon's
+  // cwd, and since #3039 that also means it records domain 0 and goes invisible to
+  // its own `ls` — codex/acp/opencode/mock have no repoRoot fallback to catch it.
+  // `parsed.cwd` is already absolute (parseSharedSpawnArgs resolves it), which is what
+  // `domainIdForPath` requires; `d.getCwd()` is absolute by construction.
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
+  else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = d.getCwd();
+  if (spawnDomain) toolArgs.domain = spawnDomain;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
@@ -2011,7 +2025,8 @@ function printProviderUsage(
 
 Usage:
   mcx agent ${name} spawn --task "description"   Start a new session (returns immediately — do not background)
-  mcx agent ${name} ls [--short] [--json]        List active sessions
+  mcx agent ${name} ls [--short] [--json]        List active sessions (scoped to current domain)
+  mcx agent ${name} ls -d <domain>               List sessions in a named domain, from anywhere
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session> [--keep]       End session (--keep preserves worktree)

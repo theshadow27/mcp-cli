@@ -3621,7 +3621,9 @@ describe("mcx claude wait", () => {
       expect(logSpy.mock.calls.length).toBe(0);
       // Stderr note about hidden sessions
       expect(errSpy.mock.calls.length).toBe(1);
-      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 sessions in other repos — use --all to see them)");
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe(
+        "(2 sessions in other domains or repos — use --all to see them)",
+      );
     } finally {
       console.log = origLog;
       console.error = origErr;
@@ -3658,7 +3660,9 @@ describe("mcx claude wait", () => {
       await cmdClaude(["wait", "--short", "--after", "0"], deps);
       expect(logSpy.mock.calls.length).toBe(0);
       expect(errSpy.mock.calls.length).toBe(1);
-      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 events in other repos — use --all to see them)");
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe(
+        "(2 events in other domains or repos — use --all to see them)",
+      );
     } finally {
       console.log = origLog;
       console.error = origErr;

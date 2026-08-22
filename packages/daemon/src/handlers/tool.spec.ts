@@ -274,6 +274,36 @@ describe("ToolHandlers – callTool domain scoping (#3039)", () => {
     }
   });
 
+  test("wait is scoped too, for every provider — not just session_list", async () => {
+    // The review found `wait` resolved and forwarded a filter that four of five workers
+    // discarded. This covers the injection half for every provider; the enforcement
+    // half is session-domain-roundtrip.spec.ts plus the session-wait-domain-scoped rule.
+    for (const [server, tool] of [
+      ["_claude", "claude_wait"],
+      ["_codex", "codex_wait"],
+      ["_acp", "acp_wait"],
+      ["_opencode", "opencode_wait"],
+      ["_mock", "mock_wait"],
+    ] as const) {
+      const { map, forwarded } = capturing();
+      await invoke(map, "callTool")(
+        { server, tool, arguments: { domainCwd: "/home/u/phoenix/wt", timeout: 10 } },
+        mockCtx(),
+      );
+      expect(forwarded()?.domainId).toBe(PHOENIX.id);
+      expect(forwarded()).not.toHaveProperty("domainCwd");
+    }
+  });
+
+  test("a caller-supplied domainId never reaches a worker", async () => {
+    const { map, forwarded } = capturing();
+    await invoke(map, "callTool")(
+      { server: "_claude", tool: "claude_session_list", arguments: { domainId: 4242 } },
+      mockCtx(),
+    );
+    expect(forwarded()).not.toHaveProperty("domainId");
+  });
+
   test("an unregistered domain name fails the call instead of listing another domain", async () => {
     const { map } = capturing();
     await expect(

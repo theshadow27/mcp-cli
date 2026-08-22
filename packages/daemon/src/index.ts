@@ -525,6 +525,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
   }
 
+  // Adopt pre-domain sessions into the domains that now exist (#3039). This has to run
+  // AFTER the import — `importScopesAsDomains` creates the domain rows before the
+  // `agent_sessions` copy, so rows landing later cannot be adopted by `createDomain`
+  // itself — and BEFORE sessions are restored below, so the workers rebuild from the
+  // corrected rows rather than from `domain_id = 0`. Get that order wrong and the first
+  // start after upgrading shows an empty `mcx claude ls` on a box full of live sessions.
+  const adopted = db.adoptSessionsIntoDomains();
+  if (adopted > 0) {
+    logger.warn(`[mcpd] adopted ${adopted} pre-domain session(s) into their domains`);
+  }
+
   // Clean up DB records for sessions whose processes are dead.
   // Alive processes are preserved for restoreActiveSessions() to pick up.
   const cleaned = reapOrphanedSessions(db, logger);

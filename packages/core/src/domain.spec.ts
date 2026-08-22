@@ -301,19 +301,29 @@ describe("matchesDomain", () => {
     expect(matchesDomain({ domainId: NO_DOMAIN_ID }, 3)).toBe(false);
   });
 
-  test("sibling-prefix paths cannot cross-match, because ids are compared, not paths", () => {
-    // The historic scopeRoot bug: /foo/barbaz matched a scope root of /foo/bar
-    // via `startsWith`. Two domains at sibling paths get two ids, and no string
-    // comparison happens at filter time at all.
+  test("sibling-prefix directories RESOLVE to different domains — the historic scopeRoot bug", () => {
+    // The previous version of this test built two sessions with two different ids and
+    // asserted they compared unequal. That is true by construction and cannot fail; it
+    // read as coverage of the scopeRoot bug while testing nothing.
+    //
+    // The bug lived in RESOLUTION, not comparison: `cwd.startsWith(scopeRoot)` put
+    // /foo/barbaz inside /foo/bar. So assert resolution, and assert it against the
+    // string-prefix rule that was wrong — this fails if isPathWithin ever loses its
+    // segment awareness.
     const bar = domain("bar", "/foo/bar", null, 1);
     const barbaz = domain("barbaz", "/foo/barbaz", null, 2);
     const domains = [bar, barbaz];
 
-    expect(resolveDomainForPath("/foo/barbaz/src", domains)).toBe(barbaz);
-    expect(resolveDomainForPath("/foo/bar/src", domains)).toBe(bar);
+    for (const path of ["/foo/barbaz", "/foo/barbaz/src", "/foo/barbaz/deep/nested"]) {
+      // The rule that shipped the bug would have said "yes" to all three.
+      expect(path.startsWith("/foo/bar")).toBe(true);
+      expect(isPathWithin(path, "/foo/bar")).toBe(false);
+      expect(resolveDomainForPath(path, domains)).toBe(barbaz);
+    }
 
-    const sessionInBarbaz = { domainId: barbaz.id };
-    expect(matchesDomain(sessionInBarbaz, bar.id)).toBe(false);
-    expect(matchesDomain(sessionInBarbaz, barbaz.id)).toBe(true);
+    expect(resolveDomainForPath("/foo/bar/src", domains)).toBe(bar);
+    // And the ids that resolution produced are what filtering then compares.
+    expect(matchesDomain({ domainId: barbaz.id }, bar.id)).toBe(false);
+    expect(matchesDomain({ domainId: barbaz.id }, barbaz.id)).toBe(true);
   });
 });

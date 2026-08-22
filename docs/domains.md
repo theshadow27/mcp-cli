@@ -85,6 +85,23 @@ Commands that take `-d <domain>` default to `mcx domain which $PWD`, walking up 
 the nearest registered domain. Outside any domain, `-d` is required and its absence
 is an error, never a guess.
 
+### Nesting: resolution is longest-prefix, filtering is exact
+
+A path resolves to the **innermost** domain containing it. But a row's `domain_id`
+names exactly one domain, and filtering compares that id for equality — it does not
+walk outward. Register both `~/github` and `~/github/mcp-cli`, and a session started
+in `mcp-cli` belongs to `mcp-cli`; `mcx claude ls -d github` will **not** list it.
+
+This is deliberate. A domain is a partition, and a row in two partitions is not a
+partition. Making a listing walk outward would mean the answer to "which sessions are
+in this domain?" depends on which other domains happen to be registered, and the
+`domains` table is meant to be pure routing data. If you want an outer domain to see
+inner work, do not register the inner one.
+
+The asymmetry is worth knowing about precisely because it reads like a bug from the
+outside — it is the one place where "which domain owns this path?" and "which sessions
+are in this domain?" do not compose.
+
 ## `mcx machine` — deferred
 
 Not in this epic. Recorded so the shape is not lost:
