@@ -370,6 +370,51 @@ describe("WorkItemHandlers – domain scoping (#3037)", () => {
     expect(await invoke(map, "getWorkItem")({ number: 77, cwd: "/home/u/beta" }, {} as never)).not.toBeNull();
   });
 
+  // The other half of R2. `cmdUntrack`'s spec stubs `untrackWorkItem` and asserts the CLI
+  // cleans up the namespace named by the response's `id`. That test is worthless if the real
+  // handler never sets `id` — the double would supply a field production omits, the CLI would
+  // silently skip cleanup, and both tests would still be green. So this exercises the REAL
+  // handler over a REAL WorkItemDb and asserts the field exists and is the canonical id.
+  test("untrackWorkItem reports the canonical id it deleted, so the caller can clean up state", async () => {
+    const { map } = buildScopedHandlers();
+    const tracked = (await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never)) as {
+      id: string;
+    };
+    expect(tracked.id).toBe("d1:#42");
+
+    const result = (await invoke(map, "untrackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never)) as {
+      deleted: boolean;
+      id?: string;
+    };
+    expect(result.deleted).toBe(true);
+    // Not merely present — the stored spelling, which is the only one that names the row's
+    // phase-state namespace.
+    expect(result.id).toBe(tracked.id);
+  });
+
+  test("a branch untrack reports its canonical id too", async () => {
+    const { map } = buildScopedHandlers();
+    const tracked = (await invoke(map, "trackWorkItem")({ branch: "fix/foo", cwd: "/home/u/beta" }, {} as never)) as {
+      id: string;
+    };
+    const result = (await invoke(map, "untrackWorkItem")({ branch: "fix/foo", cwd: "/home/u/beta" }, {} as never)) as {
+      deleted: boolean;
+      id?: string;
+    };
+    expect(result.deleted).toBe(true);
+    expect(result.id).toBe(tracked.id);
+  });
+
+  test("a miss reports no id — the caller must not invent a namespace to clean", async () => {
+    const { map } = buildScopedHandlers();
+    const result = (await invoke(map, "untrackWorkItem")({ number: 999, cwd: "/home/u/alpha" }, {} as never)) as {
+      deleted: boolean;
+      id?: string;
+    };
+    expect(result.deleted).toBe(false);
+    expect(result.id).toBeUndefined();
+  });
+
   test("untrack cannot remove another project's item", async () => {
     const { map } = buildScopedHandlers();
     await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never);
