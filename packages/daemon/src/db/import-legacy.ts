@@ -32,6 +32,7 @@ import {
   resolveDomainForPath,
 } from "@mcp-cli/core";
 import { DERIVED_CURSOR_ID } from "../derived-events";
+import { ADOPTABLE_TABLES, adoptUnassignedRows } from "./adopt-domains";
 
 /** Shape of a `~/.mcp-cli/scopes/<name>.json` sidecar, as written by `mcx scope init`. */
 interface ScopeFile {
@@ -609,24 +610,13 @@ function copyTable(
 }
 
 /**
- * Map imported `alias_state` and `monitor_events` rows onto the domains just created
- * from the scope sidecars (#3040).
+ * Map imported `alias_state` and `monitor_events` rows onto the domains just created from
+ * the scope sidecars.
  *
- * The legacy tables have no `domain_id`, so `copyTable` lands every row on the sentinel
- * `NO_DOMAIN_ID`. Left there, the mapping would be an accident rather than a decision:
- * `mcx phase run` in a domain-registered repo would resolve domain 3, query
- * `(3, repo_root, …)`, find nothing, and the user's phase state — round counters,
- * scrutiny, every `ctx.state` key — would read as absent while sitting in the table one
- * column away. That is silent data loss dressed up as a fresh start.
- *
- * The mapping is the same rule everything else uses: `repo_root` (for `alias_state`) or
- * the event's own `repoRoot` (for `monitor_events`) through `resolveDomainForPath`.
- * A root outside every domain stays at the sentinel, which is correct — an unregistered
- * project keeps exactly its pre-domain behaviour.
- *
- * Runs inside the import transaction, after the copies: it needs the rows to exist, and
- * a failure here must roll the whole import back rather than leave a half-stamped table.
- * Collisions cannot arise because the import only ever runs into an empty `mcx.db`.
+ * Shares its row-mapping with the boot-time adopter (`adopt-domains.ts`) so the two cannot
+ * disagree about which domain owns a root. They differ only in collision policy, which is
+ * a real difference and not a knob: here a collision must abort so the whole copy rolls
+ * back and retries, because this file is seal-or-nothing (#3040 review R4).
  */
 function stampImportedDomainIds(target: Database, log: (msg: string) => void): string[] {
   const domains = target
@@ -637,50 +627,18 @@ function stampImportedDomainIds(target: Database, log: (msg: string) => void): s
     .map((r): Domain => ({ id: r.id, name: r.name, host: r.host, path: r.path, createdAt: r.created_at }));
   if (domains.length === 0) return [];
 
-  const idFor = (root: string): number => {
-    try {
-      // Already canonical in both tables: alias_state roots were canonicalized by the
-      // pre-domain StateDb migrations, and event repoRoots by their producers.
-      return resolveDomainForPath(root, domains)?.id ?? NO_DOMAIN_ID;
-    } catch {
-      return NO_DOMAIN_ID;
-    }
-  };
-
   const failures: string[] = [];
-
-  for (const { table, rootExpr } of [
-    { table: "alias_state", rootExpr: "repo_root" },
-    { table: "monitor_events", rootExpr: "json_extract(payload, '$.repoRoot')" },
-  ]) {
+  for (const spec of ADOPTABLE_TABLES) {
     try {
-      const roots = target
-        .query<{ root: string | null }, []>(
-          `SELECT DISTINCT ${rootExpr} AS root FROM ${table} WHERE domain_id = ${NO_DOMAIN_ID}`,
-        )
-        .all();
-      let stamped = 0;
-      for (const { root } of roots) {
-        if (typeof root !== "string" || root.length === 0) continue;
-        const id = idFor(root);
-        if (id === NO_DOMAIN_ID) continue;
-        stamped += target.run(
-          `UPDATE ${table} SET domain_id = ? WHERE domain_id = ${NO_DOMAIN_ID} AND ${rootExpr} = ?`,
-          [id, root],
-        ).changes;
-      }
-      if (stamped > 0) log(`[domain-import] ${table}: stamped ${stamped} row(s) with a domain`);
+      const { stamped } = adoptUnassignedRows(target, domains, spec, "throw", log);
+      if (stamped > 0) log(`[domain-import] ${spec.table}: stamped ${stamped} row(s) with a domain`);
     } catch (err) {
-      // Reported, NOT swallowed (#3040 review R4). This used to log-and-continue, which
-      // let one table stamp and another not, and the run still sealed. The caller folds
-      // this into failedTables so the whole import rolls back and retries — the same
-      // treatment a failed copy gets. Collecting rather than throwing means the second
-      // table is still attempted, so the log names every problem, not just the first.
-      failures.push(table);
-      log(`[domain-import] ${table}: could not stamp domain ids — ${errText(err)}`);
+      // Reported, NOT swallowed (#3040 review R4): the caller folds this into failedTables
+      // so the whole import rolls back and retries, the same treatment a failed copy gets.
+      failures.push(spec.table);
+      log(`[domain-import] ${spec.table}: could not stamp domain ids — ${errText(err)}`);
     }
   }
-
   return failures;
 }
 

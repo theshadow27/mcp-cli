@@ -77,6 +77,7 @@ import { CodexServer, buildCodexToolCache } from "./codex-server";
 import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
+import { adoptUnassignedDomains } from "./db/adopt-domains";
 import { importLegacyState } from "./db/import-legacy";
 import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
@@ -524,6 +525,22 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     );
   } else if (!importResult.ran) {
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
+  }
+
+  // Adopt rows written before their domain existed. Runs on EVERY boot, not just the
+  // one-shot import: scope sidecars become domain rows automatically at startup, so a box
+  // that wrote `ctx.state` before that happened would otherwise find it silently absent
+  // once a domain appeared — with no user action to blame and, until #3035 ships
+  // `mcx domain rm`, no recovery short of raw sqlite3. Idempotent and cheap: adoption
+  // only ever moves rows OFF the sentinel, so after the first boot the scan finds nothing.
+  const adopted = adoptUnassignedDomains(db.getDatabase(), db.listDomains(), (msg) => logger.warn(msg));
+  if (adopted.stamped > 0) {
+    logger.info(`[mcpd] adopted ${adopted.stamped} row(s) onto their domain`);
+  }
+  if (adopted.collided > 0) {
+    logger.warn(
+      `[mcpd] ${adopted.collided} row(s) stayed on the unassigned partition — their domain already holds those keys`,
+    );
   }
 
   // Clean up DB records for sessions whose processes are dead.
