@@ -78,6 +78,8 @@ export const SESSION_IDLE = "session.idle" as const;
 export const SESSION_STUCK = "session.stuck" as const;
 export const SESSION_TOOL_USE = "session.tool_use" as const;
 export const SESSION_SPAWN_OVERRIDE = "session.spawn_override" as const;
+/** Which GitHub credential tier a spawn resolved to (#1510). Secret-free by construction. */
+export const SESSION_GH_CREDENTIALS = "session.gh_credentials" as const;
 
 // ── Session metric event names (#1610) ──
 
@@ -326,6 +328,14 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     const binary = typeof e.binaryPath === "string" ? cap(e.binaryPath, 60) : "";
     const bypassed = typeof e.bypassedReason === "string" ? `bypassed: ${cap(e.bypassedReason, 60)}` : "";
     return join(wi(e), sid(e), binary, bypassed);
+  },
+
+  [SESSION_GH_CREDENTIALS]: (e) => {
+    const mode = typeof e.mode === "string" ? e.mode : "";
+    // `problem` is the operator-actionable half when a tokens file was rejected;
+    // it names a path and a mode, never token material.
+    const detail = typeof e.problem === "string" ? e.problem : typeof e.reason === "string" ? e.reason : "";
+    return join(wi(e), sid(e), mode, cap(detail, 80));
   },
 
   [PR_OPENED]: (e) => {
@@ -633,6 +643,9 @@ const SEVERITY_OVERRIDES: Partial<Record<string, (e: MonitorEventBase) => Monito
   [QUOTA_UTILIZATION_THRESHOLD]: (e) =>
     typeof e.utilization === "number" && e.utilization >= 95 ? "urgent" : "notable",
   [PR_REVIEW_COMMENT_POSTED]: (e) => (typeof e.newCount === "number" && e.newCount > 0 ? "actionable" : "notable"),
+  // A rejected tokens file silently costs every spawn its GitHub access, so it
+  // is actionable; a routine `scoped`/`inherited` decision is a record, not news.
+  [SESSION_GH_CREDENTIALS]: (e) => (typeof e.problem === "string" ? "actionable" : "info"),
 };
 
 /** Classify an event's actionability. Unmapped event types are `info`. */
