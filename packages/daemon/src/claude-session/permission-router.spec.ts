@@ -20,8 +20,15 @@ function makeRequest(toolName: string, input: Record<string, unknown> = {}): Can
 
 // ── auto strategy ──
 
-describe("PermissionRouter — auto", () => {
+// The daemon is still the gate here: auto mode could not be handed to the child
+// (worktree session, or a binary too old to accept the flag), so the pre-#3119
+// allow stands and ContainmentGuard runs in front of it.
+describe("PermissionRouter — auto, daemon-gated", () => {
   const router = new PermissionRouter("auto");
+
+  test("defaults to daemon-gated", () => {
+    expect(router.childGated).toBe(false);
+  });
 
   test("approves any tool", async () => {
     const decision = await router.evaluate(makeRequest("Bash", { command: "rm -rf /" }));
@@ -32,6 +39,56 @@ describe("PermissionRouter — auto", () => {
   test("approves tools with no input", async () => {
     const decision = await router.evaluate(makeRequest("Read"));
     expect(decision.allow).toBe(true);
+  });
+});
+
+// The child was spawned with `--permission-mode auto`, so it never round-trips
+// anything its classifier approved. Whatever still arrives was not approved
+// (#3119) — rubber-stamping it would reinstate exactly the hole this closed.
+describe("PermissionRouter — auto, child-gated", () => {
+  const router = new PermissionRouter("auto", undefined, { childGated: true });
+
+  test("reports childGated", () => {
+    expect(router.childGated).toBe(true);
+  });
+
+  test("denies a request the classifier declined to approve", async () => {
+    const decision = await router.evaluate(makeRequest("Bash", { command: "rm -rf /" }));
+    expect(decision.allow).toBe(false);
+    expect(decision.message).toContain("--permission-mode auto");
+  });
+
+  test("denies a tool that needs a human this session hasn't got", async () => {
+    const decision = await router.evaluate(makeRequest("AskUserQuestion", { questions: [] }));
+    expect(decision.allow).toBe(false);
+    // The model reads this message; it must say what to do next, not just "no".
+    expect(decision.message).toContain("Proceed with work that does not need this call");
+  });
+
+  test("never leaks updatedInput on a denial", async () => {
+    const decision = await router.evaluate(makeRequest("Write", { file_path: "/etc/passwd" }));
+    expect(decision.updatedInput).toBeUndefined();
+  });
+});
+
+// childGated describes where the *auto* strategy's gate lives. It must not
+// leak into the other two strategies, whose evaluation is unchanged (#3119).
+describe("PermissionRouter — childGated does not affect rules/delegate", () => {
+  test("rules still matches its rules", async () => {
+    const router = new PermissionRouter("rules", [{ tool: "Read", action: "allow" }], { childGated: true });
+    expect((await router.evaluate(makeRequest("Read", { file_path: "/foo" }))).allow).toBe(true);
+    expect((await router.evaluate(makeRequest("Bash", { command: "ls" }))).allow).toBe(false);
+  });
+
+  test("delegate still forwards to its callback", async () => {
+    const router = new PermissionRouter("delegate", undefined, { childGated: true });
+    let forwarded = 0;
+    router.onDelegate = async () => {
+      forwarded++;
+      return { allow: true, matched: true };
+    };
+    expect((await router.evaluate(makeRequest("Bash", { command: "ls" }))).allow).toBe(true);
+    expect(forwarded).toBe(1);
   });
 });
 

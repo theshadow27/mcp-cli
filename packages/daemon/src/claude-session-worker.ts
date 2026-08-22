@@ -806,11 +806,13 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
         binaryPath: resolution.binaryPath,
         tlsConfig: resolution.tlsConfig,
         defaultTransport,
+        claudeVersion: resolution.version,
       }
     : {
         logger: quiet ? silentLogger : undefined,
         spawnDisabledReason: resolution.error,
         defaultTransport,
+        claudeVersion: resolution.version,
       };
 
   // Start WebSocket server
