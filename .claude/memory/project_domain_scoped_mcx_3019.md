@@ -53,6 +53,12 @@ orchestrator does not inherit operator memory, so this has to be *in the brief*:
 the turn with `mcx claude wait --timeout 240000` in a wait → assess → act → wait loop; end a
 turn only to ask for a decision, and say what is blocked. Tracked as a meta issue for run.md.
 
+**Gate hold wording.** A gate hold must forbid `git commit` too — the pre-commit hook runs the
+full static+test+coverage gate, so committing is as heavy as the thing being held. Correct
+wording: *no `am-i-done`, no `bun test`, no `git push`, no `git commit`; stage with `git add` and
+hold; reading, writing, reviewing and analysis continue.* Saying "commit locally is fine" makes
+the hold self-contradictory.
+
 **Shared box.** The operator runs a second project, phoenix, on this host — session
 `phoenix-boss`, capped at 2 lanes. mcx-boss has CPU priority, but with 2 orchestrators and
 ~6 workers we are the noisy neighbour, not them. Reachable by `SendMessage` to

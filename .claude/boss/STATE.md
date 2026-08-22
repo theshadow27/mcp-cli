@@ -25,7 +25,7 @@ boundaries. `.claude/boss/sprint-79.md` is the next sprint's plan, ready to go.
 | Sprint | Contents | State |
 |---|---|---|
 | 77 | pre-#2000 gems | winding down — orchestrator `Alice`, worktree `sprint-77`, container PR #2923 |
-| **78** | **epic A + domain worker** | **running** — orchestrator `Dave`, worktree `sprint-78`, container PR #3046 |
+| **78** | **epic A + domain worker** | **running** — orchestrator `Dave`, worktree `sprint-78`, container PR #3046. **#3034 MERGED 2026-08-22 15:19 as `88b78bf5`** — the foundation is on main and all 11 dependents are unblocked. Also merged: #1459, #1510, #935. |
 | 79 | epic C (trust) + epic I (spend) | planned — `.claude/boss/sprint-79.md` |
 | 80 | epic D (cards) + B tail | not planned |
 | 81 | epic E (reducer) + F (sensors) | not planned |
@@ -77,9 +77,16 @@ I did that on #3063 and #3116 landed mid-review.
   wrong; a per-sprint drain is not a daemon-wide drain. **Caveat: `restoreSessions()` does not persist permission
   strategy**, so sessions restored after a restart come back as `auto`/blanket-allow — reload
   at true zero.
-- **#3034 not yet pushed.** Committed locally as `7e5708f4` in
-  `.claude/worktrees/issue-3034`. **Eleven issues unblock when it merges.** This is the
-  critical path of the whole arc.
+- ~~#3034 not yet pushed~~ **DONE — merged as `88b78bf5`.** It cost four review rounds, a QA
+  fail and five partial-fix corrections. Every round found something real: the `aliases`
+  partition (one domain would have overwritten another's phases), an import that committed rows
+  it could not seal, a recovery path that did not work in two different forms, a cursor clamp
+  that silently skipped live events, and a cleanup that could poison the daemon's connection.
+  **Holding it for review was the highest-value decision of the run.**
+
+- **Rebase wave in progress.** #3160/#3035, #3037, #3039, #3040 were all stacked on the
+  pre-merge branch. #3160's is non-trivial — it edits `import-legacy.ts`, which the merge
+  rewrote.
 - Two worktree collisions tonight (`issue-1328`, `issue-935`) — two live sessions in one
   worktree, both nearly destructive. Guard filed as **#3140**. Always check `mcx claude ls`
   for a live session in a path before spawning `--cwd` there.
@@ -102,3 +109,32 @@ I did that on #3063 and #3116 landed mid-review.
   `echo "..." | mcx mail -s "blocked: ..." boss`, or agent-message `mcx-boss` if `mcx` is
   denied. Say explicitly that using it carries no penalty. Three workers used it tonight and
   each one caught something I would otherwise have missed.
+
+## 2026-08-22 ~17:00 UTC — #3179, the taxonomy hole (user flagged as serious)
+
+The review label set has **no author-applicable state**. All four labels
+(`review:changes`, `review:pass`, `qa:fail`, `qa:pass`) are verdicts rendered by
+someone other than the author, so an author who has just pushed a repair has no
+truthful move. Two paths, two lies: phase-driven erases `review:changes`
+(`review-fn.ts:257`, correct anti-replay per #2649) so the PR reads as never-reviewed;
+manual leaves it so the PR reads as unrepaired.
+
+The state is *not* missing from the system — `work_items.phase` = repair,
+`review_round`, `previous_phase` are all correct in SQLite. It is missing from the PR,
+which is the surface every human and every non-phase-driven session actually reads.
+Sprint 78 ran largely hand-orchestrated, which is why it surfaced now.
+
+**Disposition: meta → 78/79 boundary window, orchestrator-driven, no worker slot.**
+Surface is `.claude/phases/**` + `.claude/skills/**`. Recorded in
+`.claude/boss/sprint-79.md` under "Boundary work" with the strict ordering
+(gate before label — otherwise `review:repaired` + `qa:pass` merges clean without
+re-review) and the bootstrap-sprint requirement (new projects inherit the hole
+otherwise).
+
+Caught on #3168 because Bob declined to self-assert `review:pass` and wrote a paragraph
+explaining why. Reply sent endorsing the call — that judgment is the behaviour to
+reinforce, not tolerate.
+
+Also filed **#3178** — `mcx mail <unknown-verb>` sends an empty message to a mailbox
+named after the verb, exit 0. I did it to myself (`mcx mail read 46` created message 47
+in mailbox `read`). Not meta; worker-eligible filler.

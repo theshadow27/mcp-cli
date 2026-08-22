@@ -123,3 +123,33 @@ Landing reliability fixes before the next four sprints of feature work is worth 
   that no flag or config value produces an unauthenticated listener. High scrutiny.
 - **#3057**: budget consumption must include **scraped** spend (#3056), or an operator blows
   through it by working in a terminal.
+
+## Boundary work (78 → 79) — meta, orchestrator-driven, no worker slot
+
+Done in the quiet window between sprints, while no phase machine is ticking. These
+touch `.claude/phases/**` and `.claude/skills/**`, so they are unmergeable mid-sprint
+and must never be dispatched to a sprint worker (meta-issue planning guard; #2331/#2570).
+
+- **#3179 — `review:repaired`, the missing author-applicable state.** P1 for
+  orchestration correctness. Today a repaired PR either carries no review label at all
+  (phase-driven path — `review-fn.ts:257` erases `review:changes` on route-to-repair, so
+  it reads as never-reviewed) or a stale `review:changes` (manual path — reads as
+  unrepaired). The one true state is not representable, and the author's only available
+  wrong move is to self-assert `review:pass`, which converts a reviewer gate into
+  self-attestation. Caught in sprint 78 on #3168 only because the author wrote a
+  paragraph about it instead of flipping the label.
+
+  Strict ordering — gate before label, or a `review:repaired` + `qa:pass` PR merges
+  clean without re-review: `phase-types.ts` (blocking) → `done-fn.ts` (merge gate) →
+  `review-fn.ts` (set it) → tests → create the label → `docs/phases.md` →
+  `.claude/skills/sprint/references/{run,review,retro}.md` →
+  **`.claude/skills/bootstrap-sprint/{SKILL.md,references/lessons.md}`**.
+
+  The bootstrap half is the load-bearing one: it builds the sprint skill for new
+  projects, so a hole in the taxonomy there is inherited by every future project on day
+  one. Include the staleness rule (a review label older than the current head is a lie)
+  — without it, `review:repaired` just moves the lie one column over.
+
+- **#3178 — `mcx mail` treats any unknown positional as a recipient.** Not meta
+  (`packages/command/src/commands/mail.ts`), so this one *can* be a worker item — noted
+  here only so it is not lost. Candidate filler for a later batch.
