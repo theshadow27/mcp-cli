@@ -21,21 +21,26 @@ import {
   canonicalizeDomainPath,
   formatDomainLocation,
 } from "@mcp-cli/core";
-import { IMPORT_MARKER_KEY, importLegacyState } from "../db/import-legacy";
+import {
+  IMPORT_MARKER_KEY,
+  clearImportMarker,
+  recoveryInstructions as recoveryInstructionsImpl,
+} from "../db/import-legacy";
 import type { StateDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 
 export class DomainHandlers {
   /**
-   * `importLegacy` is injected so a test can exercise the handler without falling back to
-   * the importer's default source — running the real importer against the developer's own
-   * `~/.mcp-cli/state.db` would stamp the one-shot marker on it. (The constant naming that
-   * file is deliberately not referenced here: `domains.spec.ts` asserts that only the
+   * The import primitives are injected so a test can exercise the handler without falling
+   * back to their defaults — clearing the marker on the developer's own legacy database
+   * would re-arm a destructive one-shot import on their real install. (The constant naming
+   * that file is deliberately not referenced here: `domains.spec.ts` asserts that only the
    * importer itself may name it, so nothing else can quietly reopen the old database.)
    */
   constructor(
     private db: StateDb,
-    private importLegacy: typeof importLegacyState = importLegacyState,
+    private clearMarker: () => { cleared: boolean; reason?: string } = clearImportMarker,
+    private recoveryInstructions: () => string = () => recoveryInstructionsImpl(),
   ) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
@@ -123,30 +128,38 @@ export class DomainHandlers {
       // `params` is optional: `mcx domain import` with no flags sends nothing.
       const { force } = DomainImportParamsSchema.parse(params ?? {});
       const log: string[] = [];
-      const result = this.importLegacy({
-        db: this.db.getDatabase(),
-        force,
-        log: (msg) => log.push(msg),
-      });
-      return {
-        ran: result.ran,
-        sealed: result.sealed,
-        reason: result.reason,
-        tables: result.tables.map((t) => ({
-          table: t.table,
-          copied: t.copied,
-          notCopied: t.notCopied,
-          failed: t.failed,
-          reason: t.reason,
-        })),
-        failedTables: result.failedTables,
-        domainsImported: result.domainsImported,
-        domainsSkipped: result.domainsSkipped,
-        totalCopied: result.totalCopied,
-        totalNotCopied: result.totalNotCopied,
-        markerKey: IMPORT_MARKER_KEY,
-        log,
-      } satisfies DomainImportResult;
+      const recovery = this.recoveryInstructions();
+      const base = { markerKey: IMPORT_MARKER_KEY, recovery, log };
+
+      if (!force) {
+        return {
+          ...base,
+          armed: false,
+          reason:
+            "the one-shot import is armed by clearing its marker, which is destructive to the current database; re-run with --force",
+        } satisfies DomainImportResult;
+      }
+
+      // Arming is unconditional, and an emptiness check does NOT belong here.
+      //
+      // The obvious-looking improvement — refuse now if the database is not empty, so the
+      // operator hears about it before restarting — cannot work: `mcx domain import` is an
+      // IPC command, so a daemon is running by definition, and the daemon writes
+      // `daemon.restarted` into `monitor_events` before it accepts its first request. The
+      // target is therefore NEVER empty at arm time, including on the correct recovery
+      // path, and the guard would refuse the very sequence it is printed alongside. Driving
+      // the documented recovery end to end is what surfaced that; reading the code did not.
+      //
+      // So the single enforcement point is `importLegacyState`, at daemon startup, ahead of
+      // the first write. Arming a start that then refuses is harmless: the marker stays
+      // clear, the daemon boots normally, and the import runs once `mcx.db` is out of the
+      // way. Nothing is copied and nothing is lost in the meantime.
+      const { cleared, reason } = this.clearMarker();
+      if (!cleared) {
+        return { ...base, armed: false, reason: reason ?? "nothing to clear" } satisfies DomainImportResult;
+      }
+      log.push("[domain-import] marker cleared — the next daemon start will re-run the import");
+      return { ...base, armed: true } satisfies DomainImportResult;
     });
   }
 }

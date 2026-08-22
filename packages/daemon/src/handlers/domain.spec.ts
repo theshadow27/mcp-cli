@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Domain, DomainImportResult, DomainRemoveResult, DomainWhichResult, IpcMethod } from "@mcp-cli/core";
-import { IMPORT_MARKER_KEY, type importLegacyState } from "../db/import-legacy";
+import { IMPORT_MARKER_KEY, nonEmptyImportedTables } from "../db/import-legacy";
 import { StateDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
 import { migrateDerivedCursor } from "../derived-events";
@@ -211,65 +211,113 @@ describe("DomainHandlers", () => {
     expect(await invoke(handlers, "domainShow")({ name: "ghost" }, ctx)).toBeNull();
   });
 
-  test("import forwards the importer's diagnostics, marker key and force flag", async () => {
+  test("import WITHOUT --force refuses to arm and never touches the marker", async () => {
     const dir = workspace();
     const db = new StateDb(join(dir, "mcx.db"));
     open.push(db);
-
-    const seen: Array<{ force: boolean | undefined }> = [];
-    const fakeImport: typeof importLegacyState = (opts) => {
-      seen.push({ force: opts.force });
-      opts.log?.("[domain-import] pretend");
-      return {
-        ran: true,
-        sealed: true,
-        tables: [{ table: "mail", copied: 2, notCopied: 0, failed: false }],
-        failedTables: [],
-        domainsImported: 1,
-        domainsSkipped: 0,
-        totalCopied: 2,
-        totalNotCopied: 0,
-      };
-    };
+    let clearCalls = 0;
     const handlers = new Map<IpcMethod, RequestHandler>();
-    new DomainHandlers(db, fakeImport).register(handlers);
-
-    const result = (await invoke(handlers, "domainImport")({ force: true }, ctx)) as DomainImportResult;
-    expect(seen).toEqual([{ force: true }]);
-    expect(result.ran).toBe(true);
-    expect(result.totalCopied).toBe(2);
-    expect(result.log).toEqual(["[domain-import] pretend"]);
-    // The decline message the CLI prints has to name the marker; it comes from here so
-    // the CLI never has to hardcode a key that lives in the daemon.
-    expect(result.markerKey).toBe(IMPORT_MARKER_KEY);
-  });
-
-  test("import defaults force to false", async () => {
-    const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
-    open.push(db);
-    const seen: Array<boolean | undefined> = [];
-    const fakeImport: typeof importLegacyState = (opts) => {
-      seen.push(opts.force);
-      return {
-        ran: false,
-        sealed: false,
-        reason: "already imported at 2026-08-22T00:00:00.000Z",
-        tables: [],
-        failedTables: [],
-        domainsImported: 0,
-        domainsSkipped: 0,
-        totalCopied: 0,
-        totalNotCopied: 0,
-      };
-    };
-    const handlers = new Map<IpcMethod, RequestHandler>();
-    new DomainHandlers(db, fakeImport).register(handlers);
+    new DomainHandlers(
+      db,
+      () => {
+        clearCalls++;
+        return { cleared: true };
+      },
+      () => "RECOVERY-TEXT",
+    ).register(handlers);
 
     const result = (await invoke(handlers, "domainImport")(undefined, ctx)) as DomainImportResult;
-    expect(seen).toEqual([false]);
-    expect(result.ran).toBe(false);
-    expect(result.reason).toContain("already imported");
+    expect(result.armed).toBe(false);
+    expect(clearCalls).toBe(0);
+    expect(result.reason).toContain("--force");
+    // The CLI never hardcodes either of these — they come from the daemon so the message
+    // and the code path cannot drift.
+    expect(result.markerKey).toBe(IMPORT_MARKER_KEY);
+    expect(result.recovery).toBe("RECOVERY-TEXT");
+  });
+
+  test("--force arms even when the database holds rows — the guard is at the import, not here", async () => {
+    // Deliberate, and driven rather than reasoned: `mcx domain import` is an IPC command,
+    // so a daemon is running whenever it can be issued, and the daemon writes
+    // `daemon.restarted` into `monitor_events` before accepting its first request. An
+    // arm-time emptiness check would therefore refuse the correct recovery path every
+    // single time — including immediately after `rm mcx.db`. The one enforcement point is
+    // `importLegacyState` at boot, ahead of the first write; `import-legacy.spec.ts` drives
+    // that. Arming against a populated database is harmless: the marker stays clear, the
+    // next start refuses to copy, and the import runs once mcx.db is out of the way.
+    const dir = workspace();
+    const db = new StateDb(join(dir, "mcx.db"));
+    open.push(db);
+    new WorkItemDb(db.database);
+    new EventLog(db.database);
+    migrateDerivedCursor(db.database);
+    new EventLog(db.database).append({
+      ts: new Date().toISOString(),
+      src: "daemon",
+      event: "daemon.restarted",
+      category: "server",
+    } as never);
+    expect(nonEmptyImportedTables(db.database).map((t) => t.table)).toContain("monitor_events");
+
+    let clearCalls = 0;
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(
+      db,
+      () => {
+        clearCalls++;
+        return { cleared: true };
+      },
+      () => "RECOVERY-TEXT",
+    ).register(handlers);
+
+    const result = (await invoke(handlers, "domainImport")({ force: true }, ctx)) as DomainImportResult;
+    expect(result.armed).toBe(true);
+    expect(clearCalls).toBe(1);
+    // The sequence the operator must follow reaches them either way.
+    expect(result.recovery).toBe("RECOVERY-TEXT");
+  });
+
+  test("--force against an empty target clears the marker and reports armed", async () => {
+    const dir = workspace();
+    const db = new StateDb(join(dir, "mcx.db"));
+    open.push(db);
+    let clearCalls = 0;
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(
+      db,
+      () => {
+        clearCalls++;
+        return { cleared: true };
+      },
+      () => "RECOVERY-TEXT",
+    ).register(handlers);
+
+    const result = (await invoke(handlers, "domainImport")({ force: true }, ctx)) as DomainImportResult;
+    expect(result.armed).toBe(true);
+    expect(clearCalls).toBe(1);
+  });
+
+  test("the real guard sees monitor_events — the table its predecessor omitted", async () => {
+    // Drives the production `nonEmptyImportedTables` (no injection) against a database
+    // whose ONLY occupied table is monitor_events. `targetLooksEmpty()` reported EMPTY
+    // here, which is what made the prescribed guard useless.
+    const dir = workspace();
+    const db = new StateDb(join(dir, "mcx.db"));
+    open.push(db);
+    new WorkItemDb(db.database);
+    new EventLog(db.database);
+    migrateDerivedCursor(db.database);
+    expect(nonEmptyImportedTables(db.database)).toEqual([]);
+
+    // Exactly what the daemon writes before it accepts its first request (index.ts:718).
+    new EventLog(db.database).append({
+      ts: new Date().toISOString(),
+      src: "daemon",
+      event: "daemon.restarted",
+      category: "server",
+    } as never);
+    const occupied = nonEmptyImportedTables(db.database);
+    expect(occupied.map((t) => t.table)).toContain("monitor_events");
   });
 });
 

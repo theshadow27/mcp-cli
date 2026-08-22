@@ -246,61 +246,58 @@ describe("mcx domain rm", () => {
 });
 
 describe("mcx domain import", () => {
-  const declined = {
-    ran: false,
-    sealed: false,
-    reason: "already imported at 2026-08-20T10:00:00.000Z",
-    tables: [],
-    failedTables: [],
-    domainsImported: 0,
-    domainsSkipped: 0,
-    totalCopied: 0,
-    totalNotCopied: 0,
+  // `--force` ARMS the next daemon start; it does not import in place. There is
+  // deliberately no `ran`/`sealed`/`totalCopied` fixture here — the previous version of
+  // this suite pinned `{ran: true, sealed: false, totalCopied: 5}`, a state the merged
+  // seal-or-nothing repair makes unreachable, so it was a green test over a path that
+  // cannot occur.
+  const base = {
+    armed: false,
+    nonEmpty: [],
     markerKey: "mcx_domain_import_at",
-    log: ["[domain-import] already imported at 2026-08-20T10:00:00.000Z — skipping"],
+    recovery:
+      "to re-run the import from /tmp/s.db: cp /tmp/m.db /tmp/m.db.bak && rm /tmp/m.db && mcx domain import --force, then restart the daemon",
+    log: [] as string[],
   };
 
-  test("a decline without --force names the marker and points at --force", async () => {
-    const h = harness({ domainImport: declined });
+  test("without --force it names the marker and the recovery, and exits non-zero", async () => {
+    const h = harness({
+      domainImport: {
+        ...base,
+        reason: "the one-shot import is armed by clearing its marker, which is destructive; re-run with --force",
+        log: ["[domain-import] already imported at 2026-08-20T10:00:00.000Z — skipping"],
+      },
+    });
     await expect(cmdDomain(["import"], h.deps)).rejects.toThrow(ExitError);
     const errors = allErrors(h);
     expect(errors).toContain("mcx_domain_import_at");
     expect(errors).toContain("mcx domain import --force");
-    // The importer's own diagnostics are forwarded, not swallowed.
+    // The daemon's own diagnostics are forwarded, not swallowed.
     expect(errors).toContain("[domain-import] already imported");
   });
 
-  test("--force is sent through to the daemon", async () => {
-    const h = harness({
-      domainImport: {
-        ...declined,
-        ran: true,
-        sealed: true,
-        reason: undefined,
-        totalCopied: 42,
-        domainsImported: 2,
-        log: [],
-      },
-    });
+  test('arming reports the whole recovery sequence, not just "restart"', async () => {
+    // The emptiness guard lives at the boot-time import, not here — a daemon is running
+    // whenever this command can be issued and has already written to the database, so an
+    // arm-time check would refuse the correct recovery path every time. What the operator
+    // needs from THIS command is the full sequence, including the `rm` the import requires.
+    const h = harness({ domainImport: { ...base, armed: true } });
     await cmdDomain(["import", "--force"], h.deps);
-    expect(h.calls[0]).toEqual({ method: "domainImport", params: { force: true } });
-    expect(allErrors(h)).toContain("Imported 42 row(s) and 2 domain(s)");
+    const errors = allErrors(h);
+    expect(errors).toContain("cp /tmp/m.db /tmp/m.db.bak");
+    expect(errors).toContain("rm /tmp/m.db");
+    expect(errors).toContain("mcx domain import --force");
   });
 
-  test("a partial import (marker withheld) exits non-zero and says it will retry", async () => {
-    const h = harness({
-      domainImport: {
-        ...declined,
-        ran: true,
-        sealed: false,
-        reason: undefined,
-        totalCopied: 5,
-        failedTables: ["mail"],
-        log: [],
-      },
-    });
-    await expect(cmdDomain(["import", "--force"], h.deps)).rejects.toThrow(ExitError);
-    expect(allErrors(h)).toContain("retries on the next daemon start");
+  test("--force on an empty target reports armed and tells the operator to restart", async () => {
+    const h = harness({ domainImport: { ...base, armed: true } });
+    await cmdDomain(["import", "--force"], h.deps);
+    expect(h.calls[0]).toEqual({ method: "domainImport", params: { force: true } });
+    const errors = allErrors(h);
+    expect(errors).toContain("Import re-armed");
+    expect(errors).toContain("mcx shutdown");
+    // It armed a future import; it did not perform one.
+    expect(errors).not.toContain("Imported");
   });
 });
 
