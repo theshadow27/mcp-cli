@@ -1,5 +1,14 @@
 # Sprint Execution
 
+> **Default execution model: [`lanes.md`](lanes.md)** — harness-native
+> subagent lanes, adopted sprint 79. This file is the authority for the
+> **daemon-session pipeline**: the phase-scripted `mcx claude` machinery,
+> used for the cases `lanes.md` reserves for hosted sessions (non-Claude
+> providers, work outliving the orchestrator, operator-interactive
+> sessions). The cross-cutting sections below — round caps,
+> convergence-failure, quota gating, flake discipline, qa:fail override,
+> Red Flags — bind **both** models.
+
 You are the orchestrator. You never write code directly — you spawn
 sessions and manage the pipeline. Spawned sessions are running team
 members, not function calls; ending one is firing a colleague mid-project.
@@ -21,6 +30,18 @@ mcx phase run <phase> --dry-run      # preview the handler's decision
 Round caps baked in: review ≤ 2, repair ≤ 3, qa:fail ≤ 2. Hitting a cap
 routes the work item to `needs-attention`.
 
+**The caps bind hand-orchestration too.** When a sprint runs outside the
+phase scripts (manual spawns, ad-hoc review dispatch), the same numbers
+apply and the orchestrator counts the rounds itself. Sprint 78 ran
+hand-orchestrated and blew through every cap — one PR took 5 review
+rounds, another 9 repair rounds, ~30 review rounds ran in a single night
+— precisely because the caps lived in scripts the orchestrator wasn't
+using. A round past the cap is not a judgment call: stop, label
+`needs-attention`, escalate to the operator with a one-paragraph decision
+request. And a PR that is **blocked on a design decision or an unmerged
+base gets zero further review rounds while blocked** — re-verifying a
+stale verdict burns a full review context to learn nothing.
+
 **Convergence-failure → simplify, don't keep patching.** The caps above
 bound *total* rounds; this bounds *the wrong kind* of rounds. If a PR keeps
 surfacing **new** review/QA findings each round (not re-flags of the same
@@ -28,10 +49,10 @@ issue, not flaky-CI) — round 1 finds A, the fix exposes B, the fix for B
 exposes C — that is a signal the implementation is too complex or fighting
 the grain, and micro-repairing it is a treadmill (each push also re-triggers
 Copilot, widening the surface). After ~2 such rounds, STOP dispatching
-repairs and launch a **simplification pass** instead: `mcx claude spawn`
-(NOT the Agent tool — observability) with a "step back and simplify the
-whole change to the minimal correct design that preserves functionality;
-read the open threads as input but rethink, don't patch" prompt. Sprint 62
+repairs and launch a **simplification pass** instead: a fresh session or
+lane subagent with a "step back and simplify the whole change to the
+minimal correct design that preserves functionality; read the open threads
+as input but rethink, don't patch" prompt. Sprint 62
 #2271 churned 4 rounds (auth regression → 7 threads → rebase → 5 more)
 because the helper took `unknown` then `as`-cast it, laundering the type so
 every field access was a fresh unguarded landmine; one simplify pass

@@ -38,7 +38,12 @@ attempts as a 🔴 finding.
 1. Read the PR description and linked issue
 2. Read CLAUDE.md for repo conventions
 3. Read the full diff carefully
-4. Launch these agents **in parallel** for second opinions:
+4. **Only for round 1 of a high-scrutiny / gated-class review** (security,
+   isolation, auth, DB schema, spawn path — per the sprint plan's scrutiny
+   column): launch these agents **in parallel** for second opinions. Skip
+   the panel entirely on normal-scrutiny reviews and on every Delta round —
+   each panelist is a full extra model context, and sprint 78 paid ~4
+   contexts per round across ~30 rounds:
    - **eigenbot** — unfiltered technical critique
    - **pessimist-prime** — failure mode analysis
    - **chaos-dancer** — social weaponization vectors: specifically, could the PR
@@ -57,6 +62,14 @@ attempts as a 🔴 finding.
 
 When a previous review comment exists, the author has likely pushed fixes.
 Don't repeat the full adversarial process — evaluate what changed.
+
+**Round cap: two.** If your round would be the third review of this PR,
+stop before reviewing: post no new findings, leave the label as it stands,
+and escalate to the orchestrator/operator with a one-line summary of what
+is still open — a PR that hasn't converged in two rounds needs a decision
+or a simplification pass (`run.md`, "Convergence-failure"), not a third
+opinion. The only exception: new commits landed since round 2 AND you
+examine strictly the delta.
 
 1. Read the previous review comment and extract all flagged issues (🔴, 🟡, 🔵)
 2. Read the PR diff and recent commits to see what changed since that review
@@ -138,11 +151,26 @@ If any new findings could be a lint rule or test pattern, note them here.
 Summarize test coverage. Call out what's tested and what isn't.
 
 ### Issues
-- 🔴 **Must Fix** — incorrect behavior, security issue, data loss risk (`file:line`)
-- 🟡 **Should Fix** — missing edge case, weak test, architectural concern (`file:line`)
+- 🔴 **Must Fix** — merge-blocking (`file:line`). See the merge-risk bar below.
+- 🟡 **Should Fix** — real but not merge-blocking: missing edge case, weak test,
+  architectural concern (`file:line`). File each 🟡 as a follow-up issue.
 - 🔵 **Suggestion** — style, naming, minor improvement
 
 If no issues: say so explicitly.
+
+**The merge-risk bar (hard rule).** A finding is 🔴 **only** if merging
+today would (a) break main or regress shipped behavior, (b) introduce a
+security, data-loss, or corruption risk, or (c) violate a stated invariant
+of the gated class (security, isolation/containment, auth, DB schema,
+spawn path). Everything else — including real bugs in code paths that
+nothing reaches yet — is 🟡: real, filed, and **not** a reason to hold the
+PR. State which of (a)/(b)/(c) each 🔴 meets, and back it with a **driven
+reproduction** (a command, test, or observed behavior — not a reading of
+the code); a finding you cannot drive is a 🟡 with a note. This bar exists
+because sprint 78 ran ~30 review rounds in one night, and when the bar was
+introduced mid-sprint, standing blockers on three PRs evaporated under it
+— including two a reviewer overturned on its own findings minutes after
+posting them.
 
 ### Suggested Automation
 If any findings could be caught by a new lint rule or test pattern, note them here
@@ -183,6 +211,13 @@ fi
 
 This ensures repair sessions and second reviewers always see the latest state
 of all findings in one place, with clear tracking of what was fixed vs what remains.
+
+**Preserve round history when updating.** When you PATCH the sticky, append
+your round as a new `### Round N (delta)` section (or update the delta
+table) — never rewrite or delete a previous round's findings table. The
+per-round history is the audit trail: sprint 78's in-place overwrites
+erased round-1 findings on six PRs, which hid finding-recurrence from the
+orchestrator in real time and from the auditor afterwards.
 
 ## Setting the Verdict Label
 

@@ -201,6 +201,16 @@ Classify each pick:
 | Medium | low-medium | QA only | ~25% (4) |
 | Heavy | high | adversarial + QA | ~15% (2) |
 
+**The mix is a cap, not a mood.** If more than ~20% of the sprint is
+classified high-scrutiny, the plan must say why, per issue, and the operator
+must sign off on the mix explicitly before the sprint starts — record the
+sign-off in the plan file. Sprint 78 inverted the mix (14 of 17 issues
+medium/high, near-everything adversarial+QA) without anyone deciding that,
+and the review-round overhead applied to the whole sprint instead of the
+riskiest 15%. High scrutiny is for the gated class (security, isolation,
+auth, DB schema, spawn path) and genuinely novel design — not for mechanical
+partition/plumbing work, however large its diff.
+
 Rules:
 1. Never pick issues labeled `needs-clarification`
 2. Prefer issues that unblock other issues (dependency roots first)
@@ -218,13 +228,13 @@ Rules:
    to retro or a user-led cleanup pass.
 6. **Flaky / recurring / unclear-mechanism issues need a nerd-snipe gate
    before impl** — see [`references/investigations.md`](investigations.md).
-   The gate is mandatory and uses a specific spawn shape (`mcx claude
-   spawn` with persona inlined, NOT the Agent tool / `subagent_type` —
-   see #2009 for the sprint-52 incident that locked this in). Mark such
-   issues `high` scrutiny in the plan table even if the eventual fix is
-   small; the gate's hard-fail outcome is `needs-attention`, which the
-   planner needs to be willing to accept (sprint 52 paid 2 slots for
-   this on #1980 and #1987).
+   The gate is mandatory. It may run as a background lane subagent (the
+   #2009 `mcx claude spawn`-only constraint is superseded — see
+   `lanes.md`, "Note on #2009"; keep `mcx claude spawn` when the operator
+   wants to attach interactively). Mark such issues `high` scrutiny in
+   the plan table even if the eventual fix is small; the gate's hard-fail
+   outcome is `needs-attention`, which the planner needs to be willing to
+   accept (sprint 52 paid 2 slots for this on #1980 and #1987).
 
 Split picks into:
 - **Goal issues** (10-12): aligned with the sprint thesis
@@ -238,6 +248,18 @@ batches 2-3 backfill as slots free. Within each batch:
 - No two issues should modify the same files
 - Mix quick and medium — don't put all heavies in one batch
 - Put dependency roots in batch 1
+
+**Foundation-first (hard rule).** A dependent of an in-flight foundation PR
+is not "batch 2" — it does not launch, at all, until the foundation is
+**merged**. Stacking branches on an unmerged base couples every dependent to
+the foundation's review outcome: sprint 78 stacked five partition PRs on its
+foundation, the foundation absorbed four review rounds + a QA fail, and every
+stacked branch then conflicted against the merged result. If the foundation
+plus its dependents don't fit one sprint after serialization, the dependents
+are next sprint's plan — that is the correct outcome, not a capacity failure.
+Corollary: issues that share a file seam (same table-partition, same dispatch
+file, same doc) form a **serial chain in one lane**, never parallel lanes —
+see `lanes.md` rule 5.
 
 **Batches are a planning mental-model for launch order; they are NOT
 TaskCreate groupings.** The run phase will create one Task per issue with
