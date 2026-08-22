@@ -61,11 +61,30 @@ describe("the worker domain link", () => {
     expect(fake.posted).toHaveLength(0);
   });
 
-  test("wire-checks JSON-RPC too, not just control messages", async () => {
+  test("wire-checks JSON-RPC too, and returns the diagnostic to the requester", async () => {
+    // Throwing here would reach the SDK's internal `.catch(onerror)` and die,
+    // leaving the request to expire on its own timeout — "Request timed out"
+    // instead of the field name, which is the guard's entire value.
     const { fake, link } = makeLink();
-    const badFrame = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { at: new Date() } };
+    const answers: unknown[] = [];
+    link.transport.onmessage = (m) => answers.push(m);
+    const badFrame = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { at: new Date() } };
 
-    await expect(link.transport.send(badFrame as unknown as JSONRPCMessage)).rejects.toThrow(WireUnsafeError);
+    await link.transport.send(badFrame as unknown as JSONRPCMessage);
+
+    expect(fake.posted).toHaveLength(0);
+    expect(answers).toHaveLength(1);
+    const reply = answers[0] as { id: number; error: { code: number; message: string } };
+    expect(reply.id).toBe(7);
+    expect(reply.error.message).toContain("$.params.at");
+    expect(reply.error.message).toContain("Date");
+  });
+
+  test("a notification that fails the wire check throws — there is nothing to answer", async () => {
+    const { fake, link } = makeLink();
+    const badNotification = { jsonrpc: "2.0", method: "notifications/progress", params: { at: new Date() } };
+
+    await expect(link.transport.send(badNotification as unknown as JSONRPCMessage)).rejects.toThrow(WireUnsafeError);
     expect(fake.posted).toHaveLength(0);
   });
 

@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { type DomainSnapshot, ProtocolVersionMismatchError, silentLogger } from "@mcp-cli/core";
 import { pollUntil } from "../../../test/harness";
 import {
-  DOMAIN_HANDSHAKE_TIMEOUT_MS,
   DomainServer,
   type DomainServerOptions,
+  DomainServerStoppedError,
   DomainWorkerUnavailableError,
   RemoteDomainError,
 } from "./domain-server";
@@ -144,10 +144,6 @@ describe("DomainServer.start", () => {
     await expect(h.server.start()).rejects.toThrow(/startup timeout/);
     expect(h.server.state).toBe("failed");
     expect(h.latest().isClosed).toBe(true);
-  });
-
-  test("has a bounded handshake budget rather than waiting forever", () => {
-    expect(DOMAIN_HANDSHAKE_TIMEOUT_MS).toBeGreaterThan(0);
   });
 });
 
@@ -311,6 +307,203 @@ describe("DomainServer crash handling", () => {
 
     expect(h.links).toHaveLength(2);
     await h.server.stop();
+  });
+});
+
+describe("the guards the PR body claims", () => {
+  // Each of these was named in review as an invariant asserted by prose and by a
+  // test that passes whether or not the guard exists. Each names the mutation it
+  // must fail against.
+
+  test("call() refuses while restarting, even though the client is still connected", async () => {
+    // Mutation this must fail against: delete `this.workerState !== "running" ||`
+    // from call()'s guard (domain-server.ts). The pre-existing test asserted
+    // state "stopped", which is the `client === null` branch — it passed for the
+    // wrong reason. The window that matters is inside handleCrash, where the
+    // state is already `restarting` but the client is not nulled until after
+    // `closeClientWithTimeout` returns.
+    let closeResolved: (() => void) | undefined;
+    let dialled = 0;
+    let closes = 0;
+    const h = makeServer({
+      clientFactory: () =>
+        makeStubDomainClient({
+          callTool: async () => {
+            dialled++;
+            return { content: [] };
+          },
+          // Only the FIRST close hangs — that is what holds the crash path open
+          // inside the window under test. Later closes (the restarted worker,
+          // and stop()) must resolve or the test hangs on its own teardown.
+          close: () => {
+            if (closes++ > 0) return Promise.resolve();
+            return new Promise<void>((resolve) => {
+              closeResolved = resolve;
+            });
+          },
+        }),
+    });
+    await h.server.start();
+
+    h.latest().die("worker panicked");
+    await pollUntil(() => h.server.state === "restarting" && closeResolved !== undefined);
+
+    const err = (await h.server.call("domain_ping").catch((e: unknown) => e)) as DomainWorkerUnavailableError;
+
+    expect(err).toBeInstanceOf(DomainWorkerUnavailableError);
+    expect(err.state).toBe("restarting");
+    expect(err.retryable).toBe(true);
+    // The point: the client was live and would have answered.
+    expect(dialled).toBe(0);
+    closeResolved?.();
+    await h.server.stop();
+  });
+
+  test("state reads restarting during the backoff sleep between attempts", async () => {
+    // Mutation this must fail against: change start()'s catch from
+    // `this.restartInProgress ? "restarting" : "failed"` to always "failed".
+    // The previously-covered spot was the *entry* ternary; this is the state a
+    // caller reads while `Bun.sleep(delay)` runs between attempts.
+    const BACKOFF_MS = 300;
+    const h = makeServer({
+      linkOptions: { autoReady: false },
+      handshakeTimeoutMs: 20,
+      restartPolicy: { maxCrashes: 3, crashWindowMs: 60_000, backoffDelaysMs: [BACKOFF_MS, BACKOFF_MS] },
+    });
+    await startManually(h);
+
+    h.latest().die("worker panicked");
+    // Attempt 0 creates link 2 and times out; the server then sleeps before
+    // attempt 1 creates link 3. Sampling once link 3 exists is inside a window
+    // that only closes when a handshake succeeds, which it never does here.
+    await pollUntil(() => h.links.length === 3);
+
+    expect(h.server.state).toBe("restarting");
+    await h.server.stop();
+  });
+});
+
+describe("DomainServer.adoptRename", () => {
+  test("updates the snapshot in place without touching the worker", async () => {
+    const h = makeServer();
+    await h.server.start();
+    const linkBefore = h.latest();
+
+    h.server.adoptRename({ ...phoenix, name: "phoenix2" });
+
+    expect(h.server.domain.name).toBe("phoenix2");
+    expect(h.server.state).toBe("running");
+    expect(h.links).toHaveLength(1);
+    expect(linkBefore.isClosed).toBe(false);
+    await h.server.stop();
+  });
+
+  test("refuses a changed binding rather than silently rebinding a live worker", async () => {
+    // The hazard is a caller reaching for the cheap path to dodge a restart it
+    // does not want to pay for. A guard, not a doc sentence — a doc sentence is
+    // what failed here the first time.
+    const h = makeServer();
+    await h.server.start();
+
+    expect(() => h.server.adoptRename({ ...phoenix, path: "/projects/elsewhere" })).toThrow(/changed binding/);
+    expect(() => h.server.adoptRename({ ...phoenix, host: "boxen0010" })).toThrow(/changed binding/);
+    expect(() => h.server.adoptRename({ ...phoenix, id: 99 })).toThrow(/changed binding/);
+    // Unchanged after every refusal.
+    expect(h.server.domain).toEqual(phoenix);
+    await h.server.stop();
+  });
+
+  test("a restart after a rename binds the worker to the new name", async () => {
+    const h = makeServer({ resolveDomain: () => ({ ...phoenix, name: "phoenix2" }) });
+    await h.server.start();
+    h.server.adoptRename({ ...phoenix, name: "phoenix2" });
+
+    h.latest().die("worker panicked");
+    await pollUntil(() => h.server.state === "running" && h.links.length === 2);
+
+    expect(h.latest().sent[0]?.domain.name).toBe("phoenix2");
+    await h.server.stop();
+  });
+});
+
+describe("stop() during start()", () => {
+  // Review finding: `start()` set `stopped = false` once at the top and wrote
+  // `running` two awaits later with no re-check, so a resolving start()
+  // resurrected the client stop() had nulled and call() served a terminated
+  // worker — after stopAll() had returned claiming everything was stopped.
+  // There was no test for stop()-during-start() anywhere.
+
+  test("a stop landing mid-handshake is terminal — no resurrection", async () => {
+    const h = makeServer({ linkOptions: { autoReady: false }, handshakeTimeoutMs: SLOW_HANDSHAKE_MS });
+    const started = h.server.start();
+    await pollUntil(() => h.links.length === 1);
+
+    await h.server.stop();
+    // The worker answers *after* the stop — the interleaving that resurrected it.
+    h.latest().sendReady();
+    await expect(started).rejects.toThrow(DomainServerStoppedError);
+
+    expect(h.server.state).toBe("stopped");
+    expect(h.latest().isClosed).toBe(true);
+    const err = (await h.server.call("domain_ping").catch((e: unknown) => e)) as DomainWorkerUnavailableError;
+    expect(err).toBeInstanceOf(DomainWorkerUnavailableError);
+  });
+
+  test("a stop landing mid-MCP-connect does not serve calls afterwards", async () => {
+    let releaseConnect: (() => void) | undefined;
+    let dialled = 0;
+    const h = makeServer({
+      clientFactory: () =>
+        makeStubDomainClient({
+          connect: () =>
+            new Promise<void>((resolve) => {
+              releaseConnect = resolve;
+            }),
+          callTool: async () => {
+            dialled++;
+            return { content: [] };
+          },
+        }),
+    });
+    const started = h.server.start();
+    await pollUntil(() => releaseConnect !== undefined);
+
+    await h.server.stop();
+    releaseConnect?.();
+    await expect(started).rejects.toThrow(DomainServerStoppedError);
+
+    expect(h.server.state).toBe("stopped");
+    await expect(h.server.call("domain_ping")).rejects.toThrow(DomainWorkerUnavailableError);
+    expect(dialled).toBe(0);
+  });
+
+  test("stop during a restart leaves `stopped`, not a permanent `restarting`", async () => {
+    // `isTransientStatus` would otherwise answer "it's coming back" forever for
+    // a server nobody is trying to keep.
+    const h = makeServer({ linkOptions: { autoReady: false }, handshakeTimeoutMs: SLOW_HANDSHAKE_MS });
+    await startManually(h);
+    h.latest().die("worker panicked");
+    await pollUntil(() => h.links.length === 2 && h.server.state === "restarting");
+
+    await h.server.stop();
+
+    expect(h.server.state).toBe("stopped");
+    const err = (await h.server.call("domain_ping").catch((e: unknown) => e)) as DomainWorkerUnavailableError;
+    expect(err.state).toBe("stopped");
+  });
+
+  test("stop settles an in-flight handshake instead of leaving it pending", async () => {
+    // Without this the handshake's timer stays live and its promise unsettled
+    // for the full budget past a resolved stop().
+    const h = makeServer({ linkOptions: { autoReady: false }, handshakeTimeoutMs: 30_000 });
+    const started = h.server.start();
+    await pollUntil(() => h.links.length === 1);
+
+    await h.server.stop();
+
+    // Settles immediately rather than in 30s — the assertion is that awaiting it
+    // does not hang this test.
+    await expect(started).rejects.toThrow(DomainServerStoppedError);
   });
 });
 

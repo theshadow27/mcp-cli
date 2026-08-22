@@ -36,6 +36,7 @@ import {
   assertDomainIdentity,
   consoleLogger,
   domainInitMessage,
+  domainRestartRequired,
   isRemoteDomain,
 } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -111,6 +112,22 @@ export class DomainWorkerUnavailableError extends Error {
   }
 }
 
+/**
+ * Thrown when a server is stopped while one of its own async steps is in flight.
+ *
+ * `stop()` is terminal, and the hazard is that `start()` spans two awaits: a
+ * handshake and an MCP connect. Without a re-check between them a resolving
+ * `start()` resurrects the client `stop()` had nulled, flips the state back to
+ * `running`, and `call()` sails past its fail-fast gate into a terminated
+ * worker — after `stopAll()` has returned claiming everything is stopped.
+ */
+export class DomainServerStoppedError extends Error {
+  constructor(domainId: number, during: string) {
+    super(`Domain ${domainId} worker was stopped during ${during}`);
+    this.name = "DomainServerStoppedError";
+  }
+}
+
 /** Thrown when a domain that lives on another host is asked for a worker in this process. */
 export class RemoteDomainError extends Error {
   readonly domain: DomainSnapshot;
@@ -134,6 +151,8 @@ export class DomainServer {
   private restartInProgress = false;
   private pendingCrashReason: string | null = null;
   private stopped = false;
+  /** Settles an in-flight handshake early when `stop()` lands. */
+  private abortHandshake: ((err: Error) => void) | null = null;
 
   private readonly logger: Logger;
   private readonly restartPolicy: RestartPolicy;
@@ -152,7 +171,7 @@ export class DomainServer {
     this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DOMAIN_HANDSHAKE_TIMEOUT_MS;
     this.callTimeoutMs = opts.callTimeoutMs ?? DOMAIN_CALL_TIMEOUT_MS;
     this.clientFactory =
-      opts.clientFactory ?? (() => new Client({ name: `mcp-cli/_domain:${domain.name}`, version: "0.1.0" }));
+      opts.clientFactory ?? (() => new Client({ name: `mcp-cli/_domain:${this.snapshot.name}`, version: "0.1.0" }));
   }
 
   /** The domain row this worker is bound to, as of the last (re)start. */
@@ -175,6 +194,29 @@ export class DomainServer {
   }
 
   /**
+   * Adopt a renamed domain row without disturbing the running worker.
+   *
+   * A rename changes the label, not the binding, so the worker keeps running and
+   * the supervisor's view of it is updated in place. The worker's own copy stays
+   * stale until it next restarts, which is harmless: inside the worker `name` is
+   * only ever a log line or the MCP handshake identity string.
+   *
+   * **Throws if the binding actually changed.** The whole hazard here is a
+   * caller reaching for the cheap path to avoid a restart it does not want to
+   * pay for, and silently rebinding a live worker to a different location. That
+   * is a guard rather than a doc sentence because a doc sentence is exactly what
+   * failed the first time.
+   */
+  adoptRename(fresh: DomainSnapshot): void {
+    if (domainRestartRequired(this.snapshot, fresh)) {
+      throw new Error(
+        `adoptRename called with a changed binding for domain ${this.snapshot.id} (${this.snapshot.host ?? "local"}:${this.snapshot.path} → ${fresh.host ?? "local"}:${fresh.path}); a moved domain needs a new worker, not a renamed one`,
+      );
+    }
+    this.snapshot = fresh;
+  }
+
+  /**
    * Bring the worker up: create the link, send `init`, wait for `ready`, connect
    * the MCP client. Throws (leaving the server `failed`) if any step fails.
    */
@@ -189,15 +231,20 @@ export class DomainServer {
 
     try {
       await this.handshake(link);
+      this.assertStillWanted("the worker handshake");
       const client = this.clientFactory();
       await this.connectClient(client, link);
+      this.assertStillWanted("the MCP handshake");
       this.client = client;
     } catch (err) {
       await this.teardownLink();
+      // `stopped` outranks everything: a server nobody is trying to keep is not
+      // `failed` (which reads as "this will never work" with `retryable: false`)
+      // and not `restarting` (which reads as "it is coming back", forever).
       // A failed attempt *during* a restart is still "restarting" — reporting
       // `failed` between backoff attempts would tell a concurrent caller the
       // worker is not coming back when it is about to be tried again.
-      this.workerState = this.restartInProgress ? "restarting" : "failed";
+      this.workerState = this.stopped ? "stopped" : this.restartInProgress ? "restarting" : "failed";
       this.failureReason = err instanceof Error ? err.message : String(err);
       throw err;
     }
@@ -210,8 +257,17 @@ export class DomainServer {
     // surface both an error and a close). Without it the duplicate is queued as
     // a pending crash and replayed *after* the restart succeeds — killing the
     // healthy worker that just came up. One link dies once.
+    link.onControl = (message: DomainWorkerMessage) => {
+      if (message.type !== "error") return;
+      // A running worker complaining about itself. Not fatal on its own — the
+      // link is still up — but it must not vanish, which is what happened while
+      // `onControl` stayed null from the end of the handshake onward.
+      this.logger.error(`[domain-server:${this.snapshot.name}] worker reported an error: ${message.message}`);
+    };
+
     let notified = false;
     link.onFailure = (reason) => {
+      if (this.stopped) return;
       if (this.link !== link || notified) return;
       notified = true;
       void this.handleCrash(reason);
@@ -220,9 +276,22 @@ export class DomainServer {
     this.opts.onActivity?.();
   }
 
-  /** Stop the worker for good. Idempotent. */
+  /**
+   * Throw if `stop()` landed while an async step was in flight.
+   *
+   * Called after every await in {@link start}. A boolean checked once at the top
+   * is not a guard when the thing it guards spans two round trips.
+   */
+  private assertStillWanted(during: string): void {
+    if (this.stopped) throw new DomainServerStoppedError(this.snapshot.id, during);
+  }
+
+  /** Stop the worker for good. Idempotent, and terminal — nothing moves it out of `stopped`. */
   async stop(): Promise<void> {
     this.stopped = true;
+    // Settle a handshake still in flight rather than leaving its timer live and
+    // its promise unsettled for the full budget past a resolved stop().
+    this.abortHandshake?.(new DomainServerStoppedError(this.snapshot.id, "the worker handshake"));
     await closeClientWithTimeout(this.client);
     await this.teardownLink();
     this.workerState = "stopped";
@@ -258,10 +327,16 @@ export class DomainServer {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.abortHandshake = null;
+        // `onControl` is reinstalled by the caller on success (see start()) —
+        // `error` is a protocol message the worker may post at any time, and
+        // dropping it silently after the handshake is how a worker's own
+        // complaint about itself goes unheard.
         link.onControl = null;
         link.onFailure = null;
         fn();
       };
+      this.abortHandshake = (err: Error) => finish(() => reject(err));
 
       const timer = safeSetTimeout(() => {
         finish(() =>

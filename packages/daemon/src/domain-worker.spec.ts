@@ -8,21 +8,24 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { type DomainSnapshot, domainInitMessage, silentLogger } from "@mcp-cli/core";
+import { type Domain, type DomainSnapshot, domainInitMessage, silentLogger } from "@mcp-cli/core";
 import { pollUntil } from "../../../test/harness";
 import { createWorkerDomainLink } from "./domain-link";
 import { DomainServer } from "./domain-server";
+import { type DomainSupervisor, UnknownDomainError } from "./domain-supervisor";
 import type { RestartPolicy } from "./restart-policy";
 
 const FAST_POLICY: RestartPolicy = { maxCrashes: 2, crashWindowMs: 60_000, backoffDelaysMs: [0, 0] };
 
 const CRASHING_WORKER = resolve(import.meta.dir, "../../../test/crashing-domain-worker.ts");
+const EXITING_WORKER = resolve(import.meta.dir, "../../../test/exiting-domain-worker.ts");
 
 function snapshot(id: number, name: string): DomainSnapshot {
   return { id, name, host: null, path: `/projects/${name}`, createdAt: "2026-08-22T00:00:00Z" };
 }
 
 const started: DomainServer[] = [];
+const supervisors: DomainSupervisor[] = [];
 
 function makeServer(
   domain: DomainSnapshot,
@@ -50,6 +53,7 @@ function payload(result: unknown): Record<string, unknown> {
 }
 
 afterEach(async () => {
+  await Promise.all(supervisors.splice(0).map((s) => s.stopAll()));
   await Promise.all(started.splice(0).map((s) => s.stop()));
 });
 
@@ -110,21 +114,26 @@ describe("a real domain worker", () => {
   });
 });
 
-describe("a real domain worker that dies", () => {
-  test("reaches the supervisor, is restarted, and eventually gives up", async () => {
-    // The half the fake link cannot prove: that an actual Bun Worker death
-    // arrives as a link failure at all.
-    const failures: string[] = [];
-    const server = makeServer(snapshot(1, "phoenix"), {
-      workerScript: CRASHING_WORKER,
-      onPermanentlyFailed: (reason) => failures.push(reason),
-    });
+describe("the no-HTTP guarantee, from inside a worker thread", () => {
+  test("a sealed worker cannot open a port by any reference it can hold", async () => {
+    // The review's finding: no test anywhere attempted to open a port from
+    // inside a sealed worker, so `guards: "sealed"` reported a marker rather
+    // than the property. This one tries, through every reference a module in
+    // the worker's graph could hold.
+    const probe = resolve(import.meta.dir, "../../../test/no-http-probe-worker.ts");
+    const worker = new Worker(probe);
+    const result = await new Promise<Record<string, { opened?: boolean; detail?: string } | boolean>>((done, fail) => {
+      worker.onmessage = (event: MessageEvent) => done(event.data);
+      worker.onerror = (event: ErrorEvent | Event) =>
+        fail(new Error(event instanceof ErrorEvent ? event.message : "probe worker error"));
+      worker.postMessage({ probe: true });
+    }).finally(() => worker.terminate());
 
-    await server.start();
-    expect(server.state).toBe("running");
-
-    await pollUntil(() => server.state === "failed", 4000);
-    expect(server.crashCount).toBeGreaterThan(FAST_POLICY.maxCrashes);
-    expect(failures[0]).toContain("giving up auto-restart");
+    // The property, three ways — a bind attempt through the global, through a
+    // static `import { serve } from "bun"`, and through a module-scope value
+    // copy of `Bun.serve`.
+    expect(result.canListenViaGlobal).toBe(false);
+    expect(result.captured).toEqual({ opened: false, detail: "HttpForbiddenError" });
+    expect(result.copied).toEqual({ opened: false, detail: "HttpForbiddenError" });
   });
 });

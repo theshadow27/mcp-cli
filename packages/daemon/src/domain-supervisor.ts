@@ -31,6 +31,7 @@ import {
   type DomainSnapshot,
   type Logger,
   consoleLogger,
+  domainRestartRequired,
   domainSnapshotEquals,
   isRemoteDomain,
   toDomainSnapshot,
@@ -68,6 +69,23 @@ export type DomainWorkerStatus =
 /** True when the status says "try again shortly" rather than "this will not work". */
 export function isTransientStatus(status: DomainWorkerStatus): boolean {
   return status.state === "starting" || status.state === "restarting" || status.state === "no-worker";
+}
+
+/**
+ * Thrown when the supervisor has been stopped and cannot start anything.
+ *
+ * Typed rather than a bare `Error` so a caller racing daemon shutdown can
+ * classify it — which is the whole distinction {@link DomainWorkerStatus} exists
+ * to preserve, and it should not be lost at the one entry point.
+ */
+export class SupervisorStoppedError extends Error {
+  readonly domainId: number;
+
+  constructor(domainId: number) {
+    super(`DomainSupervisor is stopped; not starting a worker for domain ${domainId}`);
+    this.name = "SupervisorStoppedError";
+    this.domainId = domainId;
+  }
 }
 
 /** Thrown when a domain id or name has no row in the `domains` table. */
@@ -123,23 +141,66 @@ export class DomainSupervisor {
    * a condition a retry fixes, which is why they are types and not states.
    */
   async ensure(domainId: number): Promise<DomainServer> {
-    if (this.stopped) throw new Error("DomainSupervisor is stopped");
-    const existing = this.servers.get(domainId);
-    if (existing && existing.state !== "gone" && existing.state !== "failed") return existing;
+    if (this.stopped) throw new SupervisorStoppedError(domainId);
 
+    // The registry is consulted FIRST, before any cached server. Returning the
+    // cache first meant `ensure()` handed out a live worker bound to the old
+    // path for a domain whose row had been deleted or moved — and `status()`
+    // agreed it was `running` — until the 30s reconcile tick noticed. Unbounded
+    // for any caller holding the returned server, which for #3044 is project
+    // code executing against a deleted project's path. The read is three lines
+    // and it is what makes "a removed domain loses its worker" true between
+    // ticks rather than only after one.
+    const row = this.opts.registry.getDomainById(domainId);
+    if (!row) {
+      this.reapUnserviceable(domainId, "its domain row was removed");
+      throw new UnknownDomainError(domainId);
+    }
+    const snapshot = toDomainSnapshot(row);
+    if (isRemoteDomain(snapshot)) {
+      this.reapUnserviceable(domainId, `it moved to host ${snapshot.host}`);
+      throw new RemoteDomainError(snapshot);
+    }
+
+    // Before the cache, so concurrent callers converge on the promise rather
+    // than on a server object that has not finished starting. `startServer`
+    // registers in `servers` synchronously — so that `status()` can report
+    // `starting` — which meant a second caller matched the cache and was handed
+    // a server whose `start()` had not resolved. That made the `starting` map
+    // dead code and `ensure`'s own contract ("started if it is not running yet")
+    // false.
     const inFlight = this.starting.get(domainId);
     if (inFlight) return inFlight;
 
-    const row = this.opts.registry.getDomainById(domainId);
-    if (!row) throw new UnknownDomainError(domainId);
-    const snapshot = toDomainSnapshot(row);
-    if (isRemoteDomain(snapshot)) throw new RemoteDomainError(snapshot);
+    const existing = this.servers.get(domainId);
+    if (existing) {
+      if (domainRestartRequired(existing.domain, snapshot)) {
+        this.logger.info(`[domain-supervisor] domain ${domainId} moved — replacing its worker`);
+        this.drop(domainId, existing);
+      } else if (existing.state === "running") {
+        if (!domainSnapshotEquals(existing.domain, snapshot)) existing.adoptRename(snapshot);
+        return existing;
+      } else {
+        // stopped / failed / gone / a starting server with no in-flight promise:
+        // none of these can serve a call, and leaving one in the map is how a
+        // `stopped` server got returned forever and never reaped.
+        this.drop(domainId, existing);
+      }
+    }
 
     const attempt = this.startServer(snapshot).finally(() => {
       this.starting.delete(domainId);
     });
     this.starting.set(domainId, attempt);
     return attempt;
+  }
+
+  /** Stop and forget a worker whose domain can no longer be served from this process. */
+  private reapUnserviceable(domainId: number, why: string): void {
+    const server = this.servers.get(domainId);
+    if (!server) return;
+    this.logger.info(`[domain-supervisor] stopping the worker for domain ${domainId} — ${why}`);
+    this.drop(domainId, server);
   }
 
   /** As {@link ensure}, by domain name. */
@@ -178,9 +239,11 @@ export class DomainSupervisor {
    * Reconcile running workers against the `domains` table.
    *
    * - A worker whose domain row is gone is stopped and dropped.
-   * - A worker whose row moved or was renamed is stopped; the next {@link ensure}
-   *   starts a fresh one against the new location. Continuing to execute project
-   *   code against a path the table no longer names is the worse option.
+   * - A worker whose row **moved** is stopped; the next {@link ensure} starts a
+   *   fresh one against the new location. Continuing to execute project code
+   *   against a path the table no longer names is the worse option.
+   * - A worker whose row was merely **renamed** keeps running — a rename changes
+   *   the label, not the binding. See `domainRestartRequired`.
    * - A worker that gave up permanently is dropped, so the next `ensure` gets a
    *   clean attempt instead of the corpse.
    *
@@ -197,14 +260,28 @@ export class DomainSupervisor {
         continue;
       }
       const fresh = toDomainSnapshot(row);
-      if (!domainSnapshotEquals(server.domain, fresh)) {
+      if (domainRestartRequired(server.domain, fresh)) {
         this.logger.info(
-          `[domain-supervisor] domain ${id} changed (${server.domain.name} @ ${server.domain.path} → ${fresh.name} @ ${fresh.path}) — restarting its worker`,
+          `[domain-supervisor] domain ${id} moved (${server.domain.host ?? "local"}:${server.domain.path} → ${fresh.host ?? "local"}:${fresh.path}) — restarting its worker`,
         );
         this.drop(id, server);
         continue;
       }
-      if (server.state === "gone" || server.state === "failed") {
+      if (!domainSnapshotEquals(server.domain, fresh)) {
+        // Name-only change. A rename alters the label, not the binding, so the
+        // worker keeps running and only this side's view of it is updated —
+        // killing a live worker over a cosmetic edit would abort a running phase
+        // once #3044 lands. `adoptRename` throws if the binding moved after all.
+        this.logger.info(
+          `[domain-supervisor] domain ${id} renamed (${server.domain.name} → ${fresh.name}) — worker kept running`,
+        );
+        server.adoptRename(fresh);
+      }
+      if (server.state === "gone" || server.state === "failed" || server.state === "stopped") {
+        // `stopped` belongs here too: `ensure` and `sync` disagreeing about it
+        // meant a stopped server sat in the map, was handed back forever, and
+        // was never reaped — while `retryable` said `true`, so a caller would
+        // retry into a permanent dead end.
         this.logger.info(`[domain-supervisor] dropping ${server.state} worker for domain ${fresh.name} (${id})`);
         this.drop(id, server);
       }
