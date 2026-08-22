@@ -52,7 +52,7 @@ import {
   formatToolResult,
   stripErrorPrefix,
 } from "../output";
-import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
+import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   type SharedSessionDeps,
   buildResumePrompt,
@@ -816,22 +816,32 @@ async function agentList(
   d: AgentDeps,
 ): Promise<void> {
   const P = provider.toolPrefix;
-  const { json } = extractJsonFlag(args);
-  const short = args.includes("--short");
-  const showPr = args.includes("--pr") && hasFeature(provider, "repoScoped");
-  const showAll = args.includes("--all");
+  const { domain, rest } = extractDomainFlag(args);
+  const { json } = extractJsonFlag(rest);
+  const short = rest.includes("--short");
+  const showPr = rest.includes("--pr") && hasFeature(provider, "repoScoped");
+  const showAll = rest.includes("--all");
 
   const toolArgs: Record<string, unknown> = {};
 
-  // Repo-scoped filtering (Claude only, unless --all)
-  if (hasFeature(provider, "repoScoped") && !showAll) {
-    const gitRoot = d.getGitRoot();
-    if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-    else if (gitRoot) toolArgs.repoRoot = gitRoot;
+  if (!showAll) {
+    // Domain scoping applies to EVERY provider (#3039) — unlike `repoScoped`,
+    // which is a Claude-only native feature. That asymmetry is the point: the
+    // domain is a partition key the daemon owns, not something a provider has
+    // to implement.
+    if (domain) toolArgs.domain = domain;
+    else toolArgs.domainCwd = d.getCwd();
+
+    // Repo-scoped filtering (Claude only) — the coarser pre-domain fallback.
+    if (hasFeature(provider, "repoScoped")) {
+      const gitRoot = d.getGitRoot();
+      if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
+      else if (gitRoot) toolArgs.repoRoot = gitRoot;
+    }
   }
 
   // Agent filter for ACP variants
-  const agentFilter = agentOverride ?? extractFlag(args, "--agent", "-a");
+  const agentFilter = agentOverride ?? extractFlag(rest, "--agent", "-a");
   if (agentFilter && hasFeature(provider, "agentSelect")) toolArgs.agent = agentFilter;
 
   const result = await d.callTool(`${P}_session_list`, toolArgs);
@@ -1183,6 +1193,7 @@ async function agentWait(
     short: { type: "boolean" },
     all: { type: "boolean" },
     "mail-to": { type: "string" },
+    domain: { type: "string", alias: "d" },
   });
 
   // Post-process timeout
@@ -1208,6 +1219,9 @@ async function agentWait(
 
   const short = (flags.short as boolean) ?? false;
   const all = (flags.all as boolean) ?? false;
+  const domainRaw = flags.domain as string | undefined;
+  if (domainRaw === "") error ??= "--domain requires a domain name";
+  const domain = domainRaw === "" ? undefined : domainRaw;
   const sessionPrefix = positionals[0];
 
   // Map parseFlags errors to existing error messages
@@ -1219,6 +1233,8 @@ async function agentWait(
       error = "--after requires a sequence number";
     } else if (e === "--mail-to requires a value") {
       error = "--mail-to requires a recipient name";
+    } else if (e === "--domain requires a value" || e === "-d requires a value") {
+      error = "--domain requires a domain name";
     } else {
       error = e;
     }
@@ -1238,15 +1254,20 @@ async function agentWait(
   if (timeout) toolArgs.timeout = timeout;
   if (afterSeq !== undefined) toolArgs.afterSeq = afterSeq;
 
-  // Repo-scoped filtering (Claude only)
   let repoFilter: string | undefined;
-  if (hasFeature(provider, "repoScoped") && !all && !sessionPrefix) {
-    const gitRoot = d.getGitRoot();
-    if (isLookupFailure(gitRoot)) {
-      d.printError(gitRoot.message);
-    } else if (gitRoot) {
-      toolArgs.repoRoot = gitRoot;
-      repoFilter = gitRoot;
+  if (!all && !sessionPrefix) {
+    // Domain scoping for every provider (#3039); repoRoot stays Claude-only.
+    if (domain) toolArgs.domain = domain;
+    else toolArgs.domainCwd = d.getCwd();
+
+    if (hasFeature(provider, "repoScoped")) {
+      const gitRoot = d.getGitRoot();
+      if (isLookupFailure(gitRoot)) {
+        d.printError(gitRoot.message);
+      } else if (gitRoot) {
+        toolArgs.repoRoot = gitRoot;
+        repoFilter = gitRoot;
+      }
     }
   }
 

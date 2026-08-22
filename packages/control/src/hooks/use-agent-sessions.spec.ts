@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { AgentSessionInfo } from "@mcp-cli/core";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
@@ -29,6 +30,7 @@ function session(id: string, provider: "claude" | "codex" = "claude"): AgentSess
     pendingPermissionDetails: [],
     worktree: null,
     repoRoot: null,
+    domainId: NO_DOMAIN_ID,
     processAlive: true,
     rateLimited: false,
     createdAt: Date.now(),

@@ -13,6 +13,7 @@ import type { StateDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { metrics } from "../metrics";
 import type { ServerPool } from "../server-pool";
+import { applyDomainScope } from "../session-domain";
 
 export class ToolHandlers {
   constructor(
@@ -89,7 +90,16 @@ export class ToolHandlers {
         //
         // For _claude, inject the per-request traceparent so the spawned
         // Claude process becomes a child of this IPC operation span.
-        const resolvedArgs = server === CLAUDE_SERVER_NAME ? { ...args, __traceparent: toolSpan.traceparent() } : args;
+        //
+        // Domain scoping (#3039) is applied to EVERY provider here rather than in
+        // each session worker: the domains table lives in this process, so this is
+        // the only point that can turn `-d phoenix` (or the caller's cwd) into the
+        // numeric `domainId` a worker filters on. Workers compare ids and nothing
+        // else — there is no second resolution path, which is the whole reason
+        // this replaces `scopeRoot`.
+        const scopedArgs = applyDomainScope(this.db, server, tool, args, cwd);
+        const resolvedArgs =
+          server === CLAUDE_SERVER_NAME ? { ...scopedArgs, __traceparent: toolSpan.traceparent() } : scopedArgs;
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
             ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)

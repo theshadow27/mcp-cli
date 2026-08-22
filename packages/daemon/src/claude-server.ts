@@ -375,6 +375,11 @@ export class ClaudeServer extends AbstractWorkerServer {
         totalTokens: row.totalTokens,
         claudeSessionId: row.claudeSessionId,
         transport: row.transport === "ws" || row.transport === "stdio" ? row.transport : undefined,
+        // Unlike `profile` below, the domain IS knowable after a restart — it is
+        // a column on the row (#3039). Carrying it is what keeps a restored
+        // session visible to `mcx claude ls` in the domain it was spawned in;
+        // dropping it would silently re-home every survivor to domain 0.
+        domainId: row.domainId,
         // No profile is carried: `agent_sessions` has no column for it, and the
         // schema is #3034's to change. `restoreSessions` therefore marks these
         // sessions `profileSource: "unrecorded"`, and `resolveSessionProfile`

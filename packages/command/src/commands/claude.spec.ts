@@ -1532,7 +1532,7 @@ describe("mcx claude ls", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["ls"], deps);
-      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
       // Should have header + 2 session rows
       expect(logSpy.mock.calls.length).toBe(3);
       const header = (logSpy.mock.calls[0] as string[])[0];
@@ -1669,7 +1669,7 @@ describe("mcx claude ls", () => {
     console.error = mock(() => {});
     try {
       await cmdClaude(["list"], deps);
-      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
     } finally {
       console.error = origErr;
     }
@@ -1863,7 +1863,7 @@ describe("mcx claude ls", () => {
     try {
       await cmdClaude(["ls"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/a", domainCwd: process.cwd() });
       // Header + 1 matching session (not 2)
       expect(logSpy.mock.calls.length).toBe(2);
       const row = (logSpy.mock.calls[1] as string[])[0];
@@ -3362,7 +3362,7 @@ describe("mcx claude wait", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["wait"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", {});
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { domainCwd: process.cwd() });
     } finally {
       console.log = origLog;
     }
@@ -3400,7 +3400,7 @@ describe("mcx claude wait", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["wait", "--timeout", "60000"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 60000 });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 60000, domainCwd: process.cwd() });
     } finally {
       console.log = origLog;
     }
@@ -3416,7 +3416,7 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000, domainCwd: process.cwd() });
       // First line is the header, second line is JSON
       const header = (logSpy.mock.calls[0] as string[])[0];
       expect(header).toBe("event=timeout");
@@ -3522,7 +3522,11 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000, repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {
+        timeout: 1000,
+        repoRoot: "/repo/a",
+        domainCwd: process.cwd(),
+      });
       // Only 1 session matches /repo/a
       expect(logSpy.mock.calls.length).toBe(1);
       const line = (logSpy.mock.calls[0] as string[])[0];
@@ -3580,7 +3584,11 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--short", "--after", "0"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { afterSeq: 0, repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {
+        afterSeq: 0,
+        repoRoot: "/repo/a",
+        domainCwd: process.cwd(),
+      });
       // Only event for /repo/a
       expect(logSpy.mock.calls.length).toBe(1);
       const line = (logSpy.mock.calls[0] as string[])[0];
@@ -4011,7 +4019,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
       // 2. List — verify the new session appears
       logSpy.mockClear();
       await cmdClaude(["ls"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
       // Header row + 1 session row
       expect(logSpy.mock.calls.length).toBe(2);
       const row = (logSpy.mock.calls[1] as string[])[0];

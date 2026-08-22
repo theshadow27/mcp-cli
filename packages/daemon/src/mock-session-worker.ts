@@ -36,6 +36,8 @@ import {
   type AgentSessionEvent,
   DEFAULT_TIMEOUT_MS,
   MOCK_SERVER_NAME,
+  NO_DOMAIN_ID,
+  matchesDomain,
 } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -170,6 +172,8 @@ interface MockSession {
   interrupted: boolean;
   transcript: Array<{ role: string; text: string }>;
   createdAt: number;
+  /** Domain that owns this session (#3039), resolved daemon-side before spawn. */
+  domainId: number;
   pendingPermissions: Map<string, PermissionWaiter>;
   totalCost: number;
   totalTokens: number;
@@ -473,7 +477,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       case "mock_prompt":
         return await handlePrompt(args);
       case "mock_session_list":
-        return handleSessionList();
+        return handleSessionList(args);
       case "mock_session_status":
         return handleSessionStatus(args);
       case "mock_interrupt":
@@ -544,6 +548,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
     interrupted: false,
     transcript: [{ role: "user", text: prompt }],
     createdAt: Date.now(),
+    domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
     pendingPermissions: new Map(),
     totalCost: 0,
     totalTokens: 0,
@@ -556,7 +561,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
   // Post initial DB upsert
   self.postMessage({
     type: "db:upsert",
-    session: { sessionId, state: "connecting", cwd },
+    session: { sessionId, state: "connecting", cwd, domainId: session.domainId },
   });
 
   // Run script in background
@@ -590,16 +595,21 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
   };
 }
 
-function handleSessionList(): ToolResult {
-  const list = [...sessions.values()].map((s) => ({
-    sessionId: s.sessionId,
-    state: s.state,
-    model: "mock",
-    cwd: s.cwd,
-    cost: s.totalCost,
-    tokens: s.totalTokens > 0 ? s.totalTokens : s.entries.length,
-    createdAt: s.createdAt,
-  }));
+function handleSessionList(args: Record<string, unknown>): ToolResult {
+  // Resolved daemon-side (#3039); absent means the caller is in no domain.
+  const domainId = typeof args.domainId === "number" ? args.domainId : undefined;
+  const list = [...sessions.values()]
+    .filter((s) => matchesDomain(s, domainId))
+    .map((s) => ({
+      sessionId: s.sessionId,
+      state: s.state,
+      model: "mock",
+      cwd: s.cwd,
+      cost: s.totalCost,
+      tokens: s.totalTokens > 0 ? s.totalTokens : s.entries.length,
+      domainId: s.domainId,
+      createdAt: s.createdAt,
+    }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }
 

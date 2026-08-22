@@ -10,9 +10,11 @@ import {
   isDomainScoped,
   isPathWithin,
   isValidDomainName,
+  matchesDomain,
   normalizeDomainPath,
   parseDomainLocation,
   resolveDomainForPath,
+  toDomainFilter,
 } from "./domain";
 
 function domain(name: string, path: string, host: string | null = null, id = 1): Domain {
@@ -262,5 +264,56 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
 
   test("still refuses a relative path", () => {
     expect(() => canonicalizeDomainPath("relative/path")).toThrow(/must be absolute/);
+  });
+});
+
+describe("toDomainFilter", () => {
+  test("a real domain id filters", () => {
+    expect(toDomainFilter(1)).toBe(1);
+    expect(toDomainFilter(42)).toBe(42);
+  });
+
+  test("the unassigned sentinel is NOT a filter", () => {
+    // Filtering on 0 would answer "which sessions are in no domain?" while
+    // reading like a domain filter at the call site — and would hide every
+    // session the moment domains started being registered.
+    expect(toDomainFilter(NO_DOMAIN_ID)).toBeUndefined();
+  });
+
+  test("absent stays absent", () => {
+    expect(toDomainFilter(undefined)).toBeUndefined();
+  });
+});
+
+describe("matchesDomain", () => {
+  test("no filter admits everything, including a session-less event", () => {
+    expect(matchesDomain({ domainId: 3 }, undefined)).toBe(true);
+    expect(matchesDomain(undefined, undefined)).toBe(true);
+  });
+
+  test("an active filter drops an event with no session (#1308)", () => {
+    expect(matchesDomain(undefined, 3)).toBe(false);
+  });
+
+  test("admits only the matching domain", () => {
+    expect(matchesDomain({ domainId: 3 }, 3)).toBe(true);
+    expect(matchesDomain({ domainId: 4 }, 3)).toBe(false);
+    expect(matchesDomain({ domainId: NO_DOMAIN_ID }, 3)).toBe(false);
+  });
+
+  test("sibling-prefix paths cannot cross-match, because ids are compared, not paths", () => {
+    // The historic scopeRoot bug: /foo/barbaz matched a scope root of /foo/bar
+    // via `startsWith`. Two domains at sibling paths get two ids, and no string
+    // comparison happens at filter time at all.
+    const bar = domain("bar", "/foo/bar", null, 1);
+    const barbaz = domain("barbaz", "/foo/barbaz", null, 2);
+    const domains = [bar, barbaz];
+
+    expect(resolveDomainForPath("/foo/barbaz/src", domains)).toBe(barbaz);
+    expect(resolveDomainForPath("/foo/bar/src", domains)).toBe(bar);
+
+    const sessionInBarbaz = { domainId: barbaz.id };
+    expect(matchesDomain(sessionInBarbaz, bar.id)).toBe(false);
+    expect(matchesDomain(sessionInBarbaz, barbaz.id)).toBe(true);
   });
 });

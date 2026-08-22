@@ -188,6 +188,33 @@ export function extractQuietFlag(args: string[]): { quiet: boolean; rest: string
 }
 
 /**
+ * Extract `-d <domain>` / `--domain <domain>` from args (#3039).
+ *
+ * The value is passed to the daemon verbatim as a *name*; `mcx` never resolves a
+ * domain itself, because the domains table lives in the daemon and a second
+ * resolver is the thing this replaced. Also accepts `--domain=<name>` so the
+ * flag behaves like the rest of the CLI's long options.
+ */
+export function extractDomainFlag(args: string[]): { domain: string | undefined; rest: string[] } {
+  const rest: string[] = [];
+  let domain: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if ((arg === "-d" || arg === "--domain") && i + 1 < args.length) {
+      domain = args[i + 1];
+      i++; // skip the value
+    } else if (arg.startsWith("--domain=")) {
+      domain = arg.slice("--domain=".length);
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { domain, rest };
+}
+
+/**
  * Extract --jq '<filter>' flag from args.
  * Returns the jq filter string (or undefined) and the remaining args.
  */

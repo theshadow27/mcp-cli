@@ -14,7 +14,14 @@
  */
 
 import { AcpSession, type AcpSessionConfig } from "@mcp-cli/acp";
-import { ACP_SERVER_NAME, AGENT_PROTOCOL_VERSION, type AgentSessionEvent, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+import {
+  ACP_SERVER_NAME,
+  AGENT_PROTOCOL_VERSION,
+  type AgentSessionEvent,
+  DEFAULT_TIMEOUT_MS,
+  NO_DOMAIN_ID,
+  matchesDomain,
+} from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ACP_TOOLS } from "./acp-session/tools";
@@ -160,7 +167,7 @@ async function handleToolCall(
       case "acp_prompt":
         return await handlePrompt(args);
       case "acp_session_list":
-        return handleSessionList();
+        return handleSessionList(args);
       case "acp_session_status":
         return handleSessionStatus(args);
       case "acp_interrupt":
@@ -215,6 +222,8 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
       disallowedTools: args.disallowedTools as string[] | undefined,
       worktree: args.worktree as string | undefined,
       repoRoot: args.repoRoot as string | undefined,
+      // Resolved daemon-side (#3039); this worker cannot open the domains table.
+      domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
     };
 
     const sid = sessionId;
@@ -228,6 +237,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
         sessionId,
         state: "connecting",
         cwd,
+        domainId: config.domainId,
         worktree: config.worktree,
         repoRoot: config.repoRoot,
       },
@@ -291,8 +301,11 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
   };
 }
 
-function handleSessionList(): { content: Array<{ type: "text"; text: string }> } {
-  const list = [...sessions.values()].map((s) => s.getInfo());
+function handleSessionList(args: Record<string, unknown>): { content: Array<{ type: "text"; text: string }> } {
+  // The daemon resolved `domainId` before these args crossed the worker boundary
+  // (#3039); absent means the caller is in no domain, so nothing is filtered out.
+  const domainId = typeof args.domainId === "number" ? args.domainId : undefined;
+  const list = [...sessions.values()].map((s) => s.getInfo()).filter((s) => matchesDomain(s, domainId));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }
 

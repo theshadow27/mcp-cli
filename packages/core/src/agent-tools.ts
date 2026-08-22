@@ -84,6 +84,40 @@ const requestIdProp: JsonSchemaProperty = {
   description: "Permission request ID",
 };
 
+/**
+ * `domainId` is defined here, in the shared builder, rather than in a per-provider
+ * override, so that every provider gets one partition key and none can be added
+ * later without it. It is **resolved by the daemon** — a caller passes `domain`
+ * (a name) or nothing, and `packages/daemon/src/session-domain.ts` turns that into
+ * the numeric id before the args reach a worker. Workers never resolve domains;
+ * they only compare ids.
+ */
+const domainIdProp: JsonSchemaProperty = {
+  type: "number",
+  description:
+    "Resolved domain id. Injected by the daemon from `domain`/`domainCwd`/`cwd` — callers pass those, not this.",
+};
+
+const domainNameProp: JsonSchemaProperty = {
+  type: "string",
+  description: "Domain name to scope to (as registered with `mcx domain add`). Resolved daemon-side to a domain id.",
+};
+
+/**
+ * The caller's directory, for "scope me to whatever domain I am standing in".
+ *
+ * A *tool argument* rather than a transport-level field on purpose: absence of a
+ * scoping argument is how every mcx session filter has always spelled "no filter"
+ * (`--all` simply omits one). If the daemon scoped by the caller's cwd whenever
+ * it happened to know it, `--all` would need a second, opposite flag to undo it —
+ * and a filter you have to remember to switch off is one that will be left on.
+ */
+const domainCwdProp: JsonSchemaProperty = {
+  type: "string",
+  description:
+    "Scope to whichever registered domain owns this directory. Omit for no domain filter; `domain` overrides it.",
+};
+
 // ---------------------------------------------------------------------------
 // Override slots
 // ---------------------------------------------------------------------------
@@ -209,6 +243,8 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             },
             timeout: timeoutProp,
             wait: { type: "boolean", description: "Block until result (default: false)" },
+            domain: domainNameProp,
+            domainId: domainIdProp,
             ...ov("prompt")?.extraProperties,
           },
           ["prompt", ...(ov("prompt")?.extraRequired ?? [])],
@@ -225,6 +261,9 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       inputSchema: {
         type: "object" as const,
         ...schema("session_list", {
+          domain: domainNameProp,
+          domainCwd: domainCwdProp,
+          domainId: domainIdProp,
           ...ov("session_list")?.extraProperties,
         }),
       },
@@ -325,6 +364,9 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             description: "Session ID or unique prefix to wait on (omit for any session)",
           },
           timeout: timeoutProp,
+          domain: domainNameProp,
+          domainCwd: domainCwdProp,
+          domainId: domainIdProp,
           ...ov("wait")?.extraProperties,
         }),
       },
