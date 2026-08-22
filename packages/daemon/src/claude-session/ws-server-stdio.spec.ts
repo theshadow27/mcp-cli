@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { type MonitorEventInput, silentLogger } from "@mcp-cli/core";
+import { type MonitorEventInput, SESSION_CONTAINMENT_DENIED, silentLogger } from "@mcp-cli/core";
 import { serialize } from "./ndjson";
 import type { StuckDetectorClock } from "./stuck-detector";
 import type { SpawnFn } from "./ws-server";
@@ -105,6 +105,42 @@ function streamEventMessage(sessionId: string): string {
     uuid: "stream-uuid",
     session_id: sessionId,
   });
+}
+
+/**
+ * Synthetic worktree root for containment tests. Deliberately not under /tmp:
+ * ContainmentGuard treats shared-temp writes as an allowed-but-warned gray zone,
+ * which would mask the deny path being asserted.
+ */
+const WORKTREE = "/repo/.claude/worktrees/wt";
+
+function canUseWriteMessage(requestId: string, filePath: string): string {
+  return serialize({
+    type: "control_request",
+    request_id: requestId,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      input: { file_path: filePath, content: "x" },
+      tool_use_id: `tool-${requestId}`,
+    },
+  });
+}
+
+/** Extract the permission decisions the server wrote back on the child's stdin. */
+function permissionResponses(stdinWrites: string[]): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const write of stdinWrites) {
+    for (const line of write.split("\n")) {
+      if (!line.trim()) continue;
+      // Everything the server writes on stdin is NDJSON by construction — a parse
+      // failure here is a real defect, so let it throw rather than skipping the line.
+      const msg: { type?: string; response?: { response?: Record<string, unknown> } } = JSON.parse(line);
+      const payload = msg.type === "control_response" ? msg.response?.response : undefined;
+      if (payload && "behavior" in payload) out.push(payload);
+    }
+  }
+  return out;
 }
 
 function canUseToolMessage(requestId: string): string {
@@ -917,7 +953,7 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(mock.lastCmd).not.toContain("--include-partial-messages");
   });
 
-  test("contained/worktree spawn over stdio is refused fail-closed (#2688)", async () => {
+  test("contained/worktree spawn over stdio is allowed and carries the permission bridge (#3063)", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
       spawn: mock.spawn,
@@ -929,13 +965,70 @@ describe("ClaudeWsServer — stdio transport", () => {
     server.prepareSession(sessionId, {
       prompt: "test",
       transport: "stdio",
-      worktree: "/tmp/wt",
-      cwd: "/tmp/wt",
+      worktree: "wt",
+      cwd: WORKTREE,
+      allowedTools: ["Read", "Write", "Edit", "Bash(git status)"],
     });
 
-    expect(() => server.spawnClaude(sessionId)).toThrow("stdio transport does not support ContainmentGuard — use ws");
-    // Refusal must happen before spawn — no child process started.
-    expect(mock.lastCmd).toEqual([]);
+    expect(() => server.spawnClaude(sessionId)).not.toThrow();
+    // The bridge flag is what makes can_use_tool — and therefore ContainmentGuard —
+    // reach the daemon over stdio at all.
+    const flagIdx = mock.lastCmd.indexOf("--permission-prompt-tool");
+    expect(flagIdx).toBeGreaterThanOrEqual(0);
+    expect(mock.lastCmd[flagIdx + 1]).toBe("stdio");
+    // Write tools must NOT be pre-allowed on the CLI side, or the child would
+    // approve them itself and the guard would never see the call.
+    const allowIdx = mock.lastCmd.indexOf("--allowedTools");
+    const allowed = mock.lastCmd.slice(allowIdx + 1, allowIdx + 4);
+    expect(allowed).toEqual(["Read", "Bash(git status)"]);
+  });
+
+  test("ContainmentGuard denies an out-of-worktree write over stdio (#3063)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    const monitorEvents: MonitorEventInput[] = [];
+    server.onMonitorEvent = (event) => monitorEvents.push(event);
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      transport: "stdio",
+      worktree: "wt",
+      cwd: WORKTREE,
+    });
+    server.spawnClaude(sessionId);
+
+    mock.pushStdout(`${canUseWriteMessage("req-deny", "/repo/src/escape.ts")}\n`);
+
+    await pollUntil(() => permissionResponses(mock.stdinWrites).length > 0, 1000);
+    const response = permissionResponses(mock.stdinWrites)[0];
+    expect(response?.behavior).toBe("deny");
+    expect(String(response?.message)).toContain("outside worktree");
+    // The denial is observable on the monitor stream, exactly as on the WS path.
+    expect(monitorEvents.some((e) => e.event === SESSION_CONTAINMENT_DENIED)).toBe(true);
+  });
+
+  test("ContainmentGuard allows an in-worktree write over stdio (#3063)", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      transport: "stdio",
+      worktree: "wt",
+      cwd: WORKTREE,
+      permissionStrategy: "auto",
+    });
+    server.spawnClaude(sessionId);
+
+    mock.pushStdout(`${canUseWriteMessage("req-allow", `${WORKTREE}/src/main.ts`)}\n`);
+
+    await pollUntil(() => permissionResponses(mock.stdinWrites).length > 0, 1000);
+    const response = permissionResponses(mock.stdinWrites)[0];
+    expect(response?.behavior).toBe("allow");
   });
 
   test("non-worktree stdio spawn is allowed", async () => {
