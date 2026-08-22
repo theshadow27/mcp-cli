@@ -923,27 +923,28 @@ export interface DomainRemoveResult {
   dependents: DomainDependentCount[];
 }
 
-export interface DomainImportTableResult {
-  table: string;
-  copied: number;
-  notCopied: number;
-  failed: boolean;
-  reason?: string;
-}
-
+/**
+ * Result of `mcx domain import`.
+ *
+ * `--force` **arms** the next daemon start rather than importing in place: the import has
+ * exactly one call site, at boot, ahead of the reapers and pollers whose work it would
+ * otherwise invalidate. So there is no `ran`/`sealed`/`totalCopied` here — those describe
+ * a copy this command deliberately does not perform.
+ *
+ * The emptiness precondition is enforced at that one call site, not here: a daemon is
+ * running whenever this command can be issued, and it has already written to the database,
+ * so an arm-time check would refuse the correct recovery path every time.
+ */
 export interface DomainImportResult {
-  ran: boolean;
-  sealed: boolean;
+  /** True when the marker was cleared, i.e. the next daemon start will re-run the import. */
+  armed: boolean;
+  /** Why arming was refused. Absent on success. */
   reason?: string;
-  tables: DomainImportTableResult[];
-  failedTables: string[];
-  domainsImported: number;
-  domainsSkipped: number;
-  totalCopied: number;
-  totalNotCopied: number;
-  /** Key of the marker row in the legacy DB, so the decline message can name it. */
+  /** Key of the marker row in the legacy DB, so the message can name it. */
   markerKey: string;
-  /** The importer's own diagnostics, forwarded verbatim for the CLI to print to stderr. */
+  /** The exact recovery sequence, built from the paths this daemon actually opened. */
+  recovery: string;
+  /** Diagnostics forwarded verbatim for the CLI to print to stderr. */
   log: string[];
 }
 

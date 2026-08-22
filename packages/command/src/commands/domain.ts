@@ -287,29 +287,27 @@ async function domainImport(args: string[], deps: DomainDeps): Promise<void> {
   const result = await deps.ipcCall("domainImport", { force });
   for (const line of result.log) deps.error(line);
 
-  if (!result.ran) {
-    printError(`Legacy import declined: ${result.reason ?? "unknown reason"}`);
+  if (!result.armed) {
+    printError(`Import not re-armed: ${result.reason ?? "unknown reason"}`);
     if (!force) {
       // The marker lives in the LEGACY database on purpose, so it outlives mcx.db —
       // which is exactly why deleting mcx.db is not a recovery and this flag is.
       printError(
         `The one-shot import marker "${result.markerKey}" is set in the legacy database, where it outlives mcx.db.`,
       );
-      printError("Re-run the import with: mcx domain import --force");
+      printError(result.recovery);
     }
     return deps.exit(1);
   }
 
-  const notCopied =
-    result.totalNotCopied > 0 ? `; ${result.totalNotCopied} row(s) not copied (already present or rejected)` : "";
-  deps.error(`Imported ${result.totalCopied} row(s) and ${result.domainsImported} domain(s)${notCopied}`);
-  if (!result.sealed) {
-    printError(
-      `Import did not complete: ${result.failedTables.length} table(s) failed (${result.failedTables.join(", ")}). The marker was withheld, so the import retries on the next daemon start.`,
-    );
-    return deps.exit(1);
-  }
-  deps.error("Restart the daemon (`mcx shutdown`) so every subsystem re-reads the imported rows.");
+  // The import refuses a database that already holds rows, so the removal is required, not
+  // advisory. Printing the whole sequence rather than just "restart" is the difference
+  // between an instruction that works and the three in this arc's history that did not.
+  deps.error(result.recovery);
+  // Armed, not imported: the copy runs at the next daemon start, at its one call site,
+  // ahead of the reapers and pollers whose work an in-flight import would invalidate.
+  deps.error(`Import re-armed: the marker "${result.markerKey}" was cleared from the legacy database.`);
+  deps.error("Restart the daemon to run the import: mcx shutdown && mcx status");
 }
 
 function printDomainHelp(deps: DomainDeps): void {
@@ -323,7 +321,9 @@ Usage:
   mcx domain rename <old> <new>         Rename; path and every domain_id are untouched
   mcx domain rm <name> [--force]        Remove; refuses while dependent rows exist
                                         (--cascade is an accepted alias for --force)
-  mcx domain import [--force]           Re-run the one-shot import from the legacy state.db
+  mcx domain import --force             Re-arm the one-shot legacy import (clears its
+                                        marker; the import runs on the next daemon start,
+                                        and refuses unless this database is empty)
 
 Examples:
   mcx domain add phoenix ~/github/phoenix-octovalve

@@ -91,10 +91,33 @@ reference and every `which` answer survives it.
 cascades. Silently orphaning a thousand work items because a name was typed twice is not a
 recoverable state, so the refusal is the default and the cascade is the flag.
 
-`import` re-runs the one-shot legacy import (#3034). Its marker lives in the **legacy**
-`state.db`, deliberately, so it outlives `mcx.db` — which is why deleting `mcx.db` is not a
-recovery and `mcx domain import --force` is. Without `--force` the import declines and says
-so, naming the marker.
+`import --force` **re-arms** the one-shot legacy import (#3034) — it clears the marker and
+the import itself runs at the next daemon start. It does not import in place, and that is
+not a convenience choice:
+
+- The import is positioned at daemon startup **ahead of** `reapOrphanedSessions`,
+  `restoreActiveSessions`, the pollers and the event bus. Landing `agent_sessions` rows
+  after the reaper has run surfaces dead sessions as live until the next restart, and a
+  printed "restart the daemon" line is an instruction, not a guarantee.
+- It **refuses unless the database is empty** across every table in `IMPORTED_TABLES` — the
+  same list the copy iterates, so the two cannot disagree. `INSERT OR IGNORE` over
+  AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`) silently drops every legacy
+  row whose id the target already reallocated, permanently, on a run that would otherwise
+  report success.
+- The daemon publishes `daemon.restarted` into `monitor_events` before it accepts its first
+  request, so an in-flight forced import would be refused every time anyway.
+
+The full recovery, which the daemon prints with the real paths it opened:
+
+```bash
+cp ~/.mcp-cli/mcx.db ~/.mcp-cli/mcx.db.bak && rm ~/.mcp-cli/mcx.db
+mcx domain import --force        # clears the marker
+mcx shutdown                     # next start performs the import
+```
+
+The marker lives in the **legacy** `state.db`, deliberately, so it outlives `mcx.db` — which
+is why deleting `mcx.db` alone is not a recovery. Without `--force` the command declines and
+names the marker.
 
 `host` is null for a local domain. When it is set, the daemon routes to a domain
 server on that host instead of a local worker — same control protocol either way.

@@ -429,7 +429,8 @@ mcx domain show <name> [--json]                  # resolve to host + path
 mcx domain which [path]                          # which domain owns this path? (default: cwd)
 mcx domain rename <old> <new>                    # rename; path and domain_id are untouched
 mcx domain rm <name> [--force]                   # refuses while dependent rows exist
-mcx domain import [--force]                      # re-run the one-shot legacy import
+mcx domain import --force                        # re-arm the one-shot legacy import
+                                                 #   (refuses unless mcx.db is empty; runs on next daemon start)
 ```
 
 ### Scopes
