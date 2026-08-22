@@ -1,6 +1,6 @@
 # Sprint 78
 
-> Planned 2026-08-22. Target: 17 PRs (15 firm + 2 capacity-dependent).
+> Planned 2026-08-22. Started 2026-08-22T05:28Z. Target: 17 PRs (15 firm + 2 capacity-dependent).
 > First sprint of the #3019 arc — domain-scoped mcx.
 
 ## Goal
@@ -76,3 +76,13 @@ All of these are already wired as GitHub `blocked_by` edges on the issues themse
 - **#3043**: the worker is addressed by `onmessage`/`sendMessage` today and becomes a **websocket port** when a domain moves hosts. Nothing in its interface may assume in-process delivery. The brief must name `site-worker.ts` / `site-server.ts` as the pattern to follow. High scrutiny → adversarial + QA.
 - **#935**: precedence order pinned in the issue comments — `--profile` flag > repo `.mcx.yaml` > `defaultProfile` config > bare daemon env. Secrets live in profile files, never in SQLite or logs. High scrutiny → adversarial + QA.
 - **#3042**: destructive by design — `scope.ts` and `SCOPES_DIR` are deleted, not deprecated in place. The worker must not leave a working fallback "just in case"; a second registry that still resolves is a second registry something will keep using.
+
+## Results
+
+- **Released**: none (halted mid-run by operator, ~22:15Z at 82% weekly quota)
+- **PRs merged**: 6 of 17 issues — #1459, #1510, #935, **#3034** (the epic-A foundation, PR #3143), #1249, #3040 (PR #3169, auto-merge fired at 22:12)
+- **Open with work pushed**: #3035/PR#3160, #3037/PR#3175, #3038/PR#3200, #3039/PR#3168, #3043/PR#3181, plus #3119/PR#3137 — dispositions in `sprint-78-disposition.md`, re-sequenced into sprint 79
+- **Issues dropped**: the unstarted tail (#3036, #3041, #3042, #3044, #3045) — dependents of unmerged work; re-planned for sprint 79 under the foundation-first rule
+- **New issues filed**: ~31 arc defect reports (#3134–#3218 range) + incidentals; 1 closed as duplicate (#3164 → #3170)
+- **Container PR**: #3046 closed unmerged; sprint-meta landed via `meta/sprint-78-closeout` instead
+- **Process outcome**: postmortem + process reset merged as PR #3219 (lanes execution model, review merge-risk bar, caps binding hand-orchestration, QA guard-mutation check)
