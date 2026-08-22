@@ -20,6 +20,7 @@ import {
   loadManifest,
   pruneStaleHistory,
   validateTrackValue,
+  workItemStateNamespace,
 } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
@@ -229,7 +230,7 @@ async function persistMetadata(
   trackableFields: TrackableField[],
 ): Promise<void> {
   if (metadata.size === 0 && !trackableFields.some((f) => f.defaultValue !== undefined)) return;
-  const ns = `workitem:${workItemId}`;
+  const ns = workItemStateNamespace(workItemId);
   let existingState: Record<string, unknown> = {};
   try {
     const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot, namespace: ns });
@@ -247,8 +248,17 @@ async function persistMetadata(
   }
 }
 
+/**
+ * Delete a work item's phase-state namespace after it is untracked.
+ *
+ * `workItemId` must be the id the daemon reported deleting, not one reconstructed from what
+ * the user typed. Domain-qualified ids mean `#42` and `d1:#42` are different namespaces, so
+ * passing the typed spelling silently cleaned up nothing and leaked the scratchpad forever
+ * (#3037 review R2) — while `persistMetadata` on the other half of the same command had
+ * always used `item.id` and written to the real one.
+ */
 async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string): Promise<void> {
-  const ns = `workitem:${workItemId}`;
+  const ns = workItemStateNamespace(workItemId);
   try {
     const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot: cwd, namespace: ns });
     for (const key of Object.keys(entries)) {
@@ -279,8 +289,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     }
     try {
       const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
-      if (result.deleted) {
-        await cleanupMetadata(deps, cwd, `branch:${branch}`);
+      if (result.deleted && result.id) {
+        await cleanupMetadata(deps, cwd, result.id);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -300,8 +310,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
     }
     try {
       const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
-      if (result.deleted) {
-        await cleanupMetadata(deps, cwd, `branch:${branch}`);
+      if (result.deleted && result.id) {
+        await cleanupMetadata(deps, cwd, result.id);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -322,8 +332,8 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
 
   try {
     const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd });
-    if (result.deleted) {
-      await cleanupMetadata(deps, cwd, `#${num}`);
+    if (result.deleted && result.id) {
+      await cleanupMetadata(deps, cwd, result.id);
       console.error(`Untracked #${num}`);
     } else {
       console.error(`#${num} was not tracked`);
@@ -404,7 +414,10 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
           };
           if (trackableKeys.size === 0) return base;
           try {
-            const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot: cwd, namespace: `workitem:${it.id}` });
+            const { entries } = await deps.ipcCall("aliasStateAll", {
+              repoRoot: cwd,
+              namespace: workItemStateNamespace(it.id),
+            });
             const state: Record<string, unknown> = {};
             for (const key of trackableKeys) {
               if (key in entries) state[key] = entries[key];

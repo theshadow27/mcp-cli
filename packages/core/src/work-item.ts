@@ -180,15 +180,43 @@ export function domainScopedWorkItemId(domainId: number, baseId: string): string
 }
 
 /**
- * The candidate ids a lookup inside `domainId` should try, most-specific first.
+ * The candidate ids a lookup inside `domainId` should try, **most-specific first**.
  *
  * A caller inside domain 3 that asks for `#42` means *its own* `#42`, which is stored as
  * `d3:#42`. Both candidates are still filtered by `domain_id` at the query, so this widens
  * the spelling of an id and never the partition it can reach.
+ *
+ * Order matters twice. The domain-qualified spelling is what rows are actually stored under,
+ * so trying it first turns the common case into one query instead of two. It is also the
+ * unambiguous answer: an unqualified `#42` is what a caller *typed*, while `d3:#42` is what
+ * the table holds, and if some row somehow carried the literal id `#42` inside domain 3 the
+ * qualified row is still the one that caller meant.
  */
 export function workItemIdCandidates(domainId: number, id: string): string[] {
   const scoped = domainScopedWorkItemId(domainId, id);
-  return scoped === id ? [id] : [id, scoped];
+  if (scoped === id) return [id];
+  // Already qualified for this domain — the phase runner and every tool response hand back
+  // stored ids, so this is the common path. Re-qualifying would only add a guaranteed miss
+  // to step over before the real hit.
+  if (id.startsWith(`d${domainId}:`)) return [id];
+  return [scoped, id];
+}
+
+/**
+ * The `alias_state` namespace holding a work item's phase-scoped key-value store.
+ *
+ * **`workItemId` must be the canonical stored id** — the `id` off a row the database
+ * returned, never the spelling a caller typed. Since ids became domain-qualified, `#42` and
+ * `d1:#42` name the same row but are different strings, so building this namespace from the
+ * raw argument writes to a different namespace than the phase runner reads from, and both
+ * sides succeed silently. That is a split state store, not an error anyone would see.
+ *
+ * This function exists so the namespace is spelled once rather than in the nine places that
+ * previously hand-built it across four files. Callers that hold only a caller-supplied id
+ * must resolve it through the database first.
+ */
+export function workItemStateNamespace(workItemId: string): string {
+  return `workitem:${workItemId}`;
 }
 
 /**
@@ -200,8 +228,18 @@ export function workItemIdCandidates(domainId: number, id: string): string[] {
  */
 export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "domainId" | "createdAt" | "updatedAt" | "version">>;
 
-/** Create a new WorkItem with sensible defaults. */
-export function createWorkItem(id: string, phase?: WorkItemPhase, domainId: number = NO_DOMAIN_ID): WorkItem {
+/**
+ * Create a new in-memory WorkItem with sensible defaults.
+ *
+ * `domainId` is **required and comes first**, ahead of the optional `phase`. A partition key
+ * with a default is the shape this whole epic exists to remove: the caller never has to
+ * decide, so the sentinel becomes what you get by not thinking about it, and the mistake is
+ * invisible at the call site. Required, `tsc` names every caller that has to choose.
+ *
+ * Pass `NO_DOMAIN_ID` explicitly for an item that genuinely belongs to no domain — that is a
+ * decision, and it should read like one.
+ */
+export function createWorkItem(id: string, domainId: number, phase?: WorkItemPhase): WorkItem {
   const now = new Date().toISOString();
   return {
     id,

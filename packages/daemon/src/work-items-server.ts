@@ -27,6 +27,7 @@ import {
   isReservedPhaseStateKey,
   isStandardPhase,
   resolveRealpath,
+  workItemStateNamespace,
 } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -88,6 +89,55 @@ function parseIntOrUndefined(value: unknown): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n)) throw new Error(`Expected integer, got: ${String(value)}`);
   return Math.trunc(n);
+}
+
+/** An MCP error result, ready to return from a tool handler. */
+type ToolError = { content: Array<{ type: "text"; text: string }>; isError: true };
+
+function toolError(text: string): { error: ToolError } {
+  return { error: { content: [{ type: "text" as const, text }], isError: true } };
+}
+
+/**
+ * Validate the arguments common to every `phase_state_*` tool and resolve the work item to
+ * the namespace its state actually lives in.
+ *
+ * **The load-bearing line is `item.id`, not `workItemId`.** The four `phase_state_*` handlers
+ * each used to build `workitem:${workItemId}` from the *raw argument*, while the phase runner
+ * builds its namespace from the **stored** id the daemon returned. Once ids became
+ * domain-qualified those two spellings diverge — `mcx track 42` in domain 1 returns `d1:#42`,
+ * so a caller passing `#42` and a caller passing `d1:#42` addressed **different rows**. Worse,
+ * the existence check accepts both spellings (`workItemIdCandidates`), so both callers
+ * succeeded and neither saw an error: a phase script would read state the tools never wrote.
+ *
+ * Resolving through the database and taking `item.id` collapses both spellings onto the one
+ * namespace. This lives in a single function, rather than being repeated in four handlers,
+ * because four copies of a normalization step is how three of them come to be missing it.
+ */
+function resolvePhaseStateTarget(
+  phaseState: PhaseStateBinding | null,
+  scoped: DomainWorkItems,
+  a: Record<string, unknown>,
+  opts: { requireKey: boolean },
+): { repoRoot: string; key: string; ns: string; domainId: number } | { error: ToolError } {
+  if (!phaseState) return toolError("Phase state not available (no stateDb configured)");
+
+  const workItemId = String(a.workItemId ?? "");
+  const rawRepoRoot = String(a.repoRoot ?? "").trim();
+  if (rawRepoRoot && !isAbsolute(rawRepoRoot)) return toolError("repoRoot must be an absolute path");
+
+  const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
+  const key = String(a.key ?? "");
+  if (!workItemId || !repoRoot || (opts.requireKey && !key)) {
+    return toolError(
+      opts.requireKey ? "workItemId, repoRoot, and key are required" : "workItemId and repoRoot are required",
+    );
+  }
+
+  const item = scoped.getWorkItem(workItemId);
+  if (!item) return toolError(`Work item not found: ${workItemId}`);
+
+  return { repoRoot, key, ns: workItemStateNamespace(item.id), domainId: phaseState.domainIdFor(repoRoot) };
 }
 
 /** Parse a value to integer, throwing if NaN. */
@@ -572,74 +622,22 @@ export class WorkItemsServer {
           }
 
           case "phase_state_get": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
-            if (!scoped.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
-            const ns = `workitem:${workItemId}`;
-            const value = this.phaseState.store.getAliasState(repoRoot, ns, key, this.phaseState.domainIdFor(repoRoot));
-            return { content: [{ type: "text" as const, text: JSON.stringify({ key, value }) }] };
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const value = this.phaseState?.store.getAliasState(target.repoRoot, target.ns, target.key, target.domainId);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ key: target.key, value }) }] };
           }
 
           case "phase_state_set": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
             if (a.value === undefined) {
               return {
                 content: [{ type: "text" as const, text: "value is required; use phase_state_delete to remove a key" }],
                 isError: true,
               };
             }
-            if (!scoped.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const { repoRoot, key, ns, domainId } = target;
             if (isReservedPhaseStateKey(key)) {
               return {
                 content: [
@@ -651,40 +649,14 @@ export class WorkItemsServer {
                 isError: true,
               };
             }
-            const ns = `workitem:${workItemId}`;
-            this.phaseState.store.setAliasState(repoRoot, ns, key, a.value, this.phaseState.domainIdFor(repoRoot));
+            this.phaseState?.store.setAliasState(repoRoot, ns, key, a.value, domainId);
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key }) }] };
           }
 
           case "phase_state_delete": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
-            if (!scoped.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const { repoRoot, key, ns, domainId } = target;
             if (isReservedPhaseStateKey(key)) {
               return {
                 content: [
@@ -696,46 +668,14 @@ export class WorkItemsServer {
                 isError: true,
               };
             }
-            const ns = `workitem:${workItemId}`;
-            const deleted = this.phaseState.store.deleteAliasState(
-              repoRoot,
-              ns,
-              key,
-              this.phaseState.domainIdFor(repoRoot),
-            );
+            const deleted = this.phaseState?.store.deleteAliasState(repoRoot, ns, key, domainId) ?? false;
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key, deleted }) }] };
           }
 
           case "phase_state_list": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            if (!workItemId || !repoRoot) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId and repoRoot are required" }],
-                isError: true,
-              };
-            }
-            if (!scoped.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
-            const ns = `workitem:${workItemId}`;
-            const entries = this.phaseState.store.listAliasState(repoRoot, ns, this.phaseState.domainIdFor(repoRoot));
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: false });
+            if ("error" in target) return target.error;
+            const entries = this.phaseState?.store.listAliasState(target.repoRoot, target.ns, target.domainId) ?? {};
             return {
               content: [
                 { type: "text" as const, text: JSON.stringify({ entries, count: Object.keys(entries).length }) },

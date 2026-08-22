@@ -139,7 +139,7 @@ export class WorkItemHandlers {
         const existing = scoped.getWorkItemByBranch(branch) ?? scoped.getWorkItem(`branch:${branch}`);
         if (existing) {
           scoped.deleteWorkItem(existing.id);
-          return { ok: true as const, deleted: true };
+          return { ok: true as const, deleted: true, id: existing.id };
         }
         return { ok: true as const, deleted: false };
       }
@@ -149,7 +149,7 @@ export class WorkItemHandlers {
       const existing = scoped.getWorkItemByPr(num) ?? scoped.getWorkItemByIssue(num) ?? scoped.getWorkItem(`#${num}`);
       if (existing) {
         scoped.deleteWorkItem(existing.id);
-        return { ok: true as const, deleted: true };
+        return { ok: true as const, deleted: true, id: existing.id };
       }
       return { ok: true as const, deleted: false };
     });

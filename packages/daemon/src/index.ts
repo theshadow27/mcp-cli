@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { NdjsonRecorder } from "@mcp-cli/core";
+import { NdjsonRecorder, workItemStateNamespace } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -930,10 +930,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // Automation state lives in alias_state under `workitem:<id>` — the same
             // rows `ctx.state` writes from a phase script, so it must be read from the
             // same partition or a module would see an empty snapshot for a work item
-            // whose phase script had just written to it (#3040).
+            // whose phase script had just written to it (#3040). `workItemId` here is
+            // always the canonical id straight off a DB row (see `resolveWorkItemId` /
+            // `resolveWorkItemIdFromEvent` above) — never a caller-typed spelling — so
+            // `workItemStateNamespace` is safe to use directly (#3037).
             return db.listAliasState(
               automationRepoRoot,
-              `workitem:${workItemId}`,
+              workItemStateNamespace(workItemId),
               domainResolver.idForPath(automationRepoRoot),
             );
           },

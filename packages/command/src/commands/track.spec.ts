@@ -1110,3 +1110,74 @@ describe("pruneStaleHistory integration (#2463)", () => {
     expect(remaining[0].ts).toBe("2026-06-01T12:30:00Z");
   });
 });
+
+/**
+ * R2 regression: untrack must clean up the namespace the daemon actually wrote.
+ *
+ * `persistMetadata` has always used `item.id` (the stored id from the track response), while
+ * `cleanupMetadata` was handed a spelling reconstructed from what the user typed — `#42` /
+ * `branch:foo`. Domain-qualified ids make those different namespaces, so cleanup deleted
+ * nothing and every untracked item leaked its scratchpad forever. The two halves of the same
+ * command disagreed with each other.
+ *
+ * The fix is to clean up using the canonical id the daemon reports deleting, because after
+ * the row is gone the CLI has no other way to learn it.
+ */
+describe("cmdUntrack — phase-state cleanup uses the canonical id (#3037 R2)", () => {
+  function capturingDeps(deletedId: string) {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const deps = makeDeps({
+      untrackWorkItem: () => ({ ok: true, deleted: true, id: deletedId }),
+      aliasStateAll: (params: unknown) => {
+        calls.push({ method: "aliasStateAll", params: params as Record<string, unknown> });
+        return { entries: { session_id: "abc" } };
+      },
+      aliasStateDelete: (params: unknown) => {
+        calls.push({ method: "aliasStateDelete", params: params as Record<string, unknown> });
+        return { ok: true, deleted: true };
+      },
+    });
+    return { deps, calls };
+  }
+
+  test("a number-untrack cleans the domain-qualified namespace, not the typed one", async () => {
+    const { deps, calls } = capturingDeps("d1:#1135");
+    await cmdUntrack(["1135"], deps);
+
+    const namespaces = calls.map((c) => c.params.namespace);
+    expect(namespaces).toEqual(["workitem:d1:#1135", "workitem:d1:#1135"]);
+    // The spelling the user typed must never be the one we delete from.
+    for (const ns of namespaces) expect(ns).not.toBe("workitem:#1135");
+  });
+
+  test("a branch-untrack does the same", async () => {
+    const { deps, calls } = capturingDeps("d2:branch:feat/test");
+    await cmdUntrack(["--branch", "feat/test"], deps);
+
+    expect(calls.map((c) => c.params.namespace)).toEqual([
+      "workitem:d2:branch:feat/test",
+      "workitem:d2:branch:feat/test",
+    ]);
+  });
+
+  test("the key found in the namespace is the key deleted from it", async () => {
+    const { deps, calls } = capturingDeps("d1:#1135");
+    await cmdUntrack(["1135"], deps);
+
+    const del = calls.find((c) => c.method === "aliasStateDelete");
+    expect(del?.params.key).toBe("session_id");
+  });
+
+  test("no id in the response means no cleanup attempted — never a guessed namespace", async () => {
+    const calls: string[] = [];
+    const deps = makeDeps({
+      untrackWorkItem: () => ({ ok: true, deleted: true }),
+      aliasStateAll: () => {
+        calls.push("aliasStateAll");
+        return { entries: {} };
+      },
+    });
+    await cmdUntrack(["1135"], deps);
+    expect(calls).toEqual([]);
+  });
+});
