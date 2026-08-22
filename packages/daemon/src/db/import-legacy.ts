@@ -24,21 +24,21 @@
  * rolls the whole copy back and leaves the marker unset. A failed import must not stop the
  * daemon from booting, and must not silently become permanent.
  *
- * **What "retry" does and does not mean here** (#3160 review N2; this used to promise a
- * partial-commit retry the code does not implement). Driven, not inferred — force one table
- * to error and the target holds **zero** rows from the tables that succeeded:
+ * **This does not retry automatically** (#3160 review N2; the code used to promise first a
+ * partial-commit retry it did not implement, then a conditional one it could not honour in
+ * practice). Operator decision on the PR: option (c) — one-shot is real, no exceptions.
+ * Driven, not inferred — force one table to error and the target holds **zero** rows from
+ * the tables that succeeded:
  *
  * - A failed run is **all-or-nothing**. Nothing lands. `ran && !sealed` does not mean rows
  *   are in the target; see {@link ImportResult.sealed}.
- * - The next start retries **only while the target is still empty**. That holds for a crash
- *   or a failure early in the very first boot. It does **not** hold once a daemon has
- *   completed a boot: it publishes `daemon.restarted` into `monitor_events`, so by the next
- *   start the target is non-empty and {@link nonEmptyImportedTables} declines.
- * - That decline is correct, not a regression. Copying legacy `monitor_events` over a target
- *   that already holds seq 1 drops the colliding legacy rows under `INSERT OR IGNORE` — the
- *   "retry" the old wording promised was itself the data-loss path.
- * - From there recovery is deliberate and operator-driven: `mcx domain import --force`, then
- *   remove the target, then restart. {@link recoveryInstructions} prints it with real paths.
+ * - The daemon publishes `daemon.restarted` into `monitor_events` on every boot, including
+ *   the one that just declined or failed. So by the very next start the target is already
+ *   non-empty and {@link nonEmptyImportedTables} declines again — restarting the daemon,
+ *   by itself, never makes this import run a second time, on any failure mode.
+ * - Recovery is manual and explicit, every time: `mcx domain import --force`, then remove
+ *   the target, then restart. {@link recoveryInstructions} prints it with real paths. There
+ *   is no other way back in.
  */
 
 import { Database } from "bun:sqlite";
@@ -372,7 +372,7 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
     const writeError = probeLegacyWritable(legacy);
     if (writeError !== null) {
       log(
-        `[domain-import] legacy database ${legacyPath} is not writable (${writeError}); skipping the import entirely rather than copying rows we could not mark as imported. Make it writable and restart.`,
+        `[domain-import] legacy database ${legacyPath} is not writable (${writeError}); skipping the import entirely rather than copying rows we could not mark as imported. This does not retry on a plain restart — ${recovery}`,
       );
       return declined(`legacy database not writable: ${writeError}`);
     }
@@ -470,7 +470,7 @@ function copyEverything(
       if (failedTables.length > 0) {
         const undone = safeRollback(target);
         log(
-          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} The legacy database is unmarked, so the import will be retried on the next start.`,
+          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} This does not retry automatically — recover with: mcx domain import --force`,
         );
         return result;
       }
