@@ -1429,7 +1429,9 @@ async function claudeSend(args: string[], d: ClaudeDeps): Promise<void> {
 
 async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   const clean = args.includes("--clean");
-  const showAll = args.includes("--all") || args.includes("-a");
+  // `--all-domains` selects bulk mode too — otherwise it falls through to the
+  // single-session path and reports a usage error for a flag the help text offers.
+  const showAll = args.includes("--all") || args.includes("-a") || args.includes("--all-domains");
   const positional = args.filter((a) => !a.startsWith("-"));
   const sessionPrefix = positional[0];
 
@@ -1440,7 +1442,9 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 
   if (!sessionPrefix) {
-    d.printError('Usage: mcx claude bye <session-id> "<message>" [--clean] [--all]');
+    d.printError(
+      'Usage: mcx claude bye <session-id> "<message>" [--clean]\n       mcx claude bye --all [-d <domain>]   (every session in scope)\n       mcx claude bye --all-domains         (every session on this machine)',
+    );
     d.exit(1);
   }
 
@@ -1475,18 +1479,45 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 }
 
-/** End all sessions in the caller's domain (or all sessions if unscoped). */
+/**
+ * End every session in scope. `--all` / `-a` select this BULK MODE and nothing else.
+ *
+ * `--all` used to mean two things at once — "bulk mode" AND "ignore all scoping" — and
+ * because `--all` is a PRECONDITION for reaching this function, the scoping branch was
+ * unreachable whenever it was spelled that way. So `bye --all -d phoenix` silently
+ * discarded `-d` and ended every session in every domain and every repo on the box,
+ * while `bye -a -d phoenix` scoped correctly: two spellings of one documented alias
+ * pair doing opposite things, one of them destructive.
+ *
+ * The conflation is the defect, so it is gone. Selecting bulk mode no longer says
+ * anything about scope:
+ *
+ *   `bye --all` / `bye -a`      → every session in the caller's domain. Identical.
+ *   `bye --all -d phoenix`      → every session in phoenix. `-d` SCOPES the bye.
+ *   `bye --all-domains`         → every session everywhere. The only unscoped form,
+ *                                 and it has to be asked for by name.
+ *
+ * `--scoped` is deleted rather than documented: scoping is now the default, so the
+ * flag had nothing left to mean. It had two occurrences repo-wide, no usage string,
+ * no help text, no docs and no tests — which is not an escape hatch.
+ */
 async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Promise<void> {
-  // List sessions with domain filtering. With no `-d`, the daemon resolves the
-  // domain from the caller's cwd (#3039); `--all` without `--scoped` opts out.
   const { domain, rest, error: domainError } = extractDomainFlag(args);
   if (domainError) {
     d.printError(domainError);
     d.exit(1);
   }
+
+  const allDomains = rest.includes("--all-domains");
+  if (allDomains && domain) {
+    // Contradictory, and this one ends processes — so it is refused rather than
+    // resolved by precedence. The malformed `-d` case is refused for the same reason.
+    d.printError("--all-domains and -d <domain> are contradictory: one ends everything, the other scopes");
+    d.exit(1);
+  }
+
   const toolArgs: Record<string, unknown> = {};
-  const bypassScope = rest.includes("--all") && !rest.includes("--scoped");
-  if (!bypassScope) {
+  if (!allDomains) {
     if (domain) toolArgs.domain = domain;
     else toolArgs.domainCwd = process.cwd();
   }
@@ -1507,7 +1538,7 @@ async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Prom
   }
 
   d.printError(
-    "Warning: --all ends sessions without individual closing messages. A message will be required in a future release.",
+    `Warning: this ends ${allDomains ? "EVERY session in EVERY domain on this machine" : "every session in scope"} without individual closing messages. A message will be required in a future release.`,
   );
   console.error(`Ending ${sessions.length} session${sessions.length === 1 ? "" : "s"}...`);
 

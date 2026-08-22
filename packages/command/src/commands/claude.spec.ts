@@ -2242,6 +2242,74 @@ describe("mcx claude send", () => {
 
 // ── bye ──
 
+describe("mcx claude bye — bulk scoping (P1: --all silently ended every session on the box)", () => {
+  // There was NO test anywhere asserting what scoping args claudeByeAll emits, which is
+  // exactly why two review rounds missed that `bye --all -d phoenix` ignored `-d` and
+  // ended every session in every domain and every repo — while `bye -a -d phoenix`
+  // scoped correctly. `--all` was a PRECONDITION for reaching the function, so the
+  // scoping branch was dead code on that spelling. All four combinations are pinned
+  // here, by exact args.
+  async function byeArgs(argv: string[]): Promise<Record<string, unknown> | undefined> {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, args: Record<string, unknown>) => {
+      calls.push([tool, args]);
+      if (tool === "claude_session_list") return toolResult([]);
+      return toolResult({ ended: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origErr = console.error;
+    console.error = mock(() => {});
+    try {
+      await cmdClaude(argv, deps);
+    } finally {
+      console.error = origErr;
+    }
+    return calls.find(([t]) => t === "claude_session_list")?.[1];
+  }
+
+  test("--all and -a are IDENTICAL — they are documented as aliases", async () => {
+    expect(await byeArgs(["bye", "--all"])).toEqual(await byeArgs(["bye", "-a"]));
+    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual(await byeArgs(["bye", "-a", "-d", "phoenix"]));
+  });
+
+  test("--all with no -d scopes to the caller's domain", async () => {
+    expect(await byeArgs(["bye", "--all"])).toEqual({ domainCwd: process.cwd() });
+  });
+
+  test("--all -d <domain> SCOPES the bye — the chosen repair shape", async () => {
+    // Pre-fix this emitted {} and ended everything on the machine.
+    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual({ domain: "phoenix" });
+  });
+
+  test("-a -d <domain> scopes identically", async () => {
+    expect(await byeArgs(["bye", "-a", "-d", "phoenix"])).toEqual({ domain: "phoenix" });
+  });
+
+  test("--all-domains is the ONLY unscoped form, and it must be asked for by name", async () => {
+    expect(await byeArgs(["bye", "--all-domains"])).toEqual({});
+  });
+
+  test("--all-domains with -d is refused rather than resolved by precedence", async () => {
+    const printError = mock(() => {});
+    const exit = mock(() => {
+      throw new ExitError(1);
+    });
+    const deps = makeDeps({ callTool: mock(async () => toolResult([])), printError, exit });
+    await expect(cmdClaude(["bye", "--all-domains", "-d", "phoenix"], deps)).rejects.toThrow(ExitError);
+    expect(printError).toHaveBeenCalledWith(expect.stringContaining("contradictory"));
+  });
+
+  test("a malformed -d is refused on the bulk path too", async () => {
+    const printError = mock(() => {});
+    const exit = mock(() => {
+      throw new ExitError(1);
+    });
+    const deps = makeDeps({ callTool: mock(async () => toolResult([])), printError, exit });
+    await expect(cmdClaude(["bye", "--all", "-d", "--clean"], deps)).rejects.toThrow(ExitError);
+    expect(printError).toHaveBeenCalledWith("--domain requires a domain name");
+  });
+});
+
 describe("mcx claude bye", () => {
   test("ends resolved session with message", async () => {
     const callTool: ClaudeDeps["callTool"] = mock(async (tool: string) => {

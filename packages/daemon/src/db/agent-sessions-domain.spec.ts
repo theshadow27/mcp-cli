@@ -149,7 +149,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
     // their `~/.mcp-cli/scopes/` sidecars into domains automatically on the first
     // start, their sessions stay at domain 0, and exact-equality filtering excludes 0.
     // `mcx claude ls` goes empty on a box full of live sessions — and so does
-    // `mcx claude bye --all --scoped`, so the daemon can be shut down on top of them.
+    // `mcx claude bye --all`, so the daemon can be shut down on top of them.
     const db = open();
     const root = mkdtempSync(join(tmpdir(), "mcx-adopt-"));
     try {

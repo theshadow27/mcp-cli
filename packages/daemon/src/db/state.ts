@@ -2002,7 +2002,7 @@ export class StateDb {
    * daemon start after the new schema — no flag, no prompt. Every session that existed
    * before that moment has `domain_id = 0`, and `matchesDomain` is exact equality, so
    * without a backfill the upgrade silently empties `mcx claude ls` for anyone who ever
-   * ran `mcx scope`. Worse than the empty list: `mcx claude bye --all --scoped` also
+   * ran `mcx scope`. Worse than the empty list: `mcx claude bye --all` also
    * sees nothing, so the operator can shut the daemon down believing the box is clean
    * while live children are still running.
    *
