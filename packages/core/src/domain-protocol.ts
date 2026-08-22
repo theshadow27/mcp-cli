@@ -49,16 +49,40 @@ export function toDomainSnapshot(domain: Domain): DomainSnapshot {
 }
 
 /**
- * True when two snapshots address the same location under the same name.
+ * True when two snapshots are identical in every field a worker is handed.
  *
- * A worker is bound to a location at init, so a change here means the running
- * worker is executing against a path or a name that no longer exists. `createdAt`
- * is excluded deliberately: it cannot change for a given `id`, and a domain
- * deleted and re-added is a different `id` (`domains.id` is AUTOINCREMENT
+ * `createdAt` is excluded deliberately: it cannot change for a given `id`, and a
+ * domain deleted and re-added is a different `id` (`domains.id` is AUTOINCREMENT
  * precisely so an id is never re-handed).
+ *
+ * Use {@link domainRestartRequired} to decide whether a *running* worker has to
+ * be replaced. The two are deliberately different questions — see below.
  */
 export function domainSnapshotEquals(a: DomainSnapshot, b: DomainSnapshot): boolean {
   return a.id === b.id && a.name === b.name && a.host === b.host && a.path === b.path;
+}
+
+/**
+ * True when the change between two snapshots invalidates a running worker.
+ *
+ * **A worker is bound to a location and an identity — `host`, `path`, `id` — and
+ * to nothing else.** A rename changes none of them, so a renamed domain keeps its
+ * worker; a moved one does not.
+ *
+ * This is a separate function from {@link domainSnapshotEquals} rather than a
+ * comment on it, because the two questions look identical and are not. Comparing
+ * full equality here is what made `mcx domain rename` silently kill a worker: the
+ * supervisor's reconcile tick saw `name` differ and dropped a process whose
+ * binding had not changed at all. Once #3044 moves project execution into the
+ * worker, that would abort a running phase for a cosmetic edit.
+ *
+ * Name is safe to exclude because nothing keys off it: within the worker path
+ * every use of `name` is a log line or the MCP handshake identity string, and
+ * every lookup — the supervisor's map, the partition column, the restart
+ * re-resolve — is by `id`.
+ */
+export function domainRestartRequired(current: DomainSnapshot, fresh: DomainSnapshot): boolean {
+  return current.id !== fresh.id || current.host !== fresh.host || current.path !== fresh.path;
 }
 
 /** True when the domain lives on another host and cannot be served by a local worker. */

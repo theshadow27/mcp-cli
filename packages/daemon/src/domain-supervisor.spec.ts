@@ -6,6 +6,7 @@ import {
   type DomainRegistry,
   DomainSupervisor,
   type DomainWorkerStatus,
+  SupervisorStoppedError,
   UnknownDomainError,
   isTransientStatus,
 } from "./domain-supervisor";
@@ -96,7 +97,12 @@ describe("DomainSupervisor.ensure", () => {
     await h.supervisor.stopAll();
   });
 
-  test("concurrent callers get one worker, not a race", async () => {
+  test("concurrent callers get one worker, and it is actually running", async () => {
+    // The previous version asserted object identity only, which passed for the
+    // wrong reason: `servers` is populated synchronously before `start()`
+    // resolves, so a second caller matched the cache and was handed a server
+    // that had not started — making the `starting` map dead code and ensure()'s
+    // own contract false.
     const h = makeSupervisor([domain(1, "phoenix")]);
 
     const [a, b, c] = await Promise.all([h.supervisor.ensure(1), h.supervisor.ensure(1), h.supervisor.ensure(1)]);
@@ -104,6 +110,63 @@ describe("DomainSupervisor.ensure", () => {
     expect(a).toBe(b);
     expect(b).toBe(c);
     expect(h.links).toHaveLength(1);
+    for (const server of [a, b, c]) expect(server.state).toBe("running");
+    await h.supervisor.stopAll();
+  });
+
+  test("a slow start still resolves every concurrent caller with a running worker", async () => {
+    const h = makeSupervisor([domain(1, "phoenix")], { autoReady: false });
+    const callers = [h.supervisor.ensure(1), h.supervisor.ensure(1)];
+    await pollUntil(() => h.links.length === 1);
+    // Mid-handshake the supervisor must report `starting`, not `no-worker`.
+    expect(h.supervisor.status(1).state).toBe("starting");
+
+    h.links[0]?.sendReady();
+    const [a, b] = await Promise.all(callers);
+
+    expect(a).toBe(b);
+    expect(a.state).toBe("running");
+    expect(h.links).toHaveLength(1);
+    await h.supervisor.stopAll();
+  });
+
+  test("refuses a deleted domain and reaps its worker, without waiting for the tick", async () => {
+    // Review finding: the cache was consulted before the registry, so ensure()
+    // handed back a live worker bound to the old path for a domain with no row,
+    // and status() agreed it was `running`. Unbounded for any caller holding the
+    // returned server — for #3044 that is project code running against a
+    // deleted project's path.
+    const h = makeSupervisor([domain(1, "phoenix")]);
+    await h.supervisor.ensure(1);
+    expect(h.supervisor.workerCount).toBe(1);
+
+    h.registry.replace([]);
+
+    await expect(h.supervisor.ensure(1)).rejects.toThrow(UnknownDomainError);
+    expect(h.supervisor.workerCount).toBe(0);
+    expect(h.supervisor.status(1)).toEqual({ state: "no-such-domain", domainId: 1 });
+    await pollUntil(() => h.linksFor(1)[0]?.isClosed === true);
+  });
+
+  test("refuses a domain that moved to another host and reaps its worker", async () => {
+    const h = makeSupervisor([domain(1, "phoenix")]);
+    await h.supervisor.ensure(1);
+
+    h.registry.replace([domain(1, "phoenix", { host: "boxen0010" })]);
+
+    await expect(h.supervisor.ensure(1)).rejects.toThrow(RemoteDomainError);
+    expect(h.supervisor.workerCount).toBe(0);
+  });
+
+  test("replaces rather than reuses a worker whose domain moved", async () => {
+    const h = makeSupervisor([domain(1, "phoenix")]);
+    const first = await h.supervisor.ensure(1);
+
+    h.registry.replace([domain(1, "phoenix", { path: "/projects/moved" })]);
+    const second = await h.supervisor.ensure(1);
+
+    expect(second).not.toBe(first);
+    expect(second.domain.path).toBe("/projects/moved");
     await h.supervisor.stopAll();
   });
 
@@ -210,16 +273,53 @@ describe("DomainSupervisor.sync", () => {
     await h.supervisor.stopAll();
   });
 
-  test("a renamed domain gets a worker bound to the new name", async () => {
+  test("a rename keeps the worker running and updates the supervisor's view", async () => {
+    // A worker is bound to host + path + id; a rename changes none of them.
+    // Dropping it here silently killed a worker on `mcx domain rename`, and once
+    // #3044 moves project execution into it that aborts a running phase for a
+    // cosmetic edit.
     const h = makeSupervisor([domain(1, "phoenix")]);
-    await h.supervisor.ensure(1);
+    const server = await h.supervisor.ensure(1);
+    const linksBefore = h.linksFor(1).length;
 
     h.registry.replace([{ ...domain(1, "phoenix"), name: "phoenix2" }]);
     h.supervisor.sync();
-    const restarted = await h.supervisor.ensure(1);
 
-    expect(restarted.domain.name).toBe("phoenix2");
+    expect(server.state).toBe("running");
+    expect(h.linksFor(1)).toHaveLength(linksBefore);
+    expect(h.linksFor(1)[0]?.isClosed).toBe(false);
+    // The supervisor's view follows the table, so status() reports the new name.
+    expect(server.domain.name).toBe("phoenix2");
+    expect(h.supervisor.status(1)).toEqual({ state: "running", domain: expect.objectContaining({ name: "phoenix2" }) });
+    // Same worker, not a replacement.
+    expect(await h.supervisor.ensure(1)).toBe(server);
     await h.supervisor.stopAll();
+  });
+
+  test("a move restarts the worker even when the name is unchanged", async () => {
+    const h = makeSupervisor([domain(1, "phoenix")]);
+    await h.supervisor.ensure(1);
+
+    h.registry.replace([domain(1, "phoenix", { path: "/projects/phoenix-moved" })]);
+    h.supervisor.sync();
+
+    expect(h.supervisor.workerCount).toBe(0);
+    const restarted = await h.supervisor.ensure(1);
+    expect(restarted.domain.path).toBe("/projects/phoenix-moved");
+    expect(h.linksFor(1)).toHaveLength(2);
+    await h.supervisor.stopAll();
+  });
+
+  test("a domain that gains a host restarts rather than being adopted", async () => {
+    // A rename is free; acquiring a host is not — the worker for it runs there.
+    const h = makeSupervisor([domain(1, "phoenix")]);
+    await h.supervisor.ensure(1);
+
+    h.registry.replace([domain(1, "phoenix", { host: "boxen0010" })]);
+    h.supervisor.sync();
+
+    expect(h.supervisor.workerCount).toBe(0);
+    await expect(h.supervisor.ensure(1)).rejects.toThrow(RemoteDomainError);
   });
 
   test("does nothing, and touches no rows, when no worker is running", () => {
@@ -272,7 +372,7 @@ describe("DomainSupervisor.stopAll", () => {
 
     expect(h.supervisor.workerCount).toBe(0);
     expect(h.links.every((l) => l.isClosed)).toBe(true);
-    await expect(h.supervisor.ensure(1)).rejects.toThrow(/stopped/);
+    await expect(h.supervisor.ensure(1)).rejects.toThrow(SupervisorStoppedError);
   });
 
   test("one worker failing to stop does not strand the others", async () => {

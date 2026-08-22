@@ -26,7 +26,9 @@ import {
   type DomainControlMessage,
   type DomainSnapshot,
   type DomainWorkerMessage,
+  WireUnsafeError,
   assertWireSafe,
+  findWireUnsafeValue,
   isDomainWorkerMessage,
   isJsonRpcMessage,
 } from "@mcp-cli/core";
@@ -65,8 +67,12 @@ class DomainLinkTransport implements Transport {
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
   sessionId?: string;
+  private closeEmitted = false;
 
-  constructor(private readonly sendRaw: (message: JSONRPCMessage) => void) {}
+  constructor(
+    private readonly sendRaw: (message: JSONRPCMessage) => void,
+    private readonly onTeardown: () => Promise<void>,
+  ) {}
 
   async start(): Promise<void> {
     // The link is already listening — it has to be, to receive the `ready`
@@ -74,12 +80,34 @@ class DomainLinkTransport implements Transport {
   }
 
   async send(message: JSONRPCMessage, _options?: TransportSendOptions): Promise<void> {
-    assertWireSafe(message, "domain jsonrpc send");
+    const problem = findWireUnsafeValue(message);
+    if (problem !== null) {
+      // Throwing here reaches the MCP SDK's `.catch(e => this._onerror(e))` and
+      // dies there: the request then expires on its own timeout and the caller
+      // is told "Request timed out", which sends whoever is debugging after
+      // worker health instead of after the offending field. The guard's entire
+      // value is the field name, so it has to travel back to the requester.
+      const failed = new WireUnsafeError("domain jsonrpc send", problem);
+      const id = requestIdOf(message);
+      if (id === null) throw failed;
+      this.deliver({
+        jsonrpc: "2.0",
+        id,
+        error: { code: WIRE_UNSAFE_ERROR_CODE, message: failed.message },
+      } as JSONRPCMessage);
+      return;
+    }
     this.sendRaw(message);
   }
 
   async close(): Promise<void> {
-    this.onclose?.();
+    // Not the same as `closed()`: the MCP Client calls this on its own teardown
+    // paths, and a transport that reports closure without stopping the far side
+    // leaves a live worker behind reporting `running`. `WorkerClientTransport`
+    // terminates here; two client-side worker transports with opposite close
+    // semantics is a trap for the next author.
+    await this.onTeardown();
+    this.closed();
   }
 
   /** Deliver an inbound frame. Called by the owning link. */
@@ -92,10 +120,28 @@ class DomainLinkTransport implements Transport {
     this.onerror?.(error);
   }
 
-  /** Report that the link is gone, which is what rejects in-flight requests. */
+  /**
+   * Report that the link is gone, which is what rejects in-flight requests.
+   *
+   * Idempotent: teardown can arrive from either side — the MCP Client closing
+   * the transport, or the link observing the worker die — and the SDK should
+   * see exactly one closure either way.
+   */
   closed(): void {
+    if (this.closeEmitted) return;
+    this.closeEmitted = true;
     this.onclose?.();
   }
+}
+
+/** JSON-RPC internal-error code, used when a frame cannot be put on the wire at all. */
+export const WIRE_UNSAFE_ERROR_CODE = -32603;
+
+/** The `id` of a request/response frame, or `null` for a notification (nothing to answer). */
+export function requestIdOf(message: unknown): string | number | null {
+  if (typeof message !== "object" || message === null) return null;
+  const id = (message as { id?: unknown }).id;
+  return typeof id === "string" || typeof id === "number" ? id : null;
 }
 
 /** A short, bounded description of an unexpected payload — never the payload itself. */
@@ -112,11 +158,15 @@ class WorkerDomainLink implements DomainLink {
   onFailure: ((reason: string) => void) | null = null;
   readonly transport: DomainLinkTransport;
   private closed = false;
+  private exitHandler: (() => void) | null = null;
 
   constructor(private readonly worker: Worker) {
-    this.transport = new DomainLinkTransport((message) => {
-      this.worker.postMessage(message);
-    });
+    this.transport = new DomainLinkTransport(
+      (message) => {
+        this.worker.postMessage(message);
+      },
+      () => this.close(),
+    );
 
     this.worker.onmessage = (event: MessageEvent) => {
       const data: unknown = event.data;
@@ -138,10 +188,24 @@ class WorkerDomainLink implements DomainLink {
     this.worker.onerror = (event: ErrorEvent | Event) => {
       this.fail(event instanceof ErrorEvent ? event.message : "unknown worker error");
     };
+
+    // A worker that exits cleanly — `process.exit()`, or an event loop that
+    // simply drains — fires `close` and never `error`. Without this listener the
+    // supervisor never hears about it: no failure, no restart, and a state that
+    // reads `running` forever over a channel that cannot carry the news. #3044
+    // puts arbitrary project code in this thread, where `process.exit` is not
+    // hypothetical.
+    this.exitHandler = () => this.fail("worker exited");
+    this.worker.addEventListener("close", this.exitHandler);
   }
 
   private fail(reason: string): void {
+    if (this.closed) return;
     this.transport.fail(new Error(reason));
+    // A dead link must also reject whatever was in flight on it. Without this a
+    // raw link failure (as opposed to a supervised crash) leaves MCP requests
+    // waiting for a response that can no longer arrive.
+    this.transport.closed();
     this.onFailure?.(reason);
   }
 
@@ -157,6 +221,12 @@ class WorkerDomainLink implements DomainLink {
     this.onFailure = null;
     this.worker.onmessage = null;
     this.worker.onerror = null;
+    if (this.exitHandler) {
+      // Removed before terminate(), so an intentional teardown does not come
+      // back as a spurious "worker exited" failure.
+      this.worker.removeEventListener("close", this.exitHandler);
+      this.exitHandler = null;
+    }
     try {
       this.worker.terminate();
     } catch {

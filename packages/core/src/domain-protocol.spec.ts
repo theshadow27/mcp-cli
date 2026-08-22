@@ -7,6 +7,7 @@ import {
   type DomainSnapshot,
   assertDomainIdentity,
   domainInitMessage,
+  domainRestartRequired,
   domainSnapshotEquals,
   isDomainWorkerMessage,
   isJsonRpcMessage,
@@ -88,6 +89,34 @@ describe("domainSnapshotEquals", () => {
 
   test("ignores createdAt, which cannot change for a given id", () => {
     expect(domainSnapshotEquals(base, { ...base, createdAt: "1999-01-01T00:00:00Z" })).toBe(true);
+  });
+});
+
+describe("domainRestartRequired", () => {
+  const base = toDomainSnapshot(localRow);
+
+  test("a rename does not require a restart — the binding is unchanged", () => {
+    // The bug this function exists to prevent: comparing the whole row meant
+    // `mcx domain rename` silently killed a running worker.
+    expect(domainRestartRequired(base, { ...base, name: "renamed" })).toBe(false);
+  });
+
+  test("a move, a host change or a different id does require one", () => {
+    expect(domainRestartRequired(base, { ...base, path: "/elsewhere" })).toBe(true);
+    expect(domainRestartRequired(base, { ...base, host: "boxen0010" })).toBe(true);
+    expect(domainRestartRequired(base, { ...base, id: 8 })).toBe(true);
+  });
+
+  test("an unchanged row requires nothing", () => {
+    expect(domainRestartRequired(base, { ...base })).toBe(false);
+  });
+
+  test("it is strictly weaker than full equality — that gap is the whole point", () => {
+    // If these two ever agree on every input, one of them is redundant and the
+    // rename case has silently regressed back into the restart decision.
+    const renamed = { ...base, name: "renamed" };
+    expect(domainSnapshotEquals(base, renamed)).toBe(false);
+    expect(domainRestartRequired(base, renamed)).toBe(false);
   });
 });
 
