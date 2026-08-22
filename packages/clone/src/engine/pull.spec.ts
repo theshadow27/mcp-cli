@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, resolveRealpath } from "@mcp-cli/core";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { injectFrontmatter, stripFrontmatter } from "./frontmatter";
+import type { VfsProgressEvent } from "./progress";
 import { pull } from "./pull";
 
 // Use os.tmpdir() so git's upward .git search can never reach the project
@@ -552,6 +554,165 @@ describe("pull", () => {
       const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8", env: cleanEnv() });
       expect(log).toContain("Pull test/TEST (full)");
       expect(log).toContain("2 new");
+    });
+  });
+
+  describe("progress reporting (#1249)", () => {
+    function sink(events: VfsProgressEvent[]): (e: VfsProgressEvent) => void {
+      return (e) => {
+        events.push(e);
+      };
+    }
+
+    function pages(count: number): RemoteEntry[] {
+      return Array.from({ length: count }, (_, i) =>
+        makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 1, content: `body ${i}` }),
+      );
+    }
+
+    test("full pull emits started, list progress and completed", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const entries = pages(40);
+      const provider = makeProvider({
+        itemNoun: "pages",
+        count: async () => 40,
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      expect(result.created).toBe(40);
+      expect(events[0]).toMatchObject({ event: VFS_STARTED, operation: "pull", provider: "test", scope: "TEST" });
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
+      expect(listing.map((e) => e.current)).toEqual([10, 20, 30, 40]); // 5% of 40, floored at 10
+      expect(listing.at(-1)).toMatchObject({ current: 40, total: 40, percent: 100 });
+      expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, current: 40 });
+    });
+
+    test("the terminal event does not swap units — the bar stays in pages, items counts changes", async () => {
+      // 28 of the 40 remote pages are already cached at the same version, so the
+      // pull walks 40 pages and applies 12 changes. If `current` carried the
+      // change count the bar would jump 40 → 12 at the end.
+      const entries = pages(40);
+      for (const e of entries.slice(0, 28)) cache.upsert("test", scope, e, `${e.title}.md`, "h");
+      cache.close();
+
+      const events: VfsProgressEvent[] = [];
+      const provider = makeProvider({
+        itemNoun: "pages",
+        count: async () => 40,
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      expect(result.created).toBe(12);
+      expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, current: 40, total: 40, percent: 100, items: 12 });
+    });
+
+    test("an up-to-date pull still emits a terminal event", async () => {
+      const entries = pages(12);
+      for (const e of entries) cache.upsert("test", scope, e, `${e.title}.md`, "h");
+      cache.close();
+
+      const events: VfsProgressEvent[] = [];
+      const provider = makeProvider({
+        itemNoun: "pages",
+        count: async () => 12,
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      expect(result.created).toBe(0);
+      expect(events.at(-1)).toMatchObject({ event: VFS_COMPLETED, items: 0 });
+    });
+
+    test("incremental pull reports progress over the change set", async () => {
+      cache.upsert("test", scope, makeEntry({ id: "p0", title: "Page 0" }), "Page 0.md", "h0");
+      cache.updateLastSynced("test", scope.key);
+      cache.close();
+
+      const events: VfsProgressEvent[] = [];
+      const changes: ChangeEvent[] = Array.from({ length: 20 }, (_, i) => ({
+        entry: makeEntry({ id: `p${i}`, title: `Page ${i}`, version: 2, content: `body ${i}` }),
+        type: "updated" as const,
+      }));
+      const provider = makeProvider({
+        itemNoun: "pages",
+        changes: async function* () {
+          for (const c of changes) yield c;
+        },
+      });
+
+      const result = await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      expect(result.incremental).toBe(true);
+      const content = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "content");
+      expect(content.at(-1)).toMatchObject({ current: 20, total: 20, percent: 100 });
+    });
+
+    test("pull without a counting provider still reports, without percentages", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const entries = pages(60);
+      const provider = makeProvider({
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      const listing = events.filter((e) => e.event === VFS_PROGRESS && e.stage === "list");
+      expect(listing.map((e) => e.current)).toEqual([50]);
+      expect(listing[0].percent).toBeUndefined();
+    });
+
+    test("publishes a terminal vfs.failed when the sync throws", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const provider = makeProvider({
+        itemNoun: "pages",
+        list: async function* () {
+          yield makeEntry({ id: "p0", title: "Page 0", content: "body" });
+          throw new Error("429 rate limited");
+        },
+      });
+
+      await expect(pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) })).rejects.toThrow(
+        "429 rate limited",
+      );
+
+      expect(events[0].event).toBe(VFS_STARTED);
+      expect(events.at(-1)).toMatchObject({ event: VFS_FAILED, error: "429 rate limited" });
+      expect(events.filter((e) => e.event === VFS_FAILED || e.event === VFS_COMPLETED)).toHaveLength(1);
+    });
+
+    test("carries repoRoot and one runId per pull", async () => {
+      cache.close();
+      const events: VfsProgressEvent[] = [];
+      const entries = pages(40);
+      const provider = makeProvider({
+        itemNoun: "pages",
+        count: async () => 40,
+        list: async function* () {
+          for (const e of entries) yield e;
+        },
+      });
+
+      await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
+
+      // Canonical — consumers compare raw strings against their own realpath.
+      expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolveRealpath(resolve(repoDir))]));
+      expect(new Set(events.map((e) => e.runId)).size).toBe(1);
     });
   });
 });

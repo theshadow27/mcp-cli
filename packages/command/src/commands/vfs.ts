@@ -21,7 +21,8 @@ import {
   pull,
   push,
 } from "@mcp-cli/clone";
-import type { CloneResult, McpToolCaller } from "@mcp-cli/clone";
+import type { CloneResult, McpToolCaller, VfsProgressSink } from "@mcp-cli/clone";
+import { ipcCall as coreIpcCall } from "@mcp-cli/core";
 import { ipcCall } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
@@ -46,6 +47,70 @@ export interface VfsDeps {
     providerName: string;
   };
   preflightCheck: (providerName: string) => Promise<void>;
+  /** Progress sink for clone/pull. Defaults to the daemon event bus (#1249). */
+  onEvent?: VfsProgressSink;
+}
+
+/**
+ * Ceiling on one telemetry publish, enforced locally by
+ * {@link makeProgressPublisher}. A wedged daemon must not be able to stall a
+ * clone on its own progress.
+ */
+export const PROGRESS_PUBLISH_TIMEOUT_MS = 2_000;
+
+/**
+ * Forward clone/pull progress onto the daemon event bus, so `mcx monitor` can
+ * follow a long clone running in another terminal.
+ *
+ * Best-effort, which means *swallow the error* — not *skip the await*. `main()`
+ * resolving calls `process.exit()`, which tears down the event loop before an
+ * un-awaited socket write lands, so a fire-and-forget publish silently drops the
+ * terminal `vfs.completed` / `vfs.failed` event (#2983).
+ *
+ * Two things this deliberately does *not* do:
+ *
+ * 1. **It does not call `daemon-lifecycle`'s `ipcCall`.** That one runs
+ *    `ensureDaemon()` first, which is outside `opts.timeoutMs` (#3151) and can
+ *    sit for ~15s on a daemon that holds its PID flock but does not answer its
+ *    socket — measured 15,212ms against a documented 2,000ms ceiling. Worse,
+ *    its wait path `unlink`s the daemon lock file, so routing telemetry through
+ *    it would mutate daemon-lifecycle state 20+ times per clone instead of once
+ *    per command, and could delete the lock out from under another `mcx`
+ *    inside its `O_EXCL` startup window. Telemetry must be strictly
+ *    observational: the core client talks to the socket and nothing else, and
+ *    "no daemon" is simply a rejection we swallow.
+ * 2. **It does not delegate the ceiling to the callee.** A constant named as a
+ *    bound has to bound the operation it names whatever the callee does, so the
+ *    race below is the guarantee — `timeoutMs` is passed as well, but it is
+ *    defence in depth rather than the mechanism.
+ */
+export function makeProgressPublisher(
+  ipc: typeof coreIpcCall = coreIpcCall,
+  timeoutMs: number = PROGRESS_PUBLISH_TIMEOUT_MS,
+): VfsProgressSink {
+  return async ({ event, ...fields }) => {
+    // Settled to `void` on both paths: once the race is lost nobody is awaiting
+    // this promise, and a late rejection would surface as an unhandled one.
+    const publish = Promise.resolve(
+      ipc("publishEvent", { src: "cli.vfs", event, category: "vfs", extra: { ...fields } }, { timeoutMs }),
+    ).then(
+      () => {},
+      () => {},
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        publish,
+        new Promise<void>((settle) => {
+          timer = setTimeout(settle, timeoutMs);
+        }),
+      ]);
+    } finally {
+      // Don't leave a 2s timer holding the loop open after a fast publish.
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
 }
 
 export function makeToolCaller(ipc: typeof ipcCall): McpToolCaller {
@@ -131,6 +196,7 @@ export async function cmdVfs(args: string[], opts?: { dryRun?: boolean }, deps?:
     resolveProvider: (name: string, tuning?: ProviderTuning) => resolveProvider(name, tuning),
     resolveProviderFromCache: (repoDir: string) => resolveProviderFromCache(repoDir),
     preflightCheck: (name: string) => preflightCheck(name),
+    onEvent: makeProgressPublisher(),
   };
   const sub = args[0];
 
@@ -205,6 +271,7 @@ async function vfsClone(args: string[], deps: VfsDeps): Promise<void> {
       limit,
       depth,
       onProgress: log,
+      onEvent: deps.onEvent,
     });
   } catch (err) {
     if (err instanceof VfsError) {
@@ -257,7 +324,7 @@ async function vfsPull(args: string[], deps: VfsDeps): Promise<void> {
   await deps.preflightCheck(providerName);
 
   try {
-    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log });
+    const result = await deps.pull({ repoDir, provider, full, depth, onProgress: log, onEvent: deps.onEvent });
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (err instanceof VfsError) {
@@ -368,6 +435,22 @@ Options:
                       not persisted — later pulls start from the default again)
   --full              Force full sync instead of incremental
   --create            Create new remote items from local files (push only)
+
+Progress:
+  clone and pull print live progress to stderr ("Fetching FOO... 250/5000 pages
+  (5%)") and publish vfs.started, vfs.progress and a terminal vfs.completed or
+  vfs.failed on the daemon event bus. To follow a long clone from another
+  terminal:
+      mcx monitor --all-repos                 # or: mcx monitor --repo <target-dir>
+  Bare "mcx monitor" is scoped to its own cwd, so it will NOT show a clone
+  landing anywhere else — every event carries repoRoot (the clone target), which
+  is what keeps clone chatter out of unrelated repo-scoped monitors.
+  A run killed by a signal (Ctrl-C) leaves its stream open — a waiter needs its
+  own timeout as a backstop.
+  Every event also carries a runId tagging the run, though monitor filters
+  cannot yet select on it (#3153).
+  The percentage needs a provider that can count its scope up front (confluence);
+  others report a bare item count.
 
 Examples:
   mcx vfs clone confluence FOO ~/atlassian/foo

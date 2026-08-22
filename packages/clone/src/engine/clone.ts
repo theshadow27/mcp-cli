@@ -12,10 +12,12 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
+import { ProgressReporter, type VfsProgressSink, estimateTotal } from "./progress";
 
 export interface CloneOptions {
   /** Target directory to clone into. */
@@ -26,6 +28,8 @@ export interface CloneOptions {
   scope: Scope;
   /** Progress callback. */
   onProgress?: (message: string) => void;
+  /** Structured progress sink, forwarded to the daemon event bus by the CLI (#1249). */
+  onEvent?: VfsProgressSink;
   /** Maximum pages to fetch (for testing/debugging). 0 = unlimited. */
   limit?: number;
   /** Maximum hierarchy depth to clone. 0 = unlimited. Depth 1 = root pages only. */
@@ -71,6 +75,33 @@ export function computeDepth(entry: RemoteEntry, entryById: Map<string, RemoteEn
 }
 
 export async function clone(opts: CloneOptions): Promise<CloneResult> {
+  const progress = new ProgressReporter({
+    operation: "clone",
+    provider: opts.provider.name,
+    scope: opts.scope.key,
+    // Canonicalized, not merely resolved: `event-filter.ts` compares repoRoot as
+    // a raw string and every consumer canonicalizes its side (`monitor.ts:186`,
+    // `ipc-filter.ts:25`). A producer that skips it is invisible to `--repo` and
+    // to `cd <target> && mcx monitor` whenever any ancestor is a symlink — which
+    // includes macOS `tmpdir()`. There is a DB migration in `db/state.ts` that
+    // exists because this invariant was broken once already.
+    repoRoot: resolveRealpath(resolve(opts.targetDir)),
+    unit: opts.provider.itemNoun,
+    log: (msg) => log(opts, msg),
+    onEvent: opts.onEvent,
+  });
+  try {
+    return await runClone(opts, progress);
+  } catch (err) {
+    // Close the stream on the way out. A `vfs.started` followed by nothing —
+    // auth expiry, rate limit, ENOSPC — hangs `mcx monitor --until` and
+    // `ctx.waitForEvent` to their timeouts. No-ops if we never started.
+    await progress.fail(err);
+    throw err;
+  }
+}
+
+async function runClone(opts: CloneOptions, progress: ProgressReporter): Promise<CloneResult> {
   const { targetDir, provider, scope, limit = 0, depth = 0 } = opts;
   const absTarget = resolve(targetDir);
 
@@ -91,6 +122,12 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   }
 
   // ── Step 1: Resolve scope ──────────────────────────────────
+  // Announce before the first network call, not after it. `resolveScope()` is
+  // where an expired Atlassian token surfaces — the single most common way a
+  // clone fails — and starting the stream after it meant that failure produced
+  // no events at all: nothing to see, and nothing for `--until` to end on. The
+  // scope key is already known from argv, so there is nothing to wait for.
+  await progress.start();
   log(opts, `Resolving scope: ${provider.name}/${scope.key}...`);
   const resolved = await provider.resolveScope(scope);
   const spaceName = resolved.resolved.spaceName as string;
@@ -99,7 +136,16 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   // ── Step 2: Fetch all pages ────────────────────────────────
   // Providers that support inline content (e.g., Confluence) return content
   // with the listing, avoiding N+1 individual fetch calls.
-  log(opts, "Fetching pages...");
+  //
+  // The denominator is resolved here rather than before `vfs.started`: `count()`
+  // goes through the resilient caller (30s timeout, 4 retries), so on a
+  // rate-limited remote it can take minutes — exactly when the user most needs
+  // to see that the clone is alive. It lands on the first progress line instead.
+  // A provider without `count()` (or one whose count call fails) still reports,
+  // just without a percentage. See #1249.
+  const listTotal = await estimateTotal(provider, resolved, limit);
+  progress.announceTotal(listTotal);
+
   const entries: RemoteEntry[] = [];
   const contentMap = new Map<string, string>();
   let fetched = 0;
@@ -110,7 +156,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
       contentMap.set(entry.id, entry.content);
     }
     fetched++;
-    if (fetched % 50 === 0) log(opts, `  ${fetched} pages...`);
+    await progress.tick("list", fetched, listTotal);
     if (limit > 0 && fetched >= limit) break;
   }
 
@@ -153,9 +199,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
         if (idx >= 0) includedEntries[idx] = r.entry;
         contentFetched++;
       }
-      if (contentFetched % 50 === 0 || contentFetched === missingContent.length) {
-        log(opts, `  fetched ${contentFetched}/${missingContent.length} pages`);
-      }
+      await progress.tick("content", contentFetched, missingContent.length);
     }
   }
 
@@ -269,6 +313,7 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
   log(opts, `  → remote "origin" set to ${remoteUrl}`);
 
   log(opts, `\nDone! Cloned ${includedEntries.length} pages${stubNote} to ${absTarget}`);
+  await progress.finish(includedEntries.length);
 
   return {
     path: absTarget,

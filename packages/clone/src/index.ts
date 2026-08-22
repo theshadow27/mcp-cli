@@ -8,6 +8,9 @@ export * from "./providers/resilient-caller";
 export * from "./engine/cache";
 export * from "./engine/clone";
 export * from "./engine/frontmatter";
+// Progress reporting is an engine internal — only the sink contract, which
+// callers must implement to receive updates, belongs to the public surface.
+export type { VfsProgressEvent, VfsProgressSink } from "./engine/progress";
 export * from "./engine/pull";
 export * from "./engine/push";
 export * from "./engine/remote-protocol";

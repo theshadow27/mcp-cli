@@ -168,6 +168,35 @@ describe("frontmatter", () => {
   });
 });
 
+describe("count — progress denominator (#1249)", () => {
+  function countingProvider(payload: unknown, seen: Record<string, unknown>[] = []) {
+    return createConfluenceProvider({
+      callTool: async (_server, tool, args) => {
+        if (tool !== "searchConfluenceUsingCql") return null;
+        seen.push(args);
+        return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+      },
+    });
+  }
+
+  test("returns totalSize from a one-row CQL search", async () => {
+    const args: Record<string, unknown>[] = [];
+    const provider = countingProvider({ results: [], totalSize: 5000 }, args);
+
+    expect(await provider.count?.(makeScope())).toBe(5000);
+    // One row is enough: totalSize counts matches, not returned rows.
+    expect(args[0]).toMatchObject({ limit: 1, cloudId: "cloud-123" });
+    // Mirrors list()'s own `status: "current"` filter — a count that includes
+    // archived/trashed pages exceeds what the listing yields.
+    expect(args[0].cql).toBe('space = "TEST" AND type = page AND status = current');
+  });
+
+  test("is undefined when the response carries no totalSize", async () => {
+    const provider = countingProvider({ results: [] });
+    expect(await provider.count?.(makeScope())).toBeUndefined();
+  });
+});
+
 describe("changes — truncation detection", () => {
   test("throws TruncatedChangesError when totalSize exceeds returned results", async () => {
     const scope = makeScope();

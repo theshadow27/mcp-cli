@@ -14,13 +14,15 @@
  */
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { computeDepth } from "./clone";
 import { STUB_BODY } from "./constants";
 import { injectFrontmatter } from "./frontmatter";
+import { ProgressReporter, type VfsProgressSink, estimateTotal } from "./progress";
 
 export interface PullOptions {
   /** Root directory of the cloned repo. */
@@ -29,6 +31,8 @@ export interface PullOptions {
   provider: RemoteProvider;
   /** Progress callback. */
   onProgress?: (message: string) => void;
+  /** Structured progress sink, forwarded to the daemon event bus by the CLI (#1249). */
+  onEvent?: VfsProgressSink;
   /** Force full sync instead of incremental. */
   full?: boolean;
   /** Maximum hierarchy depth. 0 = unlimited (deepens shallow clones). */
@@ -69,6 +73,9 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
   const cache = new CloneCache(cachePath);
   const result: PullResult = { updated: 0, created: 0, deleted: 0, deepened: 0, committed: false, incremental: false };
+  // Declared out here so the catch can close the event stream — the reporter
+  // itself can only be built once the scope key is read from the cache.
+  let progress: ProgressReporter | undefined;
 
   try {
     // ── Load scope from cache ────────────────────────────────
@@ -77,7 +84,19 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       throw new Error("No scope found in cache. Was this repo cloned with mcx vfs clone?");
     }
 
-    log(opts, `Pulling ${provider.name}/${scope.key}...`);
+    // The scope key only becomes known here (it lives in the cache), so the
+    // reporter — and with it the vfs.started event — is built after the lookup.
+    progress = new ProgressReporter({
+      operation: "pull",
+      provider: provider.name,
+      scope: scope.key,
+      // Canonicalized — see the note in clone.ts; consumers compare raw strings.
+      repoRoot: resolveRealpath(resolve(repoDir)),
+      unit: provider.itemNoun,
+      log: (msg) => log(opts, msg),
+      onEvent: opts.onEvent,
+    });
+    await progress.start();
 
     // ── Decide depth ─────────────────────────────────────────
     // If user specifies --depth, use it. Otherwise, use the stored clone depth.
@@ -111,12 +130,12 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
 
     if (canIncremental) {
       try {
-        await incrementalPull(opts, cache, scope, lastSynced, result, effectiveDepth);
+        await incrementalPull(opts, cache, scope, lastSynced, result, effectiveDepth, progress);
       } catch (err) {
         if (err instanceof TruncatedChangesError) {
           log(opts, `  ${err.message}`);
           result.incremental = false;
-          await fullPull(opts, cache, scope, result, effectiveDepth);
+          await fullPull(opts, cache, scope, result, effectiveDepth, progress);
         } else {
           throw err;
         }
@@ -125,7 +144,7 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       if (!full && !forceFullForDeepen && lastSynced) {
         log(opts, "Provider doesn't support incremental sync, falling back to full sync.");
       }
-      await fullPull(opts, cache, scope, result, effectiveDepth);
+      await fullPull(opts, cache, scope, result, effectiveDepth, progress);
     }
 
     // ── Update stored depth if it changed ─────────────────────
@@ -181,6 +200,15 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
         .join(", ");
       log(opts, `\nPull complete. ${summary}.`);
     }
+    // `totalChanges` is what the pull *produced*, not where the bar got to — it
+    // rides as `items` so a subscriber tracking `current` doesn't watch it
+    // collapse from a page count to a change count at the end.
+    await progress.finish(totalChanges);
+  } catch (err) {
+    // Every vfs.started gets exactly one terminal event, including when the
+    // provider throws mid-sync. No-ops if we failed before start().
+    await progress?.fail(err);
+    throw err;
   } finally {
     cache.close();
   }
@@ -196,6 +224,7 @@ async function incrementalPull(
   since: string,
   result: PullResult,
   effectiveDepth = 0,
+  progress?: ProgressReporter,
 ): Promise<void> {
   const { repoDir, provider } = opts;
   result.incremental = true;
@@ -241,8 +270,14 @@ async function incrementalPull(
     }
   }
 
+  // Ticked at the top of the loop (several branches `continue`), so the count is
+  // "changes reached", which for a throttled bar is indistinguishable from
+  // "changes applied".
+  let reached = 0;
   for (const change of changes) {
     const { entry } = change;
+    reached++;
+    await progress?.tick("content", reached, changes.length);
 
     if (change.type === "deleted") {
       const cached = cachedById.get(entry.id);
@@ -320,6 +355,7 @@ async function fullPull(
   scope: ResolvedScope,
   result: PullResult,
   effectiveDepth = 0,
+  progress?: ProgressReporter,
 ): Promise<void> {
   const { repoDir, provider } = opts;
 
@@ -333,13 +369,16 @@ async function fullPull(
   const remoteContentMap = new Map<string, string>();
   let fetched = 0;
 
+  const listTotal = await estimateTotal(provider, scope);
+  progress?.announceTotal(listTotal);
+
   for await (const entry of provider.list(scope)) {
     remoteEntries.push(entry);
     if (entry.content != null) {
       remoteContentMap.set(entry.id, entry.content);
     }
     fetched++;
-    if (fetched % 100 === 0) log(opts, `  ${fetched} pages...`);
+    await progress?.tick("list", fetched, listTotal);
   }
 
   log(opts, `  → ${remoteEntries.length} remote pages`);
@@ -416,6 +455,7 @@ async function fullPull(
   if (needsFetch.length > 0) {
     log(opts, `Fetching content for ${needsFetch.length} pages...`);
     const BATCH_SIZE = 10;
+    let contentFetched = 0;
     for (let i = 0; i < needsFetch.length; i += BATCH_SIZE) {
       const batch = needsFetch.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
@@ -426,7 +466,9 @@ async function fullPull(
       );
       for (const r of results) {
         remoteContentMap.set(r.id, r.content);
+        contentFetched++;
       }
+      await progress?.tick("content", contentFetched, needsFetch.length);
     }
   }
 

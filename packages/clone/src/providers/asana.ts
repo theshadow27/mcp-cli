@@ -121,6 +121,7 @@ export function createAsanaProvider(opts: AsanaProviderOptions): RemoteProvider 
 
   const provider: RemoteProvider = {
     name: "asana",
+    itemNoun: "tasks",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);

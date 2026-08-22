@@ -115,6 +115,22 @@ describe("matchFilter", () => {
     expect(matchFilter(makeEvent({}), spec)).toBe(true);
   });
 
+  test("vfs progress stays in the repo it clones into (#1249)", () => {
+    // Pass-through-when-unscoped is why every high-volume producer must set
+    // repoRoot: a clone into ~/atlassian/foo would otherwise spray its
+    // 60+ info events into an orchestrator's sprint monitor elsewhere.
+    const spec: EventFilterSpec = { repo: "/home/user/myrepo" };
+    const cloneEvent = makeEvent({
+      event: "vfs.progress",
+      category: "vfs",
+      repoRoot: "/home/user/atlassian/foo",
+      current: 250,
+      total: 5000,
+    });
+    expect(matchFilter(cloneEvent, spec)).toBe(false);
+    expect(matchFilter(cloneEvent, { repo: "/home/user/atlassian/foo" })).toBe(true);
+  });
+
   test("multiple filter axes — all must match (AND)", () => {
     const spec: EventFilterSpec = { pr: 10, type: "ci.*" };
     expect(matchFilter(makeEvent({ prNumber: 10, event: "ci.finished" }), spec)).toBe(true);

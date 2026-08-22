@@ -245,6 +245,7 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
   const provider: RemoteProvider = {
     name: "confluence",
+    itemNoun: "pages",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);
@@ -313,6 +314,25 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
 
         cursor = nextCursor(resp);
       } while (cursor);
+    },
+
+    /**
+     * Page count for the space, via a CQL search asking for a single result —
+     * `totalSize` is the count of matches, not of returned rows, so one cheap
+     * request yields the denominator for the whole listing (#1249).
+     */
+    async count(scope: ResolvedScope): Promise<number | undefined> {
+      // `status = current` mirrors list()'s own filter (see the listing query
+      // above). Without it the two calls ask different questions and the count
+      // can exceed what the listing yields — which, before the step ceiling in
+      // shouldReport(), silenced progress entirely.
+      const cql = `space = "${scope.key}" AND type = page AND status = current`;
+      const resp = (await callAtlassian("searchConfluenceUsingCql", {
+        cloudId: scope.cloudId,
+        cql,
+        limit: 1,
+      })) as { totalSize?: number };
+      return typeof resp?.totalSize === "number" ? resp.totalSize : undefined;
     },
 
     async fetch(scope: ResolvedScope, id: string): Promise<FetchResult> {

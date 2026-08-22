@@ -26,6 +26,9 @@ import {
   METRIC_SESSION_QUERIES,
   SESSION_SPAWN_OVERRIDE,
   SESSION_TOOL_USE,
+  VFS_COMPLETED,
+  VFS_FAILED,
+  VFS_PROGRESS,
   WORKER_RATELIMITED,
   formatMonitorEvent,
 } from "./monitor-event";
@@ -269,6 +272,84 @@ describe("formatMonitorEvent — lifecycle events", () => {
     expect(line).toContain("session.spawn_override");
     expect(line).toContain("/canary/claude");
     expect(line).toContain("bypassed: version gate: upgrade required");
+  });
+
+  test("vfs.progress shows the operation, target, stage and percent", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: VFS_PROGRESS,
+        category: "vfs",
+        operation: "clone",
+        provider: "confluence",
+        scope: "FOO",
+        stage: "list",
+        current: 250,
+        total: 5000,
+        percent: 5,
+        unit: "pages",
+      }),
+    );
+    expect(line).toContain("vfs.progress");
+    expect(line).toContain("clone  confluence/FOO");
+    expect(line).toContain("list");
+    expect(line).toContain("250/5000 pages (5%)");
+  });
+
+  test("vfs.progress degrades to a bare counter without a total", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: VFS_PROGRESS,
+        category: "vfs",
+        operation: "pull",
+        provider: "asana",
+        scope: "123",
+        stage: "list",
+        current: 50,
+        unit: "tasks",
+      }),
+    );
+    expect(line).toContain("pull  asana/123");
+    expect(line).toContain("50 tasks");
+    expect(line).not.toContain("%");
+  });
+
+  test("vfs.completed shows the final count", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: VFS_COMPLETED,
+        category: "vfs",
+        operation: "clone",
+        provider: "confluence",
+        scope: "FOO",
+        current: 5000,
+        total: 5000,
+        percent: 100,
+        unit: "pages",
+      }),
+    );
+    expect(line).toContain("vfs.completed");
+    expect(line).toContain("5000/5000 pages (100%)");
+  });
+
+  test("vfs.failed reports the reason, so a subscriber can stop waiting", () => {
+    const line = formatMonitorEvent(
+      event({
+        event: VFS_FAILED,
+        category: "vfs",
+        operation: "clone",
+        provider: "confluence",
+        scope: "FOO",
+        current: 1200,
+        total: 5000,
+        percent: 24,
+        unit: "pages",
+        error: "401 token expired",
+      }),
+    );
+    expect(line).toContain("vfs.failed");
+    expect(line).toContain("clone  confluence/FOO");
+    expect(line).toContain("1200/5000 pages (24%)");
+    expect(line).toContain("401 token expired");
   });
 
   test("uses producer summary as the detail for unknown event types", () => {

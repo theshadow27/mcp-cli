@@ -54,6 +54,7 @@ export const MONITOR_CATEGORIES = [
   "cost",
   "quota",
   "automation",
+  "vfs",
 ] as const;
 
 export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
@@ -150,6 +151,96 @@ export const AUTOMATION_FIRED = "automation.fired" as const;
 export const AUTOMATION_SKIPPED = "automation.skipped" as const;
 export const AUTOMATION_ERRORED = "automation.errored" as const;
 export const AUTOMATION_ESCALATED = "automation.escalated" as const;
+
+// ── VFS clone/pull progress event names (#1249) ──
+
+export const VFS_STARTED = "vfs.started" as const;
+export const VFS_PROGRESS = "vfs.progress" as const;
+export const VFS_COMPLETED = "vfs.completed" as const;
+export const VFS_FAILED = "vfs.failed" as const;
+
+/**
+ * The terminal events of a vfs operation.
+ *
+ * What holds: a run that reaches its own end — success or a thrown error —
+ * emits exactly one of these. `ProgressReporter` latches on the first, so the
+ * success and failure paths cannot both fire. That is what makes a slow clone
+ * distinguishable from a crashed one, which is the defect #1249 exists to fix.
+ *
+ * What does **not** hold, stated plainly because `mcx monitor --until` and
+ * `ctx.waitForEvent` users will otherwise write unbounded waits against it:
+ *
+ * - **A signal-terminated run leaves the stream open.** Ctrl-C, SIGTERM and
+ *   SIGKILL all produce `vfs.started`, some `vfs.progress`, and then nothing.
+ *   Ctrl-C is a likely way a long clone ends, so this is not a corner case.
+ *   Handling it needs a latch shared with the reporter's, so that a signal
+ *   arriving *during* the real terminal publish neither duplicates it nor
+ *   suppresses it; tracked in #3154 rather than approximated here.
+ * - **A terminal publish can be dropped silently.** Publishing is best-effort
+ *   and bounded (`PROGRESS_PUBLISH_TIMEOUT_MS`), so a daemon that stops
+ *   answering mid-publish loses the event with no error and a zero exit code.
+ * - A power cut or hard runtime crash, for the obvious reason.
+ *
+ * So: the contract removes the need for a *routine* timeout on a waiter. It
+ * does not remove the need for a backstop, and a subscriber that blocks
+ * forever on one of these is relying on more than this stream promises.
+ */
+export const VFS_TERMINAL_EVENTS = [VFS_COMPLETED, VFS_FAILED] as const;
+
+/** The long-running vfs operations that report progress. */
+export type VfsOperation = "clone" | "pull";
+
+/**
+ * Stage of a vfs operation. `list` walks the remote index, `content` fetches
+ * bodies for entries whose listing had none. Writing files is not a stage: it
+ * is local `writeFileSync` calls, fast enough that nobody waits on it.
+ *
+ * Deliberately *not* called `phase`: the flat envelope already has a top-level
+ * `phase`, the work-item phase that `mcx monitor --phase` filters on
+ * (`event-filter.ts`). Two different meanings in one key is a trap for the next
+ * consumer that writes `event.phase as WorkItemPhase`.
+ */
+export type VfsStage = "list" | "content";
+
+/**
+ * Flat payload fields carried by `vfs.*` events. Spread at the top level of the
+ * envelope — see the envelope contract in the file header, the fields never nest
+ * under `payload`.
+ */
+export interface VfsProgressFields {
+  /**
+   * Correlation id, constant for one clone/pull run. Two concurrent runs
+   * interleave on the bus; this is how a subscriber demultiplexes them (the
+   * same role `sessionId` plays for session events).
+   */
+  runId: string;
+  operation: VfsOperation;
+  /** Provider name, e.g. "confluence". */
+  provider: string;
+  /** Scope key, e.g. a Confluence space key. */
+  scope: string;
+  /**
+   * Repo the operation targets — clone's target directory, pull's repo dir.
+   * Required: `event-filter.ts` passes an event with no `repoRoot` through
+   * every repo-scoped filter, so omitting it would spray clone chatter into
+   * unrelated monitors.
+   */
+  repoRoot: string;
+  /** Stage this update belongs to. Absent before the first tick. */
+  stage?: VfsStage;
+  /** Items processed so far in `stage`. */
+  current: number;
+  /** Total items expected, when the provider can estimate one up front. */
+  total?: number;
+  /** `current`/`total` as a 0-100 integer. Present only when `total` is known. */
+  percent?: number;
+  /** Noun for the counted items, e.g. "pages" for Confluence, "issues" for Jira. */
+  unit?: string;
+  /** What the run produced (pages cloned, changes applied). Terminal events only. */
+  items?: number;
+  /** Failure reason. `vfs.failed` only. */
+  error?: string;
+}
 
 // ── Alias supervisor event names (#1924) ──
 
@@ -542,8 +633,37 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
     return join(wi(e), mod, reason);
   },
 
+  [VFS_STARTED]: (e) => join(vfsTarget(e), vfsCount(e)),
+
+  [VFS_PROGRESS]: (e) => {
+    const stage = typeof e.stage === "string" ? e.stage : "";
+    return join(vfsTarget(e), stage, vfsCount(e));
+  },
+
+  [VFS_COMPLETED]: (e) => join(vfsTarget(e), vfsCount(e)),
+
+  [VFS_FAILED]: (e) => join(vfsTarget(e), vfsCount(e), typeof e.error === "string" ? e.error : "failed"),
+
   [HEARTBEAT]: (e) => `seq:${e.seq}`,
 };
+
+/** `clone confluence/FOO` — which operation is running against which scope. */
+function vfsTarget(e: MonitorEventBase): string {
+  const op = typeof e.operation === "string" ? e.operation : "vfs";
+  const provider = typeof e.provider === "string" ? e.provider : "";
+  const scope = typeof e.scope === "string" ? e.scope : "";
+  return join(op, provider && scope ? `${provider}/${scope}` : provider || scope);
+}
+
+/** `250/5000 pages (5%)`, degrading to `250 pages` when no total could be estimated. */
+function vfsCount(e: MonitorEventBase): string {
+  if (typeof e.current !== "number") return "";
+  const unit = typeof e.unit === "string" && e.unit ? ` ${e.unit}` : "";
+  const total = typeof e.total === "number" ? e.total : undefined;
+  if (total === undefined) return `${e.current}${unit}`;
+  const pct = typeof e.percent === "number" ? ` (${e.percent}%)` : "";
+  return `${e.current}/${total}${unit}${pct}`;
+}
 
 /**
  * Format a MonitorEvent as a human-readable one-liner (≤200 chars).
@@ -609,6 +729,7 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [GC_PRUNED]: "actionable",
   [AUTOMATION_ERRORED]: "actionable",
   [AUTOMATION_ESCALATED]: "actionable",
+  [VFS_FAILED]: "actionable",
 
   // notable — state moved, but nothing to do yet
   [PR_OPENED]: "notable",
@@ -631,9 +752,12 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [SESSION_SPAWN_OVERRIDE]: "notable",
   [AUTOMATION_FIRED]: "notable",
   [AUTOMATION_SKIPPED]: "notable",
+  [VFS_COMPLETED]: "notable",
 
   // info — telemetry / chatter (also the default for unmapped types)
   [HEARTBEAT]: "info",
+  [VFS_STARTED]: "info",
+  [VFS_PROGRESS]: "info",
   [SESSION_TOOL_USE]: "info",
   [SESSION_RESPONSE]: "info",
   [MAIL_SENT]: "info",

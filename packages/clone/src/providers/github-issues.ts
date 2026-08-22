@@ -114,6 +114,7 @@ export function createGitHubIssuesProvider(opts: GitHubIssuesProviderOptions): R
 
   const provider: RemoteProvider = {
     name: "github-issues",
+    itemNoun: "issues",
 
     async resolveScope(scope: Scope): Promise<ResolvedScope> {
       validateScopeKey(scope.key);

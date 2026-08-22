@@ -3,8 +3,19 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloneCache, VfsError } from "@mcp-cli/clone";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { pollUntil } from "../../../../test/harness";
 import type { VfsDeps } from "./vfs";
-import { cmdVfs, makeToolCaller, onRetry, preflightCheck, resolveProvider, resolveProviderFromCache } from "./vfs";
+import {
+  PROGRESS_PUBLISH_TIMEOUT_MS,
+  cmdVfs,
+  makeProgressPublisher,
+  makeToolCaller,
+  onRetry,
+  preflightCheck,
+  resolveProvider,
+  resolveProviderFromCache,
+} from "./vfs";
 
 class ExitError extends Error {
   code: number;
@@ -501,6 +512,137 @@ describe("makeToolCaller", () => {
     await caller("asana", "getTask", {}, 5000);
 
     expect(capturedOpts).toEqual({ timeoutMs: 5000 });
+  });
+});
+
+describe("makeProgressPublisher (#1249)", () => {
+  type IpcCall = { method: string; params: Record<string, unknown>; opts?: { timeoutMs?: number } };
+
+  function fakeIpc(calls: IpcCall[], impl?: () => Promise<unknown>) {
+    return (async (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => {
+      calls.push({ method, params, opts });
+      return impl ? await impl() : { ok: true, seq: 1 };
+    }) as unknown as Parameters<typeof makeProgressPublisher>[0];
+  }
+
+  /** A callee that accepts the call and then never answers — a wedged daemon. */
+  const neverSettles = (() => new Promise(() => {})) as unknown as Parameters<typeof makeProgressPublisher>[0];
+
+  const FIELDS = {
+    runId: "0123456789abcdef",
+    operation: "clone",
+    provider: "confluence",
+    scope: "FOO",
+    repoRoot: "/tmp/atlassian/foo",
+    unit: "pages",
+    stage: "list",
+    current: 250,
+    total: 5000,
+    percent: 5,
+  } as const;
+
+  test("publishes a flat vfs event on the daemon event bus", async () => {
+    const calls: IpcCall[] = [];
+    await makeProgressPublisher(fakeIpc(calls))({ event: VFS_PROGRESS, ...FIELDS });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("publishEvent");
+    expect(calls[0].params).toEqual({
+      src: "cli.vfs",
+      event: VFS_PROGRESS,
+      category: "vfs",
+      // Flat, per the envelope contract — `event` is lifted out, nothing nests.
+      // `repoRoot` scopes the event to the clone target so it cannot leak into
+      // an unrelated repo's monitor; `runId` demultiplexes concurrent runs.
+      extra: { ...FIELDS },
+    });
+  });
+
+  test("awaits the publish, so process.exit() cannot drop the terminal event", async () => {
+    // Regression guard for #2983: a fire-and-forget publish returns before the
+    // socket write lands, and main() resolving calls process.exit() under it.
+    let releasePublish: (() => void) | undefined;
+    let landed = false;
+    const publish = makeProgressPublisher((async () => {
+      await new Promise<void>((r) => {
+        releasePublish = r;
+      });
+      landed = true;
+      return { ok: true, seq: 1 };
+    }) as unknown as Parameters<typeof makeProgressPublisher>[0]);
+
+    const pending = publish({ event: VFS_COMPLETED, ...FIELDS });
+    expect(landed).toBe(false); // still in flight — the sink has not returned
+    releasePublish?.();
+    await pending;
+    expect(landed).toBe(true);
+  });
+
+  test("returns even when the daemon accepts the call and never answers", async () => {
+    // The bound has to be a property of *this* function. Asserting that a
+    // constant was handed to an injected fake proved nothing: the previous
+    // version passed while the real path took 15,212ms against a 2,000ms
+    // ceiling, because the time was spent in ensureDaemon() before any
+    // timeoutMs applied (#3151).
+    //
+    // Polled rather than awaited directly: an unbounded `await` on a callee
+    // that never settles is not aborted by Bun's per-test timeout, so removing
+    // the race would hang the whole file rather than fail it — and in this repo
+    // a hanging suite is a far more expensive signal than a failing one.
+    let returned = false;
+    void Promise.resolve(makeProgressPublisher(neverSettles, 5)({ event: VFS_COMPLETED, ...FIELDS })).then(() => {
+      returned = true;
+    });
+    await pollUntil(() => returned);
+  });
+
+  test("a publish that rejects after the bound expires does not surface later", async () => {
+    // Losing the race must not leave an unhandled rejection behind to take the
+    // clone down a tick after the publisher already returned.
+    let rejectPublish: ((e: Error) => void) | undefined;
+    const publish = makeProgressPublisher(
+      (() =>
+        new Promise((_resolve, reject) => {
+          rejectPublish = reject;
+        })) as unknown as Parameters<typeof makeProgressPublisher>[0],
+      5,
+    );
+
+    await expect(publish({ event: VFS_PROGRESS, ...FIELDS })).resolves.toBeUndefined();
+    rejectPublish?.(new Error("socket closed"));
+    await Promise.resolve(); // let the late rejection settle against its handler
+  });
+
+  test("passes the ceiling to the callee as well, as defence in depth", async () => {
+    const calls: IpcCall[] = [];
+    await makeProgressPublisher(fakeIpc(calls))({ event: VFS_PROGRESS, ...FIELDS });
+    expect(calls[0].opts?.timeoutMs).toBe(PROGRESS_PUBLISH_TIMEOUT_MS);
+  });
+
+  test("cmdVfs passes the progress sink through to clone", async () => {
+    let seen: unknown;
+    const deps = makeDeps({
+      onEvent: () => {},
+      clone: async (opts) => {
+        seen = opts.onEvent;
+        return { path: "/tmp/t", pageCount: 0, stubCount: 0, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
+      },
+    });
+
+    await cmdVfs(["clone", "confluence", "FOO"], undefined, deps);
+    expect(seen).toBe(deps.onEvent);
+  });
+
+  test("swallows IPC failures — a clone must not die over telemetry", async () => {
+    const calls: IpcCall[] = [];
+    const publish = makeProgressPublisher(
+      fakeIpc(calls, async () => {
+        throw new Error("daemon not running");
+      }),
+    );
+
+    await expect(publish({ event: VFS_STARTED, ...FIELDS, current: 0 })).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
   });
 });
 

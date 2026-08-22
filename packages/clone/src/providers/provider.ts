@@ -80,6 +80,12 @@ export interface RemoteProvider {
   /** Provider name (e.g., "confluence", "jira"). */
   readonly name: string;
 
+  /**
+   * Plural noun for what this provider counts, used in progress output
+   * ("250/5000 pages"). Defaults to "items" — Jira does not clone pages (#1249).
+   */
+  readonly itemNoun?: string;
+
   // ── Discovery ──────────────────────────────────────────────
 
   /** Resolve a scope key to a fully qualified scope (e.g., look up spaceId from key). */
@@ -90,6 +96,15 @@ export interface RemoteProvider {
 
   /** List items changed since a timestamp. Falls back to full list if not supported. */
   changes?(scope: ResolvedScope, since: string): AsyncIterable<ChangeEvent>;
+
+  /**
+   * Estimate how many items `list` will yield, for progress reporting (#1249).
+   *
+   * Best-effort: return `undefined` when the remote can't be asked cheaply.
+   * Callers treat a throw the same as `undefined` — a clone must never fail
+   * because the progress denominator was unavailable.
+   */
+  count?(scope: ResolvedScope): Promise<number | undefined>;
 
   // ── Content ────────────────────────────────────────────────
 
