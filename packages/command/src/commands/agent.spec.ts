@@ -2295,6 +2295,7 @@ describe("agent wait flags", () => {
       subject: "main is red",
       body: "CI broken",
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -2320,6 +2321,7 @@ describe("agent wait flags", () => {
       subject: "PR #123 failing",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -2359,6 +2361,7 @@ describe("agent wait flags", () => {
       subject: "old message",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() - 60_000).toISOString(), // 1 min ago
     };
@@ -2380,6 +2383,7 @@ describe("agent wait flags", () => {
       subject: "tests passing",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };

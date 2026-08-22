@@ -26,6 +26,7 @@ function makeMsg(overrides: Partial<MailMessage> & { id: number }): MailMessage 
     subject: "test",
     body: "hello",
     replyTo: null,
+    domainId: 0,
     read: false,
     createdAt: new Date().toISOString(),
     ...overrides,
