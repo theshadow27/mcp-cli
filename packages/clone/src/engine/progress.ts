@@ -133,18 +133,27 @@ const STAGE_LABEL: Record<VfsStage, string> = {
 export const DEFAULT_UNIT = "items";
 
 /**
- * Ceiling on the `error` field of a terminal event.
+ * Ceiling on the `error` field of a terminal event, ellipsis included.
  *
- * The message goes verbatim into `monitor_events.payload`, which has a 7-day
- * TTL and no size cap — and the messages that reach here are the untrusted
- * kind: an HTML 500 body from a proxy, a Zod issue list naming every field.
+ * The message goes into `monitor_events.payload`, which has a 7-day TTL and no
+ * size cap — and the messages that reach here are the untrusted kind: an HTML
+ * 500 body from a proxy, a Zod issue list naming every field.
+ *
+ * This is a volume control, not redaction. It removes the *tail*, and anything
+ * worth redacting would appear at the head. No path in this repo appends
+ * headers or URLs to the message today (`resilient-caller.ts` passes the MCP
+ * tool's error text through verbatim); if one ever does, the control that case
+ * needs is redaction, not a shorter string.
  */
 export const MAX_ERROR_CHARS = 512;
 
-/** Render an unknown throw as a bounded, single-line message. */
+/** Render an unknown throw as a bounded single-line message. */
 export function truncateError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.length > MAX_ERROR_CHARS ? `${message.slice(0, MAX_ERROR_CHARS)}…` : message;
+  const raw = error instanceof Error ? error.message : String(error);
+  // Collapse first: an HTML body is mostly newlines, and a multi-line payload
+  // wrecks the one-line-per-event monitor rendering.
+  const message = raw.replace(/\s+/g, " ").trim();
+  return message.length > MAX_ERROR_CHARS ? `${message.slice(0, MAX_ERROR_CHARS - 1)}…` : message;
 }
 
 /** Render the stderr line: `  Fetching FOO... 250/5000 pages (5%)`. */

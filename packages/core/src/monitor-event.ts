@@ -162,18 +162,28 @@ export const VFS_FAILED = "vfs.failed" as const;
 /**
  * The terminal events of a vfs operation.
  *
- * Contract for subscribers: every `vfs.started` is followed by exactly one of
- * these — on the success path, on the failure path, and on SIGINT/SIGTERM
- * (Ctrl-C on a long clone is the likeliest way one ends, so the CLI installs a
- * handler for it — see `guardInterrupts` in `commands/vfs.ts`). `mcx monitor
- * --until` and `ctx.waitForEvent` rely on it: without a terminal event a hung
- * clone and a crashed one are indistinguishable, which is the very defect
- * #1249 exists to fix.
+ * What holds: a run that reaches its own end — success or a thrown error —
+ * emits exactly one of these. `ProgressReporter` latches on the first, so the
+ * success and failure paths cannot both fire. That is what makes a slow clone
+ * distinguishable from a crashed one, which is the defect #1249 exists to fix.
  *
- * The one gap that cannot be closed in-process: SIGKILL, a power cut, or a hard
- * runtime crash leave the stream open. A subscriber that must survive those
- * still needs its own ceiling — the contract removes the need for a *routine*
- * timeout, not the need for a backstop.
+ * What does **not** hold, stated plainly because `mcx monitor --until` and
+ * `ctx.waitForEvent` users will otherwise write unbounded waits against it:
+ *
+ * - **A signal-terminated run leaves the stream open.** Ctrl-C, SIGTERM and
+ *   SIGKILL all produce `vfs.started`, some `vfs.progress`, and then nothing.
+ *   Ctrl-C is a likely way a long clone ends, so this is not a corner case.
+ *   Handling it needs a latch shared with the reporter's, so that a signal
+ *   arriving *during* the real terminal publish neither duplicates it nor
+ *   suppresses it; tracked in #3154 rather than approximated here.
+ * - **A terminal publish can be dropped silently.** Publishing is best-effort
+ *   and bounded (`PROGRESS_PUBLISH_TIMEOUT_MS`), so a daemon that stops
+ *   answering mid-publish loses the event with no error and a zero exit code.
+ * - A power cut or hard runtime crash, for the obvious reason.
+ *
+ * So: the contract removes the need for a *routine* timeout on a waiter. It
+ * does not remove the need for a backstop, and a subscriber that blocks
+ * forever on one of these is relying on more than this stream promises.
  */
 export const VFS_TERMINAL_EVENTS = [VFS_COMPLETED, VFS_FAILED] as const;
 

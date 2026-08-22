@@ -152,8 +152,14 @@ describe("truncateError", () => {
 
   test("caps an HTML 500 body so it cannot sit in monitor_events for 7 days", () => {
     const huge = truncateError(new Error("x".repeat(5000)));
-    expect(huge.length).toBe(MAX_ERROR_CHARS + 1); // + the ellipsis
+    expect(huge.length).toBe(MAX_ERROR_CHARS); // the constant is the whole ceiling, ellipsis included
     expect(huge.endsWith("…")).toBe(true);
+  });
+
+  test("collapses a multi-line body, so one event stays one monitor line", () => {
+    expect(truncateError(new Error("<html>\n  <body>\n    500\n  </body>\n</html>"))).toBe(
+      "<html> <body> 500 </body> </html>",
+    );
   });
 
   test("renders a non-Error throw", () => {
@@ -424,7 +430,7 @@ describe("ProgressReporter", () => {
     const { reporter, events } = makeReporter();
     await reporter.start();
     await reporter.fail(new Error("y".repeat(5000)));
-    expect(String(events.at(-1)?.error).length).toBe(MAX_ERROR_CHARS + 1);
+    expect(String(events.at(-1)?.error).length).toBe(MAX_ERROR_CHARS);
   });
 
   test("works with no event sink attached", async () => {

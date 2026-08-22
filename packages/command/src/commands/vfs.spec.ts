@@ -3,13 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloneCache, VfsError } from "@mcp-cli/clone";
-import type { VfsProgressEvent } from "@mcp-cli/clone";
 import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { pollUntil } from "../../../../test/harness";
 import type { VfsDeps } from "./vfs";
 import {
   PROGRESS_PUBLISH_TIMEOUT_MS,
   cmdVfs,
-  guardInterrupts,
   makeProgressPublisher,
   makeToolCaller,
   onRetry,
@@ -584,9 +583,17 @@ describe("makeProgressPublisher (#1249)", () => {
     // constant was handed to an injected fake proved nothing: the previous
     // version passed while the real path took 15,212ms against a 2,000ms
     // ceiling, because the time was spent in ensureDaemon() before any
-    // timeoutMs applied (#3151). This test hangs and fails if the race is
-    // removed — that is the whole point of it.
-    await expect(makeProgressPublisher(neverSettles, 5)({ event: VFS_COMPLETED, ...FIELDS })).resolves.toBeUndefined();
+    // timeoutMs applied (#3151).
+    //
+    // Polled rather than awaited directly: an unbounded `await` on a callee
+    // that never settles is not aborted by Bun's per-test timeout, so removing
+    // the race would hang the whole file rather than fail it — and in this repo
+    // a hanging suite is a far more expensive signal than a failing one.
+    let returned = false;
+    void Promise.resolve(makeProgressPublisher(neverSettles, 5)({ event: VFS_COMPLETED, ...FIELDS })).then(() => {
+      returned = true;
+    });
+    await pollUntil(() => returned);
   });
 
   test("a publish that rejects after the bound expires does not surface later", async () => {
@@ -612,6 +619,20 @@ describe("makeProgressPublisher (#1249)", () => {
     expect(calls[0].opts?.timeoutMs).toBe(PROGRESS_PUBLISH_TIMEOUT_MS);
   });
 
+  test("cmdVfs passes the progress sink through to clone", async () => {
+    let seen: unknown;
+    const deps = makeDeps({
+      onEvent: () => {},
+      clone: async (opts) => {
+        seen = opts.onEvent;
+        return { path: "/tmp/t", pageCount: 0, stubCount: 0, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
+      },
+    });
+
+    await cmdVfs(["clone", "confluence", "FOO"], undefined, deps);
+    expect(seen).toBe(deps.onEvent);
+  });
+
   test("swallows IPC failures — a clone must not die over telemetry", async () => {
     const calls: IpcCall[] = [];
     const publish = makeProgressPublisher(
@@ -622,147 +643,6 @@ describe("makeProgressPublisher (#1249)", () => {
 
     await expect(publish({ event: VFS_STARTED, ...FIELDS, current: 0 })).resolves.toBeUndefined();
     expect(calls).toHaveLength(1);
-  });
-});
-
-describe("guardInterrupts (#1249)", () => {
-  const BASE = {
-    runId: "0123456789abcdef",
-    operation: "clone",
-    provider: "confluence",
-    scope: "FOO",
-    repoRoot: "/tmp/atlassian/foo",
-    unit: "pages",
-  } as const;
-
-  /** Signal hooks that record registrations and let a test fire one by hand. */
-  function fakeSignals() {
-    const registered = new Map<string, Array<() => void>>();
-    const exits: number[] = [];
-    const hooks = {
-      on: (signal: NodeJS.Signals, handler: () => void) => {
-        registered.set(signal, [...(registered.get(signal) ?? []), handler]);
-      },
-      off: (signal: NodeJS.Signals, handler: () => void) => {
-        registered.set(
-          signal,
-          (registered.get(signal) ?? []).filter((h) => h !== handler),
-        );
-      },
-      exit: (code: number) => {
-        exits.push(code);
-      },
-    };
-    const fire = async (signal: NodeJS.Signals) => {
-      for (const h of registered.get(signal) ?? []) h();
-      // The handler publishes asynchronously before exiting; give it its turn.
-      await Promise.resolve();
-      await Promise.resolve();
-    };
-    const count = (signal: NodeJS.Signals) => (registered.get(signal) ?? []).length;
-    return { hooks, exits, fire, count };
-  }
-
-  test("Ctrl-C on a running clone emits a terminal vfs.failed", async () => {
-    // Measured before this guard: started, progress, then silence and exit 130.
-    // `mcx monitor --until vfs.completed` never terminated.
-    const published: VfsProgressEvent[] = [];
-    const { hooks, exits, fire } = fakeSignals();
-    const guard = guardInterrupts((e) => {
-      published.push(e);
-    }, hooks);
-
-    await guard.sink?.({ event: VFS_STARTED, ...BASE, current: 0 });
-    await guard.sink?.({ event: VFS_PROGRESS, ...BASE, stage: "list", current: 250, total: 5000, percent: 5 });
-    await fire("SIGINT");
-
-    expect(published.map((e) => e.event)).toEqual([VFS_STARTED, VFS_PROGRESS, VFS_FAILED]);
-    // The terminal event carries where the run actually got to, not a bare stub.
-    expect(published[2]).toMatchObject({
-      runId: BASE.runId,
-      repoRoot: BASE.repoRoot,
-      stage: "list",
-      current: 250,
-      total: 5000,
-      error: "interrupted by SIGINT",
-    });
-    expect(exits).toEqual([130]); // 128 + SIGINT
-  });
-
-  test("SIGTERM closes the stream too, with its own exit code", async () => {
-    const published: VfsProgressEvent[] = [];
-    const { hooks, exits, fire } = fakeSignals();
-    const guard = guardInterrupts((e) => {
-      published.push(e);
-    }, hooks);
-
-    await guard.sink?.({ event: VFS_STARTED, ...BASE, current: 0 });
-    await fire("SIGTERM");
-
-    expect(published.at(-1)).toMatchObject({ event: VFS_FAILED, error: "interrupted by SIGTERM" });
-    expect(exits).toEqual([143]);
-  });
-
-  test("a signal after the run already ended does not emit a second terminal", async () => {
-    const published: VfsProgressEvent[] = [];
-    const { hooks, exits, fire } = fakeSignals();
-    const guard = guardInterrupts((e) => {
-      published.push(e);
-    }, hooks);
-
-    await guard.sink?.({ event: VFS_STARTED, ...BASE, current: 0 });
-    await guard.sink?.({ event: VFS_COMPLETED, ...BASE, current: 40, items: 40 });
-    await fire("SIGINT");
-
-    expect(published.filter((e) => e.event === VFS_FAILED || e.event === VFS_COMPLETED)).toHaveLength(1);
-    expect(exits).toEqual([130]);
-  });
-
-  test("a signal before anything started emits nothing", async () => {
-    const published: VfsProgressEvent[] = [];
-    const { hooks, exits, fire } = fakeSignals();
-    guardInterrupts((e) => {
-      published.push(e);
-    }, hooks);
-
-    await fire("SIGINT");
-    expect(published).toEqual([]);
-    expect(exits).toEqual([130]);
-  });
-
-  test("dispose removes both handlers, so subcommands do not accumulate them", () => {
-    const { hooks, count } = fakeSignals();
-    const guard = guardInterrupts(() => {}, hooks);
-    expect(count("SIGINT")).toBe(1);
-    expect(count("SIGTERM")).toBe(1);
-    guard.dispose();
-    expect(count("SIGINT")).toBe(0);
-    expect(count("SIGTERM")).toBe(0);
-  });
-
-  test("registers nothing when there is no sink to guard", () => {
-    const { hooks, count } = fakeSignals();
-    const guard = guardInterrupts(undefined, hooks);
-    expect(guard.sink).toBeUndefined();
-    expect(count("SIGINT")).toBe(0);
-  });
-
-  test("cmdVfs routes clone progress through the guard", async () => {
-    const seen: VfsProgressEvent[] = [];
-    const { hooks } = fakeSignals();
-    const deps = makeDeps({
-      onEvent: (e) => {
-        seen.push(e);
-      },
-      signals: hooks,
-      clone: async (opts) => {
-        await opts.onEvent?.({ event: VFS_STARTED, ...BASE, current: 0 });
-        return { path: "/tmp/t", pageCount: 0, stubCount: 0, scope: { key: "FOO", cloudId: "c1", resolved: {} } };
-      },
-    });
-
-    await cmdVfs(["clone", "confluence", "FOO"], undefined, deps);
-    expect(seen.map((e) => e.event)).toEqual([VFS_STARTED]);
   });
 });
 
