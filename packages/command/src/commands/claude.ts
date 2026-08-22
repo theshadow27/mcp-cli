@@ -118,7 +118,15 @@ export const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
+    // `cwd` is the LAST fallback for resolving a spawn's domain (#3039). Safe to send
+    // unconditionally: only `resolveSpawnDomainId` reads it, never the filter path, so
+    // it cannot make `--all` start scoping. Without it `callerCwd` is dead code on
+    // every real CLI path, since no `mcx claude`/`mcx agent` call sent it.
+    return ipcCall(
+      "callTool",
+      { server: CLAUDE_SERVER_NAME, tool, arguments: args, cwd: process.cwd() },
+      { timeoutMs },
+    );
   },
   log: console.log,
   printError: defaultPrintError,
@@ -493,7 +501,10 @@ async function resolveEndedSessionForResume(
   return { claudeSessionId: session.claudeSessionId, cwd: session.cwd };
 }
 
-async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
+async function claudeSpawn(rawArgs: string[], d: ClaudeDeps): Promise<void> {
+  // `*_prompt` advertises `domain`, and `resolveSpawnDomainId` honours it — without a
+  // flag you could filter by a named domain but not spawn into one (#3039 review 12).
+  const { domain: spawnDomain, rest: args } = extractDomainFlag(rawArgs);
   if (hasHelpFlag(args)) {
     const spawnHelp = getHelp("claude spawn");
     if (spawnHelp) {
@@ -613,6 +624,9 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
+  // An explicit `-d` outranks every path the daemon would otherwise resolve from, and
+  // an unregistered name fails the spawn rather than landing it somewhere else.
+  if (spawnDomain) toolArgs.domain = spawnDomain;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;
@@ -1144,11 +1158,12 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
       toolArgs.domain = domain;
       activeFilter = domain;
     } else {
-      // Both are sent: the daemon prefers the domain when this directory is in
-      // one and ignores `repoRoot`, and falls back to `repoRoot` when it is not.
-      // The CLI cannot tell which happened — it has no domains table, which is
-      // exactly why it stopped trying to (`scopeRoot` used to).
+      // Both are sent and BOTH apply server-side. The CLI cannot tell whether a
+      // domain resolved — it has no domains table, which is exactly why it stopped
+      // trying to (`scopeRoot` used to) — but it does know it ASKED for domain
+      // scoping, which is enough to label honestly and to keep the `--all` hint.
       toolArgs.domainCwd = process.cwd();
+      activeFilter = process.cwd();
       const gitRoot = d.getGitRoot();
       if (isLookupFailure(gitRoot)) {
         d.printError(gitRoot.message);
@@ -1158,7 +1173,9 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
       }
     }
   }
-  const filterLabel = toolArgs.domain ? "other domains" : "other repos";
+  // "other repos" was a lie whenever the domain filter is what excluded them, and the
+  // hint vanished entirely when getGitRoot() failed in a non-git domain directory.
+  const filterLabel = toolArgs.domain ? "other domains" : "other domains or repos";
 
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
@@ -2020,6 +2037,7 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       domainFilter = parsed.domain;
     } else {
       toolArgs.domainCwd = process.cwd();
+      domainFilter = process.cwd();
       const gitRoot = d.getGitRoot();
       if (isLookupFailure(gitRoot)) {
         d.printError(gitRoot.message);
@@ -2087,8 +2105,8 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // Guard: if data has BOTH sessions and events, the cursor branch below must win —
   // events live in the events array, not in unified.event, so formatWaitHeader
   // would incorrectly emit event=timeout for the unified branch.
-  const activeFilter = domainFilter ?? repoFilter;
-  const filterLabel = domainFilter ? "other domains" : "other repos";
+  const activeFilter = repoFilter ?? domainFilter;
+  const filterLabel = parsed.domain ? "other domains" : repoFilter ? "other domains or repos" : "other domains";
   if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
@@ -2369,9 +2387,11 @@ Usage:
   mcx claude resume <worktree> <session>   Resume specific session (--resume <id>)
   mcx claude resume <worktree> --fresh     Resume with git-context prompt (no history)
   mcx claude resume --all                  Resume all orphaned worktrees
-  mcx claude ls [--pr] [--all]             List sessions (scoped to current repo by default)
+  mcx claude ls [--pr] [--all]             List sessions (scoped to current domain/repo by default)
+  mcx claude ls -d <domain>                List sessions in a named domain, from anywhere
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session] [--all]        Block until a session event occurs
+  mcx claude wait -d <domain>              Block on events in a named domain only
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session> [--reason <text>]  Interrupt the current turn
   mcx claude approve <session>              Approve latest pending permission request

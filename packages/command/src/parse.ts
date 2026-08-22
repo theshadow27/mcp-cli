@@ -201,7 +201,10 @@ export function extractDomainFlag(args: string[]): { domain: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if ((arg === "-d" || arg === "--domain") && i + 1 < args.length) {
+    // The value must not itself look like a flag: `mcx claude ls -d --json` used to
+    // send `domain: "--json"` and fail on a domain nobody typed, while also eating the
+    // `--json` the caller did type. A missing value is left for the caller to notice.
+    if ((arg === "-d" || arg === "--domain") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
       domain = args[i + 1];
       i++; // skip the value
     } else if (arg.startsWith("--domain=")) {

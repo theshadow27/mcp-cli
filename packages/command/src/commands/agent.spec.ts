@@ -306,6 +306,50 @@ describe("agent codex spawn", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
 
+  test("-d spawns INTO a named domain (the schema advertised it with no flag to set it)", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "-d", "phoenix"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ domain: "phoenix" }));
+  });
+
+  test("sends the caller's cwd when --cwd is omitted, so the session records a domain", async () => {
+    // Without this the session books into domain 0 and goes INVISIBLE to its own
+    // `mcx agent codex ls` — codex/acp/opencode/mock have no repoRoot fallback to
+    // catch it, so the domain filter is the only filter and it excludes the row.
+    // The claude sibling always had this fallback; agent.ts did not (#3039 review 1).
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ cwd: "/fake/cwd" }));
+  });
+
+  test("the cwd that reaches the daemon is always absolute, as domain resolution requires", async () => {
+    // `domainIdForPath` rejects a relative path, so a relative --cwd would book into
+    // domain 0. It cannot: parseSharedSpawnArgs already resolves it. Asserted here as a
+    // regression guard on that guarantee rather than duplicating the resolve() locally —
+    // two places claiming to absolutize is how one of them quietly stops.
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--cwd", "./sub"], deps);
+    const call = (deps.callTool as ReturnType<typeof mock>).mock.calls.find((c) => c[0] === "codex_prompt");
+    const sentCwd = (call?.[1] as { cwd?: string }).cwd;
+    expect(sentCwd?.startsWith("/")).toBe(true);
+    expect(sentCwd?.endsWith("/sub")).toBe(true);
+  });
+
+  test("--worktree still suppresses the cwd fallback", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "wt"], deps);
+    const call = (deps.callTool as ReturnType<typeof mock>).mock.calls.find((c) => c[0] === "codex_prompt");
+    expect((call?.[1] as { cwd?: string }).cwd).toBeUndefined();
+  });
+
   test("passes worktree name to daemon", async () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1" })),

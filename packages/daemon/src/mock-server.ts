@@ -19,6 +19,7 @@ import {
   formatToolSignature,
 } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { DbUpsertSession } from "./abstract-worker-server";
 import { closeClientWithTimeout } from "./close-timeout";
 import type { StateDb } from "./db/state";
 import { MOCK_TOOLS } from "./mock-session/tools";
@@ -31,15 +32,14 @@ import { WorkerClientTransport } from "./worker-transport";
 
 interface DbUpsert {
   type: "db:upsert";
-  session: {
-    sessionId: string;
-    pid?: number;
-    state?: string;
-    model?: string;
-    cwd?: string;
-    worktree?: string;
-    repoRoot?: string;
-  };
+  /**
+   * The SHARED payload type, not a private copy. The private copy declared no
+   * `domainId`, so mock's session domain reached SQLite only because structural
+   * typing does not strip an undeclared runtime key — it worked by accident, and
+   * the first `{...event.session}` rebuild anywhere on this path would have
+   * dropped the partition silently (#3039 review 11).
+   */
+  session: DbUpsertSession;
 }
 
 interface DbState {
@@ -289,12 +289,18 @@ export class MockServer {
     switch (event.type) {
       case "ready":
         break;
-      case "db:upsert":
+      case "db:upsert": {
         this.activeSessions.add(event.session.sessionId);
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
-        this.db.upsertSession(event.session);
+        // Same null-stripping AbstractWorkerServer does: the wire type allows
+        // `pidStartTime: null` ("looked, found nothing") and StateDb takes only a
+        // number. MockServer predates that base class and keeps its own handler,
+        // which is exactly why it silently lacked `domainId` until now.
+        const { pidStartTime, ...rest } = event.session;
+        this.db.upsertSession(pidStartTime == null ? rest : { ...rest, pidStartTime });
         this.onActivity?.();
         break;
+      }
       case "db:state":
         this.sessionAddedAt.set(event.sessionId, Date.now());
         this.db.updateSessionState(event.sessionId, event.state);

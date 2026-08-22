@@ -55,9 +55,17 @@ export interface AgentSessionInfo {
    * **Required, not optional, deliberately.** `agent_sessions` is a partitioned
    * table and a partition column that only some writers populate is worse than
    * none: it reads as "no sessions here" rather than "not recorded". Making the
-   * field required means every provider's `getInfo()` fails to compile until it
-   * supplies one — the invariant is a type a caller cannot cast past rather than
-   * a sentence in a doc. See `docs/domains.md`.
+   * field required means every provider that RETURNS this type fails to compile
+   * until it supplies one — a type a caller cannot cast past rather than a
+   * sentence in a doc.
+   *
+   * The guarantee is not total, and saying so matters more than the claim: the
+   * mock worker hand-builds its listing object instead of returning
+   * `AgentSessionInfo`, so it is outside this check and carries `domainId`
+   * because someone remembered — the mechanism this comment argues against. What
+   * covers mock instead is the `session-wait-domain-scoped` rule plus
+   * `session-domain-roundtrip.spec.ts`, which drives mock's real worker. See
+   * `docs/domains.md`.
    */
   domainId: number;
   /** Whether the agent process is still alive. */

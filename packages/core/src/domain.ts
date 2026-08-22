@@ -77,6 +77,21 @@ export function toDomainFilter(domainId: number | undefined): number | undefined
 }
 
 /**
+ * Read the daemon-injected domain filter off a worker tool-call argument bag.
+ *
+ * Shared rather than re-spelled in each of the five session workers: this is the
+ * point where four of them silently dropped the filter on `*_wait` while honouring
+ * it on `*_session_list` twenty lines above. One reader means a provider either
+ * has the filter or does not compile with it.
+ *
+ * Always a number the daemon resolved — never a name, never a path. `undefined`
+ * means no domain scoping applies.
+ */
+export function domainFilterArg(args: Record<string, unknown>): number | undefined {
+  return typeof args.domainId === "number" ? args.domainId : undefined;
+}
+
+/**
  * True when `session` belongs to the domain being filtered for.
  *
  * `domainId === undefined` means no filter, so everything passes. A session that
