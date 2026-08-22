@@ -156,6 +156,59 @@ describe("parseMailArgs", () => {
     // splitting here would mean two implementations of the last-@ rule.
     expect(parseMailArgs(["-s", "hi", "orchestrator@phoenix"]).recipient).toBe("orchestrator@phoenix");
   });
+
+  /**
+   * `-d` and `--domain` are one flag with two spellings, and both must behave
+   * identically in every position.
+   *
+   * Asserting only `.domain` would be asserting the column instead of the constraint:
+   * if `-d` were ever mis-specced as a boolean, its value would fall through to
+   * `positionals[0]` and become the *recipient* — `mcx mail -d phoenix -s hi boss`
+   * would silently send to `phoenix` and drop `boss`, while a `.domain`-only
+   * assertion stayed green. So each case pins the recipient too.
+   *
+   * This is the `mcx claude bye --all` defect class: two spellings of one flag doing
+   * different things, with no test that exercised both.
+   */
+  test("-d and --domain are interchangeable and never swallow the recipient", () => {
+    const cases: string[][] = [
+      ["-d", "phoenix", "-s", "hi", "boss"],
+      ["--domain", "phoenix", "-s", "hi", "boss"],
+      ["--domain=phoenix", "-s", "hi", "boss"],
+      ["-s", "hi", "-d", "phoenix", "boss"],
+      ["-s", "hi", "boss", "-d", "phoenix"],
+      ["-s", "hi", "boss", "--domain=phoenix"],
+    ];
+    for (const argv of cases) {
+      const args = parseMailArgs(argv);
+      expect({ argv, domain: args.domain, recipient: args.recipient, error: args.error }).toEqual({
+        argv,
+        domain: "phoenix",
+        recipient: "boss",
+        error: undefined,
+      });
+    }
+  });
+
+  test("-d does not shadow the other flags' values in any position", () => {
+    expect(parseMailArgs(["-d", "phoenix", "-u", "boss"]).user).toBe("boss");
+    expect(parseMailArgs(["-d", "phoenix", "-r", "7"]).replyTo).toBe(7);
+    expect(parseMailArgs(["-d", "phoenix", "--wait", "--for=boss"]).forRecipient).toBe("boss");
+    expect(parseMailArgs(["-d", "phoenix", "--from=bot", "-s", "x", "boss"]).from).toBe("bot");
+  });
+
+  test("both spellings resolve last-wins when repeated or mixed", () => {
+    // Neither spelling gets priority over the other — only position decides.
+    expect(parseMailArgs(["-d", "alpha", "--domain", "beta", "-s", "x", "b"]).domain).toBe("beta");
+    expect(parseMailArgs(["--domain", "beta", "-d", "alpha", "-s", "x", "b"]).domain).toBe("alpha");
+    expect(parseMailArgs(["-d", "alpha", "-d", "beta", "-s", "x", "b"]).domain).toBe("beta");
+  });
+
+  test("a valueless -d errors in either spelling rather than consuming the next flag", () => {
+    expect(parseMailArgs(["-d"]).error).toBe("-d requires a domain name");
+    expect(parseMailArgs(["--domain"]).error).toBe("-d requires a domain name");
+    expect(parseMailArgs(["-d", "-s"]).error).toBe("-d requires a domain name");
+  });
 });
 
 describe("cmdMail", () => {
