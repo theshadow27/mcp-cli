@@ -32,7 +32,8 @@ const SCOPE_PROPERTIES = {
   },
   domain: {
     type: "string",
-    description: "Explicit domain name, e.g. 'phoenix'. Wins over `cwd`. Required unless `cwd`.",
+    description:
+      "Explicit domain name, e.g. 'phoenix'. \"_\" is the unassigned partition. Wins over `cwd`. Required unless `cwd`.",
   },
 } as const;
 

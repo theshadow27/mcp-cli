@@ -199,38 +199,74 @@ describe("MailHandlers — failure directions", () => {
     }
   });
 
-  test("a cwd outside every domain is refused once any domain exists", async () => {
+  /**
+   * #3038 RED 1 — the merge-blocker, as a test.
+   *
+   * The `domains` table auto-populates on daemon boot from `mcx scope` sidecars, with no
+   * user action. The previous revision only returned partition 0 when that table was
+   * empty, so one auto-imported row made every mail call from anywhere else throw —
+   * orphaning the whole mail history including the operator mailbox, with no recovery
+   * command shipped.
+   *
+   * `f.nowhere` is outside `alpha` and `beta`. Mail from there must keep working.
+   */
+  test("a cwd outside every domain keeps working when other domains exist", async () => {
     const f = fixture();
-    await expect(invoke(f.map, "sendMail")({ sender: "a", recipient: "b", cwd: f.nowhere }, CTX)).rejects.toThrow(
-      /outside every registered domain/,
-    );
+    await send(f, { sender: "orchestrator", recipient: "boss", subject: "blocked", cwd: f.nowhere });
+    expect((await read(f, { recipient: "boss", cwd: f.nowhere })).map((m) => m.subject)).toEqual(["blocked"]);
+    // ...and it is still a partition: alpha cannot see it, and it cannot see alpha.
+    await send(f, { sender: "w", recipient: "boss", subject: "alpha-only", cwd: f.alpha });
+    expect((await read(f, { recipient: "boss", cwd: f.nowhere })).map((m) => m.subject)).toEqual(["blocked"]);
+    expect((await read(f, { recipient: "boss", cwd: f.alpha })).map((m) => m.subject)).toEqual(["alpha-only"]);
   });
 
-  test("a cwd outside every domain is the unassigned partition when none are registered", async () => {
+  test("the same works before any domain is registered — the escape hatch either way", async () => {
     const f = fixture({ domains: false });
-    // The escape hatch: `mcx mail … boss` works before anyone runs `mcx domain add`.
     await send(f, { sender: "orchestrator", recipient: "boss", subject: "blocked", cwd: f.nowhere });
     expect((await read(f, { recipient: "boss", cwd: f.nowhere })).map((m) => m.subject)).toEqual(["blocked"]);
   });
 
-  test("a cross-domain send from the unassigned partition is refused — no return address", async () => {
+  /** Partition 0 is addressable by name, so mail stranded there is recoverable. */
+  test("partition 0 is reachable by -d _ from inside a registered domain", async () => {
     const f = fixture();
-    await expect(
-      invoke(f.map, "sendMail")({ sender: "a", recipient: "orchestrator@alpha", domain: undefined, cwd: f.beta }, CTX),
-    ).resolves.toBeDefined(); // beta → alpha is fine: beta has a name.
-
-    const g = fixture({ domains: false });
-    // With no domains at all there is nothing to address, and naming one errors.
-    await expect(
-      invoke(g.map, "sendMail")({ sender: "a", recipient: "orchestrator@alpha", cwd: g.nowhere }, CTX),
-    ).rejects.toThrow(/unknown domain/);
+    await send(f, { sender: "orchestrator", recipient: "boss", subject: "stranded", cwd: f.nowhere });
+    // A caller sitting inside `alpha` can still reach it, which is the recovery path.
+    expect((await read(f, { recipient: "boss", cwd: f.alpha, domain: "_" })).map((m) => m.subject)).toEqual([
+      "stranded",
+    ]);
   });
 
-  test("markRead cannot mark another domain's message read", async () => {
+  test("partition 0 can send across a boundary and receive the reply", async () => {
+    const f = fixture();
+    await send(f, { sender: "worker", recipient: "orchestrator@alpha", subject: "ping", cwd: f.nowhere });
+
+    const inAlpha = await read(f, { recipient: "orchestrator", cwd: f.alpha });
+    expect(inAlpha.map((m) => m.subject)).toEqual(["ping"]);
+    expect(inAlpha[0].sender).toBe("worker@_"); // a real return address
+
+    await invoke(f.map, "replyToMail")({ id: inAlpha[0].id, sender: "orchestrator", body: "pong", cwd: f.alpha }, CTX);
+    const back = await read(f, { recipient: "worker", cwd: f.nowhere });
+    expect(back.map((m) => m.body)).toEqual(["pong"]);
+    expect(back[0].sender).toBe("orchestrator@alpha");
+    // The reply did NOT stay in alpha.
+    expect(await read(f, { recipient: "worker", cwd: f.alpha })).toHaveLength(0);
+  });
+
+  /** #3038 RED 4 — the boolean is the partition check; discarding it reported success. */
+  test("markRead cannot mark another domain's message read, and says so", async () => {
     const f = fixture();
     const id = await send(f, { sender: "w", recipient: "orchestrator", cwd: f.alpha });
-    await invoke(f.map, "markRead")({ id, cwd: f.beta }, CTX);
+    await expect(invoke(f.map, "markRead")({ id, cwd: f.beta }, CTX)).rejects.toThrow(/not found/);
     expect(await read(f, { recipient: "orchestrator", unreadOnly: true, cwd: f.alpha })).toHaveLength(1);
+  });
+
+  test("markRead in the owning partition succeeds, and is idempotent", async () => {
+    const f = fixture();
+    const id = await send(f, { sender: "w", recipient: "orchestrator", cwd: f.alpha });
+    await invoke(f.map, "markRead")({ id, cwd: f.alpha }, CTX);
+    expect(await read(f, { recipient: "orchestrator", unreadOnly: true, cwd: f.alpha })).toHaveLength(0);
+    // Re-marking an already-read message must NOT be mistaken for a partition miss.
+    await expect(invoke(f.map, "markRead")({ id, cwd: f.alpha }, CTX)).resolves.toEqual({});
   });
 
   test("replyToMail cannot reply to another domain's message", async () => {
@@ -273,5 +309,45 @@ describe("MailHandlers — failure directions", () => {
     await expect(
       invoke(f.map, "sendMail")({ sender: "spoof@beta", recipient: "orchestrator", cwd: f.alpha }, CTX),
     ).rejects.toThrow(/may only be qualified/);
+  });
+
+  /**
+   * #3038 RED 3 — end to end, because the pure-function test cannot show the payload.
+   * `evil@beta@alpha` from alpha passed the spoof guard (suffix IS alpha), stored as a
+   * bare-looking `evil@beta`, and the victim's reply carried the body out to beta.
+   */
+  test("a sender cannot smuggle a second address in its local part", async () => {
+    const f = fixture();
+    await expect(
+      invoke(f.map, "sendMail")({ sender: "evil@beta@alpha", recipient: "orchestrator", cwd: f.alpha }, CTX),
+    ).rejects.toThrow(/local part/);
+    // Nothing was written anywhere.
+    expect(await read(f, { cwd: f.alpha })).toHaveLength(0);
+    expect(await read(f, { cwd: f.beta })).toHaveLength(0);
+  });
+
+  /**
+   * #3038 RED 1, in the exact shape that shipped: a `mcx scope` sidecar becomes a domain
+   * row at daemon boot with no user action, and the caller is nowhere near it. This is
+   * the box this sprint runs on.
+   */
+  test("an unrelated auto-imported domain does not strand existing mail", async () => {
+    const f = fixture({ domains: false });
+    // Mail written before any domain existed — i.e. the entire history on a real install.
+    await send(f, { sender: "orchestrator", recipient: "boss", subject: "pre-existing", cwd: f.nowhere });
+
+    // A domain appears on boot, covering a directory the caller is not in.
+    f.db.createDomain("gerald", f.alpha);
+
+    // The mail is still readable, and still writable, from where it always was.
+    expect((await read(f, { recipient: "boss", cwd: f.nowhere })).map((m) => m.subject)).toEqual(["pre-existing"]);
+    await send(f, { sender: "orchestrator", recipient: "boss", subject: "still works", cwd: f.nowhere });
+    // Sorted, not in insertion order: `created_at` is second-granularity, so two sends
+    // inside the same second tie and the DESC ordering between them is unspecified.
+    // Pinning the order here would be a flake waiting for a slow CI runner.
+    expect((await read(f, { recipient: "boss", cwd: f.nowhere })).map((m) => m.subject).sort()).toEqual([
+      "pre-existing",
+      "still works",
+    ]);
   });
 });

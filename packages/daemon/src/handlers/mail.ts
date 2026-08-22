@@ -102,7 +102,17 @@ export class MailHandlers {
     handlers.set("markRead", async (params, _ctx) => {
       const { id, cwd, domain } = MarkReadParamsSchema.parse(params);
       const caller = resolveCallerDomain(this.db, { cwd, domain });
-      this.db.markMailRead(id, caller.id);
+      // The return value is the partition check. Discarding it made a cross-partition
+      // mark-read report success — the caller was told it had consumed a message it was
+      // never allowed to see, and the real owner's message stayed unread with no trace.
+      // `changes = 0` means "not in this partition, or not there at all": re-marking an
+      // already-read message in your OWN partition still reports 1, so this cannot
+      // misfire on an idempotent re-mark. Same shape as replyToMail above.
+      if (!this.db.markMailRead(id, caller.id)) {
+        throw Object.assign(new Error(`Mail message ${id} not found`), {
+          code: IPC_ERROR.INVALID_PARAMS,
+        });
+      }
       return {};
     });
   }

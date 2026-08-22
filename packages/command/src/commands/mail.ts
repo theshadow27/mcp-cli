@@ -35,7 +35,12 @@ Mailboxes are created implicitly on first send.
 Mail is scoped to a domain. A bare recipient is local to the domain
 this directory belongs to; \`name@domain\` addresses another domain's
 mailbox, and its replies route back here. A bare read never sees
-another domain's mail. See \`docs/domains.md\`.
+another domain's mail.
+
+A directory outside every registered domain uses the unassigned
+partition, whose reserved name is \`_\` — so \`mcx mail -d _\` and
+\`name@_\` reach it from anywhere. That is where mail written before
+any domain existed still lives. See \`docs/domains.md\`.
 
 Usage:
   mcx mail -s "subject" <recipient>   Send a message (body from stdin)
@@ -52,7 +57,7 @@ Options:
   -u <user>         Read a specific user's mailbox
   -r <msgnum>       Reply to message number
   -N                Suppress header list
-  -d <domain>       Act in this domain (default: the domain owning \$PWD)
+  -d <domain>       Act in this domain (default: the domain owning \$PWD; "_" = unassigned)
   --wait            Block until a message arrives
   --timeout=<sec>   Timeout for --wait (default: 180)
   --for=<name>      Filter --wait by recipient

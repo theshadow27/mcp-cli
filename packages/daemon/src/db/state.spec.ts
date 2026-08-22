@@ -1993,14 +1993,63 @@ describe("StateDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 7", () => {
+    test("fresh DB sets schema version to 8", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(7);
+      expect(version).toBe(8);
       db.close();
+    });
+
+    /**
+     * #3038 RED 2. The domain-scoped mail index has to arrive as a version STEP, not as
+     * an edit to `applyV1Schema()`. The ladder is long past 1, so an edit there runs on
+     * fresh databases — every test DB, green forever — and never on an `mcx.db` that had
+     * already booted a #3143 binary, which is every real install. Production drifts and
+     * no test can see it.
+     *
+     * This is the assertion that was impossible while the change lived in v1: it starts
+     * from an ALREADY-CREATED v7 database and checks the index actually changed.
+     */
+    test("v8 migration swaps the mail index on an already-created v7 database", () => {
+      const p = tmpDb();
+      paths.push(p);
+
+      // Leave the database exactly as a pre-#3038 binary would: v7, with the old index.
+      const db1 = new StateDb(p);
+      db1.getDatabase().exec("DROP INDEX IF EXISTS idx_mail_domain_recipient");
+      db1.getDatabase().exec("CREATE INDEX IF NOT EXISTS idx_mail_recipient ON mail(recipient, read, created_at)");
+      db1.getDatabase().run("UPDATE schema_versions SET version = 7 WHERE name = 'state'");
+      db1.close();
+
+      const db2 = new StateDb(p);
+      const names = db2
+        .getDatabase()
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mail'")
+        .all()
+        .map((r) => r.name);
+      expect(names).toContain("idx_mail_domain_recipient");
+      expect(names).not.toContain("idx_mail_recipient");
+      db2.close();
+    });
+
+    test("v8 migration is inert when the mail table does not exist yet", () => {
+      const p = tmpDb();
+      paths.push(p);
+      // schema_versions seeded ahead of any table — the concurrent-race shape. v8 must
+      // not throw "no such table: mail" and take daemon startup down with it.
+      const seed = new Database(p, { create: true });
+      seed.exec("PRAGMA journal_mode = WAL");
+      seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
+      seed.exec("INSERT INTO schema_versions (name, version) VALUES ('state', 4)");
+      seed.close();
+
+      expect(() => {
+        const db = new StateDb(p);
+        db.close();
+      }).not.toThrow();
     });
 
     test("re-opening migrated DB is idempotent", () => {
@@ -2014,7 +2063,7 @@ describe("StateDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(7);
+      expect(version).toBe(8);
       db2.close();
     });
 
@@ -2036,7 +2085,7 @@ describe("StateDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(7);
+      expect(version).toBe(8);
       db.close();
     });
 

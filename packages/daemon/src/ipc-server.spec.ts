@@ -1266,12 +1266,15 @@ describe("IpcServer HTTP transport", () => {
     expect(json.error?.message).toContain("999");
   });
 
-  test("markRead calls db.markMailRead", async () => {
+  test("markRead calls db.markMailRead with the caller's partition", async () => {
     socketPath = tmpSocket();
-    let markedId: number | undefined;
+    let markedArgs: [number, number] | undefined;
     const db = mockDb({
-      markMailRead: (id: number) => {
-        markedId = id;
+      // Returns true: as of #3038 the boolean IS the partition check, and the handler
+      // treats false as "not in this partition" and throws.
+      markMailRead: (id: number, domainId: number) => {
+        markedArgs = [id, domainId];
+        return true;
       },
     });
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
@@ -1281,7 +1284,19 @@ describe("IpcServer HTTP transport", () => {
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect(json.result).toEqual({});
-    expect(markedId).toBe(7);
+    expect(markedArgs).toEqual([7, NO_DOMAIN_ID]);
+  });
+
+  test("markRead reports a cross-partition miss instead of silently succeeding", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({ markMailRead: () => false });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m11", method: "markRead", params: { id: 7, cwd: MAIL_CWD } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("7");
   });
 
   // -- Error context preservation --

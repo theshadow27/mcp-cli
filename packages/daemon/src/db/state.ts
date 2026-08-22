@@ -334,6 +334,41 @@ export class StateDb {
       })();
       version = 7;
     }
+
+    // v8 (#3038): every mail query is now domain-scoped — insertMail / readMail /
+    // getNextUnread / getMailById / markMailRead all take a required domainId and all
+    // predicate on domain_id, so the partition has to lead the index.
+    //
+    // This is a version step and NOT an edit to applyV1Schema, which is what the warning
+    // on that method forbids: the ladder is already past 1, so an index change written
+    // there would run on fresh test databases (green forever) and never on any mcx.db
+    // that had already booted a #3143 binary (silent production drift). Schema changes
+    // that tests cannot catch are exactly the ones that need a step of their own.
+    //
+    // idx_mail_recipient is dropped rather than kept alongside: no query can use a
+    // (recipient, read, created_at) index once every predicate leads with domain_id, so
+    // leaving it is pure write amplification.
+    if (version < 8) {
+      this.db.transaction(() => {
+        // Guarded on the table existing, the same way v7 guards `agent_sessions`. A
+        // database can sit at version N with the table absent — schema_versions may be
+        // seeded by a racing process before any table is created, and applyV1Schema only
+        // runs at version < 1, so it will not backfill. `CREATE INDEX ... ON mail` would
+        // then throw "no such table" and take the whole daemon start with it.
+        const hasMail =
+          (this.db
+            .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='mail'")
+            .get()?.n ?? 0) > 0;
+        if (hasMail) {
+          this.db.exec("DROP INDEX IF EXISTS idx_mail_recipient");
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_mail_domain_recipient ON mail(domain_id, recipient, read, created_at)",
+          );
+        }
+        this.setSchemaVersion(CONSUMER, 8);
+      })();
+      version = 8;
+    }
   }
 
   /**
@@ -479,16 +514,11 @@ export class StateDb {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
-      -- Every mail query is domain-scoped as of #3038 — insertMail/readMail/getNextUnread/
-      -- getMailById/markMailRead all take a required domainId and all predicate on
-      -- domain_id, so the leading column is the partition. The old idx_mail_recipient
-      -- (recipient, read, created_at) is dropped rather than kept alongside: no query can
-      -- use it any more, which makes it exactly the write amplification its replacement
-      -- comment used to warn about.
-      DROP INDEX IF EXISTS idx_mail_recipient;
+      CREATE INDEX IF NOT EXISTS idx_mail_recipient
+        ON mail(recipient, read, created_at);
 
-      CREATE INDEX IF NOT EXISTS idx_mail_domain_recipient
-        ON mail(domain_id, recipient, read, created_at);
+      -- The domain-scoped replacement for this index is a v8 step, NOT an edit here.
+      -- See the ladder below and the warning on applyV1Schema.
 
       CREATE TABLE IF NOT EXISTS notes (
         server_name TEXT NOT NULL,

@@ -444,12 +444,27 @@ here — this section describes it, that file is what an orchestrator cannot arg
 
 ### The parse rule
 
-An address splits on the **last** `@`. Local parts are free-form role-names and may
-contain `@`; domain names may not, so the trailing segment is unambiguous —
-`claude-a@b@phoenix` is the mailbox `claude-a@b` in domain `phoenix`. The cost of
-adopting the syntax is that the trailing segment is *always* read as a domain: a
-pre-existing mailbox literally named `claude-a@b` is now `claude-a` at domain `b`, and
-errors, because `b` is not registered. It fails loudly rather than delivering somewhere
+An address splits on the **last** `@`, and a local part may **not** itself contain `@`.
+
+The split rule alone is not enough, and the gap was an exfiltration channel rather than a
+cosmetic one. `evil@beta@alpha`, sent from domain `alpha` to a bare local recipient,
+splits to local `evil@beta` with `alpha` as the suffix — so a spoof check on the *domain*
+passes. It stores as a bare-looking `evil@beta`, and when the recipient replies, that
+string re-parses as `evil` at `beta` and carries the body out of `alpha`. Neither party
+ever typed `user@domain`.
+
+The real invariant is therefore:
+
+> A stored address must re-parse to the address that was stored.
+
+Forbidding `@` in a local part is the cheapest total way to guarantee it. The split rule
+stays exactly as pinned — `a@b@c` still parses deterministically to local `a@b`, domain
+`c` — and is then **rejected**. Parsing first and rejecting after keeps the refusal
+explicit rather than an accident of where the string happened to divide.
+
+The cost of adopting the syntax is that the trailing segment is *always* read as a domain:
+a pre-existing mailbox literally named `claude-a@b` is now `claude-a` at domain `b`, and
+errors because `b` is not registered. It fails loudly rather than delivering somewhere
 plausible.
 
 ### What a bare name means
@@ -457,13 +472,40 @@ plausible.
 The caller's own domain, resolved from the **caller's** cwd — never the daemon's, which
 is whatever directory `mcpd` happened to start in. `-d <domain>` overrides it.
 
-A cwd outside every registered domain is an **error** demanding `-d`, per the resolution
-rule above — with one carve-out: when the domains table is empty, it resolves to the
-unassigned partition (`domain_id = 0`). That is not a guess and not a wildcard. It is the
-single closed partition that means "no domain", and it is what makes `mcx mail` work
-before anyone has run `mcx domain add` — including the operator escape hatch this repo
-depends on during sprints. The moment one domain exists, the carve-out is gone, because
-dropping into partition 0 *alongside* a live partition would be silent misdelivery.
+A cwd outside every registered domain resolves to the **unassigned partition**
+(`domain_id = 0`), always — not conditionally. That is a total function, not a guess:
+every caller maps to exactly one partition, deterministically, and the answer never
+depends on how many other domains happen to exist. What the resolution rule above forbids
+is inventing an *arbitrary named* domain for an un-domained caller; partition 0 is the
+opposite of arbitrary.
+
+### Partition 0 is a partition, not a fallback
+
+Rows written before any domain was resolved carry `domain_id = 0`. On an existing install
+that is the **entire mail history**, so partition 0 is not an edge case to tolerate — it
+is where the data is. It therefore has a reserved name, **`_`**, and is a first-class
+address:
+
+```bash
+mcx mail -d _ -u boss        # read the unassigned partition
+mcx mail -s "..." boss@_     # address it from inside a named domain
+```
+
+`_` is reserved by construction rather than by a check somebody has to remember: it is
+**not a legal domain name** (those must start alphanumeric), so `mcx domain add _ …`
+cannot create a domain that shadows it. It also matches the reserved-namespace convention
+this codebase already uses for virtual servers — `_mail`, `_work_items`, `_metrics`.
+
+This is deliberately **not** a carve-out conditional on the `domains` table being empty.
+An earlier revision made it one, and that was a merge-blocking defect rather than a style
+question: the `domains` table is auto-populated at daemon boot by `importScopesAsDomains`
+from `~/.mcp-cli/scopes/*.json`, with no user action. On any box that ever ran
+`mcx scope`, one domain row appears at startup, a conditional carve-out closes, and every
+mail call from outside that one directory starts throwing — orphaning the whole mail
+history, including the operator mailbox that sprint workers use to report being blocked.
+
+The general rule that came out of it: **no change may close a partition whose recovery
+command has not shipped.** Partition 0 is reachable by name for exactly that reason.
 
 ### Cross-domain delivery
 
@@ -477,21 +519,36 @@ the partition, because:
 - The stored `sender` is rewritten to `local@sender-domain`, so the reply routes back
   across the boundary instead of hitting a same-named mailbox at home.
 - A sender may only qualify itself with its own domain. Otherwise a caller could stamp a
-  message as coming from elsewhere and steer the reply into that domain.
-- A cross-domain send **from** the unassigned partition is refused: partition 0 has no
-  name, so there would be no return address, and a reply would be misdelivered to a
-  third party. Refusing is the closed direction.
+  message as coming from elsewhere and steer the reply into that domain — and because a
+  local part cannot contain `@`, that check cannot be bypassed by burying a second
+  address in the local half.
 - An unknown domain in an address errors at **send** time, not as a row nobody reads.
+
+Partition 0 participates on the same terms as any named domain: it can address others and
+be addressed, and a reply to a message it sent routes home rather than landing on a
+same-named mailbox in the recipient's domain. That falls out of it having a name.
 
 ### Failure directions
 
 Every failure fails **closed** — the call throws and nothing is delivered or read. There
 is deliberately no branch that widens a query, drops the `domain_id` predicate, or falls
-back to a default domain: mail that degrades to "show everything" on an unresolved domain
-is worse than mail that refuses, because the failure is invisible to both parties.
-A message id from another domain reads as *not found*, indistinguishable from a
-nonexistent one, so probing sequential ids reports nothing about another domain.
+back to a *named* domain the caller did not ask for: mail that degrades to "show
+everything" on an unresolved domain is worse than mail that refuses, because the failure
+is invisible to both parties. A message id from another domain reads as *not found*,
+indistinguishable from a nonexistent one, so probing sequential ids reports nothing about
+another domain — and mark-read reports that miss rather than silently succeeding.
 
 `pruneExpiredMail` is the one mail writer that is **not** partitioned, deliberately: it
 is the TTL janitor. It moves no bytes across a boundary and exposes nothing; scoping it
-would mean a partition whose last caller went away never gets swept.
+would mean a partition whose last caller went away never gets swept. It is reachable from
+no IPC method and no CLI command.
+
+### Verifying the guards
+
+Every guard here is checked by **deletion against the concrete-`StateDb` specs**, not
+against a hand-written fake. Mutation-testing a guard with a fake proves the fake is
+wired to the guard, not that the guard is reachable: an earlier revision had a guard whose
+only coverage was a `fakeDb` presenting a combination of states the real database could
+not produce, so deleting it left every test green. The rule is: delete the guard, run the
+specs that use a real `StateDb`, and if nothing goes red, either the guard is unreachable
+or the fake is lying.

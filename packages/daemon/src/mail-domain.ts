@@ -5,8 +5,7 @@
  *
  * > A mail row belongs to exactly one domain partition, and no read, wait, reply or
  * > mark-read ever observes a row outside the caller's partition. Crossing a partition
- * > boundary requires an explicit `user@domain` recipient **and** a sender that itself
- * > has a return address.
+ * > boundary requires an explicit `user@domain`.
  *
  * Every mail path routes through {@link resolveCallerDomain} and {@link resolveDelivery};
  * every `StateDb` mail method takes `domainId` as a **required first parameter**, so a
@@ -14,39 +13,60 @@
  * the "function, not prose" half of that — `docs/domains.md` describes the rule, but the
  * rule is enforced here.
  *
+ * ## Partition 0 is a partition, not a fallback
+ *
+ * Rows written before any domain was resolved carry `domain_id = 0`. On an existing
+ * install that is the **entire mail history**, so partition 0 is not an edge case to be
+ * tolerated — it is where the data is. It is therefore a first-class, addressable
+ * partition with a reserved name ({@link UNASSIGNED_DOMAIN_NAME}, `_`): reachable by
+ * `-d _`, addressable as `boss@_`, and usable as a return address.
+ *
+ * An earlier revision made it a **carve-out** — partition 0 only when `domains` happened
+ * to be empty — and that was a merge-blocking defect, not a style problem. The `domains`
+ * table is auto-populated on daemon boot by `importScopesAsDomains` from
+ * `~/.mcp-cli/scopes/*.json`, with no user action. On any box that ever ran `mcx scope`,
+ * one domain appears at boot, the carve-out closes, and every mail call from outside that
+ * one directory throws — orphaning the whole mail history, including the operator
+ * mailbox that sprint workers use to report being blocked. The reasoning error was
+ * concluding "the table is always empty" from "no *command* writes it".
+ *
+ * So: a caller outside every registered domain resolves to partition 0, **always** —
+ * not conditionally. That is a total function, not a guess: every caller maps to exactly
+ * one partition, deterministically, and the answer never depends on how many other
+ * domains happen to exist. What `docs/domains.md` forbids is inventing an *arbitrary*
+ * domain for an un-domained caller; partition 0 is the opposite of arbitrary.
+ *
  * ## Failure directions
  *
- * Every path in this module fails **closed**: it throws, and the caller delivers nothing
- * and reads nothing. There is deliberately no branch that widens the query, drops the
- * `domain_id` predicate, or falls back to a "default" domain — a mail system that
- * degrades to "show everything" on an unresolved domain is worse than one that refuses,
- * because the failure is invisible to both parties.
- *
- * The one place that does **not** throw is a caller whose cwd is outside every domain
- * *while the domains table is empty*: that resolves to the unassigned partition
- * ({@link NO_DOMAIN_ID}). This is not a guess and not a wildcard — it is the single
- * closed partition that literally means "no domain", and it is what makes mail work at
- * all before anyone has registered a domain. The moment one domain exists, an
- * unresolvable cwd becomes an error demanding `-d`, exactly as `docs/domains.md`
- * prescribes, because silently dropping into partition 0 alongside a live partition is
- * the silent misdelivery this epic exists to prevent.
+ * Every remaining failure fails **closed**: it throws, and the caller delivers nothing
+ * and reads nothing. There is no branch that widens a query, drops the `domain_id`
+ * predicate, or falls back to a *named* domain the caller did not ask for — a mail
+ * system that degrades to "show everything" on an unresolved domain is worse than one
+ * that refuses, because the failure is invisible to both parties.
  */
 
-import { type Domain, IPC_ERROR, NO_DOMAIN_ID, formatMailAddress, parseMailAddress } from "@mcp-cli/core";
+import {
+  type Domain,
+  IPC_ERROR,
+  NO_DOMAIN_ID,
+  UNASSIGNED_DOMAIN_NAME,
+  formatMailAddress,
+  isUnassignedDomainName,
+  parseMailAddress,
+} from "@mcp-cli/core";
 
-/** The partition a mail operation acts on: a real domain, or the unassigned sentinel. */
+/** The partition a mail operation acts on. Always named — partition 0 included. */
 export interface MailDomain {
   id: number;
-  /** The domain's name, or `null` for the unassigned partition — which has no name. */
-  name: string | null;
+  /** The domain's name, or {@link UNASSIGNED_DOMAIN_NAME} for partition 0. Never null. */
+  name: string;
 }
 
-/** The unassigned partition. Has no name, and therefore no return address. */
-export const UNASSIGNED_MAIL_DOMAIN: MailDomain = { id: NO_DOMAIN_ID, name: null };
+/** The unassigned partition, as a fully addressable domain. */
+export const UNASSIGNED_MAIL_DOMAIN: MailDomain = { id: NO_DOMAIN_ID, name: UNASSIGNED_DOMAIN_NAME };
 
 /** The slice of `StateDb` mail resolution needs. Narrow on purpose — this unit-tests without a daemon. */
 export interface MailDomainDb {
-  listDomains(): Domain[];
   getDomainByName(name: string): Domain | null;
   resolveDomain(path: string): Domain | null;
 }
@@ -68,14 +88,26 @@ function toMailDomain(domain: Domain): MailDomain {
 }
 
 /**
+ * Look up a domain **by name**, including the reserved name for partition 0.
+ *
+ * Single lookup path so `-d _` and `user@_` cannot disagree about what `_` means.
+ * Returns `null` for a name that is neither reserved nor registered; callers throw.
+ */
+function lookupDomainByName(db: MailDomainDb, name: string): MailDomain | null {
+  if (isUnassignedDomainName(name)) return UNASSIGNED_MAIL_DOMAIN;
+  const found = db.getDomainByName(name);
+  return found ? toMailDomain(found) : null;
+}
+
+/**
  * Which partition is this caller acting in?
  *
- * 1. `domain` (from `-d`) wins, and must name a registered domain — an unknown name is
- *    an error, never a silently-created partition.
+ * 1. `domain` (from `-d`) wins, and must name a registered domain or the reserved
+ *    `_` — an unknown name is an error, never a silently-created partition.
  * 2. Otherwise `cwd` is resolved through the domains table (longest matching prefix).
- * 3. A `cwd` outside every domain is an error demanding `-d` — **unless** no domains are
- *    registered at all, in which case there is exactly one partition and it is the
- *    unassigned one.
+ * 3. A `cwd` outside every registered domain is **partition 0**, always. See the header:
+ *    this is the property that keeps mail working on a box where a domain row appeared
+ *    at daemon boot without anyone asking for it.
  * 4. Neither supplied is an error. The daemon's own `process.cwd()` is never consulted:
  *    it is the cwd of whatever directory `mcpd` happened to start in, which has no
  *    relationship to the caller's.
@@ -83,11 +115,13 @@ function toMailDomain(domain: Domain): MailDomain {
 export function resolveCallerDomain(db: MailDomainDb, scope: MailScope): MailDomain {
   const explicit = scope.domain?.trim();
   if (explicit) {
-    const found = db.getDomainByName(explicit);
+    const found = lookupDomainByName(db, explicit);
     if (!found) {
-      throw invalidParams(`unknown domain ${JSON.stringify(explicit)} — register it with \`mcx domain add\``);
+      throw invalidParams(
+        `unknown domain ${JSON.stringify(explicit)} — register it with \`mcx domain add\`, or use "${UNASSIGNED_DOMAIN_NAME}" for the unassigned partition`,
+      );
     }
-    return toMailDomain(found);
+    return found;
   }
 
   const cwd = scope.cwd?.trim();
@@ -96,14 +130,7 @@ export function resolveCallerDomain(db: MailDomainDb, scope: MailScope): MailDom
   }
 
   const resolved = db.resolveDomain(cwd);
-  if (resolved) return toMailDomain(resolved);
-
-  // Outside every registered domain. Only safe when there is nothing to be outside of.
-  if (db.listDomains().length === 0) return UNASSIGNED_MAIL_DOMAIN;
-
-  throw invalidParams(
-    `${cwd} is outside every registered domain — name one with -d <domain> (see \`mcx domain ls\`). Mail is not delivered to a guessed domain.`,
-  );
+  return resolved ? toMailDomain(resolved) : UNASSIGNED_MAIL_DOMAIN;
 }
 
 /** Where a message is going, and how it is stamped once it gets there. */
@@ -126,21 +153,27 @@ export interface MailDelivery {
  *
  * - A **bare** recipient resolves to the caller's own partition. It never means "any
  *   domain" and never means "search other domains too".
- * - `user@domain` resolves through the domains table. An unknown domain is an error at
- *   **send** time — the acceptance criterion the issue names — rather than a row written
+ * - `user@domain` resolves by name, `_` included. An unknown domain is an error at
+ *   **send** time — the acceptance criterion #3038 names — rather than a row written
  *   into a partition nobody reads.
- * - A **cross-domain** send from the unassigned partition is refused. Partition 0 has no
- *   name, so the recipient could not be given a return address, and a reply would be
- *   delivered to a same-named mailbox in the *recipient's* domain instead: silent
- *   misdelivery to a third party. Refusing is the closed direction.
  * - A `sender` may carry `@domain` only if it is the caller's own. Otherwise any caller
  *   could stamp a message as coming from another domain and steer the reply into it.
+ *   `parseMailAddress` separately guarantees the local part holds no second address, so
+ *   this check cannot be bypassed by burying one in the local half.
  *
  * Cross-domain traffic does not become an ambient channel because it is per-message and
  * one-directional: the row lands in the recipient's partition and is readable only there.
  * There is no query anywhere that returns rows from more than one partition, so a domain
  * cannot observe another domain's traffic — only receive a message a named sender chose
  * to address to it.
+ *
+ * Note there is deliberately **no** "sender has no return address" branch any more. Every
+ * partition is named, partition 0 included, so a return address always exists. The
+ * previous revision had such a guard and it was **unreachable against a real `StateDb`**:
+ * reaching it required an unassigned caller while `domains` was non-empty, and the old
+ * carve-out made that state impossible. Only a hand-written fake could produce it, so
+ * mutation-testing it against a fake-based spec proved the fake was wired to the guard,
+ * not that the guard ran.
  */
 export function resolveDelivery(
   db: MailDomainDb,
@@ -151,7 +184,7 @@ export function resolveDelivery(
   const sender = parseMailAddress(senderRaw);
   if (sender.domain !== null && sender.domain !== caller.name) {
     throw invalidParams(
-      `cannot send as ${JSON.stringify(senderRaw)} from domain ${JSON.stringify(caller.name ?? "(unassigned)")} — a sender may only be qualified with its own domain`,
+      `cannot send as ${JSON.stringify(senderRaw)} from domain ${JSON.stringify(caller.name)} — a sender may only be qualified with its own domain`,
     );
   }
 
@@ -160,7 +193,7 @@ export function resolveDelivery(
     return { domain: caller, recipient: recipient.local, sender: sender.local, crossDomain: false };
   }
 
-  const target = db.getDomainByName(recipient.domain);
+  const target = lookupDomainByName(db, recipient.domain);
   if (!target) {
     throw invalidParams(
       `unknown domain ${JSON.stringify(recipient.domain)} in recipient ${JSON.stringify(recipientRaw)} — register it with \`mcx domain add\` (see \`mcx domain ls\`)`,
@@ -171,14 +204,8 @@ export function resolveDelivery(
     return { domain: caller, recipient: recipient.local, sender: sender.local, crossDomain: false };
   }
 
-  if (caller.name === null) {
-    throw invalidParams(
-      `cannot send to ${JSON.stringify(recipientRaw)} from outside every domain: the message would have no return address. Register this path with \`mcx domain add\`, or name your domain with -d <domain>.`,
-    );
-  }
-
   return {
-    domain: toMailDomain(target),
+    domain: target,
     recipient: recipient.local,
     sender: formatMailAddress({ local: sender.local, domain: caller.name }),
     crossDomain: true,

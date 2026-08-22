@@ -1,18 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { type Domain, NO_DOMAIN_ID, UNASSIGNED_DOMAIN_NAME } from "@mcp-cli/core";
 import { type MailDomainDb, resolveCallerDomain, resolveDelivery } from "./mail-domain";
+
+/**
+ * Addressing and precedence only.
+ *
+ * The partition semantics — who can read what — are asserted in `handlers/mail.spec.ts`
+ * and `db/state.spec.ts` against a **concrete `StateDb`**, deliberately not here. A fake
+ * can present a combination of states the real database cannot produce, and mutation-
+ * testing a guard against such a fake proves the fake is wired to the guard, not that the
+ * guard is reachable. That is precisely how an unreachable guard survived review once in
+ * this file's history.
+ */
 
 function domain(id: number, name: string, path: string, host: string | null = null): Domain {
   return { id, name, host, path, createdAt: "2026-08-22 00:00:00" };
 }
 
-/** In-memory stand-in for the domains half of StateDb — the resolver needs nothing else. */
 function fakeDb(domains: Domain[]): MailDomainDb {
   return {
-    listDomains: () => domains,
     getDomainByName: (name) => domains.find((d) => d.name === name) ?? null,
     resolveDomain: (path) => {
-      // Longest matching local prefix, mirroring resolveDomainForPath.
       let best: Domain | null = null;
       for (const d of domains) {
         if (d.host !== null) continue;
@@ -30,26 +38,42 @@ const BETA = domain(2, "beta", "/work/beta");
 const BOTH = fakeDb([ALPHA, BETA]);
 const EMPTY = fakeDb([]);
 
+const alpha = { id: 1, name: "alpha" };
+const beta = { id: 2, name: "beta" };
+const unassigned = { id: NO_DOMAIN_ID, name: UNASSIGNED_DOMAIN_NAME };
+
 describe("resolveCallerDomain", () => {
   test("resolves cwd to the domain owning it", () => {
-    expect(resolveCallerDomain(BOTH, { cwd: "/work/alpha/src/deep" })).toEqual({ id: 1, name: "alpha" });
-    expect(resolveCallerDomain(BOTH, { cwd: "/work/beta" })).toEqual({ id: 2, name: "beta" });
+    expect(resolveCallerDomain(BOTH, { cwd: "/work/alpha/src/deep" })).toEqual(alpha);
+    expect(resolveCallerDomain(BOTH, { cwd: "/work/beta" })).toEqual(beta);
   });
 
   test("-d wins over cwd", () => {
-    expect(resolveCallerDomain(BOTH, { cwd: "/work/alpha", domain: "beta" })).toEqual({ id: 2, name: "beta" });
+    expect(resolveCallerDomain(BOTH, { cwd: "/work/alpha", domain: "beta" })).toEqual(beta);
   });
 
   test("an unknown -d is an error, not a new partition", () => {
     expect(() => resolveCallerDomain(BOTH, { cwd: "/work/alpha", domain: "nosuchdomain" })).toThrow(/unknown domain/);
   });
 
-  test("cwd outside every domain is an error once any domain exists", () => {
-    expect(() => resolveCallerDomain(BOTH, { cwd: "/tmp/elsewhere" })).toThrow(/outside every registered domain/);
+  /**
+   * #3038 RED 1. This is the property that keeps mail alive on a box where the `domains`
+   * table filled itself at daemon boot from a `mcx scope` sidecar. The earlier revision
+   * returned partition 0 ONLY when `domains` was empty, so the first auto-imported domain
+   * row orphaned the entire mail history — including the operator mailbox.
+   */
+  test("a cwd outside every domain is partition 0 — whether or not domains exist", () => {
+    expect(resolveCallerDomain(EMPTY, { cwd: "/tmp/elsewhere" })).toEqual(unassigned);
+    expect(resolveCallerDomain(BOTH, { cwd: "/tmp/elsewhere" })).toEqual(unassigned);
+    // The specific shape of the regression: one unrelated domain registered, caller far away.
+    expect(
+      resolveCallerDomain(fakeDb([domain(1, "gerald", "/home/u/github/gerald")]), { cwd: "/home/u/other" }),
+    ).toEqual(unassigned);
   });
 
-  test("cwd outside every domain is the unassigned partition only when none are registered", () => {
-    expect(resolveCallerDomain(EMPTY, { cwd: "/tmp/elsewhere" })).toEqual({ id: NO_DOMAIN_ID, name: null });
+  test("partition 0 is reachable by name, so orphaned mail is addressable", () => {
+    expect(resolveCallerDomain(BOTH, { domain: UNASSIGNED_DOMAIN_NAME })).toEqual(unassigned);
+    expect(resolveCallerDomain(BOTH, { cwd: "/work/alpha", domain: UNASSIGNED_DOMAIN_NAME })).toEqual(unassigned);
   });
 
   test("no cwd and no -d is an error — the daemon's own cwd is never consulted", () => {
@@ -60,10 +84,6 @@ describe("resolveCallerDomain", () => {
 });
 
 describe("resolveDelivery", () => {
-  const alpha = { id: 1, name: "alpha" };
-  const beta = { id: 2, name: "beta" };
-  const unassigned = { id: NO_DOMAIN_ID, name: null };
-
   test("a bare recipient stays in the caller's domain", () => {
     expect(resolveDelivery(BOTH, alpha, "worker", "orchestrator")).toEqual({
       domain: alpha,
@@ -83,23 +103,63 @@ describe("resolveDelivery", () => {
   });
 
   test("user@own-domain is not a cross-domain send", () => {
-    const r = resolveDelivery(BOTH, alpha, "worker", "orchestrator@alpha");
-    expect(r).toEqual({ domain: alpha, recipient: "orchestrator", sender: "worker", crossDomain: false });
+    expect(resolveDelivery(BOTH, alpha, "worker", "orchestrator@alpha")).toEqual({
+      domain: alpha,
+      recipient: "orchestrator",
+      sender: "worker",
+      crossDomain: false,
+    });
   });
 
   test("an unknown domain in the recipient errors at send time", () => {
     expect(() => resolveDelivery(BOTH, alpha, "worker", "orchestrator@nosuchdomain")).toThrow(/unknown domain/);
   });
 
-  test("a cross-domain send from the unassigned partition is refused — no return address", () => {
-    expect(() => resolveDelivery(BOTH, unassigned, "worker", "orchestrator@alpha")).toThrow(/no.*return address/s);
+  test("a reply to a qualified sender routes back across the boundary", () => {
+    expect(resolveDelivery(BOTH, beta, "orchestrator", "worker@alpha")).toEqual({
+      domain: alpha,
+      recipient: "worker",
+      sender: "orchestrator@beta",
+      crossDomain: true,
+    });
   });
 
-  test("bare addressing still works from the unassigned partition", () => {
-    expect(resolveDelivery(EMPTY, unassigned, "worker", "boss")).toEqual({
+  /**
+   * #3038 RED 1, delivery half. Partition 0 has a name, so it can both address other
+   * domains and be addressed — and a reply to a message it sent routes home rather than
+   * landing on a same-named mailbox in the recipient's domain.
+   */
+  test("partition 0 can send across a boundary and receive the reply", () => {
+    const out = resolveDelivery(BOTH, unassigned, "worker", "orchestrator@alpha");
+    expect(out).toEqual({
+      domain: alpha,
+      recipient: "orchestrator",
+      sender: `worker@${UNASSIGNED_DOMAIN_NAME}`,
+      crossDomain: true,
+    });
+    // alpha replies to that return address: back to partition 0, not to alpha's own `worker`.
+    expect(resolveDelivery(BOTH, alpha, "orchestrator", out.sender)).toEqual({
+      domain: unassigned,
+      recipient: "worker",
+      sender: "orchestrator@alpha",
+      crossDomain: true,
+    });
+  });
+
+  test("a named domain can address partition 0 explicitly", () => {
+    expect(resolveDelivery(BOTH, alpha, "worker", `boss@${UNASSIGNED_DOMAIN_NAME}`)).toEqual({
       domain: unassigned,
       recipient: "boss",
-      sender: "worker",
+      sender: "worker@alpha",
+      crossDomain: true,
+    });
+  });
+
+  test("bare addressing inside partition 0 stays there", () => {
+    expect(resolveDelivery(BOTH, unassigned, "orchestrator", "boss")).toEqual({
+      domain: unassigned,
+      recipient: "boss",
+      sender: "orchestrator",
       crossDomain: false,
     });
   });
@@ -113,15 +173,19 @@ describe("resolveDelivery", () => {
     expect(resolveDelivery(BOTH, alpha, "worker@alpha", "orchestrator").sender).toBe("worker");
   });
 
-  test("a reply to a qualified sender routes back across the boundary", () => {
-    // beta received `worker@alpha`; replying addresses that string verbatim.
-    const reply = resolveDelivery(BOTH, beta, "orchestrator", "worker@alpha");
-    expect(reply).toEqual({
-      domain: alpha,
-      recipient: "worker",
-      sender: "orchestrator@beta",
-      crossDomain: true,
-    });
+  /**
+   * #3038 RED 3 — the smuggling channel. `evil@beta@alpha` splits to local `evil@beta`
+   * with the caller's OWN domain as the suffix, so the spoof check passes; it stored as
+   * a bare-looking `evil@beta`, and the victim's reply re-parsed that as evil AT beta and
+   * carried the body out of alpha. Neither party ever typed `user@domain`.
+   */
+  test("an address cannot smuggle a second address in its local part", () => {
+    expect(() => resolveDelivery(BOTH, alpha, "evil@beta@alpha", "orchestrator")).toThrow(/local part/);
+    expect(() => resolveDelivery(BOTH, alpha, "worker", "evil@beta@alpha")).toThrow(/local part/);
+    // And the payload the smuggle would have produced is itself unusable as a sender:
+    // `evil@beta` from alpha is caught by the spoof guard, so it can never be stored
+    // bare and then weaponised on reply.
+    expect(() => resolveDelivery(BOTH, alpha, "evil@beta", "orchestrator")).toThrow(/may only be qualified/);
   });
 
   test("broadcast is domain-local, and @domain broadcasts into that domain", () => {
@@ -132,24 +196,6 @@ describe("resolveDelivery", () => {
       crossDomain: false,
     });
     expect(resolveDelivery(BOTH, alpha, "admin", "*@beta").domain).toEqual(beta);
-  });
-
-  test("a local part containing @ splits on the LAST @", () => {
-    // `claude-a@b` is the mailbox name; `@alpha` is the domain. Splitting on the FIRST
-    // `@` would give local `claude-a` in the invalid domain `b@alpha`.
-    expect(resolveDelivery(BOTH, beta, "x", "claude-a@b@alpha")).toEqual({
-      domain: alpha,
-      recipient: "claude-a@b",
-      sender: "x@beta",
-      crossDomain: true,
-    });
-  });
-
-  test("the trailing segment is ALWAYS read as a domain — a bare name with @ is not a local part", () => {
-    // The documented cost of adopting the syntax: a pre-#3038 mailbox literally named
-    // `claude-a@b` is now `claude-a` at domain `b`, and errors because `b` is not
-    // registered. It fails closed and loudly rather than delivering somewhere plausible.
-    expect(() => resolveDelivery(BOTH, alpha, "x", "claude-a@b")).toThrow(/unknown domain "b"/);
   });
 
   test("a malformed address is refused rather than half-understood", () => {
