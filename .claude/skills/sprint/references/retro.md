@@ -276,16 +276,36 @@ the cadence. See `introspection.md` for the prompt + triage flow.
 ## Clear the sprint-active sentinel
 
 ```bash
-rm -f .claude/sprints/.active
-# Verify it's gone — a stuck sentinel silently turns the main checkout
-# read-only for commits until someone notices (see #2398).
-test ! -e .claude/sprints/.active || { echo "FAILED to clear sentinel"; exit 1; }
+# The sentinel names the sprint that OWNS it — check before clearing. A late
+# wind-down can overlap the next sprint (sprint 77 closed at 08:10 while sprint
+# 78 was eight sessions deep), and an unconditional `rm -f` then lifts the
+# pre-commit guard on a LIVE sprint. Silent, and in the dangerous direction.
+ACTIVE=$(cat .claude/sprints/.active 2>/dev/null || true)
+if [ -z "$ACTIVE" ]; then
+  echo "sentinel already clear"
+elif [ "$ACTIVE" != "{N}" ]; then
+  echo "REFUSING to clear: .active names sprint $ACTIVE, not {N} — a later sprint owns it."
+  echo "Leave it. Sprint $ACTIVE's retro will clear it."
+else
+  rm -f .claude/sprints/.active
+  # Verify it's gone — a stuck sentinel silently turns the main checkout
+  # read-only for commits until someone notices (see #2398).
+  test ! -e .claude/sprints/.active || { echo "FAILED to clear sentinel"; exit 1; }
+fi
 ```
 
 This lifts the pre-commit guard (#1443) so post-sprint maintenance commits
 on main no longer need `SPRINT_OVERRIDE=1`. Do it only after the sprint PR
 merges and the worktree is removed — a stuck sentinel on a dead sprint
 still blocks commits.
+
+**Why it checks whose sprint it is**: the step was written when only one
+sprint existed at a time, so it never re-validated that assumption. Sprint 77's
+wind-down ran *concurrently* with sprint 78 and its orchestrator noticed the
+sentinel read `78`, then declined to clear it and reported the hole rather than
+following the procedure. Had it followed the procedure, the guard would have
+come off a sprint with eight sessions in flight. A check whose precondition
+nobody re-validates is the recurring shape of this project's worst bugs.
 
 **Why a guaranteed terminal step**: in sprint 63 the retro ran and merged
 but the sentinel survived (mtime predated the retro commit), then blocked

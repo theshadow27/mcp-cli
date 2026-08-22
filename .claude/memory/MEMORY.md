@@ -27,6 +27,7 @@
 - [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
 - [Meta-issue planning guard](feedback_meta_issue_planning_guard.md) — exclude issues whose surface is .claude/phases/**, .mcx.yaml, or .claude/skills/** at plan time (meta; sprint-74 note: #2804 merged with a reload-after-merge protocol but cost 3 lock rounds via #2737)
+- [Halt needs a durable artifact](feedback_halt_needs_durable_artifact.md) — a resume plan in sprint markdown is read by nobody; sprint 77 stalled 19 days undetected
 - [Never bypass gates (--no-verify banned)](feedback_never_bypass_gate.md) — push blocked by a flake → retry (never --no-verify); same tracked signature → wait + retry once more; NEW signature → stop and report. CI on clean runners is the arbiter
 - [Rate-limited sessions: send first, restart never](feedback_rate_limited_send_first.md) — after quota reset, log-read each idle session (some finished, just lost bookkeeping — backfill branch/prNumber), then send a resume nudge; sprint 76 revived 6/6 with zero restarts
 
@@ -34,6 +35,7 @@
 - [Bedrock for spawns (#935)](project_bedrock_spawns_935.md) — quota-stall escape hatch: restart daemon from Bedrock-env shell; model-ID caveat with `--model opus`
 - [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
 - [Early segfault = check host load first](false-segfault-orphaned-load.md) — am-i-done aborting ~25-30s with a Bun segfault + mass `worker panicked` cascade is usually host CPU starvation (orphaned `bun build/burn.ts` from investigations), not a code bug; check `uptime` + PPID=1 bun procs before treating as real
+- [--resume ignores --allow (#3115)](mcx_resume_ignores_allow_3115.md) — respawn an under-permissioned session; resuming with --allow silently does nothing
 - [CI suite SIGTERM at ~97%](ci-suite-sigterm-resource-leak.md) — large `bun test` killed near end with 0 failures, Linux-only, passes isolated = resource leak in test files, NOT a size threshold. A hang / near-end SIGTERM is a STOP-and-fix-root-cause signal — never a killer/reaper/timeout-bump (those caused the 69/70 collapse). Diagnose with bias-free adversarial review. #2641→#2644.
 
 ## Orchestration (non-sprint, general facts)
@@ -44,6 +46,18 @@
 - `core.bare` arc closed in sprint 52 / #1860 / PR #1998 — `ensureCoreBareUnset()` removes the key entirely; daemon sweep deletes both true/false. Pre-flight invariant: `git config --local core.bare` should exit non-zero (key absent). The `git config core.bare false` hot-patch is no longer needed.
 - [Sprint operator north-star](project_sprint_operator.md) — orchestrator as k8s-style reconciler; backlog as declarative CRD (`mcx flow apply`); crash-resume = stateless reconcile; moat is the control plane not the LLM. Epic #2577. Near-term: Stage 0 review-labels + Stage 1 reconciler (#1942).
 - [Remote agent orchestration via sprite](project_sprites_remote_orchestration.md) — `mcx agent claude` subcommands work over `sprite x --` remote exec; stdout JSON + exit codes + no-TTY constraints must be preserved when changing the agent command surface
+
+## Active programs
+- [A verdict must reach the PR](feedback_verdict_must_reach_the_pr.md) — every review/QA brief must require label + comment on the PR, not a report back; cost 4h and 7h twice in one day
+- **Compaction recovery: read `.claude/boss/STATE.md` in mcp-cli** — live operational state for the #3019 arc (gated class, decisions made, pending reload, sprint sequence)
+- [Worker escape hatch](feedback_worker_escape_hatch.md) — every brief gets `mcx mail … boss`; watch the mailbox. A blocked worker and a thinking worker are both quiet
+- [Security fixes always in scope](feedback_security_fixes_always_in_scope.md) — outside the QoL budget; prefer Claude Code auto mode over denying Bash; mcx `auto` strategy means allow-all
+- [Send briefs via file](feedback_send_briefs_via_file.md) — markdown backticks execute in double-quoted shell strings; use a quoted heredoc + "$(cat …)"
+- [No author state in review labels](feedback_no_author_state_in_labels.md) — a repaired PR can't be represented; never self-assert `review:pass` (#3179, meta/boundary work)
+- [Sprint 78 audit lessons](feedback_sprint78_audit_lessons.md) — rework is one defect class (invariant at some call sites, not all); stalls drop sequenced-but-unspawned issues; nobody watches the orchestrator
+- [Gate before auto-merge](feedback_gate_before_automerge.md) — classify a dispatched fix routine vs gated BEFORE briefing; auto-merge forfeits the gate (#3116 landed mid-review)
+- [QoL budget: 2 per sprint](feedback_qol_budget_per_sprint.md) — standing grant for orchestration-reliability fixes alongside goal work; planned spend per sprint recorded
+- [#3019 domain-scoped mcx arc](project_domain_scoped_mcx_3019.md) — ten sub-epics #3021–#3030, A blocks all; one orchestrator per sprint, program manager plans between
 
 ## Skills
 - `/sprint` — lifecycle: plan, run, review, retro. Detailed rules in `.claude/skills/sprint/references/*.md`.
