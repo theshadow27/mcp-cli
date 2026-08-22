@@ -27,13 +27,14 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import {
+  NO_DOMAIN_ID,
   PR_COMMENT,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   REVIEW_COMMENTED,
   REVIEW_STICKY_UPDATED,
 } from "@mcp-cli/core";
-import { WorkItemDb } from "../db/work-items";
+import { type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import {
   CopilotPoller,
   type CopilotPollerOptions,
@@ -76,12 +77,12 @@ function okPRComments(comments: IssueComment[]): FetchIssueCommentsResult {
 
 describe("CopilotPoller — review/sticky integration", () => {
   let rawDb: Database;
-  let workItemDb: WorkItemDb;
+  let workItemDb: DomainWorkItems;
   let stateDb: ReturnType<typeof createCopilotStateDb>;
 
   beforeEach(() => {
     rawDb = new Database(":memory:");
-    workItemDb = new WorkItemDb(rawDb);
+    workItemDb = new WorkItemDb(rawDb).forDomain(NO_DOMAIN_ID);
     stateDb = createCopilotStateDb(rawDb);
   });
 

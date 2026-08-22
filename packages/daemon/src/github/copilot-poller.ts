@@ -23,7 +23,7 @@ import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
-import type { WorkItemDb } from "../db/work-items";
+import type { DomainWorkItems } from "../db/work-items";
 import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
@@ -100,7 +100,8 @@ export interface FetchIssueCommentsResult {
 }
 
 export interface CopilotPollerOptions {
-  workItemDb: WorkItemDb;
+  /** Work-item handle for the domain this poller watches (#3037). */
+  workItemDb: DomainWorkItems;
   stateDb: StateDb;
   logger?: Logger;
   intervalMs?: number;
@@ -110,12 +111,14 @@ export interface CopilotPollerOptions {
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   getToken?: () => Promise<string>;
   onEvent?: (event: MonitorEventInput) => void;
+  /** Name of the domain this poller watches; stamped on every event it emits (#3037). */
+  domain?: string | null;
 }
 
 // ── Poller ──
 
 export class CopilotPoller {
-  private workItemDb: WorkItemDb;
+  private workItemDb: DomainWorkItems;
   private stateDb: StateDb;
   private logger: Logger;
   private fixedInterval: number | null;
@@ -134,8 +137,10 @@ export class CopilotPoller {
   private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
   private getTokenFn: NonNullable<CopilotPollerOptions["getToken"]>;
   private onEvent: (event: MonitorEventInput) => void;
+  private domain: string | null;
 
   constructor(opts: CopilotPollerOptions) {
+    this.domain = opts.domain ?? null;
     this.workItemDb = opts.workItemDb;
     this.stateDb = opts.stateDb;
     this.logger = opts.logger ?? consoleLogger;
@@ -146,7 +151,11 @@ export class CopilotPoller {
     this.fetchIssueCommentsFn = opts.fetchIssueComments ?? fetchIssueEndpointComments;
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
     this.getTokenFn = opts.getToken ?? getGhToken;
-    this.onEvent = opts.onEvent ?? (() => {});
+    // Stamp the domain once, here, rather than at each of the five emit sites — a field
+    // every event must carry is a wrapper, not five things to remember (#3037).
+    const emit = opts.onEvent ?? ((): void => {});
+    const domain = this.domain;
+    this.onEvent = domain ? (event) => emit({ ...event, domain }) : emit;
   }
 
   get lastError(): string | null {

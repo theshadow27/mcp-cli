@@ -377,16 +377,19 @@ describe("domain schema", () => {
       const wi = new WorkItemDb(raw);
       const beta = state.createDomain("beta", "/home/u/beta");
 
-      const item = wi.createWorkItem({ issueNumber: 7 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [beta.id, item.id]);
+      const item = wi.forDomain(beta.id).createWorkItem({ issueNumber: 7 });
       raw.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
 
-      expect(() => state.deleteDomain("beta")).toThrow(/still has 2 dependent row\(s\)/);
+      // Three, not two: creating a work item also appends its first transition, and
+      // that row carries domain_id now that #3037 gave the column a writer. Before that
+      // fix every transition said domain_id = 0 and this count silently omitted them.
+      expect(() => state.deleteDomain("beta")).toThrow(/still has 3 dependent row\(s\)/);
       expect(() => state.deleteDomain("beta")).toThrow(/work_items=1/);
+      expect(() => state.deleteDomain("beta")).toThrow(/work_item_transitions=1/);
       expect(() => state.deleteDomain("beta")).toThrow(/mail=1/);
       // Refusal leaves everything intact.
       expect(state.getDomainByName("beta")).not.toBeNull();
-      expect(wi.getWorkItemByIssue(7, beta.id)?.id).toBe(item.id);
+      expect(wi.forDomain(beta.id).getWorkItemByIssue(7)?.id).toBe(item.id);
     });
 
     test("cascade deletes the dependents with the domain", () => {
@@ -396,16 +399,14 @@ describe("domain schema", () => {
       const beta = state.createDomain("beta", "/home/u/beta");
       const keep = state.createDomain("keep", "/home/u/keep");
 
-      const doomed = wi.createWorkItem({ issueNumber: 7 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [beta.id, doomed.id]);
-      const survivor = wi.createWorkItem({ issueNumber: 8 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [keep.id, survivor.id]);
+      wi.forDomain(beta.id).createWorkItem({ issueNumber: 7 });
+      const survivor = wi.forDomain(keep.id).createWorkItem({ issueNumber: 8 });
 
       expect(state.deleteDomain("beta", { cascade: true })).toBe(true);
       expect(state.getDomainByName("beta")).toBeNull();
-      expect(wi.getWorkItemByIssue(7, beta.id)).toBeNull();
+      expect(wi.forDomain(beta.id).getWorkItemByIssue(7)).toBeNull();
       // Another domain's rows are untouched.
-      expect(wi.getWorkItemByIssue(8, keep.id)?.id).toBe(survivor.id);
+      expect(wi.forDomain(keep.id).getWorkItemByIssue(8)?.id).toBe(survivor.id);
     });
 
     test("created_at is a single sortable format across CLI and import paths", () => {
@@ -439,39 +440,33 @@ describe("domain schema", () => {
       const wi = new WorkItemDb(raw);
       const alpha = state.createDomain("alpha", "/home/u/alpha");
 
-      const item = wi.createWorkItem({ issueNumber: 7 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [alpha.id, item.id]);
-      wi.recordTransition(item.id, "impl", "qa", false);
-      wi.recordTransition(item.id, "qa", "done", false);
+      const items = wi.forDomain(alpha.id);
+      const item = items.createWorkItem({ issueNumber: 7 });
+      items.recordTransition(item.id, "impl", "qa", false);
+      items.recordTransition(item.id, "qa", "done", false);
 
-      // Each transition takes the domain its parent held when it was recorded. The
-      // creation transition predates the assignment above and correctly stays at the
-      // sentinel; #3037 gives createWorkItem a domain and closes that gap.
+      // #3037 closed the gap this test used to carve out: the work item is created IN the
+      // domain, so the creation transition carries it too. All three rows, not just the
+      // two recorded after a post-hoc UPDATE.
       const rows = raw
-        .query<{ domain_id: number }, []>(
-          "SELECT domain_id FROM work_item_transitions WHERE to_phase IN ('qa', 'done') ORDER BY id",
-        )
+        .query<{ domain_id: number }, []>("SELECT domain_id FROM work_item_transitions ORDER BY id")
         .all();
-      expect(rows).toEqual([{ domain_id: alpha.id }, { domain_id: alpha.id }]);
+      expect(rows).toEqual([{ domain_id: alpha.id }, { domain_id: alpha.id }, { domain_id: alpha.id }]);
 
       // The count that deleteDomain's refusal is built on must see them — it previously
       // reported a confident zero because every row was at 0.
       const counts = state.countDomainDependents(alpha.id);
-      expect(counts).toContainEqual({ table: "work_item_transitions", rows: 2 });
-      expect(() => state.deleteDomain("alpha")).toThrow(/work_item_transitions=2/);
+      expect(counts).toContainEqual({ table: "work_item_transitions", rows: 3 });
+      expect(() => state.deleteDomain("alpha")).toThrow(/work_item_transitions=3/);
 
       // ...and a cascade takes that history with the item rather than orphaning it.
       state.deleteDomain("alpha", { cascade: true });
-      expect(
-        raw
-          .query<{ n: number }, []>("SELECT count(*) AS n FROM work_item_transitions WHERE to_phase IN ('qa', 'done')")
-          .get()?.n,
-      ).toBe(0);
+      expect(raw.query<{ n: number }, []>("SELECT count(*) AS n FROM work_item_transitions").get()?.n).toBe(0);
     });
 
     test("Y5: a transition for an unassigned work item stays at the sentinel", () => {
       const state = createStateDb();
-      const wi = new WorkItemDb(state.database);
+      const wi = new WorkItemDb(state.database).forDomain(NO_DOMAIN_ID);
       const item = wi.createWorkItem({ issueNumber: 8 });
       wi.recordTransition(item.id, null, "impl", false);
       expect(
@@ -502,20 +497,18 @@ describe("domain schema", () => {
       const beta = state.createDomain("beta", "/home/u/beta");
       const wi = new WorkItemDb(raw);
 
-      // Create then assign one at a time: the unassigned partition is itself unique,
-      // so both cannot sit in domain 0 at the same moment. (#3037 makes createWorkItem
-      // take a domain directly; until then the column default is 0.)
-      const a = wi.createWorkItem({ issueNumber: 42, branch: "fix/issue-42", prNumber: 7 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [alpha.id, a.id]);
-      const b = wi.createWorkItem({ issueNumber: 42, branch: "fix/issue-42", prNumber: 7 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [beta.id, b.id]);
+      // Each domain writes through its own handle (#3037) — no post-hoc UPDATE to move
+      // the row, because there is no API that could.
+      const a = wi.forDomain(alpha.id).createWorkItem({ issueNumber: 42, branch: "fix/issue-42", prNumber: 7 });
+      const b = wi.forDomain(beta.id).createWorkItem({ issueNumber: 42, branch: "fix/issue-42", prNumber: 7 });
+      expect(a.id).not.toBe(b.id);
 
-      expect(wi.getWorkItemByIssue(42, alpha.id)?.id).toBe(a.id);
-      expect(wi.getWorkItemByIssue(42, beta.id)?.id).toBe(b.id);
-      expect(wi.getWorkItemByBranch("fix/issue-42", alpha.id)?.id).toBe(a.id);
-      expect(wi.getWorkItemByBranch("fix/issue-42", beta.id)?.id).toBe(b.id);
-      expect(wi.getWorkItemByPr(7, alpha.id)?.id).toBe(a.id);
-      expect(wi.getWorkItemByPr(7, beta.id)?.id).toBe(b.id);
+      expect(wi.forDomain(alpha.id).getWorkItemByIssue(42)?.id).toBe(a.id);
+      expect(wi.forDomain(beta.id).getWorkItemByIssue(42)?.id).toBe(b.id);
+      expect(wi.forDomain(alpha.id).getWorkItemByBranch("fix/issue-42")?.id).toBe(a.id);
+      expect(wi.forDomain(beta.id).getWorkItemByBranch("fix/issue-42")?.id).toBe(b.id);
+      expect(wi.forDomain(alpha.id).getWorkItemByPr(7)?.id).toBe(a.id);
+      expect(wi.forDomain(beta.id).getWorkItemByPr(7)?.id).toBe(b.id);
     });
 
     test("uniqueness still bites inside a single domain", () => {
@@ -524,17 +517,13 @@ describe("domain schema", () => {
       const alpha = state.createDomain("alpha", "/home/u/alpha");
       const wi = new WorkItemDb(raw);
 
-      const a = wi.createWorkItem({ issueNumber: 42 });
-      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [alpha.id, a.id]);
-      const b = wi.createWorkItem({ issueNumber: 43 });
-      expect(() =>
-        raw.run("UPDATE work_items SET domain_id = ?, issue_number = 42 WHERE id = ?", [alpha.id, b.id]),
-      ).toThrow();
+      wi.forDomain(alpha.id).createWorkItem({ issueNumber: 42 });
+      expect(() => wi.forDomain(alpha.id).createWorkItem({ issueNumber: 42 })).toThrow();
     });
 
     test("uniqueness bites in the unassigned partition too — NULL would have dropped it", () => {
       const state = createStateDb();
-      const wi = new WorkItemDb(state.database);
+      const wi = new WorkItemDb(state.database).forDomain(NO_DOMAIN_ID);
       wi.createWorkItem({ issueNumber: 42 });
       expect(() => wi.createWorkItem({ issueNumber: 42 })).toThrow();
     });
@@ -599,13 +588,23 @@ describe("domain schema", () => {
     test("ci run states are keyed per domain", () => {
       const state = createStateDb();
       const wi = new WorkItemDb(state.database);
-      wi.upsertCiRunState(42, { suiteId: 1, startedAt: 100, emittedStarted: true, emittedFinished: false }, 1);
-      wi.upsertCiRunState(42, { suiteId: 2, startedAt: 200, emittedStarted: false, emittedFinished: false }, 2);
-      expect(wi.loadCiRunStates(1).get(42)?.suiteId).toBe(1);
-      expect(wi.loadCiRunStates(2).get(42)?.suiteId).toBe(2);
-      wi.deleteCiRunState(42, 1);
-      expect(wi.loadCiRunStates(1).size).toBe(0);
-      expect(wi.loadCiRunStates(2).size).toBe(1);
+      wi.forDomain(1).upsertCiRunState(42, {
+        suiteId: 1,
+        startedAt: 100,
+        emittedStarted: true,
+        emittedFinished: false,
+      });
+      wi.forDomain(2).upsertCiRunState(42, {
+        suiteId: 2,
+        startedAt: 200,
+        emittedStarted: false,
+        emittedFinished: false,
+      });
+      expect(wi.forDomain(1).loadCiRunStates().get(42)?.suiteId).toBe(1);
+      expect(wi.forDomain(2).loadCiRunStates().get(42)?.suiteId).toBe(2);
+      wi.forDomain(1).deleteCiRunState(42);
+      expect(wi.forDomain(1).loadCiRunStates().size).toBe(0);
+      expect(wi.forDomain(2).loadCiRunStates().size).toBe(1);
     });
   });
 });

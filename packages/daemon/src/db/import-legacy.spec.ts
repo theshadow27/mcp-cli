@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import { IMPORTED_TABLES, IMPORT_MARKER_KEY, importLegacyState, recoveryInstructions } from "./import-legacy";
@@ -138,7 +139,7 @@ describe("importLegacyState", () => {
     expect(state.getAliasState("/repo", "ns", "k")).toBe("v");
     expect(state.getNote("s", "t")).toBe("n");
 
-    const wi = new WorkItemDb(raw);
+    const wi = new WorkItemDb(raw).forDomain(NO_DOMAIN_ID);
     expect(wi.getWorkItemByIssue(42)?.branch).toBe("fix/issue-42");
 
     // tool_cache is deliberately not imported.
@@ -585,7 +586,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     legacy.insertMail("alice", "bob", "subject", "body");
     legacy.upsertSession({ sessionId: "sess-1", provider: "claude", cwd: "/repo", state: "running" });
     legacy.saveAlias("impl", "/repo/.claude/phases/impl.ts", "the impl phase", "defineAlias");
-    const legacyWi = new WorkItemDb(legacy.database);
+    const legacyWi = new WorkItemDb(legacy.database).forDomain(NO_DOMAIN_ID);
     legacyWi.createWorkItem({ issueNumber: 4242, branch: "feat/prod-fixture", prNumber: 99 });
     legacy.close();
 
@@ -611,7 +612,9 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     expect(target.getAlias("impl")?.description).toBe("the impl phase");
     expect(target.getSession("sess-1")?.cwd).toBe("/repo");
     expect(target.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(1);
-    expect(new WorkItemDb(target.database).getWorkItemByIssue(4242)?.branch).toBe("feat/prod-fixture");
+    expect(new WorkItemDb(target.database).forDomain(NO_DOMAIN_ID).getWorkItemByIssue(4242)?.branch).toBe(
+      "feat/prod-fixture",
+    );
   });
 
   test("a production-schema import is idempotent and copies nothing the second time", () => {

@@ -192,7 +192,7 @@ function gitRoot(): string {
 
 const defaultDeps: SprintStatsDeps = {
   async listWorkItems() {
-    const result = await ipcCall("listWorkItems", { includeArchived: true });
+    const result = await ipcCall("listWorkItems", { includeArchived: true, cwd: process.cwd() });
     return result.items;
   },
   homeDir: homedir,

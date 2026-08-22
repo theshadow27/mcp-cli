@@ -33,6 +33,7 @@ import {
   type Manifest,
   ManifestError,
   type ManifestState,
+  NO_DOMAIN_ID,
   NO_REPO_ROOT,
   RegressionError,
   TransitionLockBusyError,
@@ -1023,7 +1024,7 @@ export async function cmdPhase(
           if (opts.workItemId !== null && manifestForFrom) {
             const ex: PhaseExecuteDeps = { ...defaultExecuteDeps, ...execDeps };
             try {
-              const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
+              const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId, cwd: d.cwd() })) as WorkItem | null;
               if (
                 wi &&
                 Object.hasOwn(manifestForFrom.manifest.phases, wi.phase) &&
@@ -1177,7 +1178,15 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
     globalState: {} as AliasStateAccessor, // overwritten by wrapDryRunContext
     // Stub work item so phases that guard on `ctx.workItem !== null` can
     // preview without throwing. All fields are clearly synthetic.
-    workItem: { id: "dry-run", issueNumber: null, prNumber: null, branch: null, phase: "(dry-run)" },
+    workItem: {
+      id: "dry-run",
+      domainId: NO_DOMAIN_ID,
+      issueNumber: null,
+      prNumber: null,
+      branch: null,
+      phase: "(dry-run)",
+    },
+    domain: null,
     repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
     gh: createGhClient({ repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT }),
     signal: controller.signal,
@@ -1293,6 +1302,7 @@ export function parsePhaseExecuteArgs(argv: string[]): PhaseExecuteArgs {
 function toAliasWorkItem(w: WorkItem): AliasWorkItemInfo {
   return {
     id: w.id,
+    domainId: w.domainId,
     issueNumber: w.issueNumber,
     prNumber: w.prNumber,
     branch: w.branch,
@@ -1415,7 +1425,7 @@ export async function executePhase(
   let workItem: AliasWorkItemInfo | null = null;
   if (parsed.workItemId !== null) {
     try {
-      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      const wi = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId, cwd })) as WorkItem | null;
       if (!wi) {
         d.logError(`work item "${parsed.workItemId}" not found`);
         d.exit(1);
@@ -1572,6 +1582,11 @@ export async function executePhase(
     state,
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE, call: ex.ipcCall }),
     workItem,
+    // The partition this phase run belongs to, taken from the work item the daemon
+    // returned. The *name* needs the domains table, which the CLI cannot read until
+    // #3035 lands the `mcx domain` IPC surface; the id is what actually partitions, and
+    // it is the daemon — not this value — that scopes the `_work_items` tools.
+    domain: workItem ? { id: workItem.domainId, name: null } : null,
     repoRoot,
     gh: createGhClient({ repoRoot }),
     signal: phaseController.signal,
@@ -1648,13 +1663,15 @@ export async function executePhase(
   // detect if the handler already updated phase (done/needs-attention).
   if (workItem && parsed.workItemId) {
     try {
-      const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId })) as WorkItem | null;
+      const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId, cwd })) as WorkItem | null;
       if (fresh && fresh.phase !== parsed.target) {
         const repoRoot = ex.findGitRoot(cwd) ?? cwd;
         const updateResult = (await ex.ipcCall("callTool", {
           server: "_work_items",
           tool: "work_items_update",
           arguments: { id: parsed.workItemId, phase: parsed.target, repoRoot },
+          // The daemon resolves the domain from this, not from `arguments` (#3037).
+          cwd,
         })) as { isError?: boolean; content?: unknown } | null;
         if (updateResult?.isError) {
           d.logError(
@@ -1737,7 +1754,7 @@ export async function cmdPhaseAdvance(
 
   let workItem: WorkItem;
   try {
-    const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId })) as WorkItem | null;
+    const wi = (await ex.ipcCall("getWorkItem", { id: opts.workItemId, cwd: d.cwd() })) as WorkItem | null;
     if (!wi) {
       d.logError(`work item "${opts.workItemId}" not found`);
       d.exit(1);
@@ -1905,6 +1922,7 @@ export async function cmdPhaseAdvance(
           server: "_work_items",
           tool: "phase_state_set",
           arguments: { workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot },
+          cwd: d.cwd(),
         })) as { isError?: boolean; content?: unknown } | null;
 
         if (setResult?.isError) {

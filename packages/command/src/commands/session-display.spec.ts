@@ -230,6 +230,7 @@ function stripAnsi(str: string): string {
 function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
     id: "#1135",
+    domainId: 0,
     issueNumber: 1135,
     branch: "feat/issue-1135-test",
     prNumber: null,

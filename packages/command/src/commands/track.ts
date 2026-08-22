@@ -181,6 +181,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   if (branch) {
     try {
       const item = await deps.ipcCall("trackWorkItem", {
+        cwd,
         branch,
         ...(initialPhase ? { initialPhase } : {}),
         ...(automationOverrides ? { automationOverrides } : {}),
@@ -205,6 +206,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
 
   try {
     const item = await deps.ipcCall("trackWorkItem", {
+      cwd,
       number: num,
       ...(initialPhase ? { initialPhase } : {}),
       ...(automationOverrides ? { automationOverrides } : {}),
@@ -276,7 +278,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
       if (result.deleted) {
         await cleanupMetadata(deps, cwd, `branch:${branch}`);
         console.error(`Untracked branch ${branch}`);
@@ -297,7 +299,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
       if (result.deleted) {
         await cleanupMetadata(deps, cwd, `branch:${branch}`);
         console.error(`Untracked branch ${branch}`);
@@ -319,7 +321,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
   }
 
   try {
-    const result = await deps.ipcCall("untrackWorkItem", { number: num });
+    const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd });
     if (result.deleted) {
       await cleanupMetadata(deps, cwd, `#${num}`);
       console.error(`Untracked #${num}`);
@@ -387,6 +389,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
 
   try {
     const { items, hiddenCount } = await deps.ipcCall("listWorkItems", {
+      cwd,
       ...(phase ? { phase } : {}),
       includeArchived,
     });

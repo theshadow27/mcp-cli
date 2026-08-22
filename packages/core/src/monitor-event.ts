@@ -196,6 +196,13 @@ export interface MonitorEventBase {
   payload?: never;
   /** Repo root path this event is scoped to. Present when known / when session is repo-scoped; absent on global events (mail, quota, heartbeats) and sessions started without a configured or discoverable repo root. */
   repoRoot?: string;
+  /**
+   * Name of the domain this event belongs to (`domains.name`). Present on events produced
+   * by a domain-scoped writer — every `work_item.*` event carries it (#3037). Absent on
+   * genuinely global events and on rows that predate any domain (`domain_id = 0`), where
+   * "unassigned" is the honest answer and a synthesized default would be a lie.
+   */
+  domain?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];
   [key: string]: unknown;

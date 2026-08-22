@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import type { WorkItemEvent } from "@mcp-cli/core";
-import { WorkItemDb } from "../db/work-items";
+import { type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import type { CiEvent } from "./ci-events";
 import type { CiCheck, PRStatus, RepoInfo } from "./graphql-client";
 import { WorkItemPoller } from "./work-item-poller";
@@ -34,11 +35,11 @@ function makePRStatus(overrides: Partial<PRStatus> & { number: number }): PRStat
 
 describe("WorkItemPoller", () => {
   let sqlDb: Database;
-  let db: WorkItemDb;
+  let db: DomainWorkItems;
 
   beforeEach(() => {
     sqlDb = new Database(":memory:");
-    db = new WorkItemDb(sqlDb);
+    db = new WorkItemDb(sqlDb).forDomain(NO_DOMAIN_ID);
   });
 
   afterEach(() => {
