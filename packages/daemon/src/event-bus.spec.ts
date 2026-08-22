@@ -607,7 +607,10 @@ function sessionAwareResolver() {
       { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
       { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
     ],
-    getSessionPath: (id: string) => roots[id] ?? null,
+    getSessionPaths: (id: string) => {
+      const root = roots[id];
+      return typeof root === "string" && root !== "" ? [root] : [];
+    },
   });
 }
 
@@ -615,7 +618,7 @@ function sessionAwareResolver() {
 
 describe("EventBus domain stamping", () => {
   const resolver = createDomainResolver({
-    getSessionPath: () => null,
+    getSessionPaths: () => [],
     listDomains: () => [
       { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
       { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },

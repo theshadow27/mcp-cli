@@ -807,7 +807,7 @@ describe("AutomationDispatcher domain attribution", () => {
   const REPO = "/tmp/phoenix";
   const resolver = createDomainResolver({
     listDomains: () => [{ id: 3, name: "phoenix", host: null, path: REPO, createdAt: "2026-08-22T00:00:00.000Z" }],
-    getSessionPath: () => null,
+    getSessionPaths: () => [],
   });
 
   // The dispatcher is still one object bound to the daemon's cwd (per-domain dispatchers

@@ -161,6 +161,18 @@ export abstract class AbstractWorkerServer {
 
   onRestarted?: (client: Client, transport: WorkerClientTransport) => void;
   onActivity?: () => void;
+  /**
+   * Fired after a session row is written, with that session's id.
+   *
+   * Exists so the domain resolver can drop its memo for that session (#3169 review).
+   * `upsertSession` COALESCEs a newly-supplied `repo_root` over a row the resolver may
+   * already have memoized from `cwd`, and without this the session keeps its original
+   * domain until the daemon restarts. The resolver memo is worth keeping — a session
+   * lookup measured 5.3us against a 20.6us event insert, so resolving per-event would
+   * add ~25% to the daemon's hottest write — but a memo with no invalidation hook is
+   * how the staleness became prose instead of a mechanism.
+   */
+  onSessionUpserted?: (sessionId: string) => void;
 
   abstract get descriptor(): WorkerServerDescriptor;
 
@@ -555,6 +567,7 @@ export abstract class AbstractWorkerServer {
         const upsertData: typeof sessionRest & { pidStartTime?: number } = { ...sessionRest };
         if (pst != null) upsertData.pidStartTime = pst;
         this.db.upsertSession(upsertData);
+        this.onSessionUpserted?.(event.session.sessionId);
         this.metrics.gauge(d.metrics.activeSessions).set(this.activeSessions.size);
         this.metrics.counter(d.metrics.sessionsTotal).inc();
         this.onActivity?.();

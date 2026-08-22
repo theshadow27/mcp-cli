@@ -16,22 +16,10 @@ import { join } from "node:path";
 import { type IpcMethod, NO_DOMAIN_ID } from "@mcp-cli/core";
 import { StateDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
-import { createDomainResolver } from "../domain-resolver";
+import { createDomainResolver, createStateDbDomainSource } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 import { WorkItemsServer } from "../work-items-server";
 import { WorkItemHandlers } from "./work-item";
-
-/** The DomainSource the daemon builds in index.ts — mirrored so specs exercise real wiring. */
-function productionSource(db: StateDb) {
-  return {
-    listDomains: () => db.listDomains(),
-    getSessionPath: (sessionId: string) => {
-      const session = db.getSession(sessionId);
-      if (!session) return null;
-      return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
-    },
-  };
-}
 
 const ctx = {} as never;
 
@@ -84,7 +72,7 @@ function setup() {
     null,
     null,
     noopLogger as never,
-    createDomainResolver(productionSource(db)),
+    createDomainResolver(createStateDbDomainSource(db)),
   ).register(map);
 
   return { db, map, phoenixPath, clrgPath, orphanPath, phoenix, clrg };
@@ -203,7 +191,7 @@ describe("phase_state_* and ctx.state share one partition (#3040 review R1)", ()
     const server = new WorkItemsServer(new WorkItemDb(db.getDatabase()), {
       phaseState: {
         store: db,
-        domainIdFor: (repoRoot) => createDomainResolver(productionSource(db)).idForPath(repoRoot),
+        domainIdFor: (repoRoot) => createDomainResolver(createStateDbDomainSource(db)).idForPath(repoRoot),
       },
     });
     const { client } = await server.start();
@@ -277,7 +265,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     expect(row?.repoRoot ?? null).toBeNull();
     expect(row?.cwd).toBe(phoenixPath);
 
-    expect(createDomainResolver(productionSource(db)).idForSession("s-spawned")).toBe(phoenix.id);
+    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-spawned")).toBe(phoenix.id);
   });
 
   test("a nested cwd resolves by walking up, like `mcx domain which $PWD`", () => {
@@ -286,21 +274,58 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     mkdirSync(nested, { recursive: true });
     db.upsertSession({ sessionId: "s-nested", cwd: nested, state: "running" });
 
-    expect(createDomainResolver(productionSource(db)).idForSession("s-nested")).toBe(phoenix.id);
+    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-nested")).toBe(phoenix.id);
   });
 
   test("repoRoot still wins when a session actually has one", () => {
     const { db, phoenixPath, clrgPath, phoenix } = setup();
     db.upsertSession({ sessionId: "s-both", cwd: clrgPath, repoRoot: phoenixPath, state: "running" });
 
-    expect(createDomainResolver(productionSource(db)).idForSession("s-both")).toBe(phoenix.id);
+    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-both")).toBe(phoenix.id);
+  });
+
+  // #3169 review R7: `worktree` held a NAME, never a path, and sat mid-chain in a `??`
+  // expression — so its mere presence suppressed `cwd` and the session resolved to the
+  // sentinel. Reachable today via `mcx agent codex spawn --worktree <name>`. This fails
+  // against the `repo_root ?? worktree ?? cwd` chain.
+  test("a session with a worktree NAME still resolves via cwd", () => {
+    const { db, phoenixPath, phoenix } = setup();
+    // Exactly what worktree-shim.ts records: a name, not a path.
+    db.upsertSession({ sessionId: "s-wt", cwd: phoenixPath, worktree: "claude-mt3xvzkf", state: "running" });
+
+    // Premise: the recorded worktree really is a bare name, so this cannot pass by accident.
+    const row = db.getSession("s-wt");
+    expect(row?.worktree).toBe("claude-mt3xvzkf");
+    expect(row?.worktree?.startsWith("/")).toBe(false);
+    expect(row?.repoRoot ?? null).toBeNull();
+
+    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-wt")).toBe(phoenix.id);
+  });
+
+  test("the production source offers only resolvable candidates — never the worktree name", () => {
+    const { db, phoenixPath } = setup();
+    db.upsertSession({ sessionId: "s-wt2", cwd: phoenixPath, worktree: "claude-mt3xvzkf", state: "running" });
+
+    const candidates = createStateDbDomainSource(db).getSessionPaths("s-wt2");
+    expect(candidates).toEqual([phoenixPath]);
+    expect(candidates).not.toContain("claude-mt3xvzkf");
+  });
+
+  // The root, not the instance: a non-resolving candidate must not swallow the rest.
+  test("a non-resolving candidate falls through to the next one", () => {
+    const { db, phoenixPath, phoenix } = setup();
+    const resolver = createDomainResolver({
+      listDomains: () => db.listDomains(),
+      getSessionPaths: () => ["not-an-absolute-path", "/var/outside-every-domain", phoenixPath],
+    });
+    expect(resolver.idForSession("s-any")).toBe(phoenix.id);
   });
 
   test("a session outside every domain, and an unknown session, are the sentinel", () => {
     const { db, orphanPath } = setup();
     db.upsertSession({ sessionId: "s-orphan", cwd: orphanPath, state: "running" });
 
-    const resolver = createDomainResolver(productionSource(db));
+    const resolver = createDomainResolver(createStateDbDomainSource(db));
     expect(resolver.idForSession("s-orphan")).toBe(NO_DOMAIN_ID);
     expect(resolver.idForSession("s-never-existed")).toBe(NO_DOMAIN_ID);
   });
@@ -308,7 +333,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
   test("invalidateSession() picks up a session that was re-rooted after first observation", () => {
     const { db, phoenixPath, clrgPath, phoenix, clrg } = setup();
     db.upsertSession({ sessionId: "s-move", cwd: phoenixPath, state: "running" });
-    const resolver = createDomainResolver(productionSource(db));
+    const resolver = createDomainResolver(createStateDbDomainSource(db));
     expect(resolver.idForSession("s-move")).toBe(phoenix.id);
 
     db.upsertSession({ sessionId: "s-move", repoRoot: clrgPath });

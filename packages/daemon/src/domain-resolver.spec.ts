@@ -14,7 +14,7 @@ function countingSource(domains: Domain[]) {
       reads++;
       return domains;
     },
-    getSessionPath: () => null,
+    getSessionPaths: () => [],
     get reads() {
       return reads;
     },
@@ -28,7 +28,7 @@ function countingSource(domains: Domain[]) {
  * writes down rather than an omission the compiler tolerates — see the interface doc.
  */
 function noSessions(domains: Domain[]) {
-  return { listDomains: () => domains, getSessionPath: () => null };
+  return { listDomains: () => domains, getSessionPaths: () => [] };
 }
 
 describe("createDomainResolver", () => {
@@ -66,7 +66,7 @@ describe("createDomainResolver", () => {
   test("nested domains resolve to the innermost", () => {
     const r = createDomainResolver({
       listDomains: () => [domain(1, "outer", "/tmp/work"), domain(2, "inner", "/tmp/work/sub")],
-      getSessionPath: () => null,
+      getSessionPaths: () => [],
     });
     expect(r.idForPath("/tmp/work/sub/pkg")).toBe(2);
     expect(r.idForPath("/tmp/work/other")).toBe(1);
@@ -99,7 +99,7 @@ describe("createDomainResolver", () => {
     const domains: Domain[] = [];
     // Lazy on purpose: the source must be re-read after invalidate(), so this cannot
     // use the snapshot helper.
-    const r = createDomainResolver({ listDomains: () => [...domains], getSessionPath: () => null });
+    const r = createDomainResolver({ listDomains: () => [...domains], getSessionPaths: () => [] });
     expect(r.idForPath("/tmp/late")).toBe(NO_DOMAIN_ID);
 
     domains.push(domain(7, "late", "/tmp/late"));
@@ -160,9 +160,10 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
     let lookups = 0;
     return {
       listDomains: () => DOMAINS,
-      getSessionPath: (id: string) => {
+      getSessionPaths: (id: string) => {
         lookups++;
-        return sessions[id] ?? null;
+        const root = sessions[id];
+        return typeof root === "string" && root !== "" ? [root] : [];
       },
       get lookups() {
         return lookups;
@@ -206,7 +207,10 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
     const sessions: Record<string, string | null> = { s1: null };
     const r = createDomainResolver({
       listDomains: () => DOMAINS,
-      getSessionPath: (id: string) => sessions[id] ?? null,
+      getSessionPaths: (id: string) => {
+        const root = sessions[id];
+        return typeof root === "string" && root !== "" ? [root] : [];
+      },
     });
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
     sessions.s1 = "/tmp/phoenix";

@@ -82,7 +82,7 @@ import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
-import { createDomainResolver } from "./domain-resolver";
+import { createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
@@ -714,24 +714,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Epic B (domain servers) is what makes this per-domain rather than per-daemon.
   const daemonRepoRoot = resolveRealpath(resolve(process.cwd()));
 
-  const domainResolver = createDomainResolver({
-    listDomains: () => db.listDomains(),
-    // 80% of the daemon's events carry a sessionId and almost none carry a repoRoot
-    // (#3040 review R3), so the session's own recorded path is what actually partitions
-    // the traffic. Becomes a direct `agent_sessions.domain_id` read once #3038 lands.
-    //
-    // repo_root ?? worktree ?? cwd, in that order, because `repo_root` alone is empty in
-    // practice: `mcx claude spawn` sets `cwd` only, so on a real log 25,235 of the 25,245
-    // session-bearing rows had a cwd and just 8 had a repo_root. Consulting only
-    // repo_root took real resolution to 20%, not the 99% the reach metric suggested.
-    // All three are recorded facts about the session, and resolveDomainForPath walks up
-    // to the nearest registered domain — the same rule as `mcx domain which $PWD`.
-    getSessionPath: (sessionId: string) => {
-      const session = db.getSession(sessionId);
-      if (!session) return null;
-      return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
-    },
-  });
+  // One shared factory, not a hand-copy: the IPC server's fallback and the specs use the
+  // same source, so the candidate order cannot drift between them (#3169 review R7).
+  const domainResolver = createDomainResolver(createStateDbDomainSource(db));
   const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
 
@@ -998,6 +983,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   mockServer.onActivity = () => resetIdleTimer();
   // Site browser sessions can sit idle during interactive login — keep the daemon alive.
   siteServer.onActivity = () => resetIdleTimer();
+
+  // Every agent provider drops the resolver's memo for a session it just wrote, so a row
+  // that gains a repo_root after its first event is re-resolved instead of keeping the
+  // domain it was first observed in (#3169 review). Iterated rather than assigned four
+  // times so adding a fifth provider is one list entry, not a forgotten line.
+  //
+  // Excludes siteServer (browser sessions, not agent sessions) and mockServer (a test
+  // double); neither extends AbstractWorkerServer, so neither has the hook.
+  for (const server of [claudeServer, codexServer, acpServer, opencodeServer]) {
+    if (server) server.onSessionUpserted = (sessionId: string) => domainResolver.invalidateSession(sessionId);
+  }
 
   // Start idle timer
   resetIdleTimer();

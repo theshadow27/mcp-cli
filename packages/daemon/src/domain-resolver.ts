@@ -20,6 +20,7 @@
  */
 
 import { type Domain, NO_DOMAIN_ID, canonicalizeDomainPath, resolveDomainForPath } from "@mcp-cli/core";
+import type { StateDb } from "./db/state";
 
 /**
  * The slice of `StateDb` a resolver needs. Narrow so tests need no database.
@@ -34,20 +35,60 @@ import { type Domain, NO_DOMAIN_ID, canonicalizeDomainPath, resolveDomainForPath
 export interface DomainSource {
   listDomains(): Domain[];
   /**
-   * A filesystem path recorded for a session, or null when the session is unknown.
+   * Every filesystem path recorded for a session, best candidate first. Empty when the
+   * session is unknown or recorded none.
    *
    * The identity join behind {@link DomainResolver.idForSession}. It does NOT read
    * `agent_sessions.domain_id` because that column has no writer yet — it is #3038's.
    *
-   * The caller decides which recorded path to hand over; the daemon supplies
-   * `repo_root ?? worktree ?? cwd`. That ordering matters and is not cosmetic:
+   * **A list, not a single value, and the resolver short-circuits on RESOLUTION rather
+   * than on PRESENCE.** That distinction is the fix for #3169 review R7. The chain was
+   * `repo_root ?? worktree ?? cwd`, which short-circuits on presence — so a session with
+   * a populated `worktree` handed that value over and `cwd` was never consulted. Since
+   * `agent_sessions.worktree` holds a worktree *name* (`claude-mt3xvzkf`), never a path,
+   * such a session resolved to the sentinel even though its `cwd` would have resolved
+   * perfectly. A `??` chain cannot express "try the next one if this does not work", and
+   * that is exactly what is needed here: one non-resolving candidate must not swallow the
+   * rest. Returning candidates makes a future name-shaped column a no-op instead of a
+   * silent regression.
+   *
    * `repo_root` is NULL for the overwhelming majority of real sessions because
-   * `mcx claude spawn` sets `cwd` only, so a resolver that consulted `repo_root` alone
-   * resolved 8 of 25,245 session-bearing rows on a real log (#3040 review R3). `cwd` is
+   * `mcx claude spawn` sets `cwd` only (#3187), so `cwd` is what actually resolves. It is
    * no weaker a signal — `resolveDomainForPath` walks up to the nearest registered
    * domain, which is precisely what `mcx domain which $PWD` is documented to do.
    */
-  getSessionPath(sessionId: string): string | null | undefined;
+  getSessionPaths(sessionId: string): readonly string[];
+}
+
+/**
+ * The production {@link DomainSource}, over a real `StateDb`.
+ *
+ * Exists because this wiring was hand-copied into three places — the daemon, the IPC
+ * server's fallback, and a spec — with nothing making them agree (#3169 review). That is
+ * a quieter form of the same defect the R3 fix was about: change the candidate order in
+ * one copy and the spec keeps asserting the old one, so the test passes while production
+ * does something else. One exported factory makes the three agree by construction, which
+ * is stronger than a rule that checks they still do.
+ *
+ * Typed structurally rather than as `StateDb` so a test can pass a stub, and imported as
+ * a type only so this module keeps no runtime dependency on the database layer.
+ *
+ * `worktree` is deliberately NOT a candidate: `agent_sessions.worktree` holds a worktree
+ * NAME, never a path (`worktree-shim.ts` writes `toolArgs.worktree = name`), so it can
+ * never resolve. On a live log it contributed exactly zero — 34,917 rows resolved with
+ * and without it — while its presence in a `??` chain actively suppressed `cwd`.
+ */
+export function createStateDbDomainSource(db: Pick<StateDb, "listDomains" | "getSession">): DomainSource {
+  return {
+    listDomains: () => db.listDomains(),
+    getSessionPaths: (sessionId: string) => {
+      const session = db.getSession(sessionId);
+      if (!session) return [];
+      // repo_root first when present (most precise), cwd otherwise. Both are recorded
+      // facts about the session; neither is a guess.
+      return [session.repoRoot, session.cwd].filter((p): p is string => typeof p === "string" && p !== "");
+    },
+  };
 }
 
 export interface DomainResolver {
@@ -66,12 +107,14 @@ export interface DomainResolver {
    * session's path is a fact recorded on its own row, so this is a join on an identity
    * the event already has — not an inference from a field nobody sets.
    *
-   * **Staleness:** the answer is memoized at first observation. `upsertSession` can
-   * COALESCE a new root over an old one, and nothing invalidates on that — so a session
-   * that is re-rooted mid-life keeps its original domain until {@link
-   * DomainResolver.invalidateSession} is called for it or the daemon restarts. That is a
-   * deliberate trade for keeping a DB read off the publish hot path, and it is stated
-   * here rather than discovered: a silently mis-attributed event is worse than a slow one.
+   * **Staleness:** the answer is memoized, because resolving per-event would put a
+   * session lookup on the daemon's hottest write — measured at 5.3us against a 20.6us
+   * event insert, so ~25% overhead. `upsertSession` can COALESCE a new root over a row
+   * already memoized from `cwd`, so every agent provider calls {@link
+   * DomainResolver.invalidateSession} after writing a session row
+   * (`abstract-worker-server.ts`, wired in `index.ts`). This used to be documented as an
+   * accepted trade with no caller, which left the same staleness class with a
+   * doing-it-wrong rule on the domain-table side and prose on this one (#3169 review).
    */
   idForSession(sessionId: string | undefined): number;
   /** Forget one session's memoized domain. Call when that session's recorded path changes. */
@@ -158,8 +201,13 @@ export function createDomainResolver(source: DomainSource, opts: DomainResolverO
       if (sessionId === undefined || sessionId === "") return NO_DOMAIN_ID;
       const memo = bySession.get(sessionId);
       if (memo !== undefined) return memo;
-      const root = source.getSessionPath(sessionId);
-      const id = typeof root === "string" && root !== "" ? idForPath(root) : NO_DOMAIN_ID;
+      // First candidate that RESOLVES wins — not merely the first that is present.
+      let id = NO_DOMAIN_ID;
+      for (const candidate of source.getSessionPaths(sessionId)) {
+        if (typeof candidate !== "string" || candidate === "") continue;
+        id = idForPath(candidate);
+        if (id !== NO_DOMAIN_ID) break;
+      }
       return remember(bySession, sessionId, id);
     },
 

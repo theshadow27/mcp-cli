@@ -37,7 +37,7 @@ import type { AutomationDispatcher } from "./automation-dispatcher";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
-import { type DomainResolver, createDomainResolver } from "./domain-resolver";
+import { type DomainResolver, createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
@@ -172,17 +172,7 @@ export class IpcServer {
       // against `this.db` alone because the source member was optional — yielding a
       // resolver whose session path was silently dead (#3040 review). Latent, since the
       // eventBus branch wins in production, but latent is how the R1 split-brain shipped.
-      domains:
-        opts.domains ??
-        eventBus?.domainResolver ??
-        createDomainResolver({
-          listDomains: () => this.db.listDomains(),
-          getSessionPath: (sessionId: string) => {
-            const session = this.db.getSession(sessionId);
-            if (!session) return null;
-            return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
-          },
-        }),
+      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createStateDbDomainSource(this.db)),
     });
     this.db.pruneExpiredAliases();
   }
