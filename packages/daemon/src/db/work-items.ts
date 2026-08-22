@@ -8,14 +8,15 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 
-import type {
-  CiStatus,
-  MergeStateStatus,
-  PrState,
-  ReviewStatus,
-  WorkItem,
-  WorkItemPatch,
-  WorkItemPhase,
+import {
+  type CiStatus,
+  type MergeStateStatus,
+  NO_DOMAIN_ID,
+  type PrState,
+  type ReviewStatus,
+  type WorkItem,
+  type WorkItemPatch,
+  type WorkItemPhase,
 } from "@mcp-cli/core";
 import type { CiRunState } from "../github/ci-events";
 
@@ -183,9 +184,10 @@ export class WorkItemDb {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS work_items (
           id              TEXT PRIMARY KEY,
-          issue_number    INTEGER UNIQUE,
-          branch          TEXT UNIQUE,
-          pr_number       INTEGER UNIQUE,
+          domain_id       INTEGER NOT NULL DEFAULT 0,
+          issue_number    INTEGER,
+          branch          TEXT,
+          pr_number       INTEGER,
           pr_state        TEXT DEFAULT 'open',
           pr_url          TEXT,
           ci_status       TEXT DEFAULT 'none',
@@ -196,10 +198,15 @@ export class WorkItemDb {
           created_at      TEXT DEFAULT (datetime('now')),
           updated_at      TEXT DEFAULT (datetime('now'))
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_issue_number
-          ON work_items(issue_number) WHERE issue_number IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_branch
-          ON work_items(branch) WHERE branch IS NOT NULL;
+        -- Per-domain, not global (#3034). issue_number/branch/pr_number were globally
+        -- unique, so two projects could not both have an issue #42. The column-level
+        -- UNIQUE constraints are gone; these partial indexes replace them.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_issue
+          ON work_items(domain_id, issue_number) WHERE issue_number IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_branch
+          ON work_items(domain_id, branch) WHERE branch IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_pr
+          ON work_items(domain_id, pr_number) WHERE pr_number IS NOT NULL;
       `);
       this.setSchemaVersion(CONSUMER, 1);
       version = 1;
@@ -208,6 +215,7 @@ export class WorkItemDb {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS work_item_transitions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          domain_id INTEGER NOT NULL DEFAULT 0,
           work_item_id TEXT NOT NULL,
           from_phase TEXT,
           to_phase TEXT NOT NULL,
@@ -234,11 +242,13 @@ export class WorkItemDb {
     if (version < 5) {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS ci_run_states (
-          pr_number        INTEGER PRIMARY KEY,
+          domain_id        INTEGER NOT NULL DEFAULT 0,
+          pr_number        INTEGER NOT NULL,
           suite_id         INTEGER NOT NULL,
           started_at       INTEGER NOT NULL,
           emitted_started  INTEGER NOT NULL DEFAULT 0,
-          emitted_finished INTEGER NOT NULL DEFAULT 0
+          emitted_finished INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (domain_id, pr_number)
         )
       `);
       this.setSchemaVersion(CONSUMER, 5);
@@ -410,10 +420,14 @@ export class WorkItemDb {
   deleteWorkItem(id: string): boolean {
     return this.db.transaction(() => {
       const row = this.db
-        .query<{ pr_number: number | null }, [string]>("SELECT pr_number FROM work_items WHERE id = ?")
+        .query<{ pr_number: number | null; domain_id: number }, [string]>(
+          "SELECT pr_number, domain_id FROM work_items WHERE id = ?",
+        )
         .get(id);
       if (row?.pr_number !== null && row?.pr_number !== undefined) {
-        this.db.query("DELETE FROM ci_run_states WHERE pr_number = ?").run(row.pr_number);
+        this.db
+          .query("DELETE FROM ci_run_states WHERE domain_id = ? AND pr_number = ?")
+          .run(row.domain_id, row.pr_number);
       }
       this.db.query("DELETE FROM work_item_transitions WHERE work_item_id = ?").run(id);
       this.db.query("DELETE FROM work_items WHERE id = ?").run(id);
@@ -453,47 +467,59 @@ export class WorkItemDb {
     );
   }
 
-  getWorkItemByPr(prNumber: number): WorkItem | null {
-    const row = this.db.query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE pr_number = ?").get(prNumber);
-    return row ? rowToWorkItem(row) : null;
-  }
+  // Lookups by a per-domain unique key take a trailing `domainId` that defaults to
+  // NO_DOMAIN_ID (#3034). Without it, `WHERE pr_number = 42` would be ambiguous the
+  // moment two domains each have a PR #42 — SQLite would return an arbitrary row.
 
-  getWorkItemByIssue(issueNumber: number): WorkItem | null {
+  getWorkItemByPr(prNumber: number, domainId: number = NO_DOMAIN_ID): WorkItem | null {
     const row = this.db
-      .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE issue_number = ?")
-      .get(issueNumber);
+      .query<WorkItemRow, [number, number]>("SELECT * FROM work_items WHERE domain_id = ? AND pr_number = ?")
+      .get(domainId, prNumber);
     return row ? rowToWorkItem(row) : null;
   }
 
-  getWorkItemByBranch(branch: string): WorkItem | null {
-    const row = this.db.query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ?").get(branch);
+  getWorkItemByIssue(issueNumber: number, domainId: number = NO_DOMAIN_ID): WorkItem | null {
+    const row = this.db
+      .query<WorkItemRow, [number, number]>("SELECT * FROM work_items WHERE domain_id = ? AND issue_number = ?")
+      .get(domainId, issueNumber);
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  getWorkItemByBranch(branch: string, domainId: number = NO_DOMAIN_ID): WorkItem | null {
+    const row = this.db
+      .query<WorkItemRow, [number, string]>("SELECT * FROM work_items WHERE domain_id = ? AND branch = ?")
+      .get(domainId, branch);
     return row ? rowToWorkItem(row) : null;
   }
 
   /** Get the last-seen HEAD commit OID for a PR, used by the push detector. Returns null if not yet seen. */
-  getLastSeenHeadOid(prNumber: number): string | null {
+  getLastSeenHeadOid(prNumber: number, domainId: number = NO_DOMAIN_ID): string | null {
     const row = this.db
-      .query<{ last_seen_head_oid: string | null }, [number]>(
-        "SELECT last_seen_head_oid FROM work_items WHERE pr_number = ?",
+      .query<{ last_seen_head_oid: string | null }, [number, number]>(
+        "SELECT last_seen_head_oid FROM work_items WHERE domain_id = ? AND pr_number = ?",
       )
-      .get(prNumber);
+      .get(domainId, prNumber);
     return row?.last_seen_head_oid ?? null;
   }
 
   /** Persist the HEAD commit OID for a PR so the push detector survives daemon restarts. */
-  setLastSeenHeadOid(prNumber: number, oid: string): void {
-    this.db.prepare("UPDATE work_items SET last_seen_head_oid = ? WHERE pr_number = ?").run(oid, prNumber);
+  setLastSeenHeadOid(prNumber: number, oid: string, domainId: number = NO_DOMAIN_ID): void {
+    this.db
+      .prepare("UPDATE work_items SET last_seen_head_oid = ? WHERE domain_id = ? AND pr_number = ?")
+      .run(oid, domainId, prNumber);
   }
 
   // -- CI run states --
 
-  loadCiRunStates(): Map<number, CiRunState> {
+  loadCiRunStates(domainId: number = NO_DOMAIN_ID): Map<number, CiRunState> {
     const rows = this.db
       .query<
         { pr_number: number; suite_id: number; started_at: number; emitted_started: number; emitted_finished: number },
-        []
-      >("SELECT pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states")
-      .all();
+        [number]
+      >(
+        "SELECT pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states WHERE domain_id = ?",
+      )
+      .all(domainId);
     const map = new Map<number, CiRunState>();
     for (const row of rows) {
       map.set(row.pr_number, {
@@ -506,22 +532,29 @@ export class WorkItemDb {
     return map;
   }
 
-  upsertCiRunState(prNumber: number, state: CiRunState): void {
+  upsertCiRunState(prNumber: number, state: CiRunState, domainId: number = NO_DOMAIN_ID): void {
     this.db
       .prepare(
-        `INSERT INTO ci_run_states (pr_number, suite_id, started_at, emitted_started, emitted_finished)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(pr_number) DO UPDATE SET
+        `INSERT INTO ci_run_states (domain_id, pr_number, suite_id, started_at, emitted_started, emitted_finished)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(domain_id, pr_number) DO UPDATE SET
            suite_id = excluded.suite_id,
            started_at = excluded.started_at,
            emitted_started = excluded.emitted_started,
            emitted_finished = excluded.emitted_finished`,
       )
-      .run(prNumber, state.suiteId, state.startedAt, state.emittedStarted ? 1 : 0, state.emittedFinished ? 1 : 0);
+      .run(
+        domainId,
+        prNumber,
+        state.suiteId,
+        state.startedAt,
+        state.emittedStarted ? 1 : 0,
+        state.emittedFinished ? 1 : 0,
+      );
   }
 
-  deleteCiRunState(prNumber: number): void {
-    this.db.prepare("DELETE FROM ci_run_states WHERE pr_number = ?").run(prNumber);
+  deleteCiRunState(prNumber: number, domainId: number = NO_DOMAIN_ID): void {
+    this.db.prepare("DELETE FROM ci_run_states WHERE domain_id = ? AND pr_number = ?").run(domainId, prNumber);
   }
 
   /**

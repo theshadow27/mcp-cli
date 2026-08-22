@@ -51,9 +51,12 @@ export class EventLog {
             work_item_id TEXT,
             session_id   TEXT,
             pr_number    INTEGER,
+            domain_id    INTEGER NOT NULL DEFAULT 0,
             payload      TEXT    NOT NULL
           );
           CREATE INDEX IF NOT EXISTS idx_monitor_events_ts ON monitor_events(ts);
+          -- Replay a single domain's stream without scanning every other domain's (#3034).
+          CREATE INDEX IF NOT EXISTS idx_monitor_events_domain ON monitor_events(domain_id, seq);
         `);
         this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 1]);
       })();

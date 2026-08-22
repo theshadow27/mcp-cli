@@ -1923,7 +1923,9 @@ describe("StateDb", () => {
       const raw = new Database(p, { create: true });
       raw.exec("PRAGMA journal_mode = WAL");
       raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
-      raw.exec("CREATE TABLE aliases (name TEXT PRIMARY KEY, file_path TEXT NOT NULL)");
+      raw.exec(
+        "CREATE TABLE aliases (name TEXT PRIMARY KEY, file_path TEXT NOT NULL, domain_id INTEGER NOT NULL DEFAULT 0)",
+      );
       raw.close();
 
       const db = new StateDb(p);
@@ -1955,7 +1957,7 @@ describe("StateDb", () => {
         raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
         // alias_state must exist for the v3 step to find rows.
         raw.exec(
-          "CREATE TABLE alias_state (repo_root TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (repo_root, namespace, key))",
+          "CREATE TABLE alias_state (domain_id INTEGER NOT NULL DEFAULT 0, repo_root TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (domain_id, repo_root, namespace, key))",
         );
         raw.run("INSERT INTO alias_state (repo_root, namespace, key, value_json) VALUES (?, ?, ?, ?)", [
           symlinkDir,
@@ -2132,6 +2134,7 @@ describe("StateDb", () => {
         "auth_tokens",
         "copilot_comment_state",
         "daemon_state",
+        "domains",
         "mail",
         "notes",
         "oauth_clients",
@@ -2347,13 +2350,15 @@ describe("StateDb", () => {
       raw.exec(`
         CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
         CREATE TABLE copilot_comment_state (
-          pr_number              INTEGER PRIMARY KEY,
+          domain_id              INTEGER NOT NULL DEFAULT 0,
+          pr_number              INTEGER NOT NULL,
           seen_comment_ids       TEXT NOT NULL DEFAULT '[]',
           seen_review_ids        TEXT NOT NULL DEFAULT '[]',
           seen_pr_comment_ids    TEXT NOT NULL DEFAULT '[]',
           seen_issue_comment_ids TEXT NOT NULL DEFAULT '[]',
           last_sticky_body_hash  TEXT,
-          last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now'))
+          last_poll_ts           TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (domain_id, pr_number)
         );
         INSERT INTO schema_versions (name, version) VALUES ('state', 4);
         INSERT INTO copilot_comment_state (pr_number, last_poll_ts) VALUES (0, '2026-04-27T22:37:26.000Z');

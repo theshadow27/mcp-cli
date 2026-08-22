@@ -432,6 +432,7 @@ describe("WorkItemDb", () => {
       raw.exec(`
         CREATE TABLE work_items (
           id              TEXT PRIMARY KEY,
+          domain_id       INTEGER NOT NULL DEFAULT 0,
           issue_number    INTEGER UNIQUE,
           branch          TEXT UNIQUE,
           pr_number       INTEGER UNIQUE,

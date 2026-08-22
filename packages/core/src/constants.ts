@@ -59,8 +59,18 @@ function computeDevProtocolHash(): string {
 /** Runtime state directory (override with MCP_CLI_DIR env var for test isolation) */
 export const MCP_CLI_DIR = process.env.MCP_CLI_DIR || join(homedir(), ".mcp-cli");
 
-/** SQLite database path */
-const DB_PATH = join(MCP_CLI_DIR, "state.db");
+/**
+ * SQLite database path.
+ *
+ * Domain-scoped mcx is a clean slate, not a migration (#3034): the daemon opens
+ * `mcx.db` and nothing opens `state.db` at runtime. The legacy file is left on disk
+ * untouched apart from the one-shot import's read and its marker write, and the
+ * recovery story for a bad import is deleting `mcx.db`.
+ */
+const DB_PATH = join(MCP_CLI_DIR, "mcx.db");
+
+/** Pre-domain SQLite database. Read once by the one-shot import (#3034), never at runtime. */
+const LEGACY_DB_PATH = join(MCP_CLI_DIR, "state.db");
 
 /** CLI config file path (trust-claude, etc.) */
 const MCP_CLI_CONFIG_PATH = join(MCP_CLI_DIR, "config.json");
@@ -85,6 +95,7 @@ const CACHE_DIR = join(MCP_CLI_DIR, "cache");
 const _originalOptions = {
   MCP_CLI_DIR,
   DB_PATH,
+  LEGACY_DB_PATH,
   MCP_CLI_CONFIG_PATH,
   SOCKET_PATH,
   PID_PATH,

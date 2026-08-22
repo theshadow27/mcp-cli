@@ -26,7 +26,8 @@ export function testOptions(input?: TestOptionsInput) {
   const dir = mkdtempSync(join(tmpdir(), "mcp-test-"));
 
   options.MCP_CLI_DIR = dir;
-  options.DB_PATH = join(dir, "state.db");
+  options.DB_PATH = join(dir, "mcx.db");
+  options.LEGACY_DB_PATH = join(dir, "state.db");
   options.MCP_CLI_CONFIG_PATH = join(dir, "config.json");
   options.SOCKET_PATH = join(dir, "mcpd.sock");
   options.PID_PATH = join(dir, "mcpd.pid");
