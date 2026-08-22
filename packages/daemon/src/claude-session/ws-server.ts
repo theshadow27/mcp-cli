@@ -42,6 +42,7 @@ import {
   SESSION_DISCONNECTED,
   SESSION_ENDED,
   SESSION_ERROR,
+  SESSION_GH_CREDENTIALS,
   SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_BLOCKED,
@@ -59,8 +60,8 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
-import type { GhTokenSource } from "./gh-token";
-import { ghTokenRole, ghTokensPath, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
+import type { GhTokenConfig } from "./gh-token";
+import { ghTokensPath, isolatedGhConfigDir, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
@@ -527,7 +528,7 @@ export class ClaudeWsServer {
   private readonly workItemBuffer: BufferedWorkItemEvent[] = [];
   private readonly spawn: SpawnFn;
   /** Resolves the configured GitHub credential pair at spawn time (#1510). */
-  private readonly ghTokens: () => GhTokenSource;
+  private readonly ghTokens: () => GhTokenConfig;
   /** Latches the single-token warning so it fires once per daemon, not once per spawn. */
   private ghSingleTokenWarned = false;
   private readonly killTimeoutMs: number;
@@ -618,8 +619,8 @@ export class ClaudeWsServer {
     spawnDisabledReason?: string | null;
     /** Transport for sessions without a per-spawn override. Default: `"ws"`. */
     defaultTransport?: "ws" | "stdio";
-    /** Source of the two-tier GitHub credential pair (#1510). Default: `~/.mcp-cli/tokens.json` + env. */
-    ghTokens?: () => GhTokenSource;
+    /** Source of the GitHub credential configuration (#1510). Default: `~/.mcp-cli/tokens.json` + env. */
+    ghTokens?: () => GhTokenConfig;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -1013,21 +1014,32 @@ export class ClaudeWsServer {
     // TLS — only needed for WS transport (sdk-url against a self-signed cert).
     if (!opts.useStdio && this.tlsConfig) env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-    // GitHub credential tier (#1510) — gh-token.ts owns the allow/deny table.
-    Object.assign(env, this.resolveGhTokenEnv(sessionId, session));
+    // GitHub credential scoping (#1510) — gh-token.ts owns the allow/deny table.
+    Object.assign(env, this.resolveGhTokenEnv(sessionId));
 
     return env;
   }
 
   /**
-   * Apply the two-tier GitHub credential policy to one spawn (#1510).
+   * Apply the GitHub credential policy to one spawn (#1510).
    *
-   * Only the decision's `mode` and secret-free `reason` are logged — token
-   * material never reaches the daemon log ring, an event payload, or the DB.
+   * Only the decision's `mode` and secret-free `reason` are logged or emitted —
+   * token material never reaches the daemon log ring, an event payload, or the
+   * DB. The decision is published on the event bus every spawn, because the log
+   * ring evicts and a daemon here stays up for days: the ring cannot answer
+   * "what credential tier did session X run at?" after it rolls.
    */
-  private resolveGhTokenEnv(sessionId: string, session: WsSession): Record<string, string | undefined> {
-    const decision = resolveSpawnGhToken(ghTokenRole(session.config), this.ghTokens());
-    if (decision.warnSingleToken) {
+  private resolveGhTokenEnv(sessionId: string): Record<string, string | undefined> {
+    const decision = resolveSpawnGhToken(this.ghTokens(), {
+      sourceEnv: process.env,
+      isolatedGhConfigDir: isolatedGhConfigDir(),
+    });
+
+    if (decision.problem !== undefined) {
+      // A tokens file we could not trust. Never latched: this is a live
+      // misconfiguration and every affected spawn deserves to say so.
+      this.logger.error(`[_claude] session ${sessionId} gh credentials: denied — ${decision.problem}`);
+    } else if (decision.warnSingleToken) {
       // Warn once per daemon, not once per spawn — a sprint spawns many workers.
       if (!this.ghSingleTokenWarned) {
         this.ghSingleTokenWarned = true;
@@ -1038,6 +1050,17 @@ export class ClaudeWsServer {
     } else if (decision.mode !== "inherited") {
       this.logger.info(`[_claude] session ${sessionId} gh credentials: ${decision.mode} — ${decision.reason}`);
     }
+
+    this.onMonitorEvent?.({
+      src: "daemon.claude-server",
+      event: SESSION_GH_CREDENTIALS,
+      category: "session",
+      sessionId,
+      mode: decision.mode,
+      reason: decision.reason,
+      ...(decision.problem !== undefined ? { problem: decision.problem } : {}),
+    });
+
     return decision.env;
   }
 
