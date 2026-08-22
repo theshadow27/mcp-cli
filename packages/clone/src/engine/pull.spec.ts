@@ -3,7 +3,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, resolveRealpath } from "@mcp-cli/core";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
@@ -710,7 +710,8 @@ describe("pull", () => {
 
       await pull({ repoDir, provider, onProgress: () => {}, onEvent: sink(events) });
 
-      expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolve(repoDir)]));
+      // Canonical — consumers compare raw strings against their own realpath.
+      expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolveRealpath(resolve(repoDir))]));
       expect(new Set(events.map((e) => e.runId)).size).toBe(1);
     });
   });

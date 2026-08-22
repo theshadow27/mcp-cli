@@ -77,11 +77,26 @@ describe("shouldReport", () => {
   });
 
   test("with a known total, reports every 5% by default", () => {
-    // 5% of 5000 = 250 — the cadence the issue asks for.
-    expect(shouldReport(249, 5000, 0)).toBe(false);
-    expect(shouldReport(250, 5000, 0)).toBe(true);
-    expect(shouldReport(499, 5000, 250)).toBe(false);
-    expect(shouldReport(500, 5000, 250)).toBe(true);
+    // 5% of 1000 = 50, the widest step the count rule allows.
+    expect(shouldReport(49, 1000, 0)).toBe(false);
+    expect(shouldReport(50, 1000, 0)).toBe(true);
+    expect(shouldReport(99, 1000, 50)).toBe(false);
+    expect(shouldReport(100, 1000, 50)).toBe(true);
+  });
+
+  test("the percent step never rises above the flat count step", () => {
+    // 5% of 5000 is 250, but an estimate must not widen the cadence past what
+    // the run would report with no estimate at all — see the over-count case.
+    expect(shouldReport(50, 5000, 0)).toBe(true);
+    expect(shouldReport(49, 5000, 0)).toBe(false);
+  });
+
+  test("an inflated estimate cannot silence progress", () => {
+    // The regression this ceiling exists for: count() answers 30000 for a
+    // 300-item listing. Uncapped the step was 1500 and the run ended having
+    // reported nothing at all — worse than having no count() at all.
+    expect(shouldReport(50, 30_000, 0)).toBe(true);
+    expect(shouldReport(300, 1_000_000, 250)).toBe(true);
   });
 
   test("the percent step never drops below 10 items", () => {
@@ -219,11 +234,24 @@ describe("formatProgressLine", () => {
 
 describe("ProgressReporter", () => {
   test("emits exactly one update per 5% of a known total", async () => {
-    const { events, lines } = await runPhase(5000, 5000);
+    const { events, lines } = await runPhase(1000, 1000);
     expect(events).toHaveLength(20);
     expect(lines).toHaveLength(20);
-    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 250, total: 5000, percent: 5, stage: "list" });
-    expect(events[19]).toMatchObject({ current: 5000, percent: 100 });
+    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 50, total: 1000, percent: 5, stage: "list" });
+    expect(events[19]).toMatchObject({ current: 1000, percent: 100 });
+  });
+
+  test("an over-estimated count() still reports — never worse than no estimate", async () => {
+    // The mirror of the stale-count() case below, and the direction nobody
+    // checked. Measured before the ceiling: 30000 against a 300-item listing
+    // emitted 0 lines and 0 events, where no count() at all emits 6.
+    const noEstimate = await runPhase(300, undefined);
+    for (const inflated of [5300, 30_000, 1_000_000]) {
+      const { events, lines } = await runPhase(300, inflated);
+      expect(events.length).toBeGreaterThanOrEqual(noEstimate.events.length);
+      expect(lines.length).toBeGreaterThanOrEqual(noEstimate.lines.length);
+    }
+    expect(noEstimate.events).toHaveLength(6);
   });
 
   test("a small scope stays quiet — 4 updates for 40 pages, not 40", async () => {

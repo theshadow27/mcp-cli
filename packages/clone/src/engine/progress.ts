@@ -92,11 +92,25 @@ export function usableTotal(current: number, total: number | undefined): number 
 /**
  * Decide whether `current` deserves an update given the last one emitted.
  *
- * With a usable total the step is a share of it but never below `minStep`, so a
- * 5000-item scope reports every 250 items and a 40-item scope reports every 10
- * rather than every one; the tick that reaches the total always reports, so a
- * stage never ends mid-bar. Without one — none given, or one the run has
- * already overshot — the step is a flat item count.
+ * Two rules, and the tighter one wins:
+ *
+ * - **At most one update per `percentStep` of a usable total**, so a big scope
+ *   does not narrate every page — floored at `minStep` so a 40-item scope
+ *   reports every 10 rather than every one. The tick that reaches the total
+ *   always reports, so a stage never ends mid-bar.
+ * - **At least one update per `countStep` items**, always. This is the rule
+ *   that holds when there is no usable total, and it is also a *ceiling* on the
+ *   percent-derived step.
+ *
+ * The ceiling is the part that is easy to leave out, and leaving it out is
+ * strictly worse than having no estimate at all. `usableTotal` guards an
+ * estimate that came in *low*; an estimate that comes in *high* inflates the
+ * step instead, and the run can finish before the step is ever reached. An
+ * archived-heavy Confluence space whose CQL index answers 30,000 for a 300-page
+ * listing produced **zero** progress lines — where the pre-#1249 code printed
+ * six, and where having no `count()` at all prints six. A best-effort
+ * denominator must never be able to silence the output it is decorating; the
+ * flat count rule is the floor the whole feature stands on.
  */
 export function shouldReport(
   current: number,
@@ -106,16 +120,17 @@ export function shouldReport(
 ): boolean {
   if (current <= lastReported) return false;
 
+  const countStep = throttle.countStep ?? DEFAULT_COUNT_STEP;
   const usable = usableTotal(current, total);
   if (usable !== undefined) {
     if (current >= usable && lastReported < usable) return true;
     const percentStep = throttle.percentStep ?? DEFAULT_PERCENT_STEP;
     const minStep = throttle.minStep ?? MIN_PERCENT_STEP_ITEMS;
-    const step = Math.max(minStep, Math.ceil((usable * percentStep) / 100));
+    const step = Math.min(countStep, Math.max(minStep, Math.ceil((usable * percentStep) / 100)));
     return current - lastReported >= step;
   }
 
-  return current - lastReported >= (throttle.countStep ?? DEFAULT_COUNT_STEP);
+  return current - lastReported >= countStep;
 }
 
 /** `current`/`total` as a 0-100 integer, clamped so a low estimate can't exceed 100. */

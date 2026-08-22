@@ -322,7 +322,11 @@ export function createConfluenceProvider(opts: ConfluenceProviderOptions): Remot
      * request yields the denominator for the whole listing (#1249).
      */
     async count(scope: ResolvedScope): Promise<number | undefined> {
-      const cql = `space = "${scope.key}" AND type = page`;
+      // `status = current` mirrors list()'s own filter (see the listing query
+      // above). Without it the two calls ask different questions and the count
+      // can exceed what the listing yields — which, before the step ceiling in
+      // shouldReport(), silenced progress entirely.
+      const cql = `space = "${scope.key}" AND type = page AND status = current`;
       const resp = (await callAtlassian("searchConfluenceUsingCql", {
         cloudId: scope.cloudId,
         cql,

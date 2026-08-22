@@ -186,7 +186,9 @@ describe("count — progress denominator (#1249)", () => {
     expect(await provider.count?.(makeScope())).toBe(5000);
     // One row is enough: totalSize counts matches, not returned rows.
     expect(args[0]).toMatchObject({ limit: 1, cloudId: "cloud-123" });
-    expect(args[0].cql).toBe('space = "TEST" AND type = page');
+    // Mirrors list()'s own `status: "current"` filter — a count that includes
+    // archived/trashed pages exceeds what the listing yields.
+    expect(args[0].cql).toBe('space = "TEST" AND type = page AND status = current');
   });
 
   test("is undefined when the response carries no totalSize", async () => {

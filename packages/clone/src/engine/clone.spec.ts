@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, resolveRealpath } from "@mcp-cli/core";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { clone, computeDepth } from "./clone";
@@ -368,10 +368,35 @@ describe("clone progress reporting (#1249)", () => {
     // Without repoRoot every event passes every repo-scoped monitor filter
     // (event-filter.ts) — a clone elsewhere on the box would spray into an
     // unrelated repo's stream.
-    expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolve(targetDir)]));
+    // Canonical, not merely resolved — asserting against resolve() would agree
+    // with the producer on the wrong answer whenever an ancestor is a symlink.
+    expect(new Set(events.map((e) => e.repoRoot))).toEqual(new Set([resolveRealpath(resolve(targetDir))]));
     expect(new Set(events.map((e) => e.runId)).size).toBe(1);
     expect(events[0].runId).toMatch(/^[0-9a-f]{16}$/);
     expect(new Set(events.map((e) => e.unit))).toEqual(new Set(["pages"]));
+  });
+
+  test("repoRoot is canonicalized, so a symlinked target is still reachable by --repo", async () => {
+    // event-filter.ts compares repoRoot as a raw string and every consumer
+    // canonicalizes its own side (monitor.ts, ipc-filter.ts). A producer that
+    // only resolve()s is invisible to `--repo <target>` and to
+    // `cd <target> && mcx monitor` whenever an ancestor is a symlink — which on
+    // macOS includes tmpdir() itself. This fails without resolveRealpath.
+    const realParent = join(TMP, "real-parent");
+    const linkParent = join(TMP, "link-parent");
+    mkdirSync(realParent, { recursive: true });
+    symlinkSync(realParent, linkParent);
+
+    const viaLink = join(linkParent, "space");
+    const events: VfsProgressEvent[] = [];
+    const provider = bulkProvider(5, { count: async () => 5 });
+
+    await clone({ targetDir: viaLink, provider, scope: makeScope("FOO"), onProgress: () => {}, onEvent: sink(events) });
+
+    const emitted = [...new Set(events.map((e) => e.repoRoot))];
+    expect(emitted).toEqual([join(realpathSync(realParent), "space")]);
+    // The path the user typed still contains the symlink — that is the point.
+    expect(emitted[0]).not.toBe(resolve(viaLink));
   });
 
   test("publishes a terminal vfs.failed when the remote throws mid-listing", async () => {

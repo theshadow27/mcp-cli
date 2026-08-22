@@ -439,13 +439,16 @@ Options:
 Progress:
   clone and pull print live progress to stderr ("Fetching FOO... 250/5000 pages
   (5%)") and publish vfs.started, vfs.progress and a terminal vfs.completed or
-  vfs.failed on the daemon event bus. Follow a long clone from another terminal
-  with: mcx monitor
+  vfs.failed on the daemon event bus. To follow a long clone from another
+  terminal:
+      mcx monitor --all-repos                 # or: mcx monitor --repo <target-dir>
+  Bare "mcx monitor" is scoped to its own cwd, so it will NOT show a clone
+  landing anywhere else — every event carries repoRoot (the clone target), which
+  is what keeps clone chatter out of unrelated repo-scoped monitors.
   A run killed by a signal (Ctrl-C) leaves its stream open — a waiter needs its
   own timeout as a backstop.
-  Every event carries repoRoot (the target dir), so repo-scoped monitors stay
-  unpolluted, and a runId that tags the run in the stream. Note that monitor
-  filters cannot yet select on runId (#3153).
+  Every event also carries a runId tagging the run, though monitor filters
+  cannot yet select on it (#3153).
   The percentage needs a provider that can count its scope up front (confluence);
   others report a bare item count.
 

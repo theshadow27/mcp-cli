@@ -15,6 +15,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
@@ -89,7 +90,8 @@ export async function pull(opts: PullOptions): Promise<PullResult> {
       operation: "pull",
       provider: provider.name,
       scope: scope.key,
-      repoRoot: resolve(repoDir),
+      // Canonicalized — see the note in clone.ts; consumers compare raw strings.
+      repoRoot: resolveRealpath(resolve(repoDir)),
       unit: provider.itemNoun,
       log: (msg) => log(opts, msg),
       onEvent: opts.onEvent,

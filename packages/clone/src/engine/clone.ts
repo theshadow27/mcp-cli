@@ -12,6 +12,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { resolveRealpath } from "@mcp-cli/core";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { STUB_BODY } from "./constants";
@@ -78,7 +79,13 @@ export async function clone(opts: CloneOptions): Promise<CloneResult> {
     operation: "clone",
     provider: opts.provider.name,
     scope: opts.scope.key,
-    repoRoot: resolve(opts.targetDir),
+    // Canonicalized, not merely resolved: `event-filter.ts` compares repoRoot as
+    // a raw string and every consumer canonicalizes its side (`monitor.ts:186`,
+    // `ipc-filter.ts:25`). A producer that skips it is invisible to `--repo` and
+    // to `cd <target> && mcx monitor` whenever any ancestor is a symlink — which
+    // includes macOS `tmpdir()`. There is a DB migration in `db/state.ts` that
+    // exists because this invariant was broken once already.
+    repoRoot: resolveRealpath(resolve(opts.targetDir)),
     unit: opts.provider.itemNoun,
     log: (msg) => log(opts, msg),
     onEvent: opts.onEvent,
