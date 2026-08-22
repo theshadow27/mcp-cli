@@ -6,10 +6,27 @@
  */
 
 import { resolve } from "node:path";
-import { looksLikeToolName, validateAllowPatterns } from "@mcp-cli/core";
+import { SPAWN_PROFILE_NAME_RE, looksLikeToolName, validateAllowPatterns } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 
 export { looksLikeToolName } from "@mcp-cli/core";
+
+/**
+ * Validate a `--profile <name>` value (#935).
+ *
+ * Shared by `mcx claude spawn` and `mcx agent claude spawn` so both reject the
+ * same inputs with the same words — the message is the contract a stuck operator
+ * reads at 3am, and two copies of it drift.
+ */
+export function parseProfileFlagValue(value: string | undefined): { name?: string; error?: string } {
+  if (value === undefined || value.startsWith("-")) {
+    return { error: "--profile requires a name (use --no-profile to opt out of a configured default)" };
+  }
+  if (!SPAWN_PROFILE_NAME_RE.test(value)) {
+    return { error: `--profile "${value}" is not a valid profile name (letters, digits, hyphens, underscores)` };
+  }
+  return { name: value };
+}
 
 export interface SharedSpawnArgs {
   task: string | undefined;

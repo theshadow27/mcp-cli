@@ -218,6 +218,31 @@ describe("parseSpawnArgs", () => {
     expect(result.transport).toBeUndefined();
   });
 
+  test("parses --profile (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "bedrock", "-t", "x"]);
+    expect(result.profile).toBe("bedrock");
+    expect(result.task).toBe("x");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("--no-profile is null, distinct from an omitted flag (#935)", () => {
+    // null must survive to the RPC: it is what overrides a configured default.
+    expect(parseSpawnArgs(["--no-profile", "-t", "x"]).profile).toBeNull();
+    expect(parseSpawnArgs(["-t", "x"]).profile).toBeUndefined();
+  });
+
+  test("--profile without a name is an error, and does not eat the next flag (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "-t", "x"]);
+    expect(result.error).toContain("--profile requires a name");
+    expect(result.task).toBe("x");
+  });
+
+  test("--profile rejects a name that could never be a filename (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "../../etc/passwd", "-t", "x"]);
+    expect(result.error).toContain("not a valid profile name");
+    expect(result.profile).toBeUndefined();
+  });
+
   test("parses -w shorthand", () => {
     const result = parseSpawnArgs(["-w", "feat", "-t", "x"]);
     expect(result.worktree).toBe("feat");
@@ -1285,6 +1310,28 @@ describe("mcx claude spawn --headed", () => {
     } finally {
       console.log = origLog;
     }
+  });
+
+  test("errors on --headed with --profile — the daemon never gets to apply it", async () => {
+    // It used to exit 0 having silently run on the terminal's own credentials:
+    // claudeSpawnHeaded returns before the profile pre-check, and
+    // buildHeadedCommand never reads parsed.profile. Injecting the values into
+    // the command string is not the fix either — that puts a credential in shell
+    // history and in every `ps` on the box (#935).
+    const ttyOpen = mock(async () => {});
+    const deps = makeDeps({ ttyOpen });
+    await expect(cmdClaude(["spawn", "--headed", "--profile", "bedrock", "--task", "x"], deps)).rejects.toThrow(
+      ExitError,
+    );
+    expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("--headed and --profile"));
+    expect(ttyOpen).not.toHaveBeenCalled();
+  });
+
+  test("errors on --headed with --no-profile too", async () => {
+    const ttyOpen = mock(async () => {});
+    const deps = makeDeps({ ttyOpen });
+    await expect(cmdClaude(["spawn", "--headed", "--no-profile", "--task", "x"], deps)).rejects.toThrow(ExitError);
+    expect(ttyOpen).not.toHaveBeenCalled();
   });
 
   test("errors on --headed with --resume", async () => {

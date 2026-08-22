@@ -97,6 +97,8 @@ const _originalOptions = {
   CLAUDE_POLICY_LIMITS_PATH: join(homedir(), ".claude", "policy-limits.json"),
   /** Directory holding saved Claude auth profiles (`mcx claude auth save/load`) */
   AUTH_PROFILES_DIR: join(MCP_CLI_DIR, "auth-profiles"),
+  /** Directory holding spawn profiles — per-spawn env bundles (`--profile`, #935) */
+  PROFILES_DIR: join(MCP_CLI_DIR, "profiles"),
   CLAUDE_DESKTOP_CONFIG_PATH: join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json"),
   USER_SERVERS_PATH: join(MCP_CLI_DIR, "servers.json"),
   PROJECTS_DIR: join(MCP_CLI_DIR, "projects"),

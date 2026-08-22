@@ -22,7 +22,9 @@ import {
   detectScope,
   getDefaultBranch,
   listMcxWorktrees,
+  listSpawnProfiles,
   loadManifest,
+  options,
   parseWorktreeList,
   readWorktreeConfig,
   resolveEffectiveTools,
@@ -52,7 +54,7 @@ import {
   formatSessionShort,
 } from "./session-display";
 import type { SharedSpawnArgs } from "./spawn-args";
-import { parseSharedSpawnArgs } from "./spawn-args";
+import { parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 import type { LookupResult, MailMessage, QuotaStatusResult, SessionInfo, WorkItem } from "@mcp-cli/core";
@@ -174,7 +176,7 @@ export const defaultDeps: ClaudeDeps = {
  *
  * Exported so tests can assert every member routes through `cmdClaudeInternal`.
  */
-export const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update", "auth"]);
+export const CLAUDE_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["patch-update", "auth", "profile"]);
 
 /**
  * `mcx claude` — thin alias that routes to `mcx agent claude` for shared
@@ -270,6 +272,11 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
       await claudeAuth(subArgs, d);
       break;
     }
+    case "profile": {
+      const { claudeProfile } = await import("./claude-profile");
+      await claudeProfile(subArgs, d);
+      break;
+    }
     case "status": {
       const { cmdAgent } = await import("./agent");
       await cmdAgent(["claude", sub, ...subArgs], d);
@@ -277,7 +284,7 @@ async function cmdClaudeInternal(args: string[], deps?: Partial<ClaudeDeps>): Pr
     }
     default:
       d.printError(
-        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", "auth", "worktrees", or "status".`,
+        `Unknown claude subcommand: ${sub}. Use "spawn", "resume", "ls", "send", "bye", "interrupt", "log", "wait", "approve", "deny", "patch-update", "auth", "profile", "worktrees", or "status".`,
       );
       d.exit(1);
   }
@@ -300,6 +307,12 @@ export interface SpawnArgs extends SharedSpawnArgs {
   claudeBinary: string | undefined;
   /** Per-spawn transport override. Bypasses the daemon's global transport config for this session only. */
   transport: "stdio" | "sdk-url" | undefined;
+  /**
+   * Spawn profile name (`--profile`), `null` for `--no-profile` (run on the bare
+   * daemon env even when a repo or config default is set), `undefined` when
+   * neither flag was given — the layer below decides (#935).
+   */
+  profile: string | null | undefined;
 }
 
 export function parseSpawnArgs(args: string[]): SpawnArgs {
@@ -310,6 +323,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
   let workItemId: string | undefined;
   let claudeBinary: string | undefined;
   let transport: "stdio" | "sdk-url" | undefined;
+  let profile: string | null | undefined;
   let extraError: string | undefined;
 
   const shared = parseSharedSpawnArgs(args, (arg, allArgs, i) => {
@@ -361,6 +375,21 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       extraError = "--claude-binary requires a path";
       return 0;
     }
+    if (arg === "--no-profile") {
+      profile = null;
+      return 0;
+    }
+    if (arg === "--profile") {
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const parsed = parseProfileFlagValue(next);
+      if (parsed.error) {
+        extraError = parsed.error;
+        // Don't consume a flag-shaped value (matches --transport's error path).
+        return next && !next.startsWith("-") ? 1 : 0;
+      }
+      profile = parsed.name;
+      return 1;
+    }
     if (arg === "--transport") {
       const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
       if (next === "stdio" || next === "sdk-url") {
@@ -386,6 +415,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
     workItemId,
     claudeBinary,
     transport,
+    profile,
   };
 }
 
@@ -524,6 +554,18 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
     parsed.claudeBinary = binPath;
   }
 
+  // Fail here rather than after the daemon has created (and torn down) a session:
+  // a missing profile is nearly always a typo, and the list is the fix (#935).
+  if (typeof parsed.profile === "string") {
+    const available = listSpawnProfiles();
+    if (!available.includes(parsed.profile)) {
+      const known = available.length > 0 ? ` (available: ${available.join(", ")})` : " (no profiles defined yet)";
+      d.printError(`--profile "${parsed.profile}": no such profile in ${options.PROFILES_DIR}${known}`);
+      d.exit(1);
+      return;
+    }
+  }
+
   const rawTask = parsed.task ?? "Continue from where you left off.";
   let task = rawTask;
   try {
@@ -553,6 +595,17 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
       }
     } else {
       // Session is active (or not in DB) — send as follow-up prompt to existing session.
+      // A running child's environment cannot be changed, so a profile here would
+      // be validated above and then dropped, leaving the operator with a
+      // confirmed flag and an unprofiled session. The daemon refuses this too;
+      // catching it here spends no session (#935).
+      if (parsed.profile !== undefined) {
+        d.printError(
+          `--profile/--no-profile cannot be applied to the running session "${parsed.resume}" — a profile is applied when the child process is spawned. Use \`mcx claude bye ${parsed.resume}\` and spawn fresh with --profile, or resume an ended session.`,
+        );
+        d.exit(1);
+        return;
+      }
       toolArgs.sessionId = parsed.resume;
     }
   }
@@ -569,6 +622,10 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // so a later `mcx config set` cannot change what this session uses (#2681).
   if (parsed.claudeBinary) toolArgs.claudeBinary = parsed.claudeBinary;
   if (parsed.transport) toolArgs.transport = parsed.transport;
+  // Only the profile NAME crosses the wire; the daemon reads its values at spawn
+  // so credentials never reach the RPC args, spans, or the state DB (#935).
+  // `null` is meaningful (--no-profile) — don't collapse it with a truthiness test.
+  if (parsed.profile !== undefined) toolArgs.profile = parsed.profile;
 
   // Handle worktree: always pre-create via shim so cwd points to the worktree.
   // Without cwd, Claude inherits the daemon's cwd (main repo) and file
@@ -663,6 +720,16 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   }
   if (parsed.wait) {
     d.printError("--headed and --wait are incompatible. Headed sessions are interactive.");
+    d.exit(1);
+  }
+  // A headed session is a shell command run in your terminal, not a daemon
+  // spawn — so nothing here reads the profile file, and injecting the values
+  // into the command string would put credentials in shell history and `ps`.
+  // Refuse rather than exit 0 having silently used the wrong account (#935).
+  if (parsed.profile !== undefined) {
+    d.printError(
+      "--headed and --profile/--no-profile are incompatible: a headed session runs in your terminal on that shell's environment, which the daemon cannot substitute. Drop --headed to use a profile, or `source` the profile file in that terminal first.",
+    );
     d.exit(1);
   }
 

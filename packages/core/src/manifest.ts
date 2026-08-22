@@ -252,6 +252,16 @@ export const ManifestSchema = z
   .object({
     version: z.number().int().min(1).default(MANIFEST_SCHEMA_VERSION),
     runsOn: z.string().min(1).optional(),
+    /**
+     * Spawn-profile opt-out for this repo (#935) — DESELECT-ONLY.
+     *
+     * `null` pins "no profile", overriding the operator's `defaultProfile`. A
+     * NAMED profile parses (so an older repo still validates) but is IGNORED at
+     * spawn time, with a warning naming the file: a `.mcx.yaml` arrives by `git
+     * clone`, and repo content does not get to choose which credentials an
+     * auto-approving agent spawns with. See `findManifestProfile`.
+     */
+    profile: z.string().min(1).nullable().optional(),
     worktree: ManifestWorktreeSchema.optional(),
     state: ManifestStateSchema.optional(),
     initial: identifier("initial"),

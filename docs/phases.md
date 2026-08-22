@@ -55,6 +55,7 @@ export default defineAlias({
 |-------|------|----------|---------|
 | `version` | `1` | no | Manifest format discriminator; defaults to `1` when omitted |
 | `runsOn` | string | no | Branch the orchestrator must stand on (e.g. `main`) |
+| `profile` | `null` | no | Opt this repo out of spawn profiles; a named profile is ignored (see below) |
 | `worktree.setup` | string | no | Command run after worktree creation |
 | `worktree.teardown` | string | no | Command run before worktree removal |
 | `worktree.base` | string | no | Base branch for new worktrees |
@@ -70,6 +71,41 @@ Bare state types are `string`, `number`, `boolean`, each optionally
 suffixed with `?` (e.g. `string?`). The object form (see below) also
 accepts `enum[val1,val2,...]` with optional `?`. Runtime enforcement is
 wired in #1286.
+
+### `profile` — repo-wide spawn opt-out
+
+A spawn profile is an env bundle in `~/.mcp-cli/profiles/<name>.env` applied
+to sessions spawned by the daemon (see `mcx claude profile --help`). The
+precedence chain, highest first:
+
+```
+--profile <name>  >  mcx config set default-profile  >  bare daemon env
+```
+
+**`.mcx.yaml` is deselect-only.** `profile: null` pins "no profile" for this
+repo, overriding a machine-wide `default-profile`. A *named* `profile: bedrock`
+is **ignored**, with a warning naming the file.
+
+That asymmetry is deliberate. A `.mcx.yaml` arrives by `git clone`, and
+`docs/trust.md` states the rule: input from an untrusted source is ignored, not
+merged. If repo content could *select* a profile, a third-party checkout under
+`~/github/` would choose which credentials an auto-approving agent spawns with
+— and, since a profile may set `ANTHROPIC_BASE_URL`, where those credentials
+get sent. Opting *out* is safe in the other direction: the worst a hostile repo
+can achieve is a session on the bare daemon env.
+
+Pick the profile where the operator lives instead:
+
+```bash
+mcx config set default-profile bedrock   # machine-wide
+mcx claude spawn --profile bedrock ...   # one session
+mcx claude spawn --no-profile ...        # opt one session out
+```
+
+Resolution is one function — `resolveSpawnProfile` in
+`packages/core/src/spawn-profile.ts` — not a chain of checks at call sites, and
+its `manifest` layer is typed `null | undefined` so the manifest *cannot* select
+even by accident.
 
 ### Trackable metadata fields
 

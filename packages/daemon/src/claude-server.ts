@@ -375,6 +375,15 @@ export class ClaudeServer extends AbstractWorkerServer {
         totalTokens: row.totalTokens,
         claudeSessionId: row.claudeSessionId,
         transport: row.transport === "ws" || row.transport === "stdio" ? row.transport : undefined,
+        // No profile is carried: `agent_sessions` has no column for it, and the
+        // schema is #3034's to change. `restoreSessions` therefore marks these
+        // sessions `profileSource: "unrecorded"`, and `resolveSessionProfile`
+        // REFUSES to revive them when a profile would have to be guessed —
+        // rather than substituting today's `defaultProfile` for whatever the
+        // operator originally chose. Substituting is not a milder version of
+        // losing it: it would put a `--no-profile` session onto billed
+        // credentials it was explicitly denied. Persisting the name is the real
+        // fix and belongs with #3034's schema; tracked as a follow-up.
       })),
     });
 
