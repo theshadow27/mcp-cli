@@ -55,6 +55,8 @@
 - [Send briefs via file](feedback_send_briefs_via_file.md) — markdown backticks execute in double-quoted shell strings; use a quoted heredoc + "$(cat …)"
 - [No author state in review labels](feedback_no_author_state_in_labels.md) — a repaired PR can't be represented; never self-assert `review:pass` (#3179, meta/boundary work)
 - [Sprint 78 audit lessons](feedback_sprint78_audit_lessons.md) — rework is one defect class (invariant at some call sites, not all); stalls drop sequenced-but-unspawned issues; nobody watches the orchestrator
+- [Coverage is blind to vacuous tests](feedback_coverage_blind_to_vacuous_tests.md) — 14/18 sprint-78 repair rounds; a rising coverage number is camouflage, verify guards by deleting them (#3201)
+- [True premise, unexamined conclusion](feedback_true_premise_unexamined_conclusion.md) — verify shared-infrastructure claims with one command before asserting; 3 instances in one night
 - [Gate before auto-merge](feedback_gate_before_automerge.md) — classify a dispatched fix routine vs gated BEFORE briefing; auto-merge forfeits the gate (#3116 landed mid-review)
 - [QoL budget: 2 per sprint](feedback_qol_budget_per_sprint.md) — standing grant for orchestration-reliability fixes alongside goal work; planned spend per sprint recorded
 - [#3019 domain-scoped mcx arc](project_domain_scoped_mcx_3019.md) — ten sub-epics #3021–#3030, A blocks all; one orchestrator per sprint, program manager plans between

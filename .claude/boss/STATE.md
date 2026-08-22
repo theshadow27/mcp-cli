@@ -138,3 +138,66 @@ reinforce, not tolerate.
 Also filed **#3178** — `mcx mail <unknown-verb>` sends an empty message to a mailbox
 named after the verb, exit 0. I did it to myself (`mcx mail read 46` created message 47
 in mailbox `read`). Not meta; worker-eligible filler.
+
+## Sprint 78 → 79 boundary runbook (ordering is load-bearing)
+
+Two deferred items collide at the same moment and the order matters. Surfaced by the
+auditor, decided here.
+
+**The collision:** the daemon reload (makes #3116 containment live) wants **zero live
+sessions**; the audit re-run needs **its own session alive**. Same moment, opposite
+requirements. And `restoreSessions()` does not persist permission strategy — anything the
+reload restores comes back as `auto` / blanket-allow, i.e. running under permissions nobody
+chose.
+
+**Therefore: MEASURE FIRST, THEN REACH TRUE ZERO, THEN RELOAD.** In order:
+
+1. Sprint-78 PRs all merged; nothing in flight.
+2. Refresh `build/sprint-78-reviews.json` (one command; the dump script is in the
+   scratchpad) and ping the auditor for the five-figure re-run — denominator, 14/18 and
+   9/18 ratios, per-PR ledger, merge drought, R2→R3 recurrence.
+3. Retro, diary, sentinel clear (`.claude/sprints/.active` — the sprint-aware guard in
+   `retro.md` refuses to clear another sprint's sentinel).
+4. **End every mcp-cli session INDIVIDUALLY, BY SESSION ID** — `mcx claude bye <id>`,
+   one at a time, including the auditor. **NEVER ANY BULK FORM — `--all`, `-a` and
+   `--all-domains` are the same machine-wide path (#3199). The ONLY safe spelling is
+   `mcx claude bye <session-id>`.** Naming only `--all` here would be actively dangerous:
+   the original guidance described `-a` as the correctly-scoped alternative, so someone
+   executing this step could reach for `-a` *because* `--all` is forbidden by name and end
+   every daemon-managed session on the box. This is the step whose entire purpose is ending
+   sessions, so it is the highest-stakes line in this document.
+
+   Success condition is **repo-scoped**, not `ls --all`: `mcx claude ls` (no `--all`) must
+   be empty. `ls --all` is the CROSS-REPO view and includes phoenix's sessions, so "`ls
+   --all` is empty" is unsatisfiable while phoenix is working — and the easiest way to
+   satisfy it would be the one forbidden command. Do not write a success condition that
+   the banned action is the shortest path to.
+
+5. **"True zero" means zero rows in `agent_sessions` with a live pid — not zero `claude`
+   processes on the box.** VERIFIED 2026-08-22: one `mcpd` serves the box, but
+   `mcx claude ls --all` returns only `~/github/mcp-cli` rows. phoenix's six
+   live `claude` processes are **plain sessions, not `mcx claude spawn` sessions**, so they
+   have no `agent_sessions` row. The restore set is built from those rows filtered on pid
+   liveness (`claude-server.ts:320-345`) — a row never written cannot be restored.
+
+   - **No joint drain with phoenix is required.** The earlier version of this step said
+     otherwise; that was my assertion, unverified, and it was wrong. Courtesy notice
+     before reloading, not a blocking dependency.
+   - **Re-verify before relying on this.** The moment any phoenix lane launches via
+     `mcx claude spawn`, it joins `agent_sessions` and the joint-drain requirement returns.
+     Check `mcx claude ls --all` for non-mcp-cli repo roots rather than assuming.
+   - The trap that produced the wrong version: *"one daemon per box"* is true;
+     *"therefore their sessions are in it"* assumes they registered. **"No command does X"
+     is not "nothing does X."**
+
+6. `bun run build && mcx daemon reload` at true zero. Nothing to restore ⇒ the
+   permission-strategy bug cannot fire. Reloading with live sessions is what would
+   resurrect them as blanket-allow.
+7. Boundary meta work (see `.claude/boss/sprint-79.md`): #3179 label taxonomy
+   (gate before label), the standing "verify by driving it, not by reading it" reviewer
+   clause, and the starvation-guidance de-duplication — that last one **after** #3138, so
+   we delete the prose rather than mechanize it.
+8. Spawn sprint-79 sessions fresh, under the correct permission strategy.
+
+**Do not reload before step 4.** A reload that restores sessions both breaks the
+measurement and silently re-grants blanket-allow.

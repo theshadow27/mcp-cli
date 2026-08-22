@@ -27,7 +27,9 @@ unusually small for a sprint this size. The exceptions are noted below.
 | # | Title | Scrutiny | Batch | Model | Category |
 |---|-------|----------|-------|-------|----------|
 | 3107 | claude: intercept `/goal` like `/clear`/`/model` + `spawn --goal` | medium | 1 | opus | goal |
-| 3104 | `[RATE LIMITED]` is sticky for the whole turn | low | 1 | opus | filler |
+| 3138 | gate-lease fails open and ADMITS — make it block, or make the fail-open loud | medium | 1 | opus | QoL |
+| 3201 | rule: tests/guards that report healthy about code that never runs (shapes 1/2/4) | high | 1 | opus | rework |
+| 3104 | `[RATE LIMITED]` is sticky for the whole turn | low | reserve | opus | filler |
 | 3047 | trust: envelope + disposition core — `chainPermitsAt` as the containment predicate | high | 1 | opus | goal |
 | 3055 | spend: per-domain rollup from `agent_sessions` | medium | 1 | opus | goal |
 | 3048 | trust: tag-neutering + control-char escaping | high | 2 | opus | goal |
@@ -44,8 +46,54 @@ unusually small for a sprint this size. The exceptions are noted below.
 
 ## Batch Plan
 
+### The rework lane — #3201, and why it is not a QoL pick
+
+Measured, not guessed: **14 of sprint 78's 18 repair rounds** cited this one defect class
+as a driver of at least one blocker (78%); it **dominated 9 of 18** (50%); and it caused
+**2 of 2 QA fails**. It also produced the rounds that made #3034 and #1249 the sprint's two
+longest PRs. Both figures are a floor — only findings the orchestrator restated in his own
+words could be classified.
+
+So this is not orchestration quality-of-life, it is **the sprint's dominant cost centre**
+and it comes out of goal budget, not the QoL budget. Use **9/18** for the conservative
+claim in the retro and **14/18** for the remedy's target.
+
+Four shapes: (1) tautological test — expectation derived from the same source as the code;
+(2) guard or branch that cannot execute; (3) vacuously-satisfied success signal;
+(4) assertion with no assertion power. **1, 2 and 4 are statically detectable and go in a
+rule; only 3 needs brief prose.** That is *less* prose than the enumerate-every-call-site
+clause and targets 14 rounds instead of 6.
+
+Shapes 1-3 **recur across rounds within one PR** — the `domains.spec.ts` tautology was
+found in round 2 and again in round 3. That recurrence is why PRs took four rounds instead
+of two, which is where the wall-clock went.
+
+Note also that line coverage is blind to it: `domain-server.ts` reports **98.29%** while
+three of its guards are freely deletable with a green suite. The ratchet will not catch
+this class.
+
+### QoL budget note (2 of 2 spent)
+
+**#3107** (`/goal` intercept + `spawn --goal`) and **#3138** (gate-lease fail-open).
+#3104 drops to reserve — it is a display annoyance; #3138 taxes every gate run in the
+remaining 5-6 sprints of the arc.
+
+Why #3138 earned the slot, decided 2026-08-22 on evidence rather than on the morning's
+guess: the lease does **not** serialize. It waits ~5 min and then admits **unleased**.
+Three occurrences in sprint 78's own transcript (~06:45, ~07:35, ~19:0x), two of them in
+the sprint's first 2h10m, so it is the steady state and not a tail event. Consequences:
+(a) `slots=1` stays satisfiable at load 40 — this is the mechanism; (b) every
+transcript-derived hours-lost figure is a **floor**, since an unleased admission is
+invisible unless you grep two lines above a green `✅ all checks passed`; (c) *"the lease
+will queue me, so starting is safe"* is false reasoning that a **careful** worker uses.
+
+Fix direction is not capacity or threshold tuning: **make the lease block (refuse + retry),
+or make the fail-open loud (non-zero exit / unmissable banner).** Two quiet lines above a
+green result are indistinguishable from success. Not meta — `packages/core/src/gate-lease.ts`
+plus `scripts/_runner/*` — so it is worker-eligible.
+
 ### Batch 1 (immediate)
-#3107, #3104, #3047, #3055, plus sprint-78 spillover
+#3107, #3138, #3201, #3047, #3055, plus sprint-78 spillover
 
 ### Batch 2 (opens when #3047 and #3055 merge)
 #3048, #3050, #3051, #3053, #3054, #3056, #3057
@@ -153,3 +201,22 @@ and must never be dispatched to a sprint worker (meta-issue planning guard; #233
 - **#3178 — `mcx mail` treats any unknown positional as a recipient.** Not meta
   (`packages/command/src/commands/mail.ts`), so this one *can* be a worker item — noted
   here only so it is not lost. Candidate filler for a later batch.
+
+- **Starvation-signature guidance is hand-written into every dispatch — ~15 occurrences
+  across ~10 briefs.** Each restates the same four symptom names (`handleWorkerCrash`,
+  `findProcessesByCwd`, `reapWorktreeProcesses`, `ServerPool rate limiting`) and the same
+  retry-once rule. A per-brief prose tax paid to compensate for #3138. Should be authored
+  once in the impl/review phase scripts (`.claude/phases/*.ts` → meta, boundary work), and
+  it can be deleted outright if #3138's fix makes the lease honest. Sequence it **after**
+  #3138 so we do not mechanize guidance we are about to retire.
+
+- **Standing reviewer clause: "verify by driving it, not by reading it."** Half of the
+  #3201 defect class is authored by *reviewers*. #1510's QA fail was a reviewer declaring a
+  path unreachable by reading it; QA tested it and it was reachable. From ~08:10 Dave began
+  hand-writing that instruction into every brief, and it **visibly worked** — verdicts after
+  ~13:30 read completely differently ("every finding was REPRODUCED against your head",
+  "reproduced with a live probe", "re-measured with a stopwatch rather than accepted from
+  the commit message"). A mid-sprint process change with a clean before/after, and the
+  strongest single piece of evidence in the audit. Promote it from an ad-hoc per-brief
+  correction to a standing clause in `.claude/phases/review-fn.ts` (meta → boundary work).
+  It is what stops shapes 1-4 surviving into round 3.
