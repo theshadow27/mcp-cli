@@ -910,16 +910,18 @@ export class ClaudeWsServer {
    */
   /** Prepare a session and return the assigned name and resolved transport. */
   prepareSession(sessionId: string, config: SessionConfig): { name: string; transport: "ws" | "stdio" } {
-    // A per-spawn `--transport` wins outright. Otherwise take the version-gated
-    // default — except for containment (worktree) sessions: ContainmentGuard
-    // rides the `can_use_tool` round-trip, which only the WS transport carries,
-    // and spawnClaude fails closed on the combination (#2688/#2791). Those keep ws
-    // rather than being silently downgraded out of the trust boundary. Drop this
-    // carve-out once #2805 gives stdio can_use_tool parity.
+    // A per-spawn `--transport` wins outright; otherwise take the version-gated
+    // default. Worktree (containment) sessions used to be pinned to ws here
+    // because ContainmentGuard rides the `can_use_tool` round-trip — but stdio
+    // carries that round-trip too once the child is spawned with
+    // `--permission-prompt-tool stdio` (see buildSpawnCmd), so the carve-out is
+    // gone (#2805). Keeping it made every worktree spawn take the sdk-url path
+    // that #3003/#3005 had already established is broken on current binaries,
+    // so #3005's move to stdio never reached the sessions that most need it (#3063).
     //
     // Resolved before SessionState so the state machine knows whether num_turns
     // is cumulative (ws) or restarts per turn (stdio) — see promptDelivered().
-    const resolvedTransport = config.transport ?? (config.worktree ? "ws" : this.defaultTransport);
+    const resolvedTransport = config.transport ?? this.defaultTransport;
 
     const state = new SessionState(sessionId, undefined, resolvedTransport);
     // Pre-populate state.cwd from config so session info shows the correct
@@ -1012,14 +1014,20 @@ export class ClaudeWsServer {
 
     const useStdio = session.transport === "stdio";
 
-    // Fail-closed: the stdio transport has no can_use_tool round-trip, so
-    // ContainmentGuard / input-rewriting / delegate-mode never fire (#2688).
-    // Refuse a contained/worktree spawn over stdio rather than silently
-    // running it outside the containment trust boundary.
-    if (useStdio && session.worktree) {
-      throw new Error("stdio transport does not support ContainmentGuard — use ws");
-    }
-
+    // A contained/worktree spawn over stdio used to be refused here (#2688/#2791)
+    // on the premise that stdio has no can_use_tool round-trip. That premise was
+    // wrong about the flag, not the mechanism: `--permission-prompt-tool stdio`
+    // (added unconditionally in buildSpawnCmd) makes the child emit the same
+    // `control_request`/`can_use_tool` frames over stdout that the WS transport
+    // carries, and honor the `control_response` we write back on stdin — so
+    // ContainmentGuard, the PermissionRouter and delegate-mode all fire on both
+    // transports through the one transport-agnostic handlePermissionRequest (#3063).
+    //
+    // The combination stays fail-closed by construction rather than by this
+    // refusal: buildSpawnCmd strips CONTAINMENT_WRITE_TOOLS from `--allowedTools`
+    // on every worktree spawn, so a child that ignored the flag has no pre-allowed
+    // write tool to fall back on — it self-denies its own writes loudly instead of
+    // writing outside the trust boundary silently.
     const cmd = this.buildSpawnCmd(sessionId, session, useStdio);
 
     const envOverrides: Record<string, string | undefined> = {};
@@ -1280,12 +1288,27 @@ export class ClaudeWsServer {
       // default on the pipe transport). The WS path uses --sdk-url and needs
       // neither, so this is gated on useStdio.
       cmd.push("--verbose", "--include-partial-messages");
+      // Route tool-permission decisions to us over the stdio control channel.
+      // Without it the child resolves every prompt itself — a tool that isn't in
+      // `--allowedTools` is auto-denied with "you haven't granted it yet" and the
+      // daemon never sees a `can_use_tool` request, which left ContainmentGuard,
+      // the `rules`/`delegate` strategies and input-rewriting silently inert on
+      // stdio (#2805). With it, the child emits the same control_request frames
+      // the WS transport carries; the shared handlePermissionRequest answers them.
+      cmd.push("--permission-prompt-tool", "stdio");
     }
 
     if (session.config.model) {
       cmd.push("--model", session.config.model);
     }
     let cliAllowedTools = session.config.allowedTools;
+    // A tool listed in `--allowedTools` is pre-approved by the child and never
+    // produces a `can_use_tool` request on either transport — so a worktree
+    // session must NOT pre-allow the write tools, or ContainmentGuard would never
+    // see the calls it exists to gate. Stripping them is what forces every write
+    // through the control channel, and it is also why an unrecognized
+    // `--permission-prompt-tool` fails closed: no bridge and no pre-allow means
+    // the child denies its own writes rather than escaping the worktree.
     if (session.config.worktree && cliAllowedTools?.length) {
       cliAllowedTools = cliAllowedTools.filter((t) => {
         const baseName = t.split("(")[0] ?? t;

@@ -38,20 +38,24 @@ describe("prepareSession transport selection (#3003)", () => {
     expect(wsDefault.prepareSession("s2", { prompt: "hi", transport: "stdio" }).transport).toBe("stdio");
   });
 
-  test("worktree sessions keep ws even when the default is stdio", () => {
-    // ContainmentGuard rides the can_use_tool round-trip, which only ws carries;
-    // spawnClaude fails closed on stdio+worktree (#2688/#2791). Drop this once
-    // #2805 gives stdio parity.
+  test("worktree sessions follow the default transport like any other (#3063)", () => {
+    // Worktree spawns used to be pinned to ws so ContainmentGuard could ride the
+    // can_use_tool round-trip. That pin routed every sprint worker onto the very
+    // sdk-url path #3003 is about, so #3005's fix never reached them. stdio now
+    // carries can_use_tool too (--permission-prompt-tool stdio), so the pin is gone.
     const server = makeServer("stdio");
-    expect(server.prepareSession("wt", { prompt: "hi", worktree: "my-tree" }).transport).toBe("ws");
+    expect(server.prepareSession("wt", { prompt: "hi", worktree: "my-tree" }).transport).toBe("stdio");
   });
 
-  test("an explicit stdio override on a worktree session is not silently rewritten", () => {
-    // The override is honoured so spawnClaude can fail closed with its own
-    // message rather than the guard being bypassed by a quiet downgrade.
+  test("an explicit transport override still wins on a worktree session", () => {
     const server = makeServer("ws");
     expect(server.prepareSession("wt", { prompt: "hi", worktree: "my-tree", transport: "stdio" }).transport).toBe(
       "stdio",
+    );
+
+    const stdioDefault = makeServer("stdio");
+    expect(stdioDefault.prepareSession("wt", { prompt: "hi", worktree: "my-tree", transport: "ws" }).transport).toBe(
+      "ws",
     );
   });
 
