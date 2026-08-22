@@ -259,11 +259,17 @@ the supervisor and stays up regardless of what any worker does.
   would notice. `DomainSupervisor.sync()` reconciles running workers against the table on
   the daemon's existing 30s tick: a removed domain loses its worker, and a **moved** one
   loses it too — the next use starts a fresh worker at the new location.
-- **A rename costs nothing.** A worker is bound to `host` + `path` + `id`, and a rename
-  changes none of them, so the running worker is kept and only the supervisor's view of it
-  is updated (`domainRestartRequired`). This is deliberate and was briefly wrong: comparing
-  the whole row meant `mcx domain rename` silently killed a worker, which once #3044 moves
-  project execution here would abort a running phase for a cosmetic edit.
+- **A rename does not restart the worker, but it is not invisible to it either.** A worker
+  is bound to `host` + `path` + `id`; a rename changes none of them, so the process is kept
+  and the supervisor's view of it is updated in place (`domainRestartRequired`). The
+  worker's *own* copy of the name is not updated — it was handed one snapshot at `init` and
+  there is no second control message — so until it next restarts it reports the old name in
+  `domain_info`, in its log prefix and in its MCP handshake identity. Nothing keys off any
+  of those; the supervisor's map, the partition column and the restart re-resolve are all
+  by `id`. This is the running-worker half of the `mcx domain` section's "every `domain_id`
+  reference survives a rename", and it was briefly wrong in the other direction: comparing
+  the whole row meant a rename silently killed a worker, which once #3044 moves project
+  execution here would abort a running phase for a cosmetic edit.
 - **Restarts run under `restart-policy.ts`** with the same backoff and crash budget as
   every other worker. A restart re-reads the `domains` row rather than replaying the
   snapshot it started with, and a worker whose row has vanished is *not* restarted.
@@ -273,6 +279,14 @@ the supervisor and stays up regardless of what any worker does.
 - **A caller can tell "coming back" from "gone".** `DomainSupervisor.status()` returns a
   discriminated union — `no-such-domain` does not even carry a domain to act on — so the
   retryable and permanent cases cannot be conflated by reading an error string.
+- **Partition 0 never gets a worker, and says so.** The unassigned sentinel is not a
+  domain, so `ensure(0)` raises `UnknownDomainError` and `status(0)` answers
+  `no-such-domain` — an error, never a guess, matching the rule for `-d` above. A worker
+  bound to the sentinel would be executing "everything not yet domain-scoped" against one
+  path, which is why `validateDomainSnapshot` rejects a non-positive `id` at the worker's
+  own boundary too. Nothing in the daemon calls `ensure()` yet; the first caller arrives
+  with #3044, and **that** is the change that makes standing outside every domain a
+  failure a user can hit — so it needs `mcx domain add` to have landed first.
 
 ### The worker is addressed, never shared
 
