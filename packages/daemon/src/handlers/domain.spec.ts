@@ -86,6 +86,31 @@ describe("DomainHandlers", () => {
     );
   });
 
+  test("NESTING IS LEGAL: add refuses only an exact location, never a containing one", async () => {
+    // #3039's filtering semantics depend on this being registrable — its doc section uses
+    // `~/github` plus `~/github/mcp-cli` as the worked example, and the longest-prefix rule
+    // in `resolveDomainForPath` has nothing to decide if the inner domain cannot exist.
+    // The refusal is equality on `(host, path)`, not the prefix relation that the word
+    // "owns" means everywhere else in docs/domains.md.
+    const { handlers } = setup();
+    await invoke(handlers, "domainAdd")({ name: "outer", path: "/srv/github" }, ctx);
+    const inner = (await invoke(handlers, "domainAdd")({ name: "inner", path: "/srv/github/mcp-cli" }, ctx)) as Domain;
+    expect(inner.name).toBe("inner");
+
+    // A parent of an existing domain is equally fine.
+    const above = (await invoke(handlers, "domainAdd")({ name: "above", path: "/srv" }, ctx)) as Domain;
+    expect(above.name).toBe("above");
+
+    // Only the exact location is refused.
+    await expect(invoke(handlers, "domainAdd")({ name: "dup", path: "/srv/github/mcp-cli" }, ctx)).rejects.toThrow(
+      /already domain "inner"/,
+    );
+
+    // ...and resolution still picks the innermost, which is the point of allowing nesting.
+    const hit = (await invoke(handlers, "domainWhich")({ path: "/srv/github/mcp-cli/src" }, ctx)) as DomainWhichResult;
+    expect(hit.domain?.name).toBe("inner");
+  });
+
   test("a host-bound path does not collide with the same local path", async () => {
     const { handlers } = setup();
     await invoke(handlers, "domainAdd")({ name: "here", path: "/srv/app" }, ctx);

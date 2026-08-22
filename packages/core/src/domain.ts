@@ -259,8 +259,10 @@ export function resolveDomainLocation(spec: string, env: PathExpansionEnv): Doma
   if (location.host !== null) {
     // A host that survived the split can still be junk: `"  spacey:/tmp/x"` yields a host
     // with leading whitespace, which becomes a hostname the daemon would later try to route
-    // to. Hostnames are letters, digits, dots and hyphens.
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(location.host)) {
+    // to. Reuses `isValidDomainHost` rather than spelling the rule a second time — a
+    // near-miss copy here (one that forgot the length bound, say) would accept hosts the
+    // rest of the codebase rejects, and nothing would notice until one was routed to.
+    if (!isValidDomainHost(location.host)) {
       throw new Error(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
     }
     return location;
