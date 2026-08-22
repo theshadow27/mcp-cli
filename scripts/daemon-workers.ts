@@ -25,4 +25,5 @@ export const daemonWorkers = [
   "packages/daemon/src/mock-session-worker.ts",
   "packages/daemon/src/monitor-executor.ts",
   "packages/daemon/src/site-worker.ts",
+  "packages/daemon/src/domain-worker.ts",
 ];

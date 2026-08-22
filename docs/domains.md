@@ -168,6 +168,58 @@ Two kinds, and they do not overlap:
 Project code and the web server are separate processes because they fail differently and
 one should not take the other with it.
 
+### Lifecycle of a domain worker
+
+`packages/daemon/src/domain-supervisor.ts` owns one worker per domain; the daemon owns
+the supervisor and stays up regardless of what any worker does.
+
+- **Spawned lazily, on first use** — not at daemon start. A domain row is a name bound to
+  a location and nothing else; spawning per row at startup would make "registered" mean
+  "running" and give the row the state column this table deliberately lacks. It is also
+  the only policy that survives the host move: for a domain with a `host`, you connect
+  when you need it, because "start it at daemon start" is not something you can do.
+- **Removal is not lazy**, because nothing calls into a deleted domain and so nothing
+  would notice. `DomainSupervisor.sync()` reconciles running workers against the table on
+  the daemon's existing 30s tick: a removed domain loses its worker, and a **moved** one
+  loses it too — the next use starts a fresh worker at the new location.
+- **A rename costs nothing.** A worker is bound to `host` + `path` + `id`, and a rename
+  changes none of them, so the running worker is kept and only the supervisor's view of it
+  is updated (`domainRestartRequired`). This is deliberate and was briefly wrong: comparing
+  the whole row meant `mcx domain rename` silently killed a worker, which once #3044 moves
+  project execution here would abort a running phase for a cosmetic edit.
+- **Restarts run under `restart-policy.ts`** with the same backoff and crash budget as
+  every other worker. A restart re-reads the `domains` row rather than replaying the
+  snapshot it started with, and a worker whose row has vanished is *not* restarted.
+- **Nothing in a worker survives a restart.** A restart and a move to another host are
+  the same event from the worker's point of view, and memory does not move. State that
+  must survive belongs in the database.
+- **A caller can tell "coming back" from "gone".** `DomainSupervisor.status()` returns a
+  discriminated union — `no-such-domain` does not even carry a domain to act on — so the
+  retryable and permanent cases cannot be conflated by reading an error string.
+
+### The worker is addressed, never shared
+
+The daemon reaches a worker through a `DomainLink` (`domain-link.ts`): control messages
+one way, MCP JSON-RPC over the same link, failure as an event. A Bun Worker today, a
+socket when the domain grows a `host` — [`agent-protocol.md`](agent-protocol.md) §2.1
+carries the message schemas. Nothing in that interface may assume in-process delivery:
+no shared references, no synchronous call-and-return, and every message is checked with
+`assertWireSafe` so a value that survives structured clone but not JSON fails at the send.
+
+**A domain worker serves no HTTP, and that is verified rather than asserted.** Two
+layers, because sealing alone is not enough:
+
+- The listener entry points are removed from the worker's global as an *import side
+  effect* (`domain/autoseal.ts`, the worker's first import), so the seal precedes the
+  worker's own import graph. Sealing later would leave any module that had already
+  copied `Bun.serve` into a variable holding a working reference.
+- At bind time the worker **attempts to listen** and refuses to start if a port opens.
+  `domain_info` reports `guards: { http: "sealed" }` only on the strength of that
+  attempt — a marker would let #3045's rule pass on a worker that can listen.
+
+`node:http`/`node:net`/`node:dgram`/`node:http2`/`node:tls` namespaces cannot be
+redefined at all, so those are closed by the static rule in #3045, not here.
+
 Because a project must be **installed** before it runs — the same as phases today — the
 console's page is built at install time with `Bun.build`. That typechecks every renderer
 the project supplies and emits a bundle. The daemon never transpiles project TSX at request
