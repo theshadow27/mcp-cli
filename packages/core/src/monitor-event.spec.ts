@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { NO_DOMAIN_ID } from "./domain";
 import type { MonitorEvent } from "./monitor-event";
 import * as monitorEventModule from "./monitor-event";
 import {
@@ -42,6 +43,7 @@ function event(overrides: Partial<MonitorEvent> & { event: string }): MonitorEve
   return {
     seq: 1,
     ts: "2025-01-01T12:00:00.000Z",
+    domainId: NO_DOMAIN_ID,
     src: "test",
     category: "session",
     ...overrides,

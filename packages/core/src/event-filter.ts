@@ -23,6 +23,17 @@ export interface EventFilterSpec {
   phase?: string;
   /** Filter to events scoped to this repo root. Events with no repoRoot pass through. */
   repo?: string;
+  /**
+   * Filter to events owned by this domain, by name (#3040).
+   *
+   * Deliberately **not** modelled on `repo`, which lets an event with no `repoRoot`
+   * pass through. `mcx monitor -d phoenix` has to mean "phoenix's events" or it means
+   * nothing: an un-domained event passing a domain filter is how a daemon-wide mail or
+   * quota event ends up read as phoenix's. Scoping is still a filter and not a wall —
+   * a subscriber that omits `domain` sees every domain, which is the daemon-wide
+   * stream `mcx monitor` and `mcpctl` rely on.
+   */
+  domain?: string;
 }
 
 export class WaitTimeoutError extends Error {
@@ -70,6 +81,8 @@ export function createEventMatcher(spec: EventFilterSpec): (event: MonitorEvent)
     }
     if (spec.phase !== undefined && event.phase !== spec.phase) return false;
     if (spec.repo !== undefined && event.repoRoot !== undefined && event.repoRoot !== spec.repo) return false;
+    // Exact match, and an absent domain never matches — see EventFilterSpec.domain.
+    if (spec.domain !== undefined && event.domain !== spec.domain) return false;
     return true;
   };
 }
@@ -101,6 +114,7 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
   src?: string;
   phase?: string;
   repo?: string;
+  domain?: string;
 } {
   return {
     subscribe: spec.subscribe?.join(","),
@@ -111,6 +125,7 @@ export function filterSpecToStreamParams(spec: EventFilterSpec): {
     src: spec.src,
     phase: spec.phase,
     repo: spec.repo,
+    domain: spec.domain,
   };
 }
 

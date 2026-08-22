@@ -23,8 +23,9 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
   const phase = params.get("phase");
   const repoRaw = params.get("repo");
   const repo = repoRaw ? resolveRealpath(resolve(repoRaw)) : null;
+  const domain = params.get("domain");
 
-  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase && !repo) {
+  if (!subscribeRaw && !session && prRaw === null && !workItem && !typeRaw && !srcRaw && !phase && !repo && !domain) {
     return null;
   }
 
@@ -56,6 +57,7 @@ export function buildEventFilter(params: URLSearchParams): ((event: Record<strin
     ...(srcRaw ? { src: srcRaw } : {}),
     ...(phase ? { phase } : {}),
     ...(repo ? { repo } : {}),
+    ...(domain ? { domain } : {}),
   };
 
   const matcher = createEventMatcher(spec);

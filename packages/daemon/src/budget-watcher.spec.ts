@@ -6,6 +6,7 @@ import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import {
   COST_SESSION_OVER_BUDGET,
   COST_SPRINT_OVER_BUDGET,
+  NO_DOMAIN_ID,
   QUOTA_UTILIZATION_THRESHOLD,
   SESSION_ENDED,
   SESSION_IDLE,
@@ -435,6 +436,7 @@ function loggedEvent(partial: Partial<MonitorEvent> & { event: string; category:
   return {
     seq: 0,
     ts: new Date().toISOString(),
+    domainId: NO_DOMAIN_ID,
     src: "daemon.budget-watcher",
     ...partial,
   } as MonitorEvent;

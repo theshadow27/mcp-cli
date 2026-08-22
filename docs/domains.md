@@ -181,7 +181,41 @@ mcx card ls    -d phoenix
 mcx sensor ls  -d phoenix
 mcx console browser
 mcx claude ls  -d phoenix
+mcx monitor    -d phoenix
 ```
+
+### Tables are a wall; the event stream is a filter
+
+The two are not the same, and the difference is deliberate.
+
+**Tables partition.** `alias_state` — the store behind `ctx.state` in alias and phase
+scripts, and behind automation's per-work-item snapshot — is keyed
+`(domain_id, repo_root, namespace, key)`. Two domains hold the same
+`(namespace, key)` without seeing each other, and there is no read that spans them.
+The domain is **derived server-side** from the caller's repo root, never sent as an
+IPC parameter: a client-supplied partition key is one any script could change to read
+another project's state.
+
+**Events filter.** Every event carries a `domainId` — stamped once, in
+`EventBus.publish`, from the producer's `repoRoot` — and `monitor_events` indexes it,
+so `mcx monitor -d phoenix --since <seq>` replays one domain without scanning the
+others. But a subscriber that omits `-d` still sees everything: the daemon-wide stream
+is a real use case (`mcpctl`, an operator watching the whole box), and a wall there
+would break it.
+
+Two consequences worth knowing:
+
+- An event with **no** domain (mail, quota, heartbeats, anything the daemon does on its
+  own behalf) does **not** pass `-d phoenix`. Unlike `--repo`, which lets un-scoped
+  events through, `-d` means "phoenix's events" — attributing daemon-wide state to one
+  project is worse than omitting it.
+- `-d` **replaces** the implicit cwd repo scope rather than stacking with it. Domains
+  supersede `mcx scope`; `mcx monitor -d phoenix` from an unrelated directory has to
+  show phoenix, not an empty stream that reads like a quiet domain. An explicit
+  `--repo` still narrows further.
+
+An unregistered domain name is an **error**, not an empty stream — for the same reason
+`mcx domain which` outside every domain is an error rather than a guess.
 
 ## Mail
 

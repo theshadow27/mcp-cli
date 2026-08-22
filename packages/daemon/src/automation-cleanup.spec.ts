@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import type { AutomationContext, MonitorEvent } from "@mcp-cli/core";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 
 const CLEANUP_PATH = resolve(import.meta.dir, "../../../.claude/automation/cleanup.ts");
 
@@ -13,6 +14,7 @@ function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
     ts: new Date().toISOString(),
+    domainId: NO_DOMAIN_ID,
     src: "test",
     event: "pr.merged",
     category: "work_item",

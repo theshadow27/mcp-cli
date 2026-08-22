@@ -4408,6 +4408,23 @@ describe("buildEventFilter", () => {
     }
   });
 
+  test("domain filter matches the stamped domain name", () => {
+    const filter = buildEventFilter(params({ domain: "phoenix" }));
+    expect(filter).not.toBeNull();
+    expect(filter?.({ event: "pr.merged", domainId: 3, domain: "phoenix" })).toBe(true);
+    expect(filter?.({ event: "pr.merged", domainId: 7, domain: "clrg" })).toBe(false);
+    // An un-domained event does not pass a `-d` filter — see EventFilterSpec.domain.
+    expect(filter?.({ event: "mail.sent", domainId: 0 })).toBe(false);
+    // ...but heartbeats always do: server-side keepalive, not a data filter concern.
+    expect(filter?.({ event: "heartbeat", category: "heartbeat" })).toBe(true);
+  });
+
+  test("no domain param means every domain is visible", () => {
+    const filter = buildEventFilter(params({ subscribe: "work_item" }));
+    expect(filter?.({ category: "work_item", event: "pr.merged", domainId: 3, domain: "phoenix" })).toBe(true);
+    expect(filter?.({ category: "work_item", event: "pr.merged", domainId: 0 })).toBe(true);
+  });
+
   test("workItem filter matches workItemId", () => {
     const filter = buildEventFilter(params({ workItem: "#1441" }));
     expect(filter?.({ workItemId: "#1441", event: "phase.changed" })).toBe(true);
