@@ -90,8 +90,12 @@ exists for, and refusing the inner one would remove the only thing that rule has
 "Owns" elsewhere in this document means the prefix relation; here it means equality, and the
 two are not the same test.
 
-`rename` is a name change only: `id` and `path` are untouched, so every `domain_id`
-reference and every `which` answer survives it.
+`rename` changes the name and nothing else **in the table**: `id` and `path` are untouched,
+so every `domain_id` reference and every `which` answer survives it. That is a statement
+about the row, not a claim that a rename is free everywhere — anything currently holding the
+old name (a running domain worker, log correlation, an MCP handshake identity) still sees a
+change. What a rename does to a running worker is the worker section's to state, not this
+one's.
 
 `rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
 cascades. Silently orphaning a thousand work items because a name was typed twice is not a
