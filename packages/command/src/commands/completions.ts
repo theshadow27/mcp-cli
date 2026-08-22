@@ -82,6 +82,7 @@ export const SUBCOMMANDS = [
   "memory",
   "tty",
   "vfs",
+  "domain",
   "scope",
   "connect",
   "daemon",
@@ -89,6 +90,9 @@ export const SUBCOMMANDS = [
 
 /** Subcommands for `mcx alias` */
 export const ALIAS_SUBCOMMANDS = ["ls", "save", "show", "edit", "rm"] as const;
+
+/** Subcommands for `mcx domain` */
+export const DOMAIN_SUBCOMMANDS = ["add", "ls", "show", "which", "rename", "rm", "import"] as const;
 
 /** Subcommands for `mcx config` */
 export const CONFIG_SUBCOMMANDS = ["show", "sources", "set", "get"] as const;
@@ -118,6 +122,9 @@ const TOOL_COMMANDS = ["call", "info"];
 /** Alias subcommands that accept an alias name */
 const ALIAS_NAME_COMMANDS = ["show", "edit", "rm"];
 
+/** Domain subcommands that accept a domain name */
+const DOMAIN_NAME_COMMANDS = ["show", "rename", "rm"];
+
 export async function cmdCompletions(args: string[], deps?: CompletionDeps): Promise<void> {
   const d = deps ?? defaultDeps;
   // Dynamic data helpers (called by the generated scripts)
@@ -135,6 +142,10 @@ export async function cmdCompletions(args: string[], deps?: CompletionDeps): Pro
   }
   if (args[0] === "--registry") {
     await printRegistrySlugs(d);
+    return;
+  }
+  if (args[0] === "--domains") {
+    await printDomains(d);
     return;
   }
 
@@ -200,6 +211,19 @@ async function printAliases(deps: CompletionDeps): Promise<void> {
   }
 }
 
+/** Print domain names, one per line. Skips if daemon not running. */
+async function printDomains(deps: CompletionDeps): Promise<void> {
+  try {
+    if (!(await deps.isDaemonRunning())) return;
+    const domains = await deps.ipcCall("domainList");
+    for (const d of domains) {
+      console.log(d.name);
+    }
+  } catch {
+    // Daemon not running — output nothing
+  }
+}
+
 /** Print registry slugs, one per line. Silent on failure (network, etc.). */
 async function printRegistrySlugs(deps: CompletionDeps): Promise<void> {
   try {
@@ -228,6 +252,8 @@ _mcx_completions() {
   local server_commands="${SERVER_COMMANDS.join(" ")}"
   local tool_commands="${TOOL_COMMANDS.join(" ")}"
   local alias_name_commands="${ALIAS_NAME_COMMANDS.join(" ")}"
+  local domain_subcommands="${DOMAIN_SUBCOMMANDS.join(" ")}"
+  local domain_name_commands="${DOMAIN_NAME_COMMANDS.join(" ")}"
 
   # mcx <TAB> — complete subcommands
   if [[ $cword -eq 1 ]]; then
@@ -263,6 +289,26 @@ _mcx_completions() {
         local aliases
         aliases="$(mcx completions --aliases 2>/dev/null)"
         COMPREPLY=( $(compgen -W "$aliases" -- "$cur") )
+        return
+      fi
+    done
+    return
+  fi
+
+  # mcx domain <TAB> — domain subcommands
+  if [[ "$cmd" == "domain" && $cword -eq 2 ]]; then
+    COMPREPLY=( $(compgen -W "$domain_subcommands" -- "$cur") )
+    return
+  fi
+
+  # mcx domain show|rename|rm <TAB> — domain names
+  if [[ "$cmd" == "domain" && $cword -eq 3 ]]; then
+    local domain_sub="\${words[2]}"
+    for dc in $domain_name_commands; do
+      if [[ "$domain_sub" == "$dc" ]]; then
+        local domains
+        domains="$(mcx completions --domains 2>/dev/null)"
+        COMPREPLY=( $(compgen -W "$domains" -- "$cur") )
         return
       fi
     done
@@ -360,6 +406,12 @@ _mcx() {
   local -a alias_name_commands
   alias_name_commands=(${ALIAS_NAME_COMMANDS.map((s) => `'${s}'`).join(" ")})
 
+  local -a domain_subcommands
+  domain_subcommands=(${DOMAIN_SUBCOMMANDS.map((s) => `'${s}'`).join(" ")})
+
+  local -a domain_name_commands
+  domain_name_commands=(${DOMAIN_NAME_COMMANDS.map((s) => `'${s}'`).join(" ")})
+
   # mcx <TAB>
   if (( CURRENT == 2 )); then
     _describe 'command' subcommands
@@ -395,6 +447,24 @@ _mcx() {
       local -a aliases
       aliases=(\${(f)"$(mcx completions --aliases 2>/dev/null)"})
       _describe 'alias' aliases
+      return
+    fi
+    return
+  fi
+
+  # mcx domain <TAB>
+  if [[ "$cmd" == "domain" ]] && (( CURRENT == 3 )); then
+    _describe 'domain subcommand' domain_subcommands
+    return
+  fi
+
+  # mcx domain show|rename|rm <TAB>
+  if [[ "$cmd" == "domain" ]] && (( CURRENT == 4 )); then
+    local domain_sub=\${words[3]}
+    if (( \${domain_name_commands[(Ie)$domain_sub]} )); then
+      local -a domains
+      domains=(\${(f)"$(mcx completions --domains 2>/dev/null)"})
+      _describe 'domain' domains
       return
     fi
     return
@@ -497,6 +567,15 @@ complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = alias' -a '${AL
 ${ALIAS_NAME_COMMANDS.map(
   (cmd) =>
     `complete -c mcx -n '__mcx_token_count -eq 3; and __mcx_token 2 = alias; and __mcx_token 3 = ${cmd}' -a '(mcx completions --aliases 2>/dev/null)' -d 'alias'`,
+).join("\n")}
+
+# mcx domain <TAB> — domain subcommands
+complete -c mcx -n '__mcx_token_count -eq 2; and __mcx_token 2 = domain' -a '${DOMAIN_SUBCOMMANDS.join(" ")}' -d 'domain subcommand'
+
+# mcx domain show|rename|rm <TAB> — domain names
+${DOMAIN_NAME_COMMANDS.map(
+  (cmd) =>
+    `complete -c mcx -n '__mcx_token_count -eq 3; and __mcx_token 2 = domain; and __mcx_token 3 = ${cmd}' -a '(mcx completions --domains 2>/dev/null)' -d 'domain'`,
 ).join("\n")}
 
 # mcx run <TAB> — alias names

@@ -68,13 +68,66 @@ loop is off. Both are normal.
 ```bash
 mcx domain add <name> [host:]<path>   # register
 mcx domain ls [--json]                # list
-mcx domain show <name>                # resolve to host + path
-mcx domain which [path]               # reverse lookup — which domain owns this path?
+mcx domain show <name> [--json]       # resolve to host + path
+mcx domain which [path] [--json]      # reverse lookup — which domain owns this path?
 mcx domain rename <old> <new>
-mcx domain rm <name>
+mcx domain rm <name> [--force]
+mcx domain import [--force]           # re-run the one-shot import from the legacy state.db
 ```
 
 Row: `id`, `name`, `host`, `path`, `created_at`. Nothing else.
+
+`~` and relative paths are expanded **at the CLI**, against the caller's home and cwd, and
+only for a local domain — a host-bound path names a directory on another machine, where
+this filesystem has no say, and is stored verbatim. The daemon rejects a relative local
+path at the IPC boundary rather than anchoring it on its own cwd, which is a different
+directory and would only misbehave after a restart.
+
+`add` refuses a duplicate name, and refuses a location that is **exactly** another domain's
+`[host:]path`, naming it. Exactly — not "inside": **nesting is legal and expected**.
+Registering both `~/github` and `~/github/mcp-cli` is the case the longest-prefix rule below
+exists for, and refusing the inner one would remove the only thing that rule has to decide.
+"Owns" elsewhere in this document means the prefix relation; here it means equality, and the
+two are not the same test.
+
+`rename` changes the name and nothing else **in the table**: `id` and `path` are untouched,
+so every `domain_id` reference and every `which` answer survives it. That is a statement
+about the row, not a claim that a rename is free everywhere — anything currently holding the
+old name (a running domain worker, log correlation, an MCP handshake identity) still sees a
+change. What a rename does to a running worker is the worker section's to state, not this
+one's.
+
+`rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
+cascades. Silently orphaning a thousand work items because a name was typed twice is not a
+recoverable state, so the refusal is the default and the cascade is the flag.
+
+`import --force` **re-arms** the one-shot legacy import (#3034) — it clears the marker and
+the import itself runs at the next daemon start. It does not import in place, and that is
+not a convenience choice:
+
+- The import is positioned at daemon startup **ahead of** `reapOrphanedSessions`,
+  `restoreActiveSessions`, the pollers and the event bus. Landing `agent_sessions` rows
+  after the reaper has run surfaces dead sessions as live until the next restart, and a
+  printed "restart the daemon" line is an instruction, not a guarantee.
+- It **refuses unless the database is empty** across every table in `IMPORTED_TABLES` — the
+  same list the copy iterates, so the two cannot disagree. `INSERT OR IGNORE` over
+  AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`) silently drops every legacy
+  row whose id the target already reallocated, permanently, on a run that would otherwise
+  report success.
+- The daemon publishes `daemon.restarted` into `monitor_events` before it accepts its first
+  request, so an in-flight forced import would be refused every time anyway.
+
+The full recovery, which the daemon prints with the real paths it opened:
+
+```bash
+cp ~/.mcp-cli/mcx.db ~/.mcp-cli/mcx.db.bak && rm ~/.mcp-cli/mcx.db
+mcx domain import --force        # clears the marker
+mcx shutdown                     # next start performs the import
+```
+
+The marker lives in the **legacy** `state.db`, deliberately, so it outlives `mcx.db` — which
+is why deleting `mcx.db` alone is not a recovery. Without `--force` the command declines and
+names the marker.
 
 `host` is null for a local domain. When it is set, the daemon routes to a domain
 server on that host instead of a local worker — same control protocol either way.

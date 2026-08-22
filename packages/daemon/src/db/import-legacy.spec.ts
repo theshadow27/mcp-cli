@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
-import { IMPORTED_TABLES, IMPORT_MARKER_KEY, importLegacyState, recoveryInstructions } from "./import-legacy";
+import {
+  IMPORTED_TABLES,
+  IMPORT_MARKER_KEY,
+  clearImportMarker,
+  importLegacyState,
+  nonEmptyImportedTables,
+  recoveryInstructions,
+} from "./import-legacy";
 import { StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
@@ -257,13 +264,20 @@ describe("importLegacyState", () => {
     expect(result.reason).toContain("already imported");
   });
 
-  test("--force re-runs and does not duplicate or clobber", () => {
+  test("--force REFUSES a populated target instead of re-running into it (#3035)", () => {
+    // This test used to assert that `--force` re-ran successfully and "did not clobber",
+    // checking config_hash and the mail count. Both of those survive — and the assertion
+    // was still blind to the defect, because `copyTable` uses INSERT OR IGNORE over shared
+    // columns that include AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`).
+    // Every legacy row whose id the target had already reallocated was dropped, silently
+    // and permanently, on a run reporting `sealed: true` and exit 0. Asserting the benign
+    // half of the outcome is what let that ship.
     const ws = workspace();
     writeLegacyDb(ws.legacyPath);
     const state = target(ws.targetPath);
     importLegacyState({ db: state.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
 
-    // Post-import work that a re-run must not overwrite.
+    // Post-import work — which is exactly what makes a re-run destructive.
     state.setState("config_hash", "local-change");
 
     const forced = importLegacyState({
@@ -273,11 +287,10 @@ describe("importLegacyState", () => {
       force: true,
       log: () => {},
     });
-    expect(forced.ran).toBe(true);
-    expect(forced.sealed).toBe(true);
+    expect(forced.ran).toBe(false);
     expect(forced.totalCopied).toBe(0);
-    expect(forced.totalNotCopied).toBeGreaterThan(0);
-    expect(forced.failedTables).toEqual([]);
+    expect(forced.reason).toContain("not empty");
+    // Nothing was touched, which is the point of refusing rather than "not clobbering".
     expect(state.getState("config_hash")).toBe("local-change");
     expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(2);
   });
@@ -434,7 +447,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(warning).toContain(IMPORT_MARKER_KEY);
   });
 
-  test("B3: the documented recovery command actually re-arms the import", () => {
+  test("B3: clearing the marker by hand re-arms the import", () => {
     const ws = workspace();
     writeLegacyDb(ws.legacyPath);
     const first = target(ws.targetPath);
@@ -442,7 +455,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     first.close();
     open.pop();
 
-    // Exactly what RECOVERY_INSTRUCTIONS tells the user to do.
+    // The mechanism `mcx domain import --force` automates (see B3b).
     rmSync(ws.targetPath, { force: true });
     const legacy = new Database(ws.legacyPath, { readwrite: true, create: false });
     legacy.run("DELETE FROM daemon_state WHERE key = ?", [IMPORT_MARKER_KEY]);
@@ -458,6 +471,56 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(result.ran).toBe(true);
     expect(result.sealed).toBe(true);
     expect(result.totalCopied).toBeGreaterThan(0);
+  });
+
+  test("B3b: force actually re-arms the import (#3035)", () => {
+    // The mechanism behind `mcx domain import --force`. Asserting that the recovery
+    // *string* mentions the command would pass while the flag did nothing, so this drives
+    // `force: true` instead. The string↔mechanism tie-back lands with the guard, in the
+    // commit that makes `recoveryInstructions()` name the command.
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const first = target(ws.targetPath);
+    const initial = importLegacyState({
+      db: first.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(initial.sealed).toBe(true);
+    first.close();
+    open.pop();
+
+    // Only mcx.db is deleted — the marker stays set, exactly the state a user lands in
+    // when they "reset" by removing the database.
+    rmSync(ws.targetPath, { force: true });
+    const rebuilt = target(ws.targetPath);
+
+    const declined = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(declined.ran).toBe(false);
+
+    const forced = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      force: true,
+      log: () => {},
+    });
+    expect(forced.ran).toBe(true);
+    expect(forced.sealed).toBe(true);
+    expect(forced.totalCopied).toBeGreaterThan(0);
+
+    // The marker must not have been copied into mcx.db by the forced run — the row whose
+    // absence from mcx.db is the whole point of it living in the legacy DB.
+    const marker = rebuilt.database
+      .query<{ n: number }, [string]>("SELECT count(*) AS n FROM daemon_state WHERE key = ?")
+      .get(IMPORT_MARKER_KEY);
+    expect(marker?.n).toBe(0);
   });
 
   test("B4: an unwritable legacy DB copies NOTHING and says so accurately", () => {
@@ -829,9 +892,30 @@ describe("recoveryInstructions (#3034 review R2)", () => {
   });
 
   test("clears both marker keys, so the re-armed import is not half-armed", () => {
-    const text = recoveryInstructions("/srv/s.db", "/srv/m.db");
-    expect(text).toContain(IMPORT_MARKER_KEY);
-    expect(text).toContain("mcx_domain_import_rows");
+    // Moved from the string to the mechanism (#3035). The sqlite3 incantation used to name
+    // both keys, and asserting that the *text* named them proved nothing about what runs.
+    // `mcx domain import --force` performs the clear, so the assertion follows it there:
+    // leaving the row-count key behind would make `importedDataMissing` compare against a
+    // stale expectation and mis-report the next import as data loss.
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-keys-"));
+    try {
+      const legacyPath = join(dir, "state.db");
+      const legacy = new Database(legacyPath, { create: true });
+      legacy.exec(
+        "CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0)",
+      );
+      legacy.run("INSERT INTO daemon_state (key, value) VALUES (?, '2026-08-22T00:00:00Z')", [IMPORT_MARKER_KEY]);
+      legacy.run("INSERT INTO daemon_state (key, value) VALUES ('mcx_domain_import_rows', '42')");
+      legacy.close();
+
+      expect(clearImportMarker(legacyPath).cleared).toBe(true);
+
+      const after = new Database(legacyPath, { readonly: true });
+      expect(after.query<{ n: number }, []>("SELECT count(*) AS n FROM daemon_state").get()?.n).toBe(0);
+      after.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1109,13 +1193,272 @@ describe("clampDerivedCursor bounds on the LEGACY range (#3143 stacked-PR blocke
       scopesDir: join(dir, "scopes"),
       log: () => {},
     });
-    expect(result.failedTables).toEqual([]);
 
+    // CHANGED BY #3035, deliberately, and worth reading before "fixing".
+    //
+    // This scenario — a target already holding live events at a seq range disjoint from
+    // legacy's — is what made `MAX(main.monitor_events)` skip 90 live events, and #3143
+    // fixed it by reading `legacy.` instead. #3035 then made the same scenario UNREACHABLE
+    // from the other side: the import refuses a target that already holds imported-table
+    // rows at all, because `INSERT OR IGNORE` over AUTOINCREMENT surrogate keys silently
+    // drops colliding legacy rows regardless of where the cursor ends up.
+    //
+    // So the import declines here rather than clamping, and the assertion follows the
+    // behaviour. The `legacy.` read remains correct and remains defence in depth: on every
+    // reachable path the target is empty before the copy, so MAX(main) == MAX(legacy) and
+    // the two forms agree. Reverting either fix on the grounds that the other covers it
+    // would re-open this — they are independent, and #3143's is the one that still holds if
+    // the guard is ever relaxed.
+    expect(result.ran).toBe(false);
+    expect(result.reason).toContain("not empty");
+
+    // The cursor was NOT moved: nothing was imported, so nothing is history.
+    const cursor = state.database
+      .query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor WHERE id = 'derived_publisher'")
+      .get();
+    expect(cursor).toBeNull();
+    // The live events are untouched — the outcome the original test was protecting.
+    expect(state.database.query<{ m: number }, []>("SELECT MAX(seq) AS m FROM monitor_events").get()?.m).toBe(190);
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n).toBe(91);
+  });
+
+  test("on the reachable path the cursor parks at the imported range, not beyond it", () => {
+    // The half of #3143's invariant that survives: import into an EMPTY target and the
+    // cursor lands exactly on the imported history.
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-clamp-ok-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    const targetPath = join(dir, "mcx.db");
+
+    const legacy = new Database(legacyPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE monitor_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, src TEXT NOT NULL, event TEXT NOT NULL,
+        category TEXT NOT NULL, work_item_id TEXT, session_id TEXT, pr_number INTEGER, payload TEXT NOT NULL
+      );
+    `);
+    for (let i = 1; i <= 5; i++) {
+      legacy.run(
+        "INSERT INTO monitor_events (seq, ts, src, event, category, payload) VALUES (?, ?, 'legacy', 'e', 'server', '{}')",
+        [i, `2026-01-0${i}T00:00:00.000Z`],
+      );
+    }
+    legacy.close();
+
+    const state = freshTargetDb(targetPath);
+    open.push(state);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath,
+      targetPath,
+      scopesDir: join(dir, "scopes"),
+      log: () => {},
+    });
+
+    expect(result.ran).toBe(true);
+    expect(result.failedTables).toEqual([]);
     const cursor = state.database
       .query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor WHERE id = 'derived_publisher'")
       .get();
     expect(cursor?.last_seq).toBe(5);
-    // Sanity: the two maxima really are distinguishable, so this test can fail.
-    expect(state.database.query<{ m: number }, []>("SELECT MAX(seq) AS m FROM monitor_events").get()?.m).toBe(190);
+  });
+});
+
+describe("the target must be empty (#3035 review finding 1)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const o of open) o.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function ws() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-guard-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
+  }
+
+  function target(path: string): StateDb {
+    const state = freshTargetDb(path);
+    open.push(state);
+    return state;
+  }
+
+  test("nonEmptyImportedTables sees monitor_events — the table targetLooksEmpty() omitted", () => {
+    const w = ws();
+    const state = target(w.targetPath);
+    expect(nonEmptyImportedTables(state.database)).toEqual([]);
+
+    state.database.run(
+      "INSERT INTO monitor_events (ts, src, event, category, payload) VALUES ('2026-08-22T00:00:00Z','daemon','daemon.restarted','server','{}')",
+    );
+    expect(nonEmptyImportedTables(state.database).map((t) => t.table)).toEqual(["monitor_events"]);
+  });
+
+  test("it covers derived_cursor too — the OTHER table targetLooksEmpty() omitted", () => {
+    // targetLooksEmpty() inspected work_items, aliases, agent_sessions, mail, auth_tokens
+    // and alias_state. Both tables the daemon touches earliest — monitor_events and
+    // derived_cursor — were outside it, so it answered "empty" for a database the daemon
+    // had already written to. Deriving from IMPORTED_TABLES is what makes that structural
+    // rather than a list someone has to remember to extend.
+    const w = ws();
+    const state = target(w.targetPath);
+    expect(nonEmptyImportedTables(state.database)).toEqual([]);
+
+    state.database.run("INSERT INTO derived_cursor (domain_id, id, last_seq) VALUES (0, 'derived_publisher', 7)");
+    expect(nonEmptyImportedTables(state.database)).toEqual([{ table: "derived_cursor", rows: 1 }]);
+
+    state.database.run(
+      "INSERT INTO monitor_events (ts, src, event, category, payload) VALUES ('2026-08-22T00:00:00Z','daemon','e','server','{}')",
+    );
+    expect(
+      nonEmptyImportedTables(state.database)
+        .map((t) => t.table)
+        .sort(),
+    ).toEqual(["derived_cursor", "monitor_events"]);
+  });
+
+  test("a populated target is REFUSED and nothing is copied or sealed", () => {
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = target(w.targetPath);
+
+    // One row, in the table the old guard could not see.
+    state.database.run(
+      "INSERT INTO monitor_events (ts, src, event, category, payload) VALUES ('2026-08-22T00:00:00Z','daemon','fresh','server','{}')",
+    );
+    const before = state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n;
+
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      scopesDir: w.scopesDir,
+      log: (m) => logs.push(m),
+    });
+
+    expect(result.ran).toBe(false);
+    expect(result.sealed).toBe(false);
+    expect(result.totalCopied).toBe(0);
+    expect(result.reason).toContain("not empty");
+    expect(logs.join("\n")).toContain("monitor_events=1");
+    // Nothing landed, and the legacy database was not marked.
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n).toBe(before);
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(0);
+    const legacy = new Database(w.legacyPath, { readonly: true });
+    expect(
+      legacy
+        .query<{ n: number }, [string]>("SELECT count(*) AS n FROM daemon_state WHERE key = ?")
+        .get(IMPORT_MARKER_KEY)?.n,
+    ).toBe(0);
+    legacy.close();
+  });
+
+  test("--force cannot destroy history: the guard fires before any copy", () => {
+    // The reproduction that made this a blocker. Import once into an empty target, let a
+    // daemon write live events, then force a re-import: legacy rows whose seq was already
+    // reallocated would be dropped forever by INSERT OR IGNORE, on a run reporting success.
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = target(w.targetPath);
+    const first = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    expect(first.ran).toBe(true);
+
+    state.database.run(
+      "INSERT INTO monitor_events (ts, src, event, category, payload) VALUES ('2026-08-22T01:00:00Z','daemon','live','server','{}')",
+    );
+    const rowsBefore = state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n;
+
+    const forced = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      scopesDir: w.scopesDir,
+      force: true,
+      log: () => {},
+    });
+
+    expect(forced.ran).toBe(false);
+    expect(forced.totalCopied).toBe(0);
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n).toBe(
+      rowsBefore,
+    );
+  });
+
+  test("{ran:true, sealed:false, totalCopied>0} is unreachable through --force", () => {
+    // The half-landed state the parent's seal-or-nothing repair exists to eliminate.
+    // Driven, not read: force every reachable outcome and assert none of them is that one.
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = target(w.targetPath);
+
+    const outcomes = [
+      importLegacyState({ db: state.database, legacyPath: w.legacyPath, scopesDir: w.scopesDir, log: () => {} }),
+      importLegacyState({
+        db: state.database,
+        legacyPath: w.legacyPath,
+        scopesDir: w.scopesDir,
+        force: true,
+        log: () => {},
+      }),
+      importLegacyState({
+        db: state.database,
+        legacyPath: join(w.dir, "absent.db"),
+        scopesDir: w.scopesDir,
+        log: () => {},
+      }),
+    ];
+
+    for (const o of outcomes) {
+      expect(o.ran && !o.sealed && o.totalCopied > 0).toBe(false);
+    }
+  });
+
+  test("clearImportMarker re-arms, and the recovery text names the command that does it", () => {
+    const w = ws();
+    writeLegacyDb(w.legacyPath);
+    const state = target(w.targetPath);
+    const sealed = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    expect(sealed.sealed).toBe(true);
+
+    // The instruction and the mechanism, tied together: the text names the command, and
+    // the command's primitive actually clears the marker it names.
+    expect(recoveryInstructions(w.legacyPath, w.targetPath)).toContain("mcx domain import --force");
+    expect(recoveryInstructions(w.legacyPath, w.targetPath)).not.toContain("sqlite3");
+
+    expect(clearImportMarker(w.legacyPath).cleared).toBe(true);
+    const legacy = new Database(w.legacyPath, { readonly: true });
+    expect(
+      legacy
+        .query<{ n: number }, [string]>("SELECT count(*) AS n FROM daemon_state WHERE key = ?")
+        .get(IMPORT_MARKER_KEY)?.n,
+    ).toBe(0);
+    legacy.close();
+
+    // Re-armed: a fresh, EMPTY target now imports again.
+    const w2 = ws();
+    const rebuilt = target(w2.targetPath);
+    const again = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: w.legacyPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    expect(again.ran).toBe(true);
+    expect(again.sealed).toBe(true);
+    expect(again.totalCopied).toBeGreaterThan(0);
   });
 });
