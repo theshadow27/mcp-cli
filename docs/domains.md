@@ -101,6 +101,15 @@ one's.
 cascades. Silently orphaning a thousand work items because a name was typed twice is not a
 recoverable state, so the refusal is the default and the cascade is the flag.
 
+`--cascade` is accepted as an exact synonym for `--force`, because `StateDb.deleteDomain`'s
+own docstring names the option `--cascade` while this command's issue specified `--force`.
+Documented rather than left implicit, and asserted as an equality in
+`domain.spec.ts` rather than as two tests that separately expect the same thing — two
+spellings of one destructive flag are only safe while something compares them to each other.
+There is no third spelling: `parseFlags` rejects any flag it was not told about, so an
+invented `--all` or `--scoped` on this command exits non-zero instead of quietly leaving a
+default in place.
+
 `import --force` **re-arms** the one-shot legacy import (#3034) — it clears the marker and
 the import itself runs at the next daemon start. It does not import in place, and that is
 not a convenience choice:

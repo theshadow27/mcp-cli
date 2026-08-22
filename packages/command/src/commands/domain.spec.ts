@@ -238,6 +238,36 @@ describe("mcx domain rm", () => {
     expect(h.calls[0].params).toEqual({ name: "phoenix", cascade: true });
   });
 
+  test("--force and --cascade are the SAME flag: identical params, asserted as one invariant", async () => {
+    // Not two tests that each happen to expect `cascade: true`. `mcx claude bye --all` vs
+    // `-a` were documented as aliases and did opposite things — one silently discarded
+    // `-d` and ended every session on the box — because nothing compared the two spellings
+    // against each other. Two spellings of one destructive flag need an equality assertion,
+    // not two independent ones that can drift apart a commit at a time.
+    const a = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    const b = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    await cmdDomain(["rm", "phoenix", "--force"], a.deps);
+    await cmdDomain(["rm", "phoenix", "--cascade"], b.deps);
+    expect(a.calls).toEqual(b.calls);
+    expect(a.calls[0].params).toEqual({ name: "phoenix", cascade: true });
+
+    // ...and both differ from the unflagged form in exactly one field.
+    const c = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    await cmdDomain(["rm", "phoenix"], c.deps);
+    expect(c.calls[0].params).toEqual({ name: "phoenix", cascade: false });
+  });
+
+  test("an undeclared flag on the destructive path errors — it is never silently ignored", async () => {
+    // The `--scoped` shape: a flag with no parser entry. Here it cannot be a no-op that
+    // leaves a destructive default in place, because parseFlags rejects what it was not
+    // told about and the command exits before reaching the daemon.
+    for (const flag of ["--scoped", "--all", "-a"]) {
+      const h = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+      await expect(cmdDomain(["rm", "phoenix", flag], h.deps)).rejects.toThrow(ExitError);
+      expect(h.calls).toEqual([]);
+    }
+  });
+
   test("unknown domain exits non-zero", async () => {
     const h = harness({ domainRemove: { found: false, removed: false, dependents: [] } });
     await expect(cmdDomain(["rm", "ghost"], h.deps)).rejects.toThrow(ExitError);
