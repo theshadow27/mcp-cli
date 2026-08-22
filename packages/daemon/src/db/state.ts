@@ -1746,8 +1746,16 @@ export class StateDb {
   }
 
   // -- Alias state --
+  //
+  // `domainId` is REQUIRED on all four, with no default (#3040 review R1). It was
+  // optional, and that is precisely how the third column-present/writer-absent bug in
+  // this arc hid: an optional parameter let `PhaseStateStore` — which declared only
+  // three — still be structurally satisfied by StateDb, so `_work_items`
+  // phase_state_* silently wrote domain 0 while `ctx.state` wrote a real domain. Same
+  // repo_root, same `workitem:<id>` namespace, different rows, and tsc said nothing.
+  // A partition key a caller can omit is prose; one the compiler demands is a function.
 
-  getAliasState(repoRoot: string, namespace: string, key: string, domainId: number = NO_DOMAIN_ID): unknown {
+  getAliasState(repoRoot: string, namespace: string, key: string, domainId: number): unknown {
     const row = this.db
       .query<{ value_json: string }, [number, string, string, string]>(
         "SELECT value_json FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ? AND key = ?",
@@ -1757,13 +1765,7 @@ export class StateDb {
     return safeParseStateValue(row.value_json, `${repoRoot}/${namespace}/${key}`);
   }
 
-  setAliasState(
-    repoRoot: string,
-    namespace: string,
-    key: string,
-    value: unknown,
-    domainId: number = NO_DOMAIN_ID,
-  ): void {
+  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown, domainId: number): void {
     // `undefined` would serialise to the string `"null"` and then readers
     // could not tell "set to null" from "never set" — reject it up front.
     if (value === undefined) {
@@ -1787,7 +1789,7 @@ export class StateDb {
     );
   }
 
-  deleteAliasState(repoRoot: string, namespace: string, key: string, domainId: number = NO_DOMAIN_ID): boolean {
+  deleteAliasState(repoRoot: string, namespace: string, key: string, domainId: number): boolean {
     const result = this.db.run(
       "DELETE FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ? AND key = ?",
       [domainId, repoRoot, namespace, key],
@@ -1795,7 +1797,7 @@ export class StateDb {
     return result.changes > 0;
   }
 
-  listAliasState(repoRoot: string, namespace: string, domainId: number = NO_DOMAIN_ID): Record<string, unknown> {
+  listAliasState(repoRoot: string, namespace: string, domainId: number): Record<string, unknown> {
     const rows = this.db
       .query<{ key: string; value_json: string }, [number, string, string]>(
         "SELECT key, value_json FROM alias_state WHERE domain_id = ? AND repo_root = ? AND namespace = ?",

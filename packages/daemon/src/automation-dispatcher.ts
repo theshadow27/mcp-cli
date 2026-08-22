@@ -215,6 +215,11 @@ export class AutomationDispatcher {
       src: `automation:${moduleName}`,
       event: eventName,
       category: "automation",
+      // The dispatcher is still constructed once from the daemon's cwd — per-domain
+      // dispatchers are #3041. Until then, naming the repoRoot it *is* bound to is what
+      // lets EventBus stamp a domain, so `mcx monitor -d <name>` sees this project's
+      // automation instead of silently dropping it as un-domained (#3040).
+      repoRoot: this.repoRoot,
       module: moduleName,
       triggerEvent: triggerEvent.event,
       triggerSeq: triggerEvent.seq,
@@ -337,6 +342,7 @@ export class AutomationDispatcher {
           );
         }
         this.eventBus.publish({
+          repoRoot: this.repoRoot,
           ...rest,
           src: `automation:${moduleName}`,
           event: evtName,
@@ -420,6 +426,7 @@ export class AutomationDispatcher {
       emit: (evt) => {
         const { event: evtName, category: evtCategory, ...rest } = evt;
         this.eventBus.publish({
+          repoRoot: this.repoRoot,
           src: `automation:${mod.name}`,
           event: evtName,
           category: evtCategory as "automation",

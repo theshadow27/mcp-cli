@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import { IMPORTED_TABLES, IMPORT_MARKER_KEY, importLegacyState, recoveryInstructions } from "./import-legacy";
@@ -135,7 +136,7 @@ describe("importLegacyState", () => {
     expect(state.getState("config_hash")).toBe("abc123");
     expect(state.getTokens("atlassian")?.access_token).toBe("tok");
     expect(raw.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(2);
-    expect(state.getAliasState("/repo", "ns", "k")).toBe("v");
+    expect(state.getAliasState("/repo", "ns", "k", NO_DOMAIN_ID)).toBe("v");
     expect(state.getNote("s", "t")).toBe("n");
 
     const wi = new WorkItemDb(raw);
@@ -581,7 +582,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     legacy.setState("config_hash", "prod-hash");
     legacy.saveTokens("atlassian", { access_token: "prod-tok", token_type: "Bearer" });
     legacy.setNote("srv", "tool", "a note");
-    legacy.setAliasState("/repo", "ns", "k", { nested: [1, 2, 3] });
+    legacy.setAliasState("/repo", "ns", "k", { nested: [1, 2, 3] }, NO_DOMAIN_ID);
     legacy.insertMail("alice", "bob", "subject", "body");
     legacy.upsertSession({ sessionId: "sess-1", provider: "claude", cwd: "/repo", state: "running" });
     legacy.saveAlias("impl", "/repo/.claude/phases/impl.ts", "the impl phase", "defineAlias");
@@ -607,7 +608,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     expect(target.getState("config_hash")).toBe("prod-hash");
     expect(target.getTokens("atlassian")?.access_token).toBe("prod-tok");
     expect(target.getNote("srv", "tool")).toBe("a note");
-    expect(target.getAliasState("/repo", "ns", "k")).toEqual({ nested: [1, 2, 3] });
+    expect(target.getAliasState("/repo", "ns", "k", NO_DOMAIN_ID)).toEqual({ nested: [1, 2, 3] });
     expect(target.getAlias("impl")?.description).toBe("the impl phase");
     expect(target.getSession("sess-1")?.cwd).toBe("/repo");
     expect(target.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(1);
@@ -1117,5 +1118,194 @@ describe("clampDerivedCursor bounds on the LEGACY range (#3143 stacked-PR blocke
     expect(cursor?.last_seq).toBe(5);
     // Sanity: the two maxima really are distinguishable, so this test can fail.
     expect(state.database.query<{ m: number }, []>("SELECT MAX(seq) AS m FROM monitor_events").get()?.m).toBe(190);
+  });
+});
+
+// ── Domain mapping of imported rows (#3040) ──
+
+/**
+ * A legacy DB whose `alias_state` and `monitor_events` rows belong to two different
+ * project roots — the case the scope→domain import has to map deliberately rather than
+ * dump on the sentinel.
+ */
+function writeLegacyWithRoots(path: string, phoenixRoot: string, otherRoot: string): void {
+  const db = new Database(path, { create: true });
+  db.exec(`
+    CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+    INSERT INTO schema_versions (name, version) VALUES ('state', 7);
+    CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE alias_state (
+      repo_root TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL,
+      value_json TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (repo_root, namespace, key)
+    );
+    CREATE TABLE monitor_events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, src TEXT NOT NULL,
+      event TEXT NOT NULL, category TEXT NOT NULL, work_item_id TEXT, session_id TEXT,
+      pr_number INTEGER, payload TEXT NOT NULL
+    );
+  `);
+  const insState = db.prepare("INSERT INTO alias_state (repo_root, namespace, key, value_json) VALUES (?, ?, ?, ?)");
+  insState.run(phoenixRoot, "workitem:#42", "round", "2");
+  insState.run(`${phoenixRoot}/packages/core`, "workitem:#43", "round", "5");
+  insState.run(otherRoot, "workitem:#42", "round", "99");
+
+  const insEvent = db.prepare("INSERT INTO monitor_events (ts, src, event, category, payload) VALUES (?, ?, ?, ?, ?)");
+  const mk = (event: string, repoRoot?: string) =>
+    JSON.stringify({
+      seq: 0,
+      ts: "2026-08-20T00:00:00.000Z",
+      src: "daemon",
+      event,
+      category: "work_item",
+      ...(repoRoot ? { repoRoot } : {}),
+    });
+  insEvent.run("2026-08-20T00:00:00.000Z", "daemon", "pr.merged", "work_item", mk("pr.merged", phoenixRoot));
+  insEvent.run("2026-08-20T00:00:01.000Z", "daemon", "pr.opened", "work_item", mk("pr.opened", otherRoot));
+  insEvent.run("2026-08-20T00:00:02.000Z", "daemon", "mail.sent", "mail", mk("mail.sent"));
+  db.close();
+}
+
+describe("importLegacyState domain mapping", () => {
+  /**
+   * One import for the whole block. Every assertion here is read-only, and the import is
+   * the expensive part (three schema migrations plus a 17-table copy); running it per
+   * test pushed this file past the 5s time budget on its own.
+   */
+  let dir = "";
+  let state: StateDb;
+  let phoenixRoot = "";
+  let otherRoot = "";
+  let phoenixId = -1;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-import-domain-"));
+    // Real directories: the scope import canonicalizes roots, so a non-existent or
+    // symlinked path would make the stored domain path and the row's repo_root disagree.
+    phoenixRoot = join(dir, "phoenix");
+    otherRoot = join(dir, "unregistered");
+    const scopesDir = join(dir, "scopes");
+    mkdirSync(phoenixRoot, { recursive: true });
+    mkdirSync(otherRoot, { recursive: true });
+    mkdirSync(scopesDir, { recursive: true });
+    writeFileSync(join(scopesDir, "phoenix.json"), JSON.stringify({ root: phoenixRoot }));
+
+    const legacyPath = join(dir, "state.db");
+    writeLegacyWithRoots(legacyPath, phoenixRoot, otherRoot);
+
+    state = freshTargetDb(join(dir, "mcx.db"));
+    importLegacyState({ db: state.database, legacyPath, scopesDir, log: () => {} });
+    phoenixId = state.getDomainByName("phoenix")?.id ?? -1;
+  });
+
+  afterAll(() => {
+    state.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("imported alias_state rows are stamped with the domain their repo_root resolves to", () => {
+    expect(phoenixId).toBeGreaterThan(0);
+
+    const byRoot = new Map(
+      state.database
+        .query<{ repo_root: string; domain_id: number }, []>("SELECT repo_root, domain_id FROM alias_state")
+        .all()
+        .map((r) => [r.repo_root, r.domain_id]),
+    );
+    expect(byRoot.get(phoenixRoot)).toBe(phoenixId);
+    // A nested root resolves to the same domain — the mapping is the longest-prefix rule,
+    // not a string equality against the scope's root.
+    expect(byRoot.get(`${phoenixRoot}/packages/core`)).toBe(phoenixId);
+    // A root outside every domain stays on the sentinel.
+    expect(byRoot.get(otherRoot)).toBe(NO_DOMAIN_ID);
+  });
+
+  test("the stamped state is readable at the domain a phase script will resolve", () => {
+    // This is the whole point: without the stamp, `ctx.state.get("round")` in a
+    // domain-registered repo reads undefined while the value sits one column away.
+    expect(state.getAliasState(phoenixRoot, "workitem:#42", "round", phoenixId)).toBe(2);
+    // ...and an unregistered project keeps its pre-domain behaviour exactly.
+    expect(state.getAliasState(otherRoot, "workitem:#42", "round", NO_DOMAIN_ID)).toBe(99);
+  });
+
+  test("imported events are stamped from their own repoRoot; global events stay un-domained", () => {
+    expect(
+      state.database
+        .query<{ event: string; domain_id: number }, []>("SELECT event, domain_id FROM monitor_events ORDER BY seq")
+        .all(),
+    ).toEqual([
+      { event: "pr.merged", domain_id: phoenixId },
+      { event: "pr.opened", domain_id: NO_DOMAIN_ID },
+      { event: "mail.sent", domain_id: NO_DOMAIN_ID },
+    ]);
+  });
+
+  test("replaying an imported event reports its stamped domain", () => {
+    const replayed = new EventLog(state.database).getSince(0, 100, { domainId: phoenixId });
+    expect(replayed.map((e) => e.event)).toEqual(["pr.merged"]);
+    expect(replayed[0]?.domainId).toBe(phoenixId);
+  });
+});
+
+// ── R4: a stamp failure must roll back, not seal ──
+
+describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
+  /**
+   * Induce a REAL stamp failure rather than a mocked one: a re-run into a target that
+   * already holds `(phoenix, repo, ns, key)`. The legacy copy lands at domain 0 (no PK
+   * clash), and the stamp's `UPDATE ... SET domain_id = phoenix` then collides with the
+   * existing row and throws.
+   *
+   * Pre-fix, `stampImportedDomainIds` logged that and CONTINUED, and the run committed
+   * with `sealed: true` — leaving one table stamped, another not, and no signal anywhere
+   * in ImportResult. These assert the repaired seal-or-nothing property extends to it.
+   *
+   * One import for the block: every assertion is read-only, and the import is the
+   * expensive part (three migrations plus a full copy).
+   */
+  let dir = "";
+  let state: StateDb;
+  let result: ReturnType<typeof importLegacyState>;
+  let phoenixRoot = "";
+  let phoenixId = -1;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-import-r4-"));
+    phoenixRoot = join(dir, "phoenix");
+    const scopesDir = join(dir, "scopes");
+    mkdirSync(phoenixRoot, { recursive: true });
+    mkdirSync(scopesDir, { recursive: true });
+    writeFileSync(join(scopesDir, "phoenix.json"), JSON.stringify({ root: phoenixRoot }));
+
+    const legacyPath = join(dir, "state.db");
+    writeLegacyWithRoots(legacyPath, phoenixRoot, join(dir, "unregistered"));
+
+    state = freshTargetDb(join(dir, "mcx.db"));
+    phoenixId = state.createDomain("phoenix", phoenixRoot).id;
+    // The row the stamp will collide with.
+    state.setAliasState(phoenixRoot, "workitem:#42", "round", "pre-existing", phoenixId);
+
+    result = importLegacyState({ db: state.database, legacyPath, scopesDir, log: () => {} });
+  });
+
+  afterAll(() => {
+    state.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a colliding stamp is reported as a failed table, not swallowed", () => {
+    expect(result.failedTables).toContain("alias_state");
+  });
+
+  test("the run does not seal, so the next start retries", () => {
+    expect(result.sealed).toBe(false);
+  });
+
+  test("nothing from the import survives — the rollback covers the copied rows too", () => {
+    // The pre-existing row is untouched...
+    expect(state.getAliasState(phoenixRoot, "workitem:#42", "round", phoenixId)).toBe("pre-existing");
+    // ...and no half-imported rows were left behind at any partition.
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM alias_state").get()?.n).toBe(1);
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n).toBe(0);
   });
 });

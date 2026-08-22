@@ -233,6 +233,11 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
         state: "connecting",
         cwd,
         worktree: config.worktree,
+        // Forwarded to match the acp and opencode workers, which both send it. Codex
+        // alone dropped it, so a `mcx agent codex spawn --worktree <name>` session
+        // landed with worktree set and repo_root NULL — the one row shape that made
+        // the old `repo_root ?? worktree ?? cwd` chain resolve to nothing (#3169 R7).
+        repoRoot: config.repoRoot,
       },
     });
 

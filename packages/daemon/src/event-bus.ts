@@ -11,9 +11,10 @@
  * #1512 #1557
  */
 
-import { type MonitorEvent, type MonitorEventInput, enrichMonitorEvent } from "@mcp-cli/core";
+import { type MonitorEvent, type MonitorEventInput, NO_DOMAIN_ID, enrichMonitorEvent } from "@mcp-cli/core";
 import type { CoalescerOptions, SubmitOptions } from "./coalesce";
 import { CoalescingPublisher } from "./coalesce";
+import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "./domain-resolver";
 import type { EventLog } from "./event-log";
 import { metrics } from "./metrics";
 
@@ -36,13 +37,73 @@ export class EventBus {
   private readonly subscribers = new Map<number, Subscription>();
   private readonly log: EventLog | null;
   private readonly now: () => number;
+  private readonly domains: DomainResolver;
 
-  constructor(eventLog?: EventLog, now: () => number = Date.now) {
+  constructor(eventLog?: EventLog, now: () => number = Date.now, domains: DomainResolver = NULL_DOMAIN_RESOLVER) {
     this.log = eventLog ?? null;
     this.now = now;
+    this.domains = domains;
     if (this.log) {
       this.seq = this.log.currentSeq();
     }
+  }
+
+  /** The resolver this bus stamps with — consumers need name↔id to filter a stream by domain. */
+  get domainResolver(): DomainResolver {
+    return this.domains;
+  }
+
+  /**
+   * Which domain owns this event?
+   *
+   * Resolved in a fixed precedence, most-authoritative first:
+   *
+   *   1. `domainId` — the producer was handed a domain and says so. Believed outright.
+   *   2. `repoRoot` — the producer supplied its own path.
+   *   3. `sessionId` — the domain of the session the event is about, read off that
+   *      session's own row.
+   *
+   * **This is preference order, not strict precedence.** Each step is tried only until
+   * one *resolves*; a `repoRoot` that names no registered domain falls THROUGH to the
+   * session rather than terminating at the sentinel. So an event a producer explicitly
+   * scoped to a non-domain path can still inherit its session's domain. That is
+   * deliberate — a path outside every domain carries no information to preserve, and
+   * discarding the session's answer for it would lose the partition for no gain — but it
+   * means "repoRoot outranks sessionId" is only true when the repoRoot actually resolves.
+   *
+   * Step 3 exists because steps 1 and 2 alone left the feature almost entirely inert
+   * (#3040 review R3). Measured against a real 7-day event log on this box: 98 of 25,536
+   * rows carried a `repoRoot`, i.e. 0.4%, while 20,449 — 80% — carried a `sessionId`.
+   * `repoRoot` is set at exactly one of the ~20 session-event emission sites and by none
+   * of the metric producers, so deriving the partition from it alone meant `-d` filtered
+   * correctly over a rounding error of the traffic.
+   *
+   * Nothing here guesses. A session's domain is a fact recorded on its own row, so step 3
+   * is a join on an identity the event already carries. Falling through all three yields
+   * `NO_DOMAIN_ID`, which is the honest answer for genuinely daemon-wide events (mail,
+   * quota, heartbeat): an un-domained event is excluded by a `-d` filter, so inventing a
+   * domain here would silently attribute daemon state to one project.
+   *
+   * Not resolvable yet: work-item and CI events keyed only by `workItemId`/`prNumber`.
+   * `work_items` has neither a repo column nor a `domain_id` writer — that is #3036/#3037.
+   * The daemon-local producers that poll a single known repo declare `repoRoot` instead,
+   * which covers them via step 2 until those land.
+   */
+  private stampDomain(input: MonitorEventInput): { domainId: number; domain?: string } {
+    const domainId = this.resolveDomainId(input);
+    if (domainId === NO_DOMAIN_ID) return { domainId };
+    const name = this.domains.nameForId(domainId);
+    return name === null ? { domainId } : { domainId, domain: name };
+  }
+
+  private resolveDomainId(input: MonitorEventInput): number {
+    if (typeof input.domainId === "number") return input.domainId;
+    if (typeof input.repoRoot === "string") {
+      const fromPath = this.domains.idForPath(input.repoRoot);
+      if (fromPath !== NO_DOMAIN_ID) return fromPath;
+    }
+    if (typeof input.sessionId === "string") return this.domains.idForSession(input.sessionId);
+    return NO_DOMAIN_ID;
   }
 
   publish(rawInput: MonitorEventInput): MonitorEvent {
@@ -50,11 +111,14 @@ export class EventBus {
     // replay, TUI) sees them regardless of which producer emitted the event.
     const input = enrichMonitorEvent(rawInput);
     const ts = new Date().toISOString();
+    // Domain is stamped alongside seq/ts for the same reason: one enforcement point, so
+    // no producer can publish an event the partition cannot see.
+    const domain = this.stampDomain(input);
     let seq: number;
 
     if (this.log) {
       try {
-        const event = { ...input, seq: 0, ts } satisfies MonitorEvent;
+        const event = { ...input, ...domain, seq: 0, ts } satisfies MonitorEvent;
         seq = this.log.append(event);
         this.seq = seq;
       } catch (err) {
@@ -65,7 +129,7 @@ export class EventBus {
       seq = ++this.seq;
     }
 
-    const event = { ...input, seq, ts } satisfies MonitorEvent;
+    const event = { ...input, ...domain, seq, ts } satisfies MonitorEvent;
 
     if (this.subscribers.size === 0) return event;
 

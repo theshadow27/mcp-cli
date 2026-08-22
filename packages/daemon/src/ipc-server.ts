@@ -37,6 +37,7 @@ import type { AutomationDispatcher } from "./automation-dispatcher";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
+import { type DomainResolver, createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
@@ -128,6 +129,12 @@ export class IpcServer {
       eventLog?: EventLog;
       onAliasChanged?: (name: string) => void;
       automationDispatcher?: AutomationDispatcher;
+      /**
+       * The daemon's domain resolver (#3040). Shared with the EventBus rather than
+       * built here so there is one memo to invalidate when the `domains` table changes,
+       * not one per subsystem. Defaults to a resolver over this server's own StateDb.
+       */
+      domains?: DomainResolver;
     },
   ) {
     this.daemonId = opts.daemonId;
@@ -161,6 +168,11 @@ export class IpcServer {
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
       automationDispatcher: opts.automationDispatcher ?? null,
+      // The bare-StateDb fallback must supply the session lookup too. It used to compile
+      // against `this.db` alone because the source member was optional — yielding a
+      // resolver whose session path was silently dead (#3040 review). Latent, since the
+      // eventBus branch wins in production, but latent is how the R1 split-brain shipped.
+      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createStateDbDomainSource(this.db)),
     });
     this.db.pruneExpiredAliases();
   }
@@ -412,13 +424,19 @@ export class IpcServer {
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
     automationDispatcher: AutomationDispatcher | null;
+    domains: DomainResolver;
   }): void {
     const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
     new AuthHandlers(this.pool).register(this.handlers);
     new AliasHandlers(this.db, deps.aliasServer, this.logger, deps.onAliasChanged ?? undefined).register(this.handlers);
-    new WorkItemHandlers(deps.workItemDb, this.db, deps.resolveIssuePr, deps.loadManifestFn, this.logger).register(
-      this.handlers,
-    );
+    new WorkItemHandlers(
+      deps.workItemDb,
+      this.db,
+      deps.resolveIssuePr,
+      deps.loadManifestFn,
+      this.logger,
+      deps.domains,
+    ).register(this.handlers);
     serveHandlers.register(this.handlers);
     new BudgetHandlers(this.db).register(this.handlers);
     new EventHandlers(deps.eventBus).register(this.handlers);

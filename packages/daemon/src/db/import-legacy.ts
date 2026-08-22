@@ -23,8 +23,16 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { NO_DOMAIN_ID, canonicalizeDomainPath, isValidDomainName, options } from "@mcp-cli/core";
+import {
+  type Domain,
+  NO_DOMAIN_ID,
+  canonicalizeDomainPath,
+  isValidDomainName,
+  options,
+  resolveDomainForPath,
+} from "@mcp-cli/core";
 import { DERIVED_CURSOR_ID } from "../derived-events";
+import { ADOPTABLE_TABLES, adoptUnassignedRows } from "./adopt-domains";
 
 /** Shape of a `~/.mcp-cli/scopes/<name>.json` sidecar, as written by `mcx scope init`. */
 interface ScopeFile {
@@ -286,11 +294,23 @@ function copyEverything(
         tables.push(copyTable(target, table, log));
       }
 
+      // The domain stamp runs INSIDE the guarded region, next to the cursor clamp and
+      // BEFORE the failure checks below (#3040 review R4). It used to sit after them,
+      // immediately before writeMarker — which meant a stamp that failed on one table
+      // and succeeded on another was COMMITted with sealed:true and no signal anywhere
+      // in ImportResult, landing the user in a split partition having done nothing
+      // wrong. This file was just repaired to be seal-or-nothing; the stamp has to hold
+      // that property too rather than be excused from it.
+      let stampFailures: string[] = [];
       if (aborted === null && target.inTransaction) {
         clampDerivedCursor(target, log);
+        stampFailures = stampImportedDomainIds(target, log);
       }
 
-      const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
+      // Stamp failures join the copy failures, so the existing rollback-and-retry path
+      // covers them and ImportResult names them. A row copied into the wrong partition
+      // is not a successful import.
+      const failedTables = [...new Set([...tables.filter((t) => t.failed).map((t) => t.table), ...stampFailures])];
       const result = summarize(tables, failedTables, domains);
 
       if (aborted !== null || !target.inTransaction) {
@@ -587,6 +607,39 @@ function copyTable(
     log(`[domain-import] table ${table} failed: ${errText(err)}`);
     return { table, copied: 0, notCopied: total, failed: true, reason: errText(err) };
   }
+}
+
+/**
+ * Map imported `alias_state` and `monitor_events` rows onto the domains just created from
+ * the scope sidecars.
+ *
+ * Shares its row-mapping with the boot-time adopter (`adopt-domains.ts`) so the two cannot
+ * disagree about which domain owns a root. They differ only in collision policy, which is
+ * a real difference and not a knob: here a collision must abort so the whole copy rolls
+ * back and retries, because this file is seal-or-nothing (#3040 review R4).
+ */
+function stampImportedDomainIds(target: Database, log: (msg: string) => void): string[] {
+  const domains = target
+    .query<{ id: number; name: string; host: string | null; path: string; created_at: string }, []>(
+      "SELECT id, name, host, path, created_at FROM domains",
+    )
+    .all()
+    .map((r): Domain => ({ id: r.id, name: r.name, host: r.host, path: r.path, createdAt: r.created_at }));
+  if (domains.length === 0) return [];
+
+  const failures: string[] = [];
+  for (const spec of ADOPTABLE_TABLES) {
+    try {
+      const { stamped } = adoptUnassignedRows(target, domains, spec, "throw", log);
+      if (stamped > 0) log(`[domain-import] ${spec.table}: stamped ${stamped} row(s) with a domain`);
+    } catch (err) {
+      // Reported, NOT swallowed (#3040 review R4): the caller folds this into failedTables
+      // so the whole import rolls back and retries, the same treatment a failed copy gets.
+      failures.push(spec.table);
+      log(`[domain-import] ${spec.table}: could not stamp domain ids — ${errText(err)}`);
+    }
+  }
+  return failures;
 }
 
 /**

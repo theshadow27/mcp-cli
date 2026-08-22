@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { AutomationAction, AutomationContext, MonitorEvent, WorkItem } from "@mcp-cli/core";
-import { createWorkItem } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, createWorkItem } from "@mcp-cli/core";
 
 import bindModule from "../../../.claude/automation/bind";
 
@@ -10,6 +10,7 @@ function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
     ts: new Date().toISOString(),
+    domainId: NO_DOMAIN_ID,
     src: "daemon.work-item-poller",
     event: "pr.opened",
     category: "work_item",

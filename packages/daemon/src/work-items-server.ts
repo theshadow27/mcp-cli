@@ -24,10 +24,29 @@ import type { WorkItemDb } from "./db/work-items";
 
 /** Narrow interface for alias_state operations — avoids coupling to full StateDb. */
 export interface PhaseStateStore {
-  getAliasState(repoRoot: string, namespace: string, key: string): unknown;
-  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown): void;
-  deleteAliasState(repoRoot: string, namespace: string, key: string): boolean;
-  listAliasState(repoRoot: string, namespace: string): Record<string, unknown>;
+  getAliasState(repoRoot: string, namespace: string, key: string, domainId: number): unknown;
+  setAliasState(repoRoot: string, namespace: string, key: string, value: unknown, domainId: number): void;
+  deleteAliasState(repoRoot: string, namespace: string, key: string, domainId: number): boolean;
+  listAliasState(repoRoot: string, namespace: string, domainId: number): Record<string, unknown>;
+}
+
+/**
+ * A phase-state store bundled with the resolver that partitions it (#3040 review R1).
+ *
+ * The two travel together as one option rather than as `stateDb?` plus an optional
+ * `domainIdFor?` because that is the difference between a bug the compiler catches and
+ * a bug that cannot be written. This interface previously declared three-parameter
+ * signatures while `StateDb` had a defaulted fourth; StateDb therefore still satisfied
+ * it structurally, and `_work_items` phase_state_* wrote domain 0 while `ctx.state`
+ * wrote a real domain — same repo_root, same namespace, different rows. Nothing failed;
+ * tsc was silent. Requiring the partition key on the interface makes the mismatch a
+ * compile error, and bundling the resolver means a caller cannot supply a store it has
+ * no way to partition.
+ */
+export interface PhaseStateBinding {
+  store: PhaseStateStore;
+  /** Which domain owns `repoRoot`. `NO_DOMAIN_ID` for a repo outside every domain. */
+  domainIdFor: (repoRoot: string) => number;
 }
 
 /** Derived from the work_items_update inputSchema — single source of truth. */
@@ -242,8 +261,8 @@ export class WorkItemsServer {
   /** Resolves a PR number to its head branch name. Injected for testability. */
   private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
 
-  /** Optional store for phase-scoped state (alias_state table). */
-  private stateDb: PhaseStateStore | null;
+  /** Optional store for phase-scoped state (alias_state table), with its domain resolver. */
+  private phaseState: PhaseStateBinding | null;
 
   private logger: Logger;
 
@@ -253,7 +272,7 @@ export class WorkItemsServer {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
       resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
-      stateDb?: PhaseStateStore;
+      phaseState?: PhaseStateBinding;
       logger?: Logger;
     },
   ) {
@@ -261,7 +280,7 @@ export class WorkItemsServer {
     this.onTrack = opts?.onTrack ?? null;
     this.loadManifestFn = opts?.loadManifest ?? null;
     this.resolveBranchFromPr = opts?.resolveBranchFromPr ?? null;
-    this.stateDb = opts?.stateDb ?? null;
+    this.phaseState = opts?.phaseState ?? null;
     this.logger = opts?.logger ?? consoleLogger;
   }
 
@@ -525,7 +544,7 @@ export class WorkItemsServer {
           }
 
           case "phase_state_get": {
-            if (!this.stateDb) {
+            if (!this.phaseState) {
               return {
                 content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
                 isError: true,
@@ -554,12 +573,12 @@ export class WorkItemsServer {
               };
             }
             const ns = `workitem:${workItemId}`;
-            const value = this.stateDb.getAliasState(repoRoot, ns, key);
+            const value = this.phaseState.store.getAliasState(repoRoot, ns, key, this.phaseState.domainIdFor(repoRoot));
             return { content: [{ type: "text" as const, text: JSON.stringify({ key, value }) }] };
           }
 
           case "phase_state_set": {
-            if (!this.stateDb) {
+            if (!this.phaseState) {
               return {
                 content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
                 isError: true,
@@ -605,12 +624,12 @@ export class WorkItemsServer {
               };
             }
             const ns = `workitem:${workItemId}`;
-            this.stateDb.setAliasState(repoRoot, ns, key, a.value);
+            this.phaseState.store.setAliasState(repoRoot, ns, key, a.value, this.phaseState.domainIdFor(repoRoot));
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key }) }] };
           }
 
           case "phase_state_delete": {
-            if (!this.stateDb) {
+            if (!this.phaseState) {
               return {
                 content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
                 isError: true,
@@ -650,12 +669,17 @@ export class WorkItemsServer {
               };
             }
             const ns = `workitem:${workItemId}`;
-            const deleted = this.stateDb.deleteAliasState(repoRoot, ns, key);
+            const deleted = this.phaseState.store.deleteAliasState(
+              repoRoot,
+              ns,
+              key,
+              this.phaseState.domainIdFor(repoRoot),
+            );
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key, deleted }) }] };
           }
 
           case "phase_state_list": {
-            if (!this.stateDb) {
+            if (!this.phaseState) {
               return {
                 content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
                 isError: true,
@@ -683,7 +707,7 @@ export class WorkItemsServer {
               };
             }
             const ns = `workitem:${workItemId}`;
-            const entries = this.stateDb.listAliasState(repoRoot, ns);
+            const entries = this.phaseState.store.listAliasState(repoRoot, ns, this.phaseState.domainIdFor(repoRoot));
             return {
               content: [
                 { type: "text" as const, text: JSON.stringify({ entries, count: Object.keys(entries).length }) },

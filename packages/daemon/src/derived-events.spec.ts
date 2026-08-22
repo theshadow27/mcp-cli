@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
-import { PHASE_CHANGED } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, PHASE_CHANGED } from "@mcp-cli/core";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher } from "./derived-events";
 import { DEFAULT_RULES, isDerivedPending, prMergedToDone } from "./derived-rules";
@@ -26,7 +26,7 @@ function prMergedInput(prNumber = 42): MonitorEventInput {
 }
 
 function stampEvent(input: MonitorEventInput, seq = 1): MonitorEvent {
-  return { ...input, seq, ts: new Date().toISOString() };
+  return { ...input, seq, ts: new Date().toISOString(), domainId: NO_DOMAIN_ID };
 }
 
 // ── Rule unit tests ──
