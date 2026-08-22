@@ -9,9 +9,11 @@ import { EventLog } from "../event-log";
 import {
   IMPORTED_TABLES,
   IMPORT_MARKER_KEY,
+  IMPORT_WRITTEN_TABLES,
   clearImportMarker,
   importLegacyState,
   nonEmptyImportedTables,
+  readImportMarkerValue,
   recoveryInstructions,
 } from "./import-legacy";
 import { StateDb } from "./state";
@@ -909,7 +911,7 @@ describe("recoveryInstructions (#3034 review R2)", () => {
       legacy.run("INSERT INTO daemon_state (key, value) VALUES ('mcx_domain_import_rows', '42')");
       legacy.close();
 
-      expect(clearImportMarker(legacyPath).cleared).toBe(true);
+      expect(clearImportMarker(legacyPath).state).toBe("armed");
 
       const after = new Database(legacyPath, { readonly: true });
       expect(after.query<{ n: number }, []>("SELECT count(*) AS n FROM daemon_state").get()?.n).toBe(0);
@@ -1440,7 +1442,7 @@ describe("the target must be empty (#3035 review finding 1)", () => {
     expect(recoveryInstructions(w.legacyPath, w.targetPath)).toContain("mcx domain import --force");
     expect(recoveryInstructions(w.legacyPath, w.targetPath)).not.toContain("sqlite3");
 
-    expect(clearImportMarker(w.legacyPath).cleared).toBe(true);
+    expect(clearImportMarker(w.legacyPath).state).toBe("armed");
     const legacy = new Database(w.legacyPath, { readonly: true });
     expect(
       legacy
@@ -1650,5 +1652,197 @@ describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
     // ...and no half-imported rows were left behind at any partition.
     expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM alias_state").get()?.n).toBe(1);
     expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get()?.n).toBe(0);
+  });
+});
+
+describe("what a failed import actually leaves on disk (#3160 review N2)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const o of open) o.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function legacyWithFourTables(path: string): void {
+    const db = new Database(path, { create: true });
+    db.exec(`
+      CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO daemon_state (key,value) VALUES ('config_hash','abc123');
+      CREATE TABLE auth_tokens (server_name TEXT PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT,
+        token_type TEXT DEFAULT 'Bearer', expires_at INTEGER, scope TEXT, updated_at INTEGER NOT NULL DEFAULT 0);
+      INSERT INTO auth_tokens (server_name, access_token) VALUES ('atlassian','tok');
+      CREATE TABLE mail (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, recipient TEXT NOT NULL,
+        subject TEXT, body TEXT, reply_to INTEGER, read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT '2026-01-01 00:00:00');
+      INSERT INTO mail (sender,recipient,subject) VALUES ('a','b','hi'),('c','d','yo');
+      CREATE TABLE work_items (id TEXT PRIMARY KEY, issue_number INTEGER, branch TEXT, phase TEXT);
+      INSERT INTO work_items (id,issue_number,branch,phase) VALUES ('wi-1',42,'fix/42','impl');
+    `);
+    db.close();
+  }
+
+  function ws() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-n2-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
+  }
+
+  /** A target missing `work_items`, so exactly one table's copy fails outright. */
+  function targetMissingWorkItems(path: string): StateDb {
+    const state = new StateDb(path);
+    open.push(state);
+    new EventLog(state.database);
+    migrateDerivedCursor(state.database);
+    return state;
+  }
+
+  test("one table failing rolls EVERYTHING back — the succeeded tables land nothing", () => {
+    // The behaviour three comments described and none pinned, which is how the two halves
+    // of this file drifted into contradicting each other. `ran && !sealed` does NOT mean
+    // rows landed.
+    const w = ws();
+    legacyWithFourTables(w.legacyPath);
+    const state = targetMissingWorkItems(w.targetPath);
+
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+
+    expect(result.failedTables).toEqual(["work_items"]);
+    expect(result.sealed).toBe(false);
+
+    // ON-DISK state — the assertion that matters. Every table that "succeeded" is empty.
+    for (const t of ["daemon_state", "auth_tokens", "mail"]) {
+      expect(state.database.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${t}`).get()?.n).toBe(0);
+    }
+    expect(nonEmptyImportedTables(state.database)).toEqual([]);
+
+    // MARKER — withheld, so the import is still armed.
+    const legacy = new Database(w.legacyPath, { readonly: true });
+    expect(
+      legacy
+        .query<{ n: number }, [string]>("SELECT count(*) AS n FROM daemon_state WHERE key = ?")
+        .get(IMPORT_MARKER_KEY)?.n,
+    ).toBe(0);
+    legacy.close();
+  });
+
+  test("the promised retry happens only while the target is still empty", () => {
+    // The half of the retry contract that was false. A failed import at boot leaves the
+    // target empty — but the daemon then FINISHES booting and publishes daemon.restarted,
+    // so by the next start the target is not empty and the import declines. That decline is
+    // correct: retrying over a target holding seq 1 would drop the colliding legacy rows.
+    const w = ws();
+    legacyWithFourTables(w.legacyPath);
+    const boot1 = targetMissingWorkItems(w.targetPath);
+    expect(
+      importLegacyState({
+        db: boot1.database,
+        legacyPath: w.legacyPath,
+        targetPath: w.targetPath,
+        scopesDir: w.scopesDir,
+        log: () => {},
+      }).sealed,
+    ).toBe(false);
+
+    // Immediately after the failure the retry WOULD run — the target is still empty.
+    expect(nonEmptyImportedTables(boot1.database)).toEqual([]);
+
+    // ...then the daemon finishes booting (index.ts publishes daemon.restarted).
+    new EventLog(boot1.database).append({
+      ts: new Date().toISOString(),
+      src: "daemon",
+      event: "daemon.restarted",
+      category: "server",
+    } as never);
+
+    const retry = importLegacyState({
+      db: boot1.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    expect(retry.ran).toBe(false);
+    expect(retry.reason).toContain("not empty");
+  });
+
+  test("the guard covers every table the import writes, derived from behaviour (#3160 N12)", () => {
+    // Not "does the list contain domains" — that would restate the constant. Run a REAL
+    // import into an empty target, then assert every table that gained rows is one the
+    // guard inspects. A future writer added to copyEverything fails here.
+    const w = ws();
+    legacyWithFourTables(w.legacyPath);
+    mkdirSync(w.scopesDir, { recursive: true });
+    writeFileSync(join(w.scopesDir, "gerald.json"), JSON.stringify({ root: "/srv/gerald" }));
+
+    const state = freshTargetDb(w.targetPath);
+    open.push(state);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    expect(result.sealed).toBe(true);
+    expect(result.domainsImported).toBe(1);
+
+    const gained = nonEmptyImportedTables(state.database).map((t) => t.table);
+    // `domains` gained a row via importScopesAsDomains, which is NOT in IMPORTED_TABLES —
+    // the omission that made the guard report EMPTY over a populated target.
+    expect(gained).toContain("domains");
+    for (const t of gained) {
+      expect((IMPORT_WRITTEN_TABLES as readonly string[]).includes(t)).toBe(true);
+    }
+  });
+
+  test("arming is idempotent and reports already-armed as success (#3160 N13)", () => {
+    const w = ws();
+    legacyWithFourTables(w.legacyPath);
+    const state = freshTargetDb(w.targetPath);
+    open.push(state);
+    importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+
+    const first = clearImportMarker(w.legacyPath);
+    expect(first).toEqual({ state: "armed", alreadyArmed: false });
+    const second = clearImportMarker(w.legacyPath);
+    // Re-running the recovery command must not report failure for the state it produces.
+    expect(second).toEqual({ state: "armed", alreadyArmed: true });
+  });
+
+  test("readImportMarkerValue reports absence rather than letting the CLI assert it (#3160 N1)", () => {
+    const w = ws();
+    // No legacy database at all — the fresh-install case that got told a marker was set.
+    expect(readImportMarkerValue(w.legacyPath)).toEqual({ present: false, value: null });
+
+    legacyWithFourTables(w.legacyPath);
+    expect(readImportMarkerValue(w.legacyPath)).toEqual({ present: true, value: null });
+
+    const state = freshTargetDb(w.targetPath);
+    open.push(state);
+    importLegacyState({
+      db: state.database,
+      legacyPath: w.legacyPath,
+      targetPath: w.targetPath,
+      scopesDir: w.scopesDir,
+      log: () => {},
+    });
+    const after = readImportMarkerValue(w.legacyPath);
+    expect(after.present).toBe(true);
+    expect(typeof after.value).toBe("string");
   });
 });

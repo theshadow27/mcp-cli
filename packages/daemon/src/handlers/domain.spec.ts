@@ -236,7 +236,7 @@ describe("DomainHandlers", () => {
     expect(await invoke(handlers, "domainShow")({ name: "ghost" }, ctx)).toBeNull();
   });
 
-  test("import WITHOUT --force refuses to arm and never touches the marker", async () => {
+  test("no legacy database: says so, does not claim a marker is set", async () => {
     const dir = workspace();
     const db = new StateDb(join(dir, "mcx.db"));
     open.push(db);
@@ -246,19 +246,61 @@ describe("DomainHandlers", () => {
       db,
       () => {
         clearCalls++;
-        return { cleared: true };
+        return { state: "armed" as const, alreadyArmed: false };
       },
       () => "RECOVERY-TEXT",
+      () => ({ present: false, value: null }),
     ).register(handlers);
 
     const result = (await invoke(handlers, "domainImport")(undefined, ctx)) as DomainImportResult;
     expect(result.armed).toBe(false);
     expect(clearCalls).toBe(0);
+    expect(result.reason).toContain("no legacy database");
+    // The field the CLI gates the `rm` incantation on — absent, so it is not printed.
+    expect(result.markerSetAt).toBeUndefined();
+  });
+
+  test("marker set: names when, and points at --force", async () => {
+    const dir = workspace();
+    const db = new StateDb(join(dir, "mcx.db"));
+    open.push(db);
+    let clearCalls = 0;
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(
+      db,
+      () => {
+        clearCalls++;
+        return { state: "armed" as const, alreadyArmed: false };
+      },
+      () => "RECOVERY-TEXT",
+      () => ({ present: true, value: "2026-08-20T10:00:00.000Z" }),
+    ).register(handlers);
+
+    const result = (await invoke(handlers, "domainImport")(undefined, ctx)) as DomainImportResult;
+    expect(result.armed).toBe(false);
+    expect(clearCalls).toBe(0);
+    expect(result.markerSetAt).toBe("2026-08-20T10:00:00.000Z");
     expect(result.reason).toContain("--force");
-    // The CLI never hardcodes either of these — they come from the daemon so the message
-    // and the code path cannot drift.
     expect(result.markerKey).toBe(IMPORT_MARKER_KEY);
-    expect(result.recovery).toBe("RECOVERY-TEXT");
+  });
+
+  test("marker already clear: reports ARMED, not failure (#3160 N13)", async () => {
+    // Without --force, and the marker is already gone — which seal-or-nothing guarantees
+    // after any failed import. The old code reported this as a refusal.
+    const dir = workspace();
+    const db = new StateDb(join(dir, "mcx.db"));
+    open.push(db);
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(
+      db,
+      () => ({ state: "armed" as const, alreadyArmed: true }),
+      () => "RECOVERY-TEXT",
+      () => ({ present: true, value: null }),
+    ).register(handlers);
+
+    const result = (await invoke(handlers, "domainImport")(undefined, ctx)) as DomainImportResult;
+    expect(result.armed).toBe(true);
+    expect(result.alreadyArmed).toBe(true);
   });
 
   test("--force arms even when the database holds rows — the guard is at the import, not here", async () => {
@@ -290,7 +332,7 @@ describe("DomainHandlers", () => {
       db,
       () => {
         clearCalls++;
-        return { cleared: true };
+        return { state: "armed" as const, alreadyArmed: false };
       },
       () => "RECOVERY-TEXT",
     ).register(handlers);
@@ -312,7 +354,7 @@ describe("DomainHandlers", () => {
       db,
       () => {
         clearCalls++;
-        return { cleared: true };
+        return { state: "armed" as const, alreadyArmed: false };
       },
       () => "RECOVERY-TEXT",
     ).register(handlers);
@@ -392,15 +434,42 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     expect(db.countDomainDependents(domain.id)).toEqual([{ table: "mail", rows: 1 }]);
   });
 
-  test("a domain deleted concurrently reports removed:false with NO dependents", async () => {
+  test("a row deleted BEFORE the lookup is not-found, not a race (#3160 N15)", async () => {
+    // This test used to claim it covered the concurrent-delete race. It does not: deleting
+    // before the handler runs makes `getDomainByName` return null, so it takes the
+    // NOT-FOUND return — the same path as "rm of an unknown domain". It asserted `removed`
+    // and `dependents` but never `found`, which is the one field that distinguishes the two.
+    // Asserting `found` is what makes the test name match the path it exercises.
     const { db, handlers } = setup2();
     await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2);
     db.database.run("DELETE FROM domains WHERE name = ?", ["phoenix"]);
 
     const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
-    // The CLI renders this as a race, not as "0 dependent row(s) still reference it".
+    expect(result.found).toBe(false);
     expect(result.removed).toBe(false);
     expect(result.dependents).toEqual([]);
+  });
+
+  test("the GENUINE race — found, then vanished before the delete — reports found:true", async () => {
+    // `{found: true, removed: false, dependents: []}` had no handler coverage at all; it
+    // existed only as a hand-built literal in the CLI harness. Driven here by deleting the
+    // row between the handler's lookup and its delete, via an injected StateDb whose
+    // `deleteDomain` removes the row itself and reports that it changed nothing.
+    const { db, handlers: _unused } = setup2();
+    await invoke(_unused, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2);
+
+    const racing = Object.create(db) as typeof db;
+    Object.defineProperty(racing, "deleteDomain", {
+      value: (name: string) => {
+        db.database.run("DELETE FROM domains WHERE name = ?", [name]);
+        return false; // another actor got there first
+      },
+    });
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(racing).register(handlers);
+
+    const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
+    expect(result).toEqual({ found: true, removed: false, dependents: [] });
   });
 
   test("the duplicate-location pre-check uses the SAME stored form as createDomain", async () => {

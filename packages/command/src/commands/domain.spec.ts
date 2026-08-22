@@ -229,7 +229,10 @@ describe("mcx domain rm", () => {
     const h = harness({ domainRemove: { found: true, removed: true, dependents: [{ table: "mail", rows: 3 }] } });
     await cmdDomain(["rm", "phoenix", "--force"], h.deps);
     expect(h.calls[0].params).toEqual({ name: "phoenix", cascade: true });
-    expect(allErrors(h)).toContain("3 dependent row(s)");
+    // No count: it would be measured outside the delete's transaction (N14).
+    const e = allErrors(h);
+    expect(e).toContain("along with its dependent rows in: mail");
+    expect(e).not.toMatch(/along with \d+ dependent/);
   });
 
   test("--cascade is accepted as the daemon-side name for --force", async () => {
@@ -294,7 +297,8 @@ describe("mcx domain import", () => {
     const h = harness({
       domainImport: {
         ...base,
-        reason: "the one-shot import is armed by clearing its marker, which is destructive; re-run with --force",
+        markerSetAt: "2026-08-20T10:00:00.000Z",
+        reason: "the legacy database was already imported at 2026-08-20T10:00:00.000Z; re-run with --force",
         log: ["[domain-import] already imported at 2026-08-20T10:00:00.000Z — skipping"],
       },
     });

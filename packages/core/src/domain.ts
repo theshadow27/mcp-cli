@@ -11,7 +11,7 @@
  * orchestrator could rationalize past is a function, not prose.
  */
 
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, posix, resolve } from "node:path";
 import { resolveRealpath } from "./fs";
 
 /** A registered domain: a name bound to `[host:]path`. */
@@ -264,6 +264,26 @@ export function resolveDomainLocation(spec: string, env: PathExpansionEnv): Doma
     // rest of the codebase rejects, and nothing would notice until one was routed to.
     if (!isValidDomainHost(location.host)) {
       throw new Error(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
+    }
+    // The PATH half is validated too (#3160 review N6). A host-bound path is stored verbatim
+    // — this filesystem has no say over another machine's — but "verbatim" was doing the work
+    // of "unchecked", and `a` and `C` are perfectly good hostnames, so `a:b` registered a
+    // domain at relative path `b` and `C:\work` invented a host called `C`. Only two shapes
+    // name a directory on a remote machine: absolute, or `~`-rooted at that host's home.
+    //
+    // This also closes the other half of a defect the reviewer found in `which`:
+    // `resolveDomainForPath` calls `normalizeDomainPath` on every row inside its loop, and
+    // that throws on a non-absolute path — so ONE bad row broke `which` for every query,
+    // including the one an operator would use to diagnose it, while `ls` kept working
+    // because it never normalizes. Refusing the row at write time is the containment.
+    // `posix.isAbsolute`, deliberately, not the platform-sensitive `isAbsolute`: on a
+    // Windows host the latter accepts `C:\work`, which is the exact phantom-host input this
+    // rejects. A remote path is interpreted by the REMOTE machine, and every transport this
+    // routes over is POSIX.
+    if (!posix.isAbsolute(location.path) && !location.path.startsWith("~")) {
+      throw new Error(
+        `invalid remote path ${JSON.stringify(location.path)} in ${JSON.stringify(spec)}: a host-bound path must be absolute or start with "~" (it names a directory on ${location.host}, not here)`,
+      );
     }
     return location;
   }

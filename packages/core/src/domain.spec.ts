@@ -322,7 +322,16 @@ describe("resolveDomainLocation (#3035)", () => {
 
   test("a host-bound path is stored verbatim — its ~ is that host's home, not ours", () => {
     expect(resolveDomainLocation("boxen0010:~/github/phoenix", env).path).toBe("~/github/phoenix");
-    expect(resolveDomainLocation("boxen0010:relative/path", env).path).toBe("relative/path");
+    expect(resolveDomainLocation("boxen0010:/srv/app", env).path).toBe("/srv/app");
+  });
+
+  test("but verbatim is not unchecked: a relative remote path is refused (#3160 N6)", () => {
+    // `a:b` and `C:\\work` both parse to a VALID hostname plus junk, so the host check
+    // passes and the path is nonsense. And a relative row is not inert: resolveDomainForPath
+    // normalizes every row inside its loop, so one of them breaks `which` for every query.
+    expect(() => resolveDomainLocation("boxen0010:relative/path", env)).toThrow(/invalid remote path/);
+    expect(() => resolveDomainLocation("a:b", env)).toThrow(/invalid remote path/);
+    expect(() => resolveDomainLocation("C:\\work", env)).toThrow(/invalid remote path/);
   });
 
   test("round-trips through formatDomainLocation", () => {

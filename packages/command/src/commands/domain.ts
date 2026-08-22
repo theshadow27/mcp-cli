@@ -15,7 +15,15 @@
 
 import { homedir } from "node:os";
 import type { Domain, IpcMethod, IpcMethodResult } from "@mcp-cli/core";
-import { expandLocalDomainPath, formatDomainLocation, ipcCall, resolveDomainLocation } from "@mcp-cli/core";
+import { expandLocalDomainPath, formatDomainLocation, resolveDomainLocation } from "@mcp-cli/core";
+// `ipcCall` from `../daemon-lifecycle`, NOT from `@mcp-cli/core` (#3160 review N11). Core's
+// is a pure transport that says so in its own header: it does not auto-start the daemon, does
+// not retry a transient ECONNREFUSED, and never raises ProtocolMismatchError — so on a cold
+// box `mcx domain ls` failed with "Was there a typo in the url or port?", and against a daemon
+// that had not reloaded it failed with a bare "Unknown method: domainList". This command is
+// the recovery path for the whole domain epic; a recovery command that requires the subsystem
+// it recovers, and cannot say so, is a second outage with better documentation.
+import { ipcCall } from "../daemon-lifecycle";
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
 
@@ -272,9 +280,20 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
     printError("Reassign or delete them first, or re-run with --force to delete them with the domain.");
     return deps.exit(1);
   }
-  const cascaded = result.dependents.reduce((n, d) => n + d.rows, 0);
+  // Deliberately no row count here (#3160 review N14). `dependents` was measured OUTSIDE
+  // the delete's transaction; `deleteDomain` re-reads and deletes on its own inside count.
+  // Against a live daemon the event log appends between the two, always in the
+  // under-reporting direction — so the number printed as the operator's only record of an
+  // unrecoverable cascade was measured from the wrong snapshot. An approximate count of
+  // rows you just destroyed is worse than no count: it reads as a receipt.
+  //
+  // Reporting the true figure means having `deleteDomain` return what it deleted from
+  // inside its transaction, which is a `state.ts` change; filed rather than churned in
+  // here, and it only becomes observable once #3155 lands `domain_id` writers.
   deps.error(
-    cascaded > 0 ? `Domain "${name}" removed along with ${cascaded} dependent row(s)` : `Domain "${name}" removed`,
+    result.dependents.length > 0
+      ? `Domain "${name}" removed, along with its dependent rows in: ${result.dependents.map((d) => d.table).join(", ")}`
+      : `Domain "${name}" removed`,
   );
 }
 
@@ -289,15 +308,25 @@ async function domainImport(args: string[], deps: DomainDeps): Promise<void> {
 
   if (!result.armed) {
     printError(`Import not re-armed: ${result.reason ?? "unknown reason"}`);
-    if (!force) {
-      // The marker lives in the LEGACY database on purpose, so it outlives mcx.db —
-      // which is exactly why deleting mcx.db is not a recovery and this flag is.
+    // Only name the marker and the recovery when the daemon actually SAW the marker.
+    // Asserting it unconditionally told operators with no legacy database at all that a
+    // marker was set and handed them an `rm` (#3160 review N1).
+    if (result.markerSetAt !== undefined) {
       printError(
         `The one-shot import marker "${result.markerKey}" is set in the legacy database, where it outlives mcx.db.`,
       );
       printError(result.recovery);
     }
     return deps.exit(1);
+  }
+
+  if (result.alreadyArmed) {
+    // The state the command exists to produce. Re-running after lost scrollback, or after a
+    // failed import — which seal-or-nothing guarantees leaves the marker unset — is a
+    // success, not a failure (#3160 review N13).
+    deps.error("Import is already armed: the marker is not set, so the next daemon start will run the import.");
+    deps.error(result.recovery);
+    return;
   }
 
   // The import refuses a database that already holds rows, so the removal is required, not

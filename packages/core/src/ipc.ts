@@ -936,8 +936,15 @@ export interface DomainRemoveResult {
  * so an arm-time check would refuse the correct recovery path every time.
  */
 export interface DomainImportResult {
-  /** True when the marker was cleared, i.e. the next daemon start will re-run the import. */
+  /** True when the marker is now clear, i.e. the next daemon start will run the import. */
   armed: boolean;
+  /**
+   * True when arming found the marker already absent. Still `armed: true` — that is the
+   * state the command exists to produce, so re-running it is a success, not a failure.
+   */
+  alreadyArmed?: boolean;
+  /** When the marker says the legacy database was imported. Absent when it is not set. */
+  markerSetAt?: string;
   /** Why arming was refused. Absent on success. */
   reason?: string;
   /** Key of the marker row in the legacy DB, so the message can name it. */

@@ -118,21 +118,36 @@ not a convenience choice:
   `restoreActiveSessions`, the pollers and the event bus. Landing `agent_sessions` rows
   after the reaper has run surfaces dead sessions as live until the next restart, and a
   printed "restart the daemon" line is an instruction, not a guarantee.
-- It **refuses unless the database is empty** across every table in `IMPORTED_TABLES` — the
-  same list the copy iterates, so the two cannot disagree. `INSERT OR IGNORE` over
-  AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`) silently drops every legacy
-  row whose id the target already reallocated, permanently, on a run that would otherwise
-  report success.
+- It **refuses unless the database is empty** across every table the import *writes* —
+  `IMPORT_WRITTEN_TABLES`, which is the copied set plus `domains`, because
+  `importScopesAsDomains` writes that one too. Deriving the guard from the copied set alone
+  reproduced the very defect the guard exists to close: a second table set maintained by
+  omission, reporting EMPTY over a target already holding `domains` rows. The spec pins this
+  behaviourally — a real import runs and every table that gained rows must be a member.
+  `INSERT OR IGNORE` over AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`)
+  silently drops every legacy row whose id the target already reallocated, permanently, on a
+  run that would otherwise report success.
 - The daemon publishes `daemon.restarted` into `monitor_events` before it accepts its first
   request, so an in-flight forced import would be refused every time anyway.
 
-The full recovery, which the daemon prints with the real paths it opened:
+The full recovery, which the daemon prints with the real paths it opened. **The order is
+load-bearing**: the target is opened in WAL mode, so copying it while the daemon is live
+takes the main file without the un-checkpointed `-wal` — a backup missing the most recent
+transactions, in the one step whose entire job is to be the rollback. Shutting down first
+checkpoints WAL into the main file and makes the single-file copy valid.
 
 ```bash
-cp ~/.mcp-cli/mcx.db ~/.mcp-cli/mcx.db.bak && rm ~/.mcp-cli/mcx.db
-mcx domain import --force        # clears the marker
-mcx shutdown                     # next start performs the import
+mcx domain import --force        # clears the marker (idempotent — safe to re-run)
+mcx shutdown                     # checkpoints WAL, so the next line is a real backup
+cp ~/.mcp-cli/mcx.db ~/.mcp-cli/mcx.db.bak
+rm ~/.mcp-cli/mcx.db
+mcx status                       # starts the daemon; the import runs at boot
 ```
+
+A remote path must be absolute or `~`-rooted. `mcx domain add weird a:b` is refused rather
+than registered at relative path `b` on a host called `a` — `a` is a perfectly valid
+hostname, so nothing else would have caught it, and one relative row breaks `which` for
+*every* query because the resolver normalizes each row inside its loop.
 
 The marker lives in the **legacy** `state.db`, deliberately, so it outlives `mcx.db` — which
 is why deleting `mcx.db` alone is not a recovery. Without `--force` the command declines and

@@ -23,7 +23,9 @@ import {
 } from "@mcp-cli/core";
 import {
   IMPORT_MARKER_KEY,
+  type ImportArmState,
   clearImportMarker,
+  readImportMarkerValue,
   recoveryInstructions as recoveryInstructionsImpl,
 } from "../db/import-legacy";
 import type { StateDb } from "../db/state";
@@ -39,8 +41,9 @@ export class DomainHandlers {
    */
   constructor(
     private db: StateDb,
-    private clearMarker: () => { cleared: boolean; reason?: string } = clearImportMarker,
+    private clearMarker: () => ImportArmState = () => clearImportMarker(),
     private recoveryInstructions: () => string = () => recoveryInstructionsImpl(),
+    private readMarker: () => { present: boolean; value: string | null } = () => readImportMarkerValue(),
   ) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
@@ -132,11 +135,26 @@ export class DomainHandlers {
       const base = { markerKey: IMPORT_MARKER_KEY, recovery, log };
 
       if (!force) {
+        // READ the marker; do not assert it (#3160 review N1). This branch used to state
+        // flatly that the marker was set and hand over an `rm` incantation — on an install
+        // with no legacy database at all, which is every fresh install.
+        const marker = this.readMarker();
+        if (!marker.present) {
+          return {
+            ...base,
+            armed: false,
+            reason: "there is no legacy database to import from; nothing to arm",
+          } satisfies DomainImportResult;
+        }
+        if (marker.value === null) {
+          // Already armed. Not a failure — it is the state --force exists to produce.
+          return { ...base, armed: true, alreadyArmed: true } satisfies DomainImportResult;
+        }
         return {
           ...base,
           armed: false,
-          reason:
-            "the one-shot import is armed by clearing its marker, which is destructive to the current database; re-run with --force",
+          markerSetAt: marker.value,
+          reason: `the legacy database was already imported at ${marker.value}; re-arming clears that marker, which is destructive to the current database — re-run with --force`,
         } satisfies DomainImportResult;
       }
 
@@ -154,12 +172,16 @@ export class DomainHandlers {
       // the first write. Arming a start that then refuses is harmless: the marker stays
       // clear, the daemon boots normally, and the import runs once `mcx.db` is out of the
       // way. Nothing is copied and nothing is lost in the meantime.
-      const { cleared, reason } = this.clearMarker();
-      if (!cleared) {
-        return { ...base, armed: false, reason: reason ?? "nothing to clear" } satisfies DomainImportResult;
+      const armed = this.clearMarker();
+      if (armed.state === "unavailable") {
+        return { ...base, armed: false, reason: armed.reason } satisfies DomainImportResult;
       }
-      log.push("[domain-import] marker cleared — the next daemon start will re-run the import");
-      return { ...base, armed: true } satisfies DomainImportResult;
+      log.push(
+        armed.alreadyArmed
+          ? "[domain-import] already armed — the next daemon start will run the import"
+          : "[domain-import] marker cleared — the next daemon start will re-run the import",
+      );
+      return { ...base, armed: true, alreadyArmed: armed.alreadyArmed } satisfies DomainImportResult;
     });
   }
 }
