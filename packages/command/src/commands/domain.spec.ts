@@ -324,3 +324,102 @@ describe("mcx domain dispatch", () => {
     expect(h.calls).toEqual([]);
   });
 });
+
+describe("--help never executes the command (#3160 review finding 8, repo-wide: #1518)", () => {
+  // `parseFlags` puts `--help` in `result.help` and leaves the positionals alone, so a
+  // subcommand that ignores that field runs normally with the flag simply absent. On `rm`
+  // that means a cascading delete. Driven per subcommand rather than asserted once, because
+  // the gate is per-call-site and a new subcommand that forgets it is the regression.
+  const invocations: Array<[string, string[]]> = [
+    ["add", ["add", "phoenix", "/srv/phoenix"]],
+    ["ls", ["ls"]],
+    ["show", ["show", "phoenix"]],
+    ["which", ["which"]],
+    ["rename", ["rename", "a", "b"]],
+    ["rm", ["rm", "phoenix"]],
+    ["import", ["import"]],
+  ];
+
+  for (const [name, args] of invocations) {
+    for (const flag of ["--help", "-h"]) {
+      test(`${name} ${flag} prints help and touches nothing`, async () => {
+        const h = harness();
+        await cmdDomain([...args, flag], h.deps);
+        expect(h.calls).toEqual([]);
+        expect(allErrors(h)).toContain("mcx domain add");
+      });
+    }
+  }
+
+  test("rm --force --help does NOT cascade-delete", async () => {
+    // The exact shape an operator produces by appending --help to a destructive command
+    // they were about to run. Before the gate this reached the daemon with cascade: true.
+    const h = harness({ domainRemove: { found: true, removed: true, dependents: [{ table: "mail", rows: 9 }] } });
+    await cmdDomain(["rm", "phoenix", "--force", "--help"], h.deps);
+    expect(h.calls).toEqual([]);
+  });
+
+  test("--help wins over a missing required positional rather than erroring", async () => {
+    const h = harness();
+    await cmdDomain(["rm", "--help"], h.deps);
+    expect(h.calls).toEqual([]);
+  });
+});
+
+describe("mcx domain rm — concurrent-delete race (#3160 review finding 6)", () => {
+  test("removed:false with no dependents is reported as a race, not a 0-row refusal", async () => {
+    const h = harness({ domainRemove: { found: true, removed: false, dependents: [] } });
+    await expect(cmdDomain(["rm", "phoenix"], h.deps)).rejects.toThrow(ExitError);
+    const errors = allErrors(h);
+    expect(errors).toContain("removed by something else");
+    expect(errors).not.toContain("0 dependent row(s)");
+    // Must not advertise --force as the remedy for a domain that is already gone.
+    expect(errors).not.toContain("--force");
+  });
+
+  test("a real refusal still names the counts and the domain_id caveat", async () => {
+    const h = harness({
+      domainRemove: { found: true, removed: false, dependents: [{ table: "work_items", rows: 7 }] },
+    });
+    await expect(cmdDomain(["rm", "phoenix"], h.deps)).rejects.toThrow(ExitError);
+    const errors = allErrors(h);
+    expect(errors).toContain("7 dependent row(s)");
+    expect(errors).toContain("#3155");
+  });
+});
+
+describe("mcx domain which --json on a miss", () => {
+  test("emits parseable JSON and still exits non-zero", async () => {
+    const h = harness({ domainWhich: { domain: null, registered: ["phoenix"] } }, { cwd: "/elsewhere" });
+    await expect(cmdDomain(["which", "--json"], h.deps)).rejects.toThrow(ExitError);
+    expect(JSON.parse(h.stdout.join("\n"))).toEqual({
+      path: "/elsewhere",
+      domain: null,
+      registered: ["phoenix"],
+    });
+  });
+});
+
+describe("mcx domain add — malformed [host:]path (#3160 review finding 3)", () => {
+  // Every one of these previously became an absolute-looking path under the caller's cwd
+  // (`<cwd>/:/tmp/foo`) and was registered without complaint.
+  for (const spec of [":/tmp/foo", "boxen:", ":", "  spacey:/tmp/x"]) {
+    test(`rejects ${JSON.stringify(spec)} without calling the daemon`, async () => {
+      const h = harness();
+      await expect(cmdDomain(["add", "d", spec], h.deps)).rejects.toThrow(ExitError);
+      expect(h.calls).toEqual([]);
+    });
+  }
+
+  test("still accepts the forms that are actually valid", async () => {
+    for (const [spec, expected] of [
+      ["/tmp/a:b", { host: null, path: "/tmp/a:b" }],
+      ["boxen0010:~/work", { host: "boxen0010", path: "~/work" }],
+      ["box-1.lan:/srv/x", { host: "box-1.lan", path: "/srv/x" }],
+    ] as const) {
+      const h = harness({ domainAdd: domain() });
+      await cmdDomain(["add", "d", spec], h.deps);
+      expect(h.calls[0].params).toEqual({ name: "d", ...expected });
+    }
+  });
+});

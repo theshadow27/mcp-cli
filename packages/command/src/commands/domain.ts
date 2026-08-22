@@ -74,18 +74,43 @@ export async function cmdDomain(args: string[], deps: DomainDeps = defaultDeps):
   }
 }
 
-/** Report flag-parsing errors and exit, or return the parsed result. */
-function requireValidFlags(result: ReturnType<typeof parseFlags>, usage: string, deps: DomainDeps): void {
-  if (result.errors.length === 0) return;
-  for (const err of result.errors) printError(err);
-  printError(usage);
-  deps.exit(1);
+/**
+ * Gate every subcommand on its parsed flags: exit on a parse error, and **stop before any
+ * side effect when `--help` was asked for**.
+ *
+ * `parseFlags` swallows `--help`/`-h` into `result.help` and leaves the positionals intact,
+ * so a subcommand that ignores that field runs normally with the flag simply gone —
+ * `mcx domain rm phoenix --force --help` parses to `{help: true, positionals: ["phoenix"],
+ * flags: {force: true}}` and would cascade-delete a domain and every row bound to it. An
+ * operator appending `--help` before running something destructive is doing the exact thing
+ * that is supposed to save them.
+ *
+ * No command under `packages/command/src/commands/` reads `result.help` today; the repo-wide
+ * fix is #1518. This is the local guard, because this is the first command surface with a
+ * cascading delete behind it.
+ *
+ * Callers must `return` on `"help"` — the returned union is what makes ignoring it a type
+ * error at the call site rather than a silent fall-through.
+ */
+type FlagGate = "ok" | "help";
+
+function gateFlags(result: ReturnType<typeof parseFlags>, usage: string, deps: DomainDeps): FlagGate {
+  if (result.errors.length > 0) {
+    for (const err of result.errors) printError(err);
+    printError(usage);
+    deps.exit(1);
+  }
+  if (result.help) {
+    printDomainHelp(deps);
+    return "help";
+  }
+  return "ok";
 }
 
 async function domainAdd(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain add <name> [host:]<path>";
   const parsed = parseFlags(args, {});
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
 
   const [name, spec] = parsed.positionals;
   if (!name || !spec) {
@@ -110,7 +135,7 @@ async function domainAdd(args: string[], deps: DomainDeps): Promise<void> {
 
 async function domainLs(args: string[], deps: DomainDeps): Promise<void> {
   const parsed = parseFlags(args, { json: { type: "boolean" } });
-  requireValidFlags(parsed, "Usage: mcx domain ls [--json]", deps);
+  if (gateFlags(parsed, "Usage: mcx domain ls [--json]", deps) === "help") return;
 
   const domains = await deps.ipcCall("domainList");
   if (parsed.flags.json) {
@@ -130,7 +155,7 @@ async function domainLs(args: string[], deps: DomainDeps): Promise<void> {
 async function domainShow(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain show <name> [--json]";
   const parsed = parseFlags(args, { json: { type: "boolean" } });
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
 
   const name = parsed.positionals[0];
   if (!name) {
@@ -157,7 +182,7 @@ async function domainShow(args: string[], deps: DomainDeps): Promise<void> {
 async function domainWhich(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain which [path] [--json]";
   const parsed = parseFlags(args, { json: { type: "boolean" } });
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
 
   // No argument means $PWD — the one place a default is right, because the question
   // "which domain am I in" is literally about here. Expanded as a plain local path, not
@@ -173,6 +198,13 @@ async function domainWhich(args: string[], deps: DomainDeps): Promise<void> {
   const { domain, registered } = await deps.ipcCall("domainWhich", { path });
   if (!domain) {
     // Outside every domain is an error, never a guess: there is no default domain.
+    // `--json` still emits parseable JSON on the miss — a consumer that has to distinguish
+    // "no domain" from "the command crashed" should not have to parse stderr to do it.
+    // The exit code stays 1 either way.
+    if (parsed.flags.json) {
+      deps.log(JSON.stringify({ path, domain: null, registered }, null, 2));
+      return deps.exit(1);
+    }
     printError(`${path} is not inside any registered domain`);
     printError(
       registered.length > 0
@@ -191,7 +223,7 @@ async function domainWhich(args: string[], deps: DomainDeps): Promise<void> {
 async function domainRename(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain rename <old> <new>";
   const parsed = parseFlags(args, {});
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
 
   const [from, to] = parsed.positionals;
   if (!from || !to) {
@@ -208,7 +240,7 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
   // `--cascade` is the StateDb-level name for the same thing; accepted so the option a
   // reader finds in the daemon's docstring works on the command line too.
   const parsed = parseFlags(args, { force: { type: "boolean" }, cascade: { type: "boolean" } });
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
 
   const name = parsed.positionals[0];
   if (!name) {
@@ -223,9 +255,20 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
     return deps.exit(1);
   }
   if (!result.removed) {
+    // `removed: false` with no dependents is not a refusal — it is a concurrent delete
+    // between the lookup and the delete. Reporting it as "0 dependent row(s) still
+    // reference it" would be nonsense, and would advertise `--force` as the remedy for a
+    // domain that is already gone.
+    if (result.dependents.length === 0) {
+      printError(`Domain "${name}" was removed by something else before this command could remove it`);
+      return deps.exit(1);
+    }
     const total = result.dependents.reduce((n, d) => n + d.rows, 0);
     printError(`Refusing to remove domain "${name}": ${total} dependent row(s) still reference it`);
     for (const { table, rows } of result.dependents) printError(`  ${table}\t${rows}`);
+    // Counts cover rows carrying this domain's `domain_id`. No production writer sets one
+    // yet (#3155 tracks them), so today this refusal is reachable only once those land.
+    printError("Counts cover rows bound to this domain (domain_id); see #3155 for writer coverage.");
     printError("Reassign or delete them first, or re-run with --force to delete them with the domain.");
     return deps.exit(1);
   }
@@ -238,7 +281,7 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
 async function domainImport(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain import [--force]";
   const parsed = parseFlags(args, { force: { type: "boolean" } });
-  requireValidFlags(parsed, usage, deps);
+  if (gateFlags(parsed, usage, deps) === "help") return;
   const force = parsed.flags.force === true;
 
   const result = await deps.ipcCall("domainImport", { force });
@@ -279,6 +322,7 @@ Usage:
   mcx domain which [path] [--json]      Which domain owns this path? (default: cwd)
   mcx domain rename <old> <new>         Rename; path and every domain_id are untouched
   mcx domain rm <name> [--force]        Remove; refuses while dependent rows exist
+                                        (--cascade is an accepted alias for --force)
   mcx domain import [--force]           Re-run the one-shot import from the legacy state.db
 
 Examples:

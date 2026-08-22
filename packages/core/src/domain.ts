@@ -255,6 +255,31 @@ export function expandLocalDomainPath(path: string, env: PathExpansionEnv): stri
  */
 export function resolveDomainLocation(spec: string, env: PathExpansionEnv): DomainLocation {
   const location = parseDomainLocation(spec);
-  if (location.host !== null) return location;
+
+  if (location.host !== null) {
+    // A host that survived the split can still be junk: `"  spacey:/tmp/x"` yields a host
+    // with leading whitespace, which becomes a hostname the daemon would later try to route
+    // to. Hostnames are letters, digits, dots and hyphens.
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(location.host)) {
+      throw new Error(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
+    }
+    return location;
+  }
+
+  // `parseDomainLocation` is a purely syntactic split and is deliberately tolerant: a spec
+  // whose colon does not yield BOTH a host and a path falls back to "it is all a local
+  // path". That tolerance is fine for a parser and lethal here, because expansion turns
+  // `":/tmp/x"` and `"boxen:"` into `<cwd>/:/tmp/x` and `<cwd>/boxen:` — absolute-looking
+  // garbage that `normalizeDomainPath` accepts and nothing downstream ever rejects, since
+  // a domain path is not required to exist. This is the `<cwd>/~/...` failure in a sibling
+  // form, so validation lives at the entry point that does the expanding.
+  const separator = location.path.indexOf("/");
+  const colon = location.path.indexOf(":");
+  if (colon !== -1 && (separator === -1 || colon < separator)) {
+    throw new Error(
+      `malformed location ${JSON.stringify(spec)}: expected <path> or <host>:<path> (a host and a path are both required)`,
+    );
+  }
+
   return { host: null, path: expandLocalDomainPath(location.path, env) };
 }

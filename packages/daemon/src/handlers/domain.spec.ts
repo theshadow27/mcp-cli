@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Domain, DomainImportResult, DomainRemoveResult, DomainWhichResult, IpcMethod } from "@mcp-cli/core";
@@ -270,5 +270,83 @@ describe("DomainHandlers", () => {
     expect(seen).toEqual([false]);
     expect(result.ran).toBe(false);
     expect(result.reason).toContain("already imported");
+  });
+});
+
+describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
+  const dirs2: string[] = [];
+  const open2: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const o of open2) o.close();
+    open2.length = 0;
+    for (const d of dirs2) rmSync(d, { recursive: true, force: true });
+    dirs2.length = 0;
+  });
+
+  function setup2(): { db: StateDb; handlers: Map<IpcMethod, RequestHandler> } {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-domain-race-"));
+    dirs2.push(dir);
+    const db = new StateDb(join(dir, "mcx.db"));
+    open2.push(db);
+    new WorkItemDb(db.database);
+    new EventLog(db.database);
+    migrateDerivedCursor(db.database);
+    const handlers = new Map<IpcMethod, RequestHandler>();
+    new DomainHandlers(db).register(handlers);
+    return { db, handlers };
+  }
+
+  const ctx2 = {} as never;
+
+  // NOTE on what is and is not tested here. The TOCTOU fix is *structural*: the handler no
+  // longer counts dependents and re-decides, so it cannot disagree with `deleteDomain`,
+  // which counts and refuses inside one call. There is no longer a window to inject into,
+  // which is the point — so there is no test that fails on the old code and passes on the
+  // new one, and pretending otherwise would be the green-test-over-an-unreachable-path
+  // shape this review already caught once. What is testable is the contract that results
+  // from it, below, plus the CLI's rendering of the race (`domain.spec.ts`).
+  test("a dependent present at delete time yields a structured refusal and the domain survives", async () => {
+    const { db, handlers } = setup2();
+    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+    db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [domain.id]);
+
+    const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
+    // The refusal reaches the caller as a *result* — never as the raw Error `deleteDomain`
+    // throws, which is what the old handler surfaced whenever its own count disagreed.
+    expect(result).toEqual({ found: true, removed: false, dependents: [{ table: "mail", rows: 1 }] });
+    expect(db.getDomainByName("phoenix")).not.toBeNull();
+    expect(db.countDomainDependents(domain.id)).toEqual([{ table: "mail", rows: 1 }]);
+  });
+
+  test("a domain deleted concurrently reports removed:false with NO dependents", async () => {
+    const { db, handlers } = setup2();
+    await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2);
+    db.database.run("DELETE FROM domains WHERE name = ?", ["phoenix"]);
+
+    const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
+    // The CLI renders this as a race, not as "0 dependent row(s) still reference it".
+    expect(result.removed).toBe(false);
+    expect(result.dependents).toEqual([]);
+  });
+
+  test("the duplicate-location pre-check uses the SAME stored form as createDomain", async () => {
+    // The pre-check derives the stored path itself (canonicalize for a local domain). If
+    // state.ts ever changes that rule, the check would compare the wrong form, miss the
+    // conflict, and fall through to the raw UNIQUE error it exists to prevent. A symlink
+    // makes canonicalization load-bearing, so this test fails if the two rules diverge.
+    const { handlers } = setup2();
+    const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
+    dirs2.push(real);
+    const link = join(tmpdir(), `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    symlinkSync(real, link);
+    try {
+      await invoke(handlers, "domainAdd")({ name: "byreal", path: real }, ctx2);
+      await expect(invoke(handlers, "domainAdd")({ name: "bylink", path: link }, ctx2)).rejects.toThrow(
+        /already domain "byreal"/,
+      );
+    } finally {
+      unlinkSync(link);
+    }
   });
 });
