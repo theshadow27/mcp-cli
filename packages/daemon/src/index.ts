@@ -82,6 +82,7 @@ import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
+import { DomainSupervisor } from "./domain-supervisor";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
@@ -599,6 +600,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // browser tool invocation pay the worker startup cost but nothing more.
   const siteServer = new SiteServer(daemonId, undefined, undefined, logger);
 
+  // Domain workers: one per registered domain, spawned lazily on first use (see
+  // domain-supervisor.ts for why lazy and not at startup). Nothing calls into a
+  // domain worker until project execution moves there in #3044; what the daemon
+  // owes it today is the reaping tick below and a clean stop at shutdown.
+  const domainSupervisor = new DomainSupervisor({
+    registry: db,
+    daemonId,
+    logger,
+    onActivity: () => resetIdleTimer(),
+  });
+
   // Start quota poller for proactive usage monitoring
   const quotaPoller = new QuotaPoller({ logger });
   quotaPoller.start();
@@ -631,6 +643,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     opencodeServer?.pruneDeadSessions();
     mockServer.pruneDeadSessions();
     sweepCoreBare(db, logger);
+    // Reap workers whose domain row was removed or moved. Removal cannot be
+    // lazy the way spawning is: nothing calls into a deleted domain, so nothing
+    // would ever notice. Returns immediately when no worker is running.
+    domainSupervisor.sync();
   }, 30_000);
 
   // Update uptime and server gauges periodically
@@ -1374,6 +1390,16 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         logger.error(`[mcpd] Error awaiting pending servers: ${err}`);
       }
       logger.info(`[mcpd] Shutdown: awaitPendingServers took ${Math.round(performance.now() - phase)}ms`);
+      // Domain workers are supervised outside the pool (they are not virtual MCP
+      // servers — nothing routes tool calls to them by name), so they get their
+      // own bounded stop. Every worker is stopped even if one hangs.
+      phase = performance.now();
+      try {
+        await withPhaseTimeout(domainSupervisor.stopAll(), SHUTDOWN_PHASE_TIMEOUT_MS, "stop domain workers", logger);
+      } catch (err) {
+        logger.error(`[mcpd] Error stopping domain workers: ${err}`);
+      }
+      logger.info(`[mcpd] Shutdown: stop domain workers took ${Math.round(performance.now() - phase)}ms`);
       // Stop each virtual server individually so one failure doesn't leak the rest
       const virtualServers: ReadonlyArray<readonly [string, { stop(): Promise<void> } | null]> =
         opts?._virtualServers ?? [

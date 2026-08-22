@@ -50,6 +50,8 @@ export * from "./flock";
 export * from "./gate-lease";
 export * from "./scope";
 export * from "./domain";
+export * from "./domain-protocol";
+export * from "./wire";
 export * from "./sprint-state";
 export * from "./upgrade";
 export * from "./work-item";
