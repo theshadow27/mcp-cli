@@ -94,8 +94,9 @@ function profileShow(name: string | undefined, json: boolean, d: ProfileCliDeps)
     d.log(JSON.stringify(summary, null, 2));
   } else {
     d.log(`${summary.name}  ${summary.path}`);
-    for (const key of summary.keys) d.log(`  ${key}`);
-    if (summary.keys.length === 0) d.log("  (no variables)");
+    for (const key of summary.keys) {
+      d.log(summary.unsets.includes(key) ? `  ${key}  (unset)` : `  ${key}`);
+    }
   }
   if (summary.insecureMode) {
     d.printError(`warning: ${summary.path} is group/world-readable — run: chmod 600 ${summary.path}`);

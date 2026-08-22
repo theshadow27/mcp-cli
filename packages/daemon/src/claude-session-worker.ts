@@ -164,6 +164,22 @@ export async function handlePrompt(
   let sessionId = args.sessionId as string | undefined;
 
   if (sessionId) {
+    // A profile is applied at spawn: a process already running cannot have its
+    // environment changed, and a revived one respawns on the profile persisted
+    // with its row. Accepting `--profile` here and doing nothing would hand the
+    // operator positive confirmation for an unchanged session — the one outcome
+    // worse than either working or failing (#935).
+    if (args.profile !== undefined) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: --profile/--no-profile cannot be applied to an existing session — a profile is applied when the child process is spawned, and this prompt goes to a session that already has its environment. Start a new session with --profile, or use `mcx claude spawn --profile <name> --resume <ended-session>`.",
+          },
+        ],
+        isError: true,
+      };
+    }
     // Follow-up prompt to existing session
     if (args.ifIdle) {
       const check = server.checkSessionIdle(sessionId);
@@ -252,10 +268,14 @@ export async function handlePrompt(
     // the same precedence, and none can silently fall back to the bare daemon
     // env by forgetting a flag. `profile: null` in the args is `--no-profile`.
     // Only the NAME is resolved here; ws-server reads the file's values at spawn.
+    const warnProfile = (m: string) => console.warn(`[claude-worker] ${m}`);
     const profile = resolveSpawnProfile({
       flag: typeof args.profile === "string" || args.profile === null ? (args.profile as string | null) : undefined,
-      manifest: findManifestProfile(args.cwd as string | undefined),
-      config: readCliConfig().defaultProfile,
+      // Deselect-only: a `.mcx.yaml` arrives by `git clone`, so it may turn a
+      // profile OFF but never choose one. findManifestProfile warns when it
+      // ignores a named value rather than dropping it silently.
+      manifest: findManifestProfile(args.cwd as string | undefined, warnProfile),
+      config: readCliConfig(warnProfile).defaultProfile,
     });
 
     let sessionName: string;
@@ -274,7 +294,11 @@ export async function handlePrompt(
         repoRoot: args.repoRoot as string | undefined,
         transport: transportOverride,
         binaryPath: binaryOverride,
-        profile: profile.name ?? undefined,
+        // `null` (not undefined) when no layer chose one: it records that the
+        // question WAS asked, so spawnClaude doesn't re-resolve and override a
+        // `--no-profile`.
+        profile: profile.name,
+        profileSource: profile.source,
       });
       sessionName = prepared.name;
       sessionTransport = prepared.transport;

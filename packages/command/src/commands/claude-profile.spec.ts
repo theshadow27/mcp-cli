@@ -47,8 +47,8 @@ describe("mcx claude profile ls", () => {
     await claudeProfile(["ls"], h.deps);
     expect(h.info.join("\n")).toContain(options.PROFILES_DIR);
 
-    writeProfile("bedrock", "A=1\n");
-    writeProfile("staging", "A=1\n");
+    writeProfile("bedrock", "AWS_REGION=us-east-1\n");
+    writeProfile("staging", "AWS_REGION=us-east-1\n");
     const h2 = harness();
     await claudeProfile(["ls"], h2.deps);
     expect(h2.out).toEqual(["bedrock", "staging"]);
@@ -56,7 +56,7 @@ describe("mcx claude profile ls", () => {
 
   test("--json emits the directory and the names", async () => {
     using _opts = testOptions();
-    writeProfile("bedrock", "A=1\n");
+    writeProfile("bedrock", "AWS_REGION=us-east-1\n");
     const h = harness();
     await claudeProfile(["ls", "--json"], h.deps);
     expect(JSON.parse(h.out.join("\n"))).toEqual({ dir: options.PROFILES_DIR, profiles: ["bedrock"] });
@@ -99,7 +99,7 @@ describe("mcx claude profile show", () => {
 
   test("a malformed profile exits 1 without echoing the offending line", async () => {
     using _opts = testOptions();
-    writeProfile("broken", `GOOD=1\n${SECRET}\n`);
+    writeProfile("broken", `AWS_REGION=us-east-1\n${SECRET}\n`);
     const h = harness();
     await expect(claudeProfile(["show", "broken"], h.deps)).rejects.toBeInstanceOf(ExitError);
     expect(h.err.join("\n")).toContain("broken.env:2");
@@ -128,7 +128,7 @@ describe("mcx claude profile import", () => {
 
   test("refuses to overwrite an existing profile", async () => {
     using opts = testOptions();
-    writeProfile("bedrock", "A=1\n");
+    writeProfile("bedrock", "AWS_REGION=us-east-1\n");
     const src = join(opts.dir, "src.env");
     writeFileSync(src, "B=2\n");
     const h = harness();
@@ -149,7 +149,7 @@ describe("mcx claude profile import", () => {
   test("rejects a traversing profile name", async () => {
     using opts = testOptions();
     const src = join(opts.dir, "src.env");
-    writeFileSync(src, "A=1\n");
+    writeFileSync(src, "AWS_REGION=us-east-1\n");
     const h = harness();
     await expect(claudeProfile(["import", "../escape", src], h.deps)).rejects.toBeInstanceOf(ExitError);
     expect(h.err.join("\n")).toContain("invalid profile name");

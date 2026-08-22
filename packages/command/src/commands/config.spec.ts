@@ -1310,7 +1310,7 @@ describe("mcx config set default-profile", () => {
   it("does not warn once the profile exists", async () => {
     using _opts = testOptions();
     mkdirSync(options.PROFILES_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(join(options.PROFILES_DIR, "bedrock.env"), "A=1\n", { mode: 0o600 });
+    writeFileSync(join(options.PROFILES_DIR, "bedrock.env"), "AWS_REGION=us-east-1\n", { mode: 0o600 });
     const { deps } = makeDepsWithCapture({});
     const errors: string[] = [];
     spyOn(console, "error").mockImplementation((msg: unknown) => errors.push(String(msg)));

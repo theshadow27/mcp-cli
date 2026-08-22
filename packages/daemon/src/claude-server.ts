@@ -375,6 +375,11 @@ export class ClaudeServer extends AbstractWorkerServer {
         totalTokens: row.totalTokens,
         claudeSessionId: row.claudeSessionId,
         transport: row.transport === "ws" || row.transport === "stdio" ? row.transport : undefined,
+        // No profile is carried: `agent_sessions` has no column for it, and the
+        // schema is #3034's to change. The restored config therefore leaves
+        // `profile` UNRESOLVED, and spawnClaude re-resolves it — see the
+        // `profile === undefined` branch there. An explicit `--profile` chosen
+        // before the restart is not recoverable; tracked as a follow-up.
       })),
     });
 

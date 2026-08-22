@@ -18,6 +18,7 @@ import type {
   MonitorEventInput,
   SessionInfo,
   SessionStateEnum,
+  SpawnProfileSource,
   WorkItemEvent,
 } from "@mcp-cli/core";
 import {
@@ -54,8 +55,11 @@ import {
   WORKER_RATELIMITED,
   consoleLogger,
   findGitRoot,
+  findManifestProfile,
   generateSessionName,
   loadSpawnProfile,
+  readCliConfig,
+  resolveSpawnProfile,
   spawnManaged,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
@@ -185,12 +189,26 @@ export interface SessionConfig {
    */
   binaryPath?: string;
   /**
-   * Spawn profile NAME (#935) — already resolved through `resolveSpawnProfile`
-   * by the caller (see claude-session-worker.ts). The file is read here, in the
-   * daemon, at spawn time: profile VALUES are credentials and never travel over
-   * IPC, never reach SQLite, and never appear in a log line or event payload.
+   * Spawn profile NAME (#935), resolved through `resolveSpawnProfile`. The file
+   * is read in the daemon at spawn time: profile VALUES are credentials and
+   * never travel over IPC, never reach SQLite, and never appear in a log line or
+   * event payload — only the name does.
+   *
+   * Three-valued on purpose:
+   *   `string`    — apply this profile
+   *   `null`      — resolved, and the answer was "no profile" (`--no-profile`,
+   *                 `profile: null`, or simply no layer set one)
+   *   `undefined` — NOT YET RESOLVED. `spawnClaude` resolves it rather than
+   *                 spawning bare. Collapsing `null` into `undefined` is what
+   *                 made a revived session (`restoreSessions` → `reviveSession`)
+   *                 silently drop its profile and respawn on the daemon env —
+   *                 on the daemon-restart recovery this feature exists to serve.
    */
-  profile?: string;
+  profile?: string | null;
+  /**
+   * Which layer chose `profile`. Diagnostics only — emitted, never a value.
+   */
+  profileSource?: SpawnProfileSource;
 }
 
 export interface TranscriptEntry {
@@ -849,6 +867,13 @@ export class ClaudeWsServer {
         router,
         ws: null,
         transcript: [],
+        // `profile` is deliberately ABSENT here, i.e. unresolved — not `null`.
+        // The session row carries no profile name (there is no column for it;
+        // `agent_sessions` belongs to #3034 this sprint), so spawnClaude
+        // re-resolves at revive time rather than reading a restored session as
+        // "chose no profile" and respawning on the bare daemon env. That silent
+        // downgrade fired on daemon restart — the very recovery action spawn
+        // profiles exist to make unnecessary (#935).
         config: { prompt: "", worktree: s.worktree ?? undefined },
         name: s.name ?? null,
         pid: s.pid,
@@ -1010,22 +1035,61 @@ export class ClaudeWsServer {
   ): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = {};
 
+    // Resolve the profile if no caller has (#935). Every spawn reaches the child
+    // through here — `handlePrompt`, `reviveSession` after a daemon restart, a
+    // respawn after `clear` — so this is the one place that can *guarantee* the
+    // answer came from `resolveSpawnProfile` rather than from whoever remembered
+    // to pass a flag. A path that forgets now inherits the config/manifest layers
+    // instead of silently landing on the bare daemon env.
+    if (session.config.profile === undefined) {
+      const warn = (m: string) => this.logger.warn(`[_claude] ${m}`);
+      const resolved = resolveSpawnProfile({
+        manifest: findManifestProfile(session.config.cwd, warn),
+        config: readCliConfig(warn).defaultProfile,
+      });
+      session.config.profile = resolved.name;
+      session.config.profileSource = resolved.source;
+      this.logger.info(
+        `[_claude] session ${sessionId} arrived with no resolved profile (restored session, or a caller that skipped the resolver); re-resolved to ${resolved.name ?? "none"} (source=${resolved.source}). NOTE: a profile chosen with --profile before a daemon restart is not recoverable — the session row does not carry it — so a restored session lands on the default-profile config.`,
+      );
+    }
+
     // Spawn profile FIRST: every daemon-derived override below outranks it (#935).
-    // loadSpawnProfile throws when the named profile is missing or malformed, which
-    // fails the spawn: silently running against the bare daemon env is the exact
-    // fragility profiles exist to remove.
+    // A profile cannot set those anyway — the allowlist in parseSpawnProfileEnv
+    // rejects them at parse time — so this ordering is belt and braces.
+    // loadSpawnProfile throws when the named profile is missing, empty or
+    // malformed, which fails the spawn: silently running against the bare daemon
+    // env is the exact fragility profiles exist to remove.
+    const profileSource = session.config.profileSource ?? "none";
     if (session.config.profile) {
       const profile = loadSpawnProfile(session.config.profile);
       Object.assign(env, profile.env);
       // Key NAMES only — a value here would land in the daemon ring-buffer log.
+      const keys = Object.keys(profile.env).sort();
       this.logger.info(
-        `[_claude] session ${sessionId} using profile "${profile.name}" (${Object.keys(profile.env).length} vars: ${Object.keys(profile.env).sort().join(", ")})`,
+        `[_claude] session ${sessionId} using profile "${profile.name}" (source=${profileSource}, ${keys.length} vars: ${keys.join(", ")})`,
       );
       if (profile.insecureMode) {
         this.logger.warn(
           `[_claude] profile "${profile.name}" is group/world-readable — run: chmod 600 ${profile.path}`,
         );
       }
+      // The same "this session is off the default configuration" signal
+      // `binaryPath` gets. NAME AND SOURCE ONLY — never a key, never a value.
+      // Without it nothing anywhere records which credentials a session ran
+      // under, which is what makes a silently-dropped profile undiagnosable.
+      this.onMonitorEvent?.({
+        src: "daemon.claude-server",
+        event: SESSION_SPAWN_OVERRIDE,
+        category: "session",
+        sessionId,
+        profile: profile.name,
+        profileSource,
+      });
+    } else {
+      // Say so. A profiled spawn and a profile-stripped respawn used to produce
+      // byte-identical output, so the failure had no signature at all.
+      this.logger.info(`[_claude] session ${sessionId} spawning with no profile (source=${profileSource})`);
     }
 
     // Trace context — propagate this spawn's traceparent to the child.

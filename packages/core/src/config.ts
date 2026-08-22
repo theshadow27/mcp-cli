@@ -128,10 +128,12 @@ export interface CliConfig {
    */
   transport?: ClaudeTransport;
   /**
-   * Spawn profile applied when a spawn names none and the repo `.mcx.yaml`
-   * declares none (#935). Lowest-precedence layer of `resolveSpawnProfile` —
-   * it exists so internal call sites (phase scripts, `mcx memory`'s audit)
-   * cannot silently fall back to the bare daemon env by forgetting a flag.
+   * Spawn profile applied when a spawn names none (#935). The operator-owned
+   * layer of `resolveSpawnProfile`, and the ONLY layer that can select a
+   * profile besides an explicit `--profile`: a repo `.mcx.yaml` may opt out
+   * (`profile: null`) but never choose. It exists so internal call sites
+   * (phase scripts, `mcx memory`'s audit) cannot silently fall back to the bare
+   * daemon env by forgetting a flag.
    * Set via: `mcx config set default-profile <name>`.
    */
   defaultProfile?: string;

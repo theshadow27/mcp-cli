@@ -595,6 +595,17 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
       }
     } else {
       // Session is active (or not in DB) — send as follow-up prompt to existing session.
+      // A running child's environment cannot be changed, so a profile here would
+      // be validated above and then dropped, leaving the operator with a
+      // confirmed flag and an unprofiled session. The daemon refuses this too;
+      // catching it here spends no session (#935).
+      if (parsed.profile !== undefined) {
+        d.printError(
+          `--profile/--no-profile cannot be applied to the running session "${parsed.resume}" — a profile is applied when the child process is spawned. Use \`mcx claude bye ${parsed.resume}\` and spawn fresh with --profile, or resume an ended session.`,
+        );
+        d.exit(1);
+        return;
+      }
       toolArgs.sessionId = parsed.resume;
     }
   }
@@ -709,6 +720,16 @@ async function claudeSpawnHeaded(parsed: SpawnArgs, d: ClaudeDeps): Promise<void
   }
   if (parsed.wait) {
     d.printError("--headed and --wait are incompatible. Headed sessions are interactive.");
+    d.exit(1);
+  }
+  // A headed session is a shell command run in your terminal, not a daemon
+  // spawn — so nothing here reads the profile file, and injecting the values
+  // into the command string would put credentials in shell history and `ps`.
+  // Refuse rather than exit 0 having silently used the wrong account (#935).
+  if (parsed.profile !== undefined) {
+    d.printError(
+      "--headed and --profile/--no-profile are incompatible: a headed session runs in your terminal on that shell's environment, which the daemon cannot substitute. Drop --headed to use a profile, or `source` the profile file in that terminal first.",
+    );
     d.exit(1);
   }
 

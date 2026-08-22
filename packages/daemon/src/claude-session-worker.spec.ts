@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { options, silentLogger } from "@mcp-cli/core";
@@ -436,16 +437,19 @@ describe("handlePrompt: spawn profile precedence (#935)", () => {
     (globalThis as Record<string, unknown>).postMessage = origPostMessage;
   });
 
-  /** Temp state dir with three profiles, a repo carrying a `.mcx.yaml`, and a config default. */
-  function setupProfiles(configDefault?: string) {
+  /** Temp state dir with profiles, a real repo carrying a `.mcx.yaml`, and a config default. */
+  function setupProfiles(configDefault?: string, manifestProfile = "from-manifest") {
     const opts = testOptions();
     mkdirSync(options.PROFILES_DIR, { recursive: true, mode: 0o700 });
     for (const name of ["from-flag", "from-manifest", "from-config"]) {
-      writeFileSync(join(options.PROFILES_DIR, `${name}.env`), `MCX_TEST_PROFILE=${name}\n`, { mode: 0o600 });
+      writeFileSync(join(options.PROFILES_DIR, `${name}.env`), `AWS_TEST_PROFILE=${name}\n`, { mode: 0o600 });
     }
+    // A real checkout: the manifest search is bounded by `findWorktreeRoot`, so
+    // a bare directory has no manifest layer at all.
     const repo = join(opts.dir, "repo");
     mkdirSync(repo, { recursive: true });
-    writeFileSync(join(repo, ".mcx.yaml"), "version: 1\nprofile: from-manifest\ninitial: impl\nphases: {}\n");
+    spawnSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, ".mcx.yaml"), `version: 1\nprofile: ${manifestProfile}\ninitial: impl\nphases: {}\n`);
     if (configDefault) {
       writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({ defaultProfile: configDefault }));
     }
@@ -462,38 +466,67 @@ describe("handlePrompt: spawn profile precedence (#935)", () => {
     return recording.lastEnv() ?? {};
   }
 
-  test("--profile beats the repo manifest and the config default", async () => {
+  test("--profile beats the config default", async () => {
     const { opts, repo } = setupProfiles("from-config");
     using _opts = opts;
     const env = await spawnWith({ cwd: repo, profile: "from-flag" });
-    expect(env.MCX_TEST_PROFILE).toBe("from-flag");
+    expect(env.AWS_TEST_PROFILE).toBe("from-flag");
   });
 
-  test("the repo manifest beats the config default when no flag is given", async () => {
+  test("a NAMED profile in the repo manifest does NOT beat the config default — it is ignored", async () => {
+    // Deselect-only. A `.mcx.yaml` arrives by `git clone`; letting it select
+    // credentials would let a third-party checkout pick which account an
+    // auto-approving agent spawns with, and where ANTHROPIC_BASE_URL sends it.
     const { opts, repo } = setupProfiles("from-config");
     using _opts = opts;
     const env = await spawnWith({ cwd: repo });
-    expect(env.MCX_TEST_PROFILE).toBe("from-manifest");
+    expect(env.AWS_TEST_PROFILE).toBe("from-config");
+  });
+
+  test("`profile: null` in the repo manifest DOES override the config default", async () => {
+    // The half that stays: a repo may always opt out.
+    const { opts, repo } = setupProfiles("from-config", "null");
+    using _opts = opts;
+    const env = await spawnWith({ cwd: repo });
+    expect(env.AWS_TEST_PROFILE).toBeUndefined();
   });
 
   test("the config default applies outside a repo — an internal caller cannot forget it", async () => {
     const { opts } = setupProfiles("from-config");
     using _opts = opts;
     const env = await spawnWith({ cwd: opts.dir });
-    expect(env.MCX_TEST_PROFILE).toBe("from-config");
+    expect(env.AWS_TEST_PROFILE).toBe("from-config");
   });
 
   test("no layer set means the bare daemon env", async () => {
     const { opts } = setupProfiles();
     using _opts = opts;
     const env = await spawnWith({ cwd: opts.dir });
-    expect(env.MCX_TEST_PROFILE).toBeUndefined();
+    expect(env.AWS_TEST_PROFILE).toBeUndefined();
   });
 
-  test("profile: null (--no-profile) opts out even with a repo and a config default", async () => {
+  test("profile: null (--no-profile) opts out even with a config default", async () => {
     const { opts, repo } = setupProfiles("from-config");
     using _opts = opts;
     const env = await spawnWith({ cwd: repo, profile: null });
-    expect(env.MCX_TEST_PROFILE).toBeUndefined();
+    expect(env.AWS_TEST_PROFILE).toBeUndefined();
+  });
+
+  test("--profile on a prompt to an existing session is refused, not silently dropped", async () => {
+    // It used to be validated by the CLI and then discarded, because a sessionId
+    // short-circuits before the resolver runs: positive confirmation, no effect.
+    const { opts } = setupProfiles("from-config");
+    using _opts = opts;
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    const result = await handlePrompt(server, {
+      prompt: "hi",
+      sessionId: crypto.randomUUID(),
+      profile: "from-flag",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("cannot be applied to an existing session");
   });
 });

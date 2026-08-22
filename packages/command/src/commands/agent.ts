@@ -564,7 +564,18 @@ async function agentSpawn(
   }
 
   const toolArgs: Record<string, unknown> = { prompt: task };
-  if (parsed.resume) toolArgs.sessionId = parsed.resume;
+  if (parsed.resume) {
+    // See claude.ts: a profile applies at spawn, so pairing it with a follow-up
+    // prompt to a live session confirms a flag that has no effect (#935).
+    if (parsed.profile !== undefined) {
+      d.printError(
+        `--profile/--no-profile cannot be applied to the running session "${parsed.resume}" — a profile is applied when the child process is spawned. End the session and spawn fresh with --profile.`,
+      );
+      d.exit(1);
+      return;
+    }
+    toolArgs.sessionId = parsed.resume;
+  }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.allowOnly) toolArgs.allowOnly = true;
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
@@ -701,6 +712,15 @@ function shellQuote(s: string): string {
 async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProvider, d: AgentDeps): Promise<void> {
   if (parsed.wait) {
     d.printError("--headed and --wait are incompatible. Headed sessions are interactive.");
+    d.exit(1);
+  }
+  // See claudeSpawnHeaded: a headed session inherits the terminal's env, so the
+  // daemon never gets to apply the profile. Silently ignoring the flag would run
+  // the session on the wrong credentials and say nothing (#935).
+  if (parsed.profile !== undefined) {
+    d.printError(
+      "--headed and --profile/--no-profile are incompatible: a headed session runs in your terminal on that shell's environment, which the daemon cannot substitute. Drop --headed to use a profile, or `source` the profile file in that terminal first.",
+    );
     d.exit(1);
   }
 
