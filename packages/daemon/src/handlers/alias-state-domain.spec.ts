@@ -21,6 +21,18 @@ import type { RequestHandler } from "../handler-types";
 import { WorkItemsServer } from "../work-items-server";
 import { WorkItemHandlers } from "./work-item";
 
+/** The DomainSource the daemon builds in index.ts — mirrored so specs exercise real wiring. */
+function productionSource(db: StateDb) {
+  return {
+    listDomains: () => db.listDomains(),
+    getSessionPath: (sessionId: string) => {
+      const session = db.getSession(sessionId);
+      if (!session) return null;
+      return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
+    },
+  };
+}
+
 const ctx = {} as never;
 
 const tempDirs: string[] = [];
@@ -72,7 +84,7 @@ function setup() {
     null,
     null,
     noopLogger as never,
-    createDomainResolver(db),
+    createDomainResolver(productionSource(db)),
   ).register(map);
 
   return { db, map, phoenixPath, clrgPath, orphanPath, phoenix, clrg };
@@ -189,7 +201,10 @@ describe("phase_state_* and ctx.state share one partition (#3040 review R1)", ()
   test("a value written via _work_items is visible to ctx.state, and vice versa", async () => {
     const { db, map, phoenixPath, phoenix } = setup();
     const server = new WorkItemsServer(new WorkItemDb(db.getDatabase()), {
-      phaseState: { store: db, domainIdFor: (repoRoot) => createDomainResolver(db).idForPath(repoRoot) },
+      phaseState: {
+        store: db,
+        domainIdFor: (repoRoot) => createDomainResolver(productionSource(db)).idForPath(repoRoot),
+      },
     });
     const { client } = await server.start();
     try {
@@ -230,5 +245,77 @@ describe("phase_state_* and ctx.state share one partition (#3040 review R1)", ()
     } finally {
       await server.stop?.();
     }
+  });
+});
+
+// ── The production DomainSource, against a realistically-created session ──
+
+describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 delta R3)", () => {
+  /**
+   * This is the test whose absence let R3 ship.
+   *
+   * Every other R3 test hands the resolver an injected `DomainSource` that always returns
+   * a path. Production's returns whatever `agent_sessions` actually holds — and
+   * `mcx claude spawn` sets `cwd` only, never `repoRoot`, so on a real 7-day log the
+   * column the first implementation read was populated for 8 of 25,245 session-bearing
+   * rows. The fixture supplied the exact field production fails to supply, so the suite
+   * asserted the conclusion ("given a path, the join works") and never the premise
+   * ("a path is there").
+   *
+   * So this builds the source the way `index.ts` does, over a real `StateDb`, against a
+   * session created the way `mcx claude spawn` creates one. It fails against the
+   * repo_root-only implementation.
+   */
+  test("a spawn-shaped session — cwd only, no repoRoot — resolves to its domain", () => {
+    const { db, phoenixPath, phoenix } = setup();
+    // Exactly what `mcx claude spawn` writes: cwd, no repoRoot, no worktree.
+    db.upsertSession({ sessionId: "s-spawned", cwd: phoenixPath, state: "running" });
+
+    // Premise first: assert the column the old implementation read really is empty,
+    // so this test cannot pass for the wrong reason if a writer is added later.
+    const row = db.getSession("s-spawned");
+    expect(row?.repoRoot ?? null).toBeNull();
+    expect(row?.cwd).toBe(phoenixPath);
+
+    expect(createDomainResolver(productionSource(db)).idForSession("s-spawned")).toBe(phoenix.id);
+  });
+
+  test("a nested cwd resolves by walking up, like `mcx domain which $PWD`", () => {
+    const { db, phoenixPath, phoenix } = setup();
+    const nested = join(phoenixPath, "packages", "core");
+    mkdirSync(nested, { recursive: true });
+    db.upsertSession({ sessionId: "s-nested", cwd: nested, state: "running" });
+
+    expect(createDomainResolver(productionSource(db)).idForSession("s-nested")).toBe(phoenix.id);
+  });
+
+  test("repoRoot still wins when a session actually has one", () => {
+    const { db, phoenixPath, clrgPath, phoenix } = setup();
+    db.upsertSession({ sessionId: "s-both", cwd: clrgPath, repoRoot: phoenixPath, state: "running" });
+
+    expect(createDomainResolver(productionSource(db)).idForSession("s-both")).toBe(phoenix.id);
+  });
+
+  test("a session outside every domain, and an unknown session, are the sentinel", () => {
+    const { db, orphanPath } = setup();
+    db.upsertSession({ sessionId: "s-orphan", cwd: orphanPath, state: "running" });
+
+    const resolver = createDomainResolver(productionSource(db));
+    expect(resolver.idForSession("s-orphan")).toBe(NO_DOMAIN_ID);
+    expect(resolver.idForSession("s-never-existed")).toBe(NO_DOMAIN_ID);
+  });
+
+  test("invalidateSession() picks up a session that was re-rooted after first observation", () => {
+    const { db, phoenixPath, clrgPath, phoenix, clrg } = setup();
+    db.upsertSession({ sessionId: "s-move", cwd: phoenixPath, state: "running" });
+    const resolver = createDomainResolver(productionSource(db));
+    expect(resolver.idForSession("s-move")).toBe(phoenix.id);
+
+    db.upsertSession({ sessionId: "s-move", repoRoot: clrgPath });
+    // Memoized at first observation — this is the documented trade, not an accident.
+    expect(resolver.idForSession("s-move")).toBe(phoenix.id);
+
+    resolver.invalidateSession("s-move");
+    expect(resolver.idForSession("s-move")).toBe(clrg.id);
   });
 });

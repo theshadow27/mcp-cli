@@ -717,9 +717,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const domainResolver = createDomainResolver({
     listDomains: () => db.listDomains(),
     // 80% of the daemon's events carry a sessionId and almost none carry a repoRoot
-    // (#3040 review R3), so the session's own recorded root is what actually partitions
+    // (#3040 review R3), so the session's own recorded path is what actually partitions
     // the traffic. Becomes a direct `agent_sessions.domain_id` read once #3038 lands.
-    getSessionRepoRoot: (sessionId) => db.getSession(sessionId)?.repoRoot ?? null,
+    //
+    // repo_root ?? worktree ?? cwd, in that order, because `repo_root` alone is empty in
+    // practice: `mcx claude spawn` sets `cwd` only, so on a real log 25,235 of the 25,245
+    // session-bearing rows had a cwd and just 8 had a repo_root. Consulting only
+    // repo_root took real resolution to 20%, not the 99% the reach metric suggested.
+    // All three are recorded facts about the session, and resolveDomainForPath walks up
+    // to the nearest registered domain — the same rule as `mcx domain which $PWD`.
+    getSessionPath: (sessionId: string) => {
+      const session = db.getSession(sessionId);
+      if (!session) return null;
+      return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
+    },
   });
   const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
@@ -1297,9 +1308,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               // (review, issue, PR comments) from a poller bound to the daemon's one
               // repo, and they key only on prNumber — so the producer states its root
               // rather than publishing un-domained (#3040 review R3).
-              // Only when the event names no other identity: `repoRoot` outranks `sessionId`
-              // in the bus's precedence, so stamping over a session-bearing event could
-              // attribute it to the wrong domain.
+              // Only when the event names no other identity. Note the bus's order is
+              // preference, not strict precedence — an unresolvable repoRoot falls through
+              // to the session — but stamping the daemon's root onto a session-bearing
+              // event would still win whenever that root DOES resolve, which would
+              // attribute another domain's session to this one.
               const event =
                 rawEvent.repoRoot === undefined && rawEvent.sessionId === undefined
                   ? { ...rawEvent, repoRoot: daemonRepoRoot }

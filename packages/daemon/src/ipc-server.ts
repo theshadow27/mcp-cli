@@ -168,7 +168,21 @@ export class IpcServer {
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
       automationDispatcher: opts.automationDispatcher ?? null,
-      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(this.db),
+      // The bare-StateDb fallback must supply the session lookup too. It used to compile
+      // against `this.db` alone because the source member was optional — yielding a
+      // resolver whose session path was silently dead (#3040 review). Latent, since the
+      // eventBus branch wins in production, but latent is how the R1 split-brain shipped.
+      domains:
+        opts.domains ??
+        eventBus?.domainResolver ??
+        createDomainResolver({
+          listDomains: () => this.db.listDomains(),
+          getSessionPath: (sessionId: string) => {
+            const session = this.db.getSession(sessionId);
+            if (!session) return null;
+            return session.repoRoot ?? session.worktree ?? session.cwd ?? null;
+          },
+        }),
     });
     this.db.pruneExpiredAliases();
   }

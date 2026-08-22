@@ -21,18 +21,33 @@
 
 import { type Domain, NO_DOMAIN_ID, canonicalizeDomainPath, resolveDomainForPath } from "@mcp-cli/core";
 
-/** The slice of `StateDb` a resolver needs. Narrow so tests need no database. */
+/**
+ * The slice of `StateDb` a resolver needs. Narrow so tests need no database.
+ *
+ * `getSessionPath` is **required**, not optional. An optional member here is the exact
+ * shape of #3040 review R1 — it would let `createDomainResolver(someStateDb)` compile
+ * against a source with no session lookup and silently yield a resolver whose session
+ * path is dead, which is 80% of the daemon's traffic. A partition input a caller can
+ * omit is prose; one the compiler demands is a function. Tests that genuinely do not
+ * care pass `() => null` and say so.
+ */
 export interface DomainSource {
   listDomains(): Domain[];
   /**
-   * The repo root recorded for a session, or null/undefined when unknown.
+   * A filesystem path recorded for a session, or null when the session is unknown.
    *
-   * This is the identity join behind {@link DomainResolver.idForSession}. It reads
-   * `agent_sessions.repo_root` rather than `agent_sessions.domain_id` because that
-   * column has no writer yet — it is #3038's. When #3038 lands, this becomes a direct
-   * column read and the path resolution here goes away.
+   * The identity join behind {@link DomainResolver.idForSession}. It does NOT read
+   * `agent_sessions.domain_id` because that column has no writer yet — it is #3038's.
+   *
+   * The caller decides which recorded path to hand over; the daemon supplies
+   * `repo_root ?? worktree ?? cwd`. That ordering matters and is not cosmetic:
+   * `repo_root` is NULL for the overwhelming majority of real sessions because
+   * `mcx claude spawn` sets `cwd` only, so a resolver that consulted `repo_root` alone
+   * resolved 8 of 25,245 session-bearing rows on a real log (#3040 review R3). `cwd` is
+   * no weaker a signal — `resolveDomainForPath` walks up to the nearest registered
+   * domain, which is precisely what `mcx domain which $PWD` is documented to do.
    */
-  getSessionRepoRoot?(sessionId: string): string | null | undefined;
+  getSessionPath(sessionId: string): string | null | undefined;
 }
 
 export interface DomainResolver {
@@ -43,15 +58,24 @@ export interface DomainResolver {
    */
   idForPath(path: string | undefined): number;
   /**
-   * `domain_id` owning a session, resolved through the root that session recorded when
-   * it was spawned, or `NO_DOMAIN_ID` when the session is unknown or rootless.
+   * `domain_id` owning a session, resolved through a path that session recorded, or
+   * `NO_DOMAIN_ID` when the session is unknown or has no recorded path.
    *
    * This exists because 80% of the daemon's events carry a `sessionId` and almost none
    * carry a `repoRoot` (#3040 review R3: 98 of 25,536 rows on a real 7-day log). A
-   * session's domain is a fact recorded on its own row, so this is a join on an identity
+   * session's path is a fact recorded on its own row, so this is a join on an identity
    * the event already has — not an inference from a field nobody sets.
+   *
+   * **Staleness:** the answer is memoized at first observation. `upsertSession` can
+   * COALESCE a new root over an old one, and nothing invalidates on that — so a session
+   * that is re-rooted mid-life keeps its original domain until {@link
+   * DomainResolver.invalidateSession} is called for it or the daemon restarts. That is a
+   * deliberate trade for keeping a DB read off the publish hot path, and it is stated
+   * here rather than discovered: a silently mis-attributed event is worse than a slow one.
    */
   idForSession(sessionId: string | undefined): number;
+  /** Forget one session's memoized domain. Call when that session's recorded path changes. */
+  invalidateSession(sessionId: string): void;
   /** `domain_id` for a registered name, or `null` when no domain has that name. */
   idForName(name: string): number | null;
   /** Name for a `domain_id`, or `null` for `NO_DOMAIN_ID` and for unregistered ids. */
@@ -72,6 +96,7 @@ export interface DomainResolver {
 export const NULL_DOMAIN_RESOLVER: DomainResolver = {
   idForPath: () => NO_DOMAIN_ID,
   idForSession: () => NO_DOMAIN_ID,
+  invalidateSession: () => {},
   idForName: () => null,
   nameForId: () => null,
   invalidate: () => {},
@@ -133,9 +158,7 @@ export function createDomainResolver(source: DomainSource, opts: DomainResolverO
       if (sessionId === undefined || sessionId === "") return NO_DOMAIN_ID;
       const memo = bySession.get(sessionId);
       if (memo !== undefined) return memo;
-      // A source with no session lookup (every unit test that passes a bare domain list)
-      // resolves to the sentinel rather than throwing.
-      const root = source.getSessionRepoRoot?.(sessionId);
+      const root = source.getSessionPath(sessionId);
       const id = typeof root === "string" && root !== "" ? idForPath(root) : NO_DOMAIN_ID;
       return remember(bySession, sessionId, id);
     },
@@ -147,6 +170,10 @@ export function createDomainResolver(source: DomainSource, opts: DomainResolverO
     nameForId(id: number): string | null {
       if (id === NO_DOMAIN_ID) return null;
       return all().find((d) => d.id === id)?.name ?? null;
+    },
+
+    invalidateSession(sessionId: string): void {
+      bySession.delete(sessionId);
     },
 
     invalidate(): void {

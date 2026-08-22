@@ -63,6 +63,14 @@ export class EventBus {
    *   3. `sessionId` — the domain of the session the event is about, read off that
    *      session's own row.
    *
+   * **This is preference order, not strict precedence.** Each step is tried only until
+   * one *resolves*; a `repoRoot` that names no registered domain falls THROUGH to the
+   * session rather than terminating at the sentinel. So an event a producer explicitly
+   * scoped to a non-domain path can still inherit its session's domain. That is
+   * deliberate — a path outside every domain carries no information to preserve, and
+   * discarding the session's answer for it would lose the partition for no gain — but it
+   * means "repoRoot outranks sessionId" is only true when the repoRoot actually resolves.
+   *
    * Step 3 exists because steps 1 and 2 alone left the feature almost entirely inert
    * (#3040 review R3). Measured against a real 7-day event log on this box: 98 of 25,536
    * rows carried a `repoRoot`, i.e. 0.4%, while 20,449 — 80% — carried a `sessionId`.

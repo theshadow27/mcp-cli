@@ -19,6 +19,7 @@ function domain(id: number, name: string, path: string): Domain {
 
 const RESOLVER = createDomainResolver({
   listDomains: () => [domain(3, "phoenix", "/tmp/phoenix"), domain(7, "clrg", "/tmp/clrg")],
+  getSessionPath: () => null,
 });
 
 const servers: EventStreamServer[] = [];

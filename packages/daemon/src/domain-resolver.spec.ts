@@ -14,25 +14,36 @@ function countingSource(domains: Domain[]) {
       reads++;
       return domains;
     },
+    getSessionPath: () => null,
     get reads() {
       return reads;
     },
   };
 }
 
+/**
+ * A source with domains but NO session lookup, stated explicitly.
+ *
+ * `getSessionPath` is required on `DomainSource` precisely so this is a decision a test
+ * writes down rather than an omission the compiler tolerates — see the interface doc.
+ */
+function noSessions(domains: Domain[]) {
+  return { listDomains: () => domains, getSessionPath: () => null };
+}
+
 describe("createDomainResolver", () => {
   test("resolves a path to the domain that owns it", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp")] });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
     expect(r.idForPath("/tmp/nested/deep")).toBe(3);
   });
 
   test("a path outside every domain is the sentinel, never a guess", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]));
     expect(r.idForPath("/var/elsewhere")).toBe(NO_DOMAIN_ID);
   });
 
   test("no domains registered resolves to the sentinel", () => {
-    const r = createDomainResolver({ listDomains: () => [] });
+    const r = createDomainResolver(noSessions([]));
     expect(r.idForPath("/tmp")).toBe(NO_DOMAIN_ID);
   });
 
@@ -47,7 +58,7 @@ describe("createDomainResolver", () => {
   // A relative repoRoot is junk on the publish path; resolveDomainForPath throws on it.
   // The resolver must degrade to the sentinel rather than take down EventBus.publish.
   test("a non-absolute path is the sentinel, not a throw", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp")] });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
     expect(() => r.idForPath("relative/path")).not.toThrow();
     expect(r.idForPath("relative/path")).toBe(NO_DOMAIN_ID);
   });
@@ -55,18 +66,19 @@ describe("createDomainResolver", () => {
   test("nested domains resolve to the innermost", () => {
     const r = createDomainResolver({
       listDomains: () => [domain(1, "outer", "/tmp/work"), domain(2, "inner", "/tmp/work/sub")],
+      getSessionPath: () => null,
     });
     expect(r.idForPath("/tmp/work/sub/pkg")).toBe(2);
     expect(r.idForPath("/tmp/work/other")).toBe(1);
   });
 
   test("a host-bound domain never owns a local path", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(5, "remote", "/tmp", "boxen0010")] });
+    const r = createDomainResolver(noSessions([domain(5, "remote", "/tmp", "boxen0010")]));
     expect(r.idForPath("/tmp/anything")).toBe(NO_DOMAIN_ID);
   });
 
   test("name and id map both ways; the sentinel has no name", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp")] });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
     expect(r.idForName("phoenix")).toBe(3);
     expect(r.idForName("nope")).toBeNull();
     expect(r.nameForId(3)).toBe("phoenix");
@@ -85,7 +97,9 @@ describe("createDomainResolver", () => {
 
   test("invalidate() makes the next lookup see a domain added since", () => {
     const domains: Domain[] = [];
-    const r = createDomainResolver({ listDomains: () => [...domains] });
+    // Lazy on purpose: the source must be re-read after invalidate(), so this cannot
+    // use the snapshot helper.
+    const r = createDomainResolver({ listDomains: () => [...domains], getSessionPath: () => null });
     expect(r.idForPath("/tmp/late")).toBe(NO_DOMAIN_ID);
 
     domains.push(domain(7, "late", "/tmp/late"));
@@ -102,7 +116,7 @@ describe("createDomainResolver", () => {
   // the memo removed entirely — it asserted the conclusion, not the premise
   // (#3040 review R6). These drive the bound and observe it.
   test("the memo never exceeds the configured cap", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 4 });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 4 });
     for (let i = 0; i < 40; i++) {
       r.idForPath(`/tmp/phoenix/p${i}`);
       expect(r.memoSize()).toBeLessThanOrEqual(4);
@@ -110,7 +124,7 @@ describe("createDomainResolver", () => {
   });
 
   test("the memo actually grows before it is cleared — the cap is doing something", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 4 });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 4 });
     expect(r.memoSize()).toBe(0);
     r.idForPath("/tmp/phoenix/a");
     r.idForPath("/tmp/phoenix/b");
@@ -124,14 +138,14 @@ describe("createDomainResolver", () => {
   });
 
   test("answers stay correct across an overflow clear", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] }, { maxMemoized: 2 });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 2 });
     for (let i = 0; i < 20; i++) r.idForPath(`/tmp/phoenix/p${i}`);
     expect(r.idForPath("/tmp/phoenix/p0")).toBe(3);
     expect(r.idForPath("/var/outside")).toBe(NO_DOMAIN_ID);
   });
 
   test("invalidate() empties the memo observably", () => {
-    const r = createDomainResolver({ listDomains: () => [domain(3, "phoenix", "/tmp/phoenix")] });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]));
     r.idForPath("/tmp/phoenix/a");
     expect(r.memoSize()).toBeGreaterThan(0);
     r.invalidate();
@@ -146,7 +160,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
     let lookups = 0;
     return {
       listDomains: () => DOMAINS,
-      getSessionRepoRoot: (id: string) => {
+      getSessionPath: (id: string) => {
         lookups++;
         return sessions[id] ?? null;
       },
@@ -183,7 +197,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
   });
 
   test("a source with no session lookup degrades to the sentinel rather than throwing", () => {
-    const r = createDomainResolver({ listDomains: () => DOMAINS });
+    const r = createDomainResolver(noSessions(DOMAINS));
     expect(() => r.idForSession("s1")).not.toThrow();
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
   });
@@ -192,7 +206,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
     const sessions: Record<string, string | null> = { s1: null };
     const r = createDomainResolver({
       listDomains: () => DOMAINS,
-      getSessionRepoRoot: (id: string) => sessions[id] ?? null,
+      getSessionPath: (id: string) => sessions[id] ?? null,
     });
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
     sessions.s1 = "/tmp/phoenix";

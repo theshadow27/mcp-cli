@@ -93,6 +93,51 @@ export function bad(n: string) {
     expect(violations[0].snippet).toContain("deleteDomain");
   });
 
+  // ── Residual bypasses found by the delta review (#3169) ──
+
+  it("a receiver that merely CONTAINS a resolver word does not silence the rule", () => {
+    for (const receiver of ["domainNameCache", "pathResolverCache", "domainsBackup"]) {
+      const violations = evaluate(
+        makeFile(`export function add(n: string, p: string) {
+  db.createDomain(n, p);
+  ${receiver}.invalidate();
+}`),
+      );
+      expect(violations, receiver).toHaveLength(1);
+    }
+  });
+
+  it("a nested resolver receiver is still accepted via its final segment", () => {
+    const violations = evaluate(
+      makeFile(`export function add(n: string, p: string) {
+  db.createDomain(n, p);
+  this.deps.domains.invalidate();
+}`),
+    );
+    expect(violations).toHaveLength(0);
+  });
+
+  it("a DESTRUCTURED mutation is caught, not invisible", () => {
+    const violations = evaluate(
+      makeFile(`const { createDomain } = db;
+export function add(n: string, p: string) {
+  createDomain(n, p);
+}`),
+    );
+    expect(violations).toHaveLength(1);
+  });
+
+  it("a destructured mutation paired with a proper invalidate is accepted", () => {
+    const violations = evaluate(
+      makeFile(`const { createDomain } = db;
+export function add(n: string, p: string) {
+  createDomain(n, p);
+  domains.invalidate();
+}`),
+    );
+    expect(violations).toHaveLength(0);
+  });
+
   it("says nothing about a file that never touches the domains table", () => {
     expect(evaluate(makeFile("const id = this.domains.idForPath(repoRoot);"))).toHaveLength(0);
   });

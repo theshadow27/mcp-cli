@@ -37,17 +37,38 @@ const MUTATORS = new Set(["createDomain", "renameDomain", "deleteDomain"]);
 const INVALIDATORS = new Set(["invalidate"]);
 
 /**
- * Does this receiver plausibly name a domain resolver?
+ * Identifiers a domain resolver is actually bound to in this codebase.
+ *
+ * Matched as a WHOLE final segment, not a substring. A substring test was the residual
+ * bypass the delta review drove: `domainNameCache.invalidate()` and
+ * `pathResolverCache.invalidate()` both contain the substring and both silenced the rule.
+ * `x.y.domains.invalidate()` is accepted via the final segment; `domainNameCache` is not.
+ */
+const RESOLVER_NAMES = new Set(["domains", "domainresolver", "resolver"]);
+
+/**
+ * Does this receiver name a domain resolver?
  *
  * A file-wide "someone called .invalidate() somewhere" is not a check — it silenced the
  * rule on the exact input it exists to catch (#3040 review R5): `db.createDomain(a, b)`
- * next to an unrelated `someCache.invalidate()` reported clean. The receiver has to look
- * like the thing whose memo is stale, which in this codebase is spelled `domains`,
- * `domainResolver`, or `this.domains`.
+ * next to an unrelated `someCache.invalidate()` reported clean.
+ *
+ * Deliberately errs toward FLAGGING: an unrecognised receiver means the rule reports and
+ * a human either renames or suppresses. The opposite bias — accepting anything that looks
+ * vaguely related — is how this rule shipped passing on its own target input.
  */
 function isResolverReceiver(expr: ts.Expression, sf: ts.SourceFile): boolean {
-  const text = expr.getText(sf).toLowerCase();
-  return text.includes("domain") || text.includes("resolver");
+  const last = ts.isPropertyAccessExpression(expr) ? expr.name.text : expr.getText(sf);
+  return RESOLVER_NAMES.has(last.toLowerCase());
+}
+
+/** The method name a call invokes, whether `db.createDomain(…)` or a destructured `createDomain(…)`. */
+function calleeName(call: ts.CallExpression): string | null {
+  if (ts.isPropertyAccessExpression(call.expression)) return call.expression.name.text;
+  // Destructuring is the other residual bypass the delta review drove:
+  // `const { createDomain } = db; createDomain(a, b)` matched nothing at all.
+  if (ts.isIdentifier(call.expression)) return call.expression.text;
+  return null;
 }
 
 /**
@@ -109,11 +130,15 @@ const rule: CheckRule = {
     const invalidations: ts.CallExpression[] = [];
 
     for (const call of ast.find(ts.isCallExpression)) {
-      if (!ts.isPropertyAccessExpression(call.expression)) continue;
-      const name = call.expression.name.text;
+      const name = calleeName(call);
+      if (name === null) continue;
       if (MUTATORS.has(name)) {
         mutations.push(call);
-      } else if (INVALIDATORS.has(name) && isResolverReceiver(call.expression.expression, sf)) {
+      } else if (
+        INVALIDATORS.has(name) &&
+        ts.isPropertyAccessExpression(call.expression) &&
+        isResolverReceiver(call.expression.expression, sf)
+      ) {
         invalidations.push(call);
       }
     }
