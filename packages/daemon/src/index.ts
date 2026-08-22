@@ -512,8 +512,16 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   new WorkItemDb(db.getDatabase());
   new EventLog(db.getDatabase());
   migrateDerivedCursor(db.getDatabase());
-  const importResult = importLegacyState({ db: db.getDatabase(), log: (msg) => logger.info(msg) });
-  if (!importResult.ran) {
+  // The import logs its own diagnostics — including the loud warning for "marker set but
+  // mcx.db is empty", which is the one decline that means the daemon is booting without
+  // the user's data. Route its sink at warn so that message cannot be swallowed by a log
+  // level, and only whisper about the ordinary "nothing to import" case.
+  const importResult = importLegacyState({ db: db.getDatabase(), log: (msg) => logger.warn(msg) });
+  if (importResult.ran && !importResult.sealed) {
+    logger.warn(
+      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will retry on the next start`,
+    );
+  } else if (!importResult.ran) {
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
   }
 

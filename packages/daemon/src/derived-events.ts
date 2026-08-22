@@ -14,7 +14,13 @@ const MAX_DERIVED_DEPTH = 4;
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
 
-const CURSOR_ID = "derived_publisher";
+/**
+ * Cursor row id for the derived-event publisher. Exported so the one-shot legacy import
+ * (#3034) can park the cursor at the newest imported event without a second copy of the
+ * literal drifting from this one.
+ */
+export const DERIVED_CURSOR_ID = "derived_publisher";
+const CURSOR_ID = DERIVED_CURSOR_ID;
 
 /**
  * Create the derived-events cursor table.

@@ -11,7 +11,8 @@
  * orchestrator could rationalize past is a function, not prose.
  */
 
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, normalize } from "node:path";
+import { resolveRealpath } from "./fs";
 
 /** A registered domain: a name bound to `[host:]path`. */
 export interface Domain {
@@ -55,16 +56,42 @@ export function isValidDomainName(name: string): boolean {
 }
 
 /**
- * Normalize a filesystem path for prefix comparison: absolutize, collapse `.`/`..`
- * and duplicate separators, and strip any trailing separator (except at root).
+ * Normalize an **absolute** path for prefix comparison: collapse `.`/`..` and
+ * duplicate separators, and strip any trailing separator (except at root).
  *
- * Relative inputs are anchored at `process.cwd()` by `resolve()`; callers that mean
- * a specific directory should pass an absolute path.
+ * **Throws on anything that is not absolute** — including `""` and `~/work`.
+ * This used to anchor relative input at `process.cwd()`, which is precisely the
+ * "answer with `process.cwd()` and a shrug" this module's header condemns: it turned
+ * `~/work` into `<cwd>/~/work` and `""` into a confident answer for a missing input.
+ * A constraint the caller can violate silently belongs in a throw, not in JSDoc.
+ *
+ * `~` is deliberately **not** expanded. A tilde means "the home directory" of whoever
+ * resolves it, and for a domain bound to a host that is a different machine's home.
+ * Callers that accept shell-style input expand it before they get here.
  */
 export function normalizeDomainPath(path: string): string {
-  const abs = isAbsolute(path) ? path : resolve(path);
-  const normalized = resolve(abs);
+  if (!isAbsolute(path)) {
+    const tildeHint = path.startsWith("~") ? " (expand ~ before calling — it is not expanded here)" : "";
+    throw new Error(`domain path must be absolute, got ${JSON.stringify(path)}${tildeHint}`);
+  }
+  const normalized = normalize(path);
   return normalized.length > 1 && normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
+}
+
+/**
+ * Normalize **and** resolve symlinks, for paths on this filesystem.
+ *
+ * Kept separate from {@link normalizeDomainPath} so the resolution rule stays a pure
+ * function that unit-tests without a filesystem. This repo has already paid for two
+ * migrations caused by storing un-canonicalized roots (#1526, #1684) — and mcx's own
+ * worktrees live under `.claude/worktrees/`, which is exactly where symlinked paths
+ * show up. Non-existent paths degrade to the lexical form rather than throwing.
+ *
+ * Only meaningful for local domains: a `host`-bound path names a directory on another
+ * machine, where this process's filesystem has no say.
+ */
+export function canonicalizeDomainPath(path: string): string {
+  return resolveRealpath(normalizeDomainPath(path));
 }
 
 /**
@@ -90,6 +117,10 @@ export function isPathWithin(child: string, parent: string): boolean {
  *   describes a directory on that host, not on this filesystem.
  * - Ties (two local domains registered at the same path) resolve by name so the result is
  *   deterministic without depending on row order or on the DB's uniqueness constraint.
+ *
+ * `path` must be absolute — this throws otherwise rather than inventing an answer from
+ * `process.cwd()`. Pure: pass an already-canonical path (see {@link canonicalizeDomainPath})
+ * if the caller's input may contain symlinks.
  */
 export function resolveDomainForPath(path: string, domains: Domain[]): Domain | null {
   const target = normalizeDomainPath(path);
@@ -98,6 +129,8 @@ export function resolveDomainForPath(path: string, domains: Domain[]): Domain | 
   let bestLength = -1;
 
   for (const domain of domains) {
+    // A host-bound domain names a directory on another machine; a local path is never
+    // inside it, and its path need not even be absolute by this filesystem's rules.
     if (domain.host !== null) continue;
     const domainPath = normalizeDomainPath(domain.path);
     if (!isPathWithin(target, domainPath)) continue;

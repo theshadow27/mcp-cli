@@ -64,8 +64,16 @@ export const MCP_CLI_DIR = process.env.MCP_CLI_DIR || join(homedir(), ".mcp-cli"
  *
  * Domain-scoped mcx is a clean slate, not a migration (#3034): the daemon opens
  * `mcx.db` and nothing opens `state.db` at runtime. The legacy file is left on disk
- * untouched apart from the one-shot import's read and its marker write, and the
- * recovery story for a bad import is deleting `mcx.db`.
+ * untouched apart from the one-shot import's read and its marker write.
+ *
+ * To recover from a bad import, deleting `mcx.db` is **not sufficient** — the import
+ * marker lives in `state.db` and outlives it, so the import would decline and the daemon
+ * would start empty. Clear the marker too:
+ *
+ * ```sh
+ * rm ~/.mcp-cli/mcx.db
+ * sqlite3 ~/.mcp-cli/state.db "DELETE FROM daemon_state WHERE key = 'mcx_domain_import_at';"
+ * ```
  */
 const DB_PATH = join(MCP_CLI_DIR, "mcx.db");
 

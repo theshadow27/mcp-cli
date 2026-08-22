@@ -1,7 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Domain,
   NO_DOMAIN_ID,
+  canonicalizeDomainPath,
   formatDomainLocation,
   isDomainScoped,
   isPathWithin,
@@ -115,6 +119,35 @@ describe("isPathWithin", () => {
   });
 });
 
+describe("normalizeDomainPath — refuses to guess (#3034 review 7)", () => {
+  test("throws on a relative path instead of anchoring it at process.cwd()", () => {
+    for (const bad of ["work", "./work", "../work", "a/b"]) {
+      expect(() => normalizeDomainPath(bad)).toThrow(/must be absolute/);
+    }
+  });
+
+  test("throws on the empty string rather than confidently answering with cwd", () => {
+    // Previously normalizeDomainPath("") returned process.cwd(), so
+    // resolveDomainForPath("", domains) returned the domain containing the daemon's cwd —
+    // a confident non-null answer for a missing input.
+    expect(() => normalizeDomainPath("")).toThrow(/must be absolute/);
+    expect(() => resolveDomainForPath("", [domain("d", "/home/u/d")])).toThrow(/must be absolute/);
+  });
+
+  test("throws on ~ rather than producing <cwd>/~/work", () => {
+    // docs/domains.md uses `mcx domain add phoenix ~/github/phoenix-octovalve` as its
+    // canonical example. Unquoted bash expands it; quoted, config-file and programmatic
+    // input do not, and that used to silently become <cwd>/~/github/...
+    expect(() => normalizeDomainPath("~/work")).toThrow(/must be absolute/);
+    expect(() => normalizeDomainPath("~/work")).toThrow(/expand ~ before calling/);
+  });
+
+  test("does not expand ~ into this process's home", () => {
+    // A tilde in a host-bound domain means THAT machine's home, not ours.
+    expect(() => normalizeDomainPath("~")).toThrow();
+  });
+});
+
 describe("normalizeDomainPath", () => {
   test("strips a trailing separator but keeps root", () => {
     expect(normalizeDomainPath("/a/b/")).toBe("/a/b");
@@ -180,5 +213,54 @@ describe("NO_DOMAIN_ID", () => {
     expect(isDomainScoped(NO_DOMAIN_ID)).toBe(false);
     expect(isDomainScoped(1)).toBe(true);
     expect(isDomainScoped(999)).toBe(true);
+  });
+});
+
+describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
+  const made: string[] = [];
+  afterAll(() => {
+    for (const p of made) {
+      try {
+        rmSync(p, { recursive: true, force: true });
+        // dotw-ignore test-empty-catch: best-effort cleanup
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  test("resolves a symlinked directory to its real path", () => {
+    const real = mkdtempSync(join(tmpdir(), "mcx-domain-real-"));
+    made.push(real);
+    const link = join(tmpdir(), `mcx-domain-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    symlinkSync(real, link);
+    try {
+      expect(canonicalizeDomainPath(link)).toBe(realpathSync(real));
+      // ...and a path *under* the symlink too, which is the .claude/worktrees case.
+      expect(canonicalizeDomainPath(join(link, "sub"))).toBe(join(realpathSync(real), "sub"));
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  test("a symlinked path and its real path resolve to the same domain", () => {
+    const real = mkdtempSync(join(tmpdir(), "mcx-domain-real2-"));
+    made.push(real);
+    const link = join(tmpdir(), `mcx-domain-link2-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    symlinkSync(real, link);
+    try {
+      const d = domain("proj", canonicalizeDomainPath(real));
+      expect(resolveDomainForPath(canonicalizeDomainPath(join(link, "src")), [d])).toBe(d);
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  test("degrades to the lexical form for a path that does not exist", () => {
+    expect(canonicalizeDomainPath("/definitely/not/here/xyz")).toBe("/definitely/not/here/xyz");
+  });
+
+  test("still refuses a relative path", () => {
+    expect(() => canonicalizeDomainPath("relative/path")).toThrow(/must be absolute/);
   });
 });

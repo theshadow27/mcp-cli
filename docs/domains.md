@@ -7,9 +7,18 @@ mcx domain add phoenix ~/github/phoenix-octovalve
 mcx domain add phoenix boxen0010:~/github/phoenix-octovalve   # same command, later
 ```
 
-The domains table is mcx's DNS: pure data, routing, and partitioning. Every other
-table in the daemon carries a `domain_id` foreign key, and every command that acts
-on something takes `-d <domain>`.
+The domains table is mcx's DNS: pure data, routing, and partitioning. Every partitioned
+table in the daemon carries a `domain_id` column, and every command that acts on
+something takes `-d <domain>`.
+
+`domain_id` is deliberately **not** a declared `REFERENCES domains(id)` foreign key.
+Rows written before a domain is resolved carry the sentinel `domain_id = 0`, which by
+design has no `domains` row — a real FK would require seeding a phantom domain that
+`mcx domain ls` would list and `mcx domain which` could match, which is a worse lie than
+an undeclared constraint. (SQLite also leaves `PRAGMA foreign_keys` off by default, so a
+declared FK here would enforce nothing anyway.) The partition is enforced where it
+actually bites: `domain_id` is part of the PRIMARY KEY or a UNIQUE index on every
+partitioned table, and `packages/daemon/src/db/domains.spec.ts` asserts exactly that.
 
 Domains supersede `mcx scope`, which was the same idea stored as JSON sidecars in
 `~/.mcp-cli/scopes/` with no partition role and no host component.

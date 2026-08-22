@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
-import { IMPORT_MARKER_KEY, importLegacyState } from "./import-legacy";
+import { IMPORTED_TABLES, IMPORT_MARKER_KEY, RECOVERY_INSTRUCTIONS, importLegacyState } from "./import-legacy";
 import { StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
@@ -274,8 +274,10 @@ describe("importLegacyState", () => {
       log: () => {},
     });
     expect(forced.ran).toBe(true);
+    expect(forced.sealed).toBe(true);
     expect(forced.totalCopied).toBe(0);
-    expect(forced.totalSkipped).toBeGreaterThan(0);
+    expect(forced.totalNotCopied).toBeGreaterThan(0);
+    expect(forced.failedTables).toEqual([]);
     expect(state.getState("config_hash")).toBe("local-change");
     expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(2);
   });
@@ -308,5 +310,335 @@ describe("importLegacyState", () => {
     });
     expect(result.ran).toBe(false);
     expect(logs.length).toBeGreaterThan(0);
+  });
+});
+
+describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) {
+      try {
+        chmodSync(join(d, "state.db"), 0o644);
+        // dotw-ignore test-empty-catch: best-effort — the file may not exist in every case
+      } catch {
+        /* ignore */
+      }
+      rmSync(d, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+  });
+
+  function workspace() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-seal-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
+  }
+
+  function target(path: string): StateDb {
+    const state = freshTargetDb(path);
+    open.push(state);
+    return state;
+  }
+
+  function markerOf(legacyPath: string): string | null {
+    const legacy = new Database(legacyPath, { readwrite: true, create: false });
+    const row = legacy
+      .query<{ value: string }, [string]>("SELECT value FROM daemon_state WHERE key = ?")
+      .get(IMPORT_MARKER_KEY);
+    legacy.close();
+    return row?.value ?? null;
+  }
+
+  test("B2: a wholly failed import does NOT write the marker and reports the failures", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    // A bare mcx.db: none of the consumer tables exist, so every copy target is missing.
+    const bare = new Database(ws.targetPath, { create: true });
+    bare.exec("CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
+    bare.exec(
+      "CREATE TABLE domains (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, host TEXT, path TEXT NOT NULL, created_at TEXT NOT NULL)",
+    );
+
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: bare,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: (m) => logs.push(m),
+    });
+    bare.close();
+
+    expect(result.ran).toBe(true);
+    expect(result.sealed).toBe(false);
+    expect(result.failedTables.length).toBeGreaterThan(0);
+    expect(result.totalCopied).toBe(0);
+    // The marker must NOT be sealed over a failed import.
+    expect(markerOf(ws.legacyPath)).toBeNull();
+    expect(logs.some((l) => l.includes("NOT marking the legacy database as imported"))).toBe(true);
+  });
+
+  test("B2: a failed import retries on the next start instead of being sealed forever", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const bare = new Database(ws.targetPath, { create: true });
+    bare.exec("CREATE TABLE schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
+    bare.exec(
+      "CREATE TABLE domains (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, host TEXT, path TEXT NOT NULL, created_at TEXT NOT NULL)",
+    );
+    importLegacyState({ db: bare, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
+    bare.close();
+    rmSync(ws.targetPath, { force: true });
+
+    // Second start, this time with a properly migrated target: the import must still run.
+    const good = target(ws.targetPath);
+    const retry = importLegacyState({
+      db: good.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(retry.ran).toBe(true);
+    expect(retry.sealed).toBe(true);
+    expect(retry.totalCopied).toBeGreaterThan(0);
+    expect(markerOf(ws.legacyPath)).toBeTruthy();
+  });
+
+  test("B3: marker set + empty mcx.db warns loudly and prints the real recovery command", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const first = target(ws.targetPath);
+    importLegacyState({ db: first.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
+    first.close();
+    open.pop();
+    rmSync(ws.targetPath, { force: true });
+
+    const rebuilt = target(ws.targetPath);
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: (m) => logs.push(m),
+    });
+
+    expect(result.ran).toBe(false);
+    const warning = logs.find((l) => l.includes("WARNING"));
+    expect(warning).toBeTruthy();
+    expect(warning).toContain("EMPTY database");
+    // The message must carry the incantation that actually works, not "delete mcx.db".
+    expect(warning).toContain(RECOVERY_INSTRUCTIONS);
+    expect(warning).toContain(IMPORT_MARKER_KEY);
+  });
+
+  test("B3: the documented recovery command actually re-arms the import", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const first = target(ws.targetPath);
+    importLegacyState({ db: first.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
+    first.close();
+    open.pop();
+
+    // Exactly what RECOVERY_INSTRUCTIONS tells the user to do.
+    rmSync(ws.targetPath, { force: true });
+    const legacy = new Database(ws.legacyPath, { readwrite: true, create: false });
+    legacy.run("DELETE FROM daemon_state WHERE key = ?", [IMPORT_MARKER_KEY]);
+    legacy.close();
+
+    const rebuilt = target(ws.targetPath);
+    const result = importLegacyState({
+      db: rebuilt.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(result.ran).toBe(true);
+    expect(result.sealed).toBe(true);
+    expect(result.totalCopied).toBeGreaterThan(0);
+  });
+
+  test("B4: an unwritable legacy DB copies NOTHING and says so accurately", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const state = target(ws.targetPath);
+    chmodSync(ws.legacyPath, 0o444);
+
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: (m) => logs.push(m),
+    });
+
+    expect(result.ran).toBe(false);
+    expect(result.reason).toContain("not writable");
+    // No torn outcome: nothing was copied, so nothing can be resurrected on the re-run.
+    const wi = state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM work_items").get();
+    expect(wi?.n).toBe(0);
+    expect(logs.some((l) => l.includes("not writable"))).toBe(true);
+    // And the old, false message is gone.
+    expect(logs.some((l) => l.includes("legacy database left untouched"))).toBe(false);
+  });
+
+  test("12: imported monitor_events do not replay — the derived cursor is parked at the newest", () => {
+    const ws = workspace();
+    const legacy = new Database(ws.legacyPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE daemon_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE monitor_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, src TEXT NOT NULL, event TEXT NOT NULL,
+        category TEXT NOT NULL, work_item_id TEXT, session_id TEXT, pr_number INTEGER, payload TEXT NOT NULL
+      );
+    `);
+    for (let i = 1; i <= 5; i++) {
+      legacy.run(
+        "INSERT INTO monitor_events (ts, src, event, category, payload) VALUES (?, 'test', 'e', 'server', '{}')",
+        [`2026-01-0${i}T00:00:00.000Z`],
+      );
+    }
+    legacy.close();
+
+    const state = target(ws.targetPath);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(result.ran).toBe(true);
+
+    const events = state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM monitor_events").get();
+    expect(events?.n).toBe(5);
+    const cursor = state.database
+      .query<{ last_seq: number }, []>("SELECT last_seq FROM derived_cursor WHERE id = 'derived_publisher'")
+      .get();
+    expect(cursor?.last_seq).toBe(5);
+  });
+
+  test("13: a failed table is distinguishable from an empty one", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const state = target(ws.targetPath);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    const absent = result.tables.find((t) => t.table === "oauth_clients");
+    expect(absent?.failed).toBe(false);
+    expect(absent?.reason).toBe("absent from legacy database");
+    expect(result.failedTables).toEqual([]);
+  });
+});
+
+describe("importLegacyState — against the PRODUCTION schema (#3034 review coverage gap)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function workspace() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-prod-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
+  }
+
+  test("every IMPORTED_TABLES entry exists in a freshly migrated mcx.db", () => {
+    // The import reports a target table it cannot find as a hard FAILURE, which withholds
+    // the marker. So an 18th entry added here without a matching migration would break
+    // every install's import — and this is the test that says so, rather than a user
+    // discovering it once, on the one run they get.
+    const ws = workspace();
+    const state = freshTargetDb(ws.targetPath);
+    open.push(state);
+
+    const missing = IMPORTED_TABLES.filter(
+      (t) =>
+        (state.database
+          .query<{ n: number }, [string]>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name = ?")
+          .get(t)?.n ?? 0) === 0,
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test("imports a legacy DB built by the real StateDb/WorkItemDb/EventLog code", () => {
+    // The other fixtures are hand-written and therefore cannot drift with the schema.
+    // This one is produced by the production DDL on both sides, so a column added to a
+    // real table is exercised here without anyone remembering to update a string literal.
+    const ws = workspace();
+
+    const legacy = freshTargetDb(ws.legacyPath);
+    legacy.setState("config_hash", "prod-hash");
+    legacy.saveTokens("atlassian", { access_token: "prod-tok", token_type: "Bearer" });
+    legacy.setNote("srv", "tool", "a note");
+    legacy.setAliasState("/repo", "ns", "k", { nested: [1, 2, 3] });
+    legacy.insertMail("alice", "bob", "subject", "body");
+    legacy.upsertSession({ sessionId: "sess-1", provider: "claude", cwd: "/repo", state: "running" });
+    legacy.saveAlias("impl", "/repo/.claude/phases/impl.ts", "the impl phase", "defineAlias");
+    const legacyWi = new WorkItemDb(legacy.database);
+    legacyWi.createWorkItem({ issueNumber: 4242, branch: "feat/prod-fixture", prNumber: 99 });
+    legacy.close();
+
+    const target = freshTargetDb(ws.targetPath);
+    open.push(target);
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: target.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: (m) => logs.push(m),
+    });
+
+    expect(result.failedTables).toEqual([]);
+    expect(result.ran).toBe(true);
+    expect(result.sealed).toBe(true);
+
+    // Every seeded row survived the real-schema round trip.
+    expect(target.getState("config_hash")).toBe("prod-hash");
+    expect(target.getTokens("atlassian")?.access_token).toBe("prod-tok");
+    expect(target.getNote("srv", "tool")).toBe("a note");
+    expect(target.getAliasState("/repo", "ns", "k")).toEqual({ nested: [1, 2, 3] });
+    expect(target.getAlias("impl")?.description).toBe("the impl phase");
+    expect(target.getSession("sess-1")?.cwd).toBe("/repo");
+    expect(target.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(1);
+    expect(new WorkItemDb(target.database).getWorkItemByIssue(4242)?.branch).toBe("feat/prod-fixture");
+  });
+
+  test("a production-schema import is idempotent and copies nothing the second time", () => {
+    const ws = workspace();
+    const legacy = freshTargetDb(ws.legacyPath);
+    legacy.setState("config_hash", "prod-hash");
+    legacy.close();
+
+    const target = freshTargetDb(ws.targetPath);
+    open.push(target);
+    const first = importLegacyState({
+      db: target.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(first.sealed).toBe(true);
+
+    const second = importLegacyState({
+      db: target.database,
+      legacyPath: ws.legacyPath,
+      scopesDir: ws.scopesDir,
+      force: true,
+      log: () => {},
+    });
+    expect(second.failedTables).toEqual([]);
+    expect(second.totalCopied).toBe(0);
+    expect(target.getState("config_hash")).toBe("prod-hash");
   });
 });

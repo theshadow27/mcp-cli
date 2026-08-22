@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, options } from "@mcp-cli/core";
@@ -10,6 +10,51 @@ import { StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 const repoRoot = resolve(import.meta.dir, "../../../..");
+
+/** Every table this schema partitions by domain. */
+const PARTITIONED_TABLES = [
+  "work_items",
+  "work_item_transitions",
+  "ci_run_states",
+  "mail",
+  "agent_sessions",
+  "alias_state",
+  "aliases",
+  "copilot_comment_state",
+  "monitor_events",
+  "derived_cursor",
+] as const;
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Partitioned tables with a NATURAL key — a value that repeats across projects (an issue
+ * number, a branch, a PR number, an alias name, a state key). These MUST include
+ * domain_id in their uniqueness or two domains collide.
+ */
+const NATURAL_KEYED_TABLES = [
+  "work_items",
+  "ci_run_states",
+  "alias_state",
+  "aliases",
+  "copilot_comment_state",
+  "derived_cursor",
+] as const;
+
+/**
+ * Partitioned tables keyed by a SURROGATE that is already globally unique, so no
+ * cross-domain collision is possible and domain_id is for filtering, not identity.
+ * Mapped to the column that must be their sole primary key — asserted below, so the
+ * exemption is verified rather than claimed.
+ */
+const SURROGATE_KEYED_TABLES: Record<string, string> = {
+  mail: "id",
+  agent_sessions: "session_id",
+  monitor_events: "seq",
+  work_item_transitions: "id",
+};
 
 function tmpDbPath(): string {
   return join(tmpdir(), `mcp-cli-domains-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -75,6 +120,27 @@ describe("domain schema", () => {
     expect(cols.has("status")).toBe(false);
   });
 
+  /**
+   * Every table that carries `domain_id` must include it in the PRIMARY KEY or in a
+   * UNIQUE index. A `domain_id` column with the partition enforced on something else is
+   * the exact bug this schema exists to kill — `aliases` shipped that way in the first
+   * revision of this PR and a column-existence test reported green on it.
+   */
+  function partitionEnforcedBy(db: Database, table: string): string | null {
+    // PK columns: PRAGMA table_info exposes `pk` as a 1-based position within the PK.
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; pk: number }>;
+    if (cols.some((c) => c.name === "domain_id" && c.pk > 0)) return "PRIMARY KEY";
+
+    // Otherwise a UNIQUE index must include it.
+    const indexes = db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>;
+    for (const idx of indexes) {
+      if (idx.unique !== 1) continue;
+      const members = db.prepare(`PRAGMA index_info(${quoteIdent(idx.name)})`).all() as Array<{ name: string | null }>;
+      if (members.some((m) => m.name === "domain_id")) return `UNIQUE index ${idx.name}`;
+    }
+    return null;
+  }
+
   test("every partitioned table carries domain_id", () => {
     const state = createStateDb();
     const raw = state.database;
@@ -82,20 +148,98 @@ describe("domain schema", () => {
     new EventLog(raw);
     migrateDerivedCursor(raw);
 
-    for (const table of [
-      "work_items",
-      "work_item_transitions",
-      "ci_run_states",
-      "mail",
-      "agent_sessions",
-      "alias_state",
-      "aliases",
-      "copilot_comment_state",
-      "monitor_events",
-      "derived_cursor",
-    ]) {
+    for (const table of PARTITIONED_TABLES) {
       expect(columnsOf(raw, table).has("domain_id")).toBe(true);
     }
+  });
+
+  test("every partitioned table ENFORCES the partition, not just the column", () => {
+    const state = createStateDb();
+    const raw = state.database;
+    new WorkItemDb(raw);
+    new EventLog(raw);
+    migrateDerivedCursor(raw);
+
+    const unenforced: string[] = [];
+    for (const table of NATURAL_KEYED_TABLES) {
+      if (partitionEnforcedBy(raw, table) === null) unenforced.push(table);
+    }
+    expect(unenforced).toEqual([]);
+  });
+
+  test("the surrogate-keyed exemption is verified, not merely claimed", () => {
+    // A table is exempt from partition-enforcement only because its key is a surrogate
+    // that is already globally unique (an AUTOINCREMENT rowid or a generated id), so no
+    // two domains can collide on it. Prove that rather than trusting the list — otherwise
+    // the exemption set is just a loophole for the next natural-keyed table.
+    const state = createStateDb();
+    const raw = state.database;
+    new WorkItemDb(raw);
+    new EventLog(raw);
+    migrateDerivedCursor(raw);
+
+    for (const [table, surrogate] of Object.entries(SURROGATE_KEYED_TABLES)) {
+      const pk = (raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; pk: number }>)
+        .filter((c) => c.pk > 0)
+        .map((c) => c.name);
+      expect({ table, pk }).toEqual({ table, pk: [surrogate] });
+    }
+  });
+
+  test("every partitioned table is classified — an 11th cannot be added silently", () => {
+    const classified = [...NATURAL_KEYED_TABLES, ...Object.keys(SURROGATE_KEYED_TABLES)].sort();
+    expect(classified).toEqual([...PARTITIONED_TABLES].sort());
+  });
+
+  test("aliases are partitioned by domain — two domains can each own a phase named impl", () => {
+    // Phases are stored as aliases. Without (domain_id, name) in the key, the second
+    // domain to run `mcx phase install` overwrites the first domain's bundled_js.
+    const state = createStateDb();
+    const alpha = state.createDomain("alpha", "/home/u/alpha");
+    const beta = state.createDomain("beta", "/home/u/beta");
+
+    state.saveAlias(
+      "impl",
+      "/a/impl.ts",
+      "alpha impl",
+      "defineAlias",
+      undefined,
+      undefined,
+      "ALPHA_JS",
+      undefined,
+      undefined,
+      null,
+      true,
+      undefined,
+      true,
+      alpha.id,
+    );
+    state.saveAlias(
+      "impl",
+      "/b/impl.ts",
+      "beta impl",
+      "defineAlias",
+      undefined,
+      undefined,
+      "BETA_JS",
+      undefined,
+      undefined,
+      null,
+      true,
+      undefined,
+      true,
+      beta.id,
+    );
+
+    expect(state.getAlias("impl", alpha.id)?.bundledJs).toBe("ALPHA_JS");
+    expect(state.getAlias("impl", beta.id)?.bundledJs).toBe("BETA_JS");
+    expect(state.listAliases(alpha.id).map((a) => a.description)).toEqual(["alpha impl"]);
+    expect(state.listAliases(beta.id).map((a) => a.description)).toEqual(["beta impl"]);
+
+    // Deleting one domain's phase leaves the other's intact.
+    state.deleteAlias("impl", alpha.id);
+    expect(state.getAlias("impl", alpha.id)).toBeUndefined();
+    expect(state.getAlias("impl", beta.id)?.bundledJs).toBe("BETA_JS");
   });
 
   test("domain ids start at 1, so NO_DOMAIN_ID can never collide with a real domain", () => {
@@ -115,6 +259,10 @@ describe("domain schema", () => {
 
       const remote = state.createDomain("work", "~/work", "boxen0010");
       expect(remote.host).toBe("boxen0010");
+      // Stored VERBATIM: ~/work is a path on boxen0010, so normalizing it against this
+      // filesystem would store a local cwd-relative path for a remote directory (#3034
+      // review 7). The previous revision did exactly that and this test never looked.
+      expect(remote.path).toBe("~/work");
 
       expect(state.getDomainByName("phoenix")).toEqual(phoenix);
       expect(state.getDomainById(phoenix.id)).toEqual(phoenix);
@@ -168,6 +316,84 @@ describe("domain schema", () => {
       expect(state.resolveDomain("/home/u/github/phoenix/src")?.id).toBe(inner.id);
       expect(state.resolveDomain("/home/u/github/other")?.id).toBe(outer.id);
       expect(state.resolveDomain("/home/u")).toBeNull();
+    });
+  });
+
+  describe("domain ids and deletion (#3034 review B6)", () => {
+    test("a deleted domain's id is never reused, so nothing gets adopted", () => {
+      const state = createStateDb();
+      const raw = state.database;
+      new WorkItemDb(raw);
+
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      const beta = state.createDomain("beta", "/home/u/beta");
+      expect(beta.id).toBe(alpha.id + 1);
+
+      state.deleteDomain("beta");
+      const gamma = state.createDomain("gamma", "/home/u/gamma");
+      // Without AUTOINCREMENT, gamma would take beta's rowid and inherit its rows.
+      expect(gamma.id).not.toBe(beta.id);
+      expect(gamma.id).toBeGreaterThan(beta.id);
+    });
+
+    test("deleteDomain REFUSES while dependents exist, naming per-table counts", () => {
+      const state = createStateDb();
+      const raw = state.database;
+      const wi = new WorkItemDb(raw);
+      const beta = state.createDomain("beta", "/home/u/beta");
+
+      const item = wi.createWorkItem({ issueNumber: 7 });
+      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [beta.id, item.id]);
+      raw.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
+
+      expect(() => state.deleteDomain("beta")).toThrow(/still has 2 dependent row\(s\)/);
+      expect(() => state.deleteDomain("beta")).toThrow(/work_items=1/);
+      expect(() => state.deleteDomain("beta")).toThrow(/mail=1/);
+      // Refusal leaves everything intact.
+      expect(state.getDomainByName("beta")).not.toBeNull();
+      expect(wi.getWorkItemByIssue(7, beta.id)?.id).toBe(item.id);
+    });
+
+    test("cascade deletes the dependents with the domain", () => {
+      const state = createStateDb();
+      const raw = state.database;
+      const wi = new WorkItemDb(raw);
+      const beta = state.createDomain("beta", "/home/u/beta");
+      const keep = state.createDomain("keep", "/home/u/keep");
+
+      const doomed = wi.createWorkItem({ issueNumber: 7 });
+      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [beta.id, doomed.id]);
+      const survivor = wi.createWorkItem({ issueNumber: 8 });
+      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [keep.id, survivor.id]);
+
+      expect(state.deleteDomain("beta", { cascade: true })).toBe(true);
+      expect(state.getDomainByName("beta")).toBeNull();
+      expect(wi.getWorkItemByIssue(7, beta.id)).toBeNull();
+      // Another domain's rows are untouched.
+      expect(wi.getWorkItemByIssue(8, keep.id)?.id).toBe(survivor.id);
+    });
+
+    test("created_at is a single sortable format across CLI and import paths", () => {
+      const state = createStateDb();
+      const d = state.createDomain("alpha", "/home/u/alpha");
+      // ISO-8601 with a Z, matching what the importer writes — mixing this with
+      // datetime('now') made any ORDER BY created_at sort imported domains as a block.
+      expect(d.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    });
+
+    test("resolveDomain matches through a symlinked path", () => {
+      const state = createStateDb();
+      const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
+      const link = join(tmpdir(), `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+      symlinkSync(real, link);
+      try {
+        const d = state.createDomain("proj", real);
+        // Querying via the symlink must find the domain registered by its real path.
+        expect(state.resolveDomain(join(link, "src"))?.id).toBe(d.id);
+      } finally {
+        unlinkSync(link);
+        rmSync(real, { recursive: true, force: true });
+      }
     });
   });
 

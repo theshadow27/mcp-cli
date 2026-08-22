@@ -55,8 +55,9 @@ export class EventLog {
             payload      TEXT    NOT NULL
           );
           CREATE INDEX IF NOT EXISTS idx_monitor_events_ts ON monitor_events(ts);
-          -- Replay a single domain's stream without scanning every other domain's (#3034).
-          CREATE INDEX IF NOT EXISTS idx_monitor_events_domain ON monitor_events(domain_id, seq);
+          -- No index on domain_id yet, deliberately: append() has no domainId parameter
+          -- until #3040, so every row would be 0 — pure write amplification on the
+          -- daemon's hottest insert for an index nothing can use. #3040 adds both.
         `);
         this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 1]);
       })();
