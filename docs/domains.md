@@ -83,7 +83,13 @@ this filesystem has no say, and is stored verbatim. The daemon rejects a relativ
 path at the IPC boundary rather than anchoring it on its own cwd, which is a different
 directory and would only misbehave after a restart.
 
-`add` refuses a duplicate name and a location another domain already owns, naming it.
+`add` refuses a duplicate name, and refuses a location that is **exactly** another domain's
+`[host:]path`, naming it. Exactly — not "inside": **nesting is legal and expected**.
+Registering both `~/github` and `~/github/mcp-cli` is the case the longest-prefix rule below
+exists for, and refusing the inner one would remove the only thing that rule has to decide.
+"Owns" elsewhere in this document means the prefix relation; here it means equality, and the
+two are not the same test.
+
 `rename` is a name change only: `id` and `path` are untouched, so every `domain_id`
 reference and every `which` answer survives it.
 
