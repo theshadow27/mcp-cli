@@ -267,7 +267,8 @@ export class DomainServer {
 
     let notified = false;
     link.onFailure = (reason) => {
-      if (this.stopped) return;
+      // No `stopped` check here: handleCrash already returns immediately when
+      // stopped, so a second one is a guard no test can tell from its absence.
       if (this.link !== link || notified) return;
       notified = true;
       void this.handleCrash(reason);
