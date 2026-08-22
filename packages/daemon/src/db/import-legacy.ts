@@ -37,11 +37,30 @@ interface ScopeFile {
 /** Key of the import marker row in the legacy DB's `daemon_state` table. */
 export const IMPORT_MARKER_KEY = "mcx_domain_import_at";
 
+/** Key recording how many rows the sealed import copied, next to the marker. */
+export const IMPORT_ROWCOUNT_KEY = "mcx_domain_import_rows";
+
 /**
- * The literal recovery incantation, exported so the log message and the doc comment are
- * the same string. Deleting `mcx.db` on its own is NOT enough — the marker outlives it.
+ * The recovery incantation, built from the paths this process actually opened.
+ *
+ * A function, not a constant, because `options` is mutable (every test harness and any
+ * non-default `MCP_CLI_DIR` retargets it) and because a hardcoded `~/.mcp-cli` made the
+ * two halves of the warning name different files — diagnosing the real database and then
+ * instructing an unconditional `rm` of a healthy one (#3034 review R2). A recovery
+ * instruction that deletes the wrong database is worse than no instruction.
+ *
+ * Step 0 is a backup: this arc has no rollback by design, so `rm` would otherwise destroy
+ * everything done since the bad import.
+ *
+ * TODO(#3035): `mcx domain import --reset` is the intended home for this. Shelling out to
+ * `sqlite3` is a stopgap — it is not a dependency of this project.
  */
-export const RECOVERY_INSTRUCTIONS = `to re-run the import: rm ~/.mcp-cli/mcx.db && sqlite3 ~/.mcp-cli/state.db "DELETE FROM daemon_state WHERE key = '${IMPORT_MARKER_KEY}';"`;
+export function recoveryInstructions(legacyPath = options.LEGACY_DB_PATH, targetPath = options.DB_PATH): string {
+  return (
+    `to re-run the import: cp ${targetPath} ${targetPath}.bak && rm ${targetPath} && ` +
+    `sqlite3 ${legacyPath} "DELETE FROM daemon_state WHERE key IN ('${IMPORT_MARKER_KEY}', '${IMPORT_ROWCOUNT_KEY}');"`
+  );
+}
 
 /**
  * Tables copied from the legacy DB, in dependency-free order.
@@ -81,7 +100,7 @@ export const IMPORTED_TABLES = [
  * deletion is supposed to be the recovery path.
  */
 const TABLE_FILTERS: Partial<Record<(typeof IMPORTED_TABLES)[number], { sql: string; params: string[] }>> = {
-  daemon_state: { sql: "key <> ?", params: [IMPORT_MARKER_KEY] },
+  daemon_state: { sql: "key NOT IN (?, ?)", params: [IMPORT_MARKER_KEY, IMPORT_ROWCOUNT_KEY] },
 };
 
 export interface TableImportResult {
@@ -123,12 +142,19 @@ export interface ImportOptions {
   db: Database;
   /** Legacy database path. Defaults to `options.LEGACY_DB_PATH`. */
   legacyPath?: string;
+  /**
+   * Path of `db`, used only in user-facing recovery text. Defaults to the filename of the
+   * handle itself, so the instruction names the database this process actually opened.
+   */
+  targetPath?: string;
   /** Directory of `mcx scope` JSON sidecars to import as domains. Defaults to `options.SCOPES_DIR`. */
   scopesDir?: string;
   /** Re-run even when the marker is set (`mcx domain import --force`). */
   force?: boolean;
   /** Progress/diagnostics sink. Defaults to stderr. */
   log?: (msg: string) => void;
+  /** How long to wait for the legacy write lock before declaring it unwritable. */
+  legacyBusyTimeoutMs?: number;
 }
 
 const declined = (reason: string): ImportResult => ({
@@ -149,8 +175,10 @@ const declined = (reason: string): ImportResult => ({
  */
 export function importLegacyState(opts: ImportOptions): ImportResult {
   const legacyPath = opts.legacyPath ?? options.LEGACY_DB_PATH;
+  const targetPath = opts.targetPath ?? opts.db.filename ?? options.DB_PATH;
   const scopesDir = opts.scopesDir ?? options.SCOPES_DIR;
   const log = opts.log ?? ((msg: string) => console.error(msg));
+  const recovery = recoveryInstructions(legacyPath, targetPath);
 
   if (!existsSync(legacyPath)) {
     return declined(`no legacy database at ${legacyPath}`);
@@ -159,6 +187,10 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
   let legacy: Database;
   try {
     legacy = new Database(legacyPath, { readwrite: true, create: false });
+    // Without this a momentary write lock (a leftover sqlite3 shell, a second daemon)
+    // surfaces as "not writable" in ~2ms and is reported to the user as a permissions
+    // problem on a database whose permissions are fine (#3034 review Y7).
+    legacy.exec(`PRAGMA busy_timeout = ${opts.legacyBusyTimeoutMs ?? 3000}`);
   } catch (err) {
     log(`[domain-import] cannot open legacy database ${legacyPath}: ${errText(err)}`);
     return declined(`cannot open ${legacyPath}`);
@@ -167,13 +199,11 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
   try {
     const existingMarker = readMarker(legacy);
     if (existingMarker !== null && !opts.force) {
-      // The decline that means "your data is not here" must be the LOUDEST, not the
-      // quietest. The marker outlives mcx.db, so a user who deleted mcx.db expecting a
-      // re-import lands here and would otherwise boot silently onto an empty database.
       const reason = `already imported at ${existingMarker}`;
-      if (targetLooksEmpty(opts.db)) {
+      const expected = readImportedRowCount(legacy);
+      if (importedDataMissing(opts.db, expected)) {
         log(
-          `[domain-import] WARNING: ${legacyPath} was already imported at ${existingMarker}, but ${options.DB_PATH} has no imported data. The daemon is starting on an EMPTY database — deleting mcx.db does not re-arm the import, because the marker lives in state.db. ${RECOVERY_INSTRUCTIONS}`,
+          `[domain-import] WARNING: ${legacyPath} was already imported at ${existingMarker} (${expected ?? "unknown"} row(s)), but ${targetPath} holds ${countImportedRows(opts.db)} of them. The daemon is starting WITHOUT your imported data — deleting mcx.db does not re-arm the import, because the marker lives in the legacy database. ${recovery}`,
         );
       } else {
         log(`[domain-import] ${reason} — skipping`);
@@ -181,11 +211,10 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
       return declined(reason);
     }
 
-    // SQLite silently degrades `readwrite` to read-only rather than throwing at open
-    // time, so the marker write would fail AFTER the copy — leaving rows imported, the
-    // marker unset, and the import re-running on every start. Since INSERT OR IGNORE can
-    // only add and never reconcile, that resurrects rows deleted after the first pass.
-    // Probe first and copy nothing if we could not seal the result.
+    // Not load-bearing for correctness any more — the marker write happens inside the
+    // same transaction as the copies, so an unwritable legacy DB rolls the whole thing
+    // back on its own. This is an early, friendlier exit that avoids doing 17 copies
+    // only to discard them, and it produces a better message than a failed INSERT.
     const writeError = probeLegacyWritable(legacy);
     if (writeError !== null) {
       log(
@@ -194,25 +223,7 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
       return declined(`legacy database not writable: ${writeError}`);
     }
 
-    const result = copyEverything(opts.db, legacyPath, scopesDir, log);
-
-    if (result.failedTables.length > 0) {
-      // Best-effort covers rows, not tables. Withhold the marker so the next start
-      // retries instead of sealing a wholly or partly failed import forever.
-      log(
-        `[domain-import] ${result.failedTables.length} table(s) failed to import (${result.failedTables.join(", ")}); NOT marking the legacy database as imported — the import will be retried on the next start.`,
-      );
-      return result;
-    }
-
-    writeMarker(legacy);
-    result.sealed = true;
-    const notCopiedNote =
-      result.totalNotCopied > 0 ? `; ${result.totalNotCopied} row(s) not copied (already present or rejected)` : "";
-    log(
-      `[domain-import] imported ${result.totalCopied} row(s) and ${result.domainsImported} domain(s) from ${legacyPath}${notCopiedNote}`,
-    );
-    return result;
+    return copyEverything(opts.db, legacyPath, scopesDir, log);
   } catch (err) {
     log(`[domain-import] import failed: ${errText(err)}`);
     return declined(`import failed: ${errText(err)}`);
@@ -222,77 +233,127 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
 }
 
 /**
- * Can we actually write to the legacy database? `{ readwrite: true }` is a request, not
- * a guarantee — a read-only mount, a restored backup, a different uid or an SELinux
- * denial all yield a handle that only fails on first write. Returns the error message,
- * or null when writable. Leaves no trace: the probe is rolled back.
+ * The whole import, as ONE transaction: every table copy, the scope→domain rows, the
+ * derived-cursor clamp, AND the marker write. It commits only if all of them succeeded.
+ *
+ * This is the structural form of the doctrine "copy nothing at all rather than copying
+ * rows we could not mark as imported". The previous shape enforced that at one call site
+ * (the unwritable-legacy probe) and left every other failure trigger — a missing target
+ * table, SQLITE_FULL — committing rows with the marker withheld, which then retried on
+ * every start and resurrected rows the user had deleted. Making it a transaction rather
+ * than a rule to remember means no failure trigger, present or future, can leave a
+ * partial commit.
+ *
+ * The marker lives in the legacy database, which is ATTACHed here, so it is written as
+ * `legacy.daemon_state` on this same connection and is inside the transaction — verified
+ * by running: a ROLLBACK undoes the marker and the copies together.
+ *
+ * One honest limit: SQLite's atomic multi-database COMMIT uses a master journal, which
+ * WAL mode disables. So a hard crash *during the commit itself* could in principle leave
+ * the two files disagreeing. Every ERROR path — which is what this function is defending
+ * against — rolls back atomically, and a SIGKILL mid-copy was verified to leave the
+ * target empty and the legacy file byte-identical.
  */
-function probeLegacyWritable(legacy: Database): string | null {
-  try {
-    legacy.run("BEGIN IMMEDIATE");
-    legacy.run("CREATE TABLE mcx_import_write_probe (ok INTEGER)");
-    legacy.run("ROLLBACK");
-    return null;
-  } catch (err) {
-    try {
-      legacy.run("ROLLBACK");
-    } catch {
-      // no transaction was open — nothing to undo
-    }
-    return errText(err);
-  }
-}
-
-/**
- * Does `mcx.db` look like nothing was ever imported into it? Used only to decide how
- * loudly to report a marker-set decline.
- */
-function targetLooksEmpty(target: Database): boolean {
-  for (const table of ["work_items", "aliases", "agent_sessions", "mail", "auth_tokens", "alias_state"]) {
-    try {
-      const row = target.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${table}`).get();
-      if ((row?.n ?? 0) > 0) return false;
-    } catch {
-      // table absent — counts as empty for this purpose
-    }
-  }
-  return true;
-}
-
 function copyEverything(
   target: Database,
   legacyPath: string,
   scopesDir: string,
   log: (msg: string) => void,
 ): ImportResult {
-  const domains = importScopesAsDomains(target, scopesDir, log);
-
   const tables: TableImportResult[] = [];
-  // ATTACH and DETACH cannot run inside a transaction, so the BEGIN sits between them.
-  // One transaction over all 17 copies gives a consistent snapshot and closes the window
-  // where the derived cursor could be clamped against a partially-copied event log.
+  let domains = { imported: 0, skipped: 0 };
+  let aborted: string | null = null;
+
+  // ATTACH and DETACH cannot run inside a transaction, so they bracket it.
   target.run("ATTACH DATABASE ? AS legacy", [legacyPath]);
   try {
     target.run("BEGIN");
     try {
+      domains = importScopesAsDomains(target, scopesDir, log);
+      logUnimportedLegacyTables(target, log);
+
       for (const table of IMPORTED_TABLES) {
+        // SQLITE_FULL aborts the transaction out from under us; without this check the
+        // remaining copies would run in autocommit and be permanently committed.
+        if (!target.inTransaction) {
+          aborted = "the transaction was aborted by SQLite (typically a full disk)";
+          break;
+        }
         tables.push(copyTable(target, table, log));
       }
-      clampDerivedCursor(target, log);
+
+      if (aborted === null && target.inTransaction) {
+        clampDerivedCursor(target, log);
+      }
+
+      const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
+      const result = summarize(tables, failedTables, domains);
+
+      if (aborted !== null || !target.inTransaction) {
+        safeRollback(target);
+        log(`[domain-import] ${aborted ?? "the transaction is no longer active"} — nothing was imported`);
+        return { ...result, ran: false, sealed: false, reason: aborted ?? "transaction aborted" };
+      }
+
+      if (failedTables.length > 0) {
+        safeRollback(target);
+        log(
+          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ROLLED BACK — nothing was imported and the legacy database is unmarked, so the import will be retried on the next start.`,
+        );
+        return result;
+      }
+
+      // Inside the transaction, in the legacy database, on this connection.
+      writeMarker(target, result.totalCopied);
       target.run("COMMIT");
+
+      const notCopiedNote =
+        result.totalNotCopied > 0 ? `; ${result.totalNotCopied} row(s) not copied (already present or rejected)` : "";
+      log(
+        `[domain-import] imported ${result.totalCopied} row(s) and ${result.domainsImported} domain(s) from ${legacyPath}${notCopiedNote}`,
+      );
+      return { ...result, sealed: true };
     } catch (err) {
-      target.run("ROLLBACK");
+      // Roll back in its own try so a rollback failure cannot replace the real error —
+      // an aborted transaction makes ROLLBACK itself throw "no transaction is active",
+      // which is how a disk-full error got reported as a rollback error.
+      safeRollback(target);
       throw err;
     }
   } finally {
     target.run("DETACH DATABASE legacy");
   }
+}
 
-  const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
-  for (const t of tables) {
-    if (t.reason) log(`[domain-import] ${t.table}: ${t.failed ? "FAILED" : "skipped"} — ${t.reason}`);
+/**
+ * Name legacy tables this import does not carry over. Every one is excluded on purpose
+ * today (caches, telemetry, schema_versions), but a user who ran a newer mcx once and
+ * downgraded would otherwise lose an unknown table permanently under a success message.
+ */
+function logUnimportedLegacyTables(target: Database, log: (msg: string) => void): void {
+  try {
+    const rows = target
+      .query<{ name: string }, []>(
+        "SELECT name FROM legacy.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .all();
+    const known = new Set<string>([...IMPORTED_TABLES, "schema_versions"]);
+    const unimported = rows.map((r) => r.name).filter((n) => !known.has(n));
+    if (unimported.length > 0) {
+      log(
+        `[domain-import] not importing legacy table(s) ${unimported.join(", ")} — caches/telemetry, rebuilt on demand`,
+      );
+    }
+  } catch (err) {
+    log(`[domain-import] could not enumerate legacy tables: ${errText(err)}`);
   }
+}
 
+function summarize(
+  tables: TableImportResult[],
+  failedTables: string[],
+  domains: { imported: number; skipped: number },
+): ImportResult {
   return {
     ran: true,
     sealed: false,
@@ -305,16 +366,67 @@ function copyEverything(
   };
 }
 
+function safeRollback(db: Database): void {
+  try {
+    if (db.inTransaction) db.run("ROLLBACK");
+  } catch {
+    // Already aborted by SQLite — there is nothing left to undo.
+  }
+}
+
 /**
- * Park the derived-event cursor at the newest imported event.
+ * Can we actually write to the legacy database? `{ readwrite: true }` is a request, not
+ * a guarantee — a read-only mount, a restored backup, a different uid or an SELinux
+ * denial all yield a handle that only fails on first write. Returns the error message,
+ * or null when writable. Leaves no trace: the probe is rolled back.
  *
- * Imported `monitor_events` are history. Without this the cursor sits at 0 while
- * `currentSeq()` reports the imported maximum, so every historical event is reconciled
- * onto the live bus on first start — and derived rules mutate `work_items` and feed the
- * automation dispatcher. Clamping is preferred over dropping `monitor_events` from the
- * import because the event log is what `mcx monitor --since` replays; losing it loses
- * history that nothing else holds.
+ * No retry loop: `busy_timeout` on the handle already waits out contention, so a second
+ * attempt only doubles the worst-case wall time without changing any outcome.
  */
+function probeLegacyWritable(legacy: Database): string | null {
+  try {
+    legacy.run("BEGIN IMMEDIATE");
+    legacy.run("CREATE TABLE mcx_import_write_probe (ok INTEGER)");
+    legacy.run("ROLLBACK");
+    return null;
+  } catch (err) {
+    try {
+      if (legacy.inTransaction) legacy.run("ROLLBACK");
+    } catch {
+      // nothing open to undo
+    }
+    return errText(err);
+  }
+}
+
+/** Total rows currently held in `mcx.db` across the tables the import populates. */
+function countImportedRows(target: Database): number {
+  let total = 0;
+  for (const table of IMPORTED_TABLES) {
+    try {
+      total += target.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${quoteIdent(table)}`).get()?.n ?? 0;
+    } catch {
+      // table absent — contributes nothing
+    }
+  }
+  return total;
+}
+
+/**
+ * Is the imported data missing from `mcx.db`?
+ *
+ * Compares against the row count recorded alongside the marker rather than asking "is
+ * this file completely blank?" — the blank test was silenced permanently by a single
+ * unrelated row (a session restore, one `mcx claude spawn`), which is exactly the case
+ * the loud warning exists for (#3034 review Y9).
+ */
+function importedDataMissing(target: Database, expected: number | null): boolean {
+  const actual = countImportedRows(target);
+  if (expected === null) return actual === 0; // pre-count marker: fall back to the blank test
+  if (expected === 0) return false; // nothing was imported, so nothing can be missing
+  return actual < expected;
+}
+
 function clampDerivedCursor(target: Database, log: (msg: string) => void): void {
   // Tolerant: if monitor_events or derived_cursor is absent there is nothing to replay,
   // and copyTable has already flagged the missing table as `failed` so the marker is
@@ -368,12 +480,17 @@ function copyTable(
   }
 
   const shared = sourceCols.filter((c) => targetCols.has(c));
+  const droppedCols = sourceCols.filter((c) => !targetCols.has(c));
+  if (droppedCols.length > 0) {
+    log(`[domain-import] ${table}: dropping legacy-only column(s) ${droppedCols.join(", ")} — absent from mcx.db`);
+  }
   const total = countRows(target, "legacy", table, where, params);
   if (shared.length === 0) {
     return { table, copied: 0, notCopied: total, failed: total > 0, reason: "no columns in common" };
   }
   if (total === 0) return { table, copied: 0, notCopied: 0, failed: false };
 
+  const targetRowsBefore = countRows(target, "main", table);
   const columnList = shared.map(quoteIdent).join(", ");
   try {
     // INSERT OR IGNORE, not OR REPLACE: a row already in mcx.db wins over the legacy
@@ -390,7 +507,13 @@ function copyTable(
       `INSERT OR IGNORE INTO main.${quoteIdent(table)} (${columnList}) SELECT ${columnList} FROM legacy.${quoteIdent(table)}${where}`,
       params,
     );
-    return { table, copied: res.changes, notCopied: Math.max(0, total - res.changes), failed: false };
+    const notCopied = Math.max(0, total - res.changes);
+    if (notCopied > 0 && targetRowsBefore === 0) {
+      // "already present" is impossible when the target table started empty, so these
+      // rows were rejected by a constraint — data loss, not a benign re-run.
+      log(`[domain-import] ${table}: ${notCopied} row(s) REJECTED (target table was empty, so not duplicates)`);
+    }
+    return { table, copied: res.changes, notCopied, failed: false };
   } catch (err) {
     log(`[domain-import] table ${table} failed: ${errText(err)}`);
     return { table, copied: 0, notCopied: total, failed: true, reason: errText(err) };
@@ -417,10 +540,14 @@ function importScopesAsDomains(
     return { imported: 0, skipped: 0 };
   }
 
-  const insert = target.prepare("INSERT OR IGNORE INTO domains (name, host, path, created_at) VALUES (?, NULL, ?, ?)");
-
-  let imported = 0;
+  // Parse first, then order by the sidecar's own `created` time — NOT by filename.
+  // One location can hold one domain, so when two sidecars share a root exactly one
+  // survives; picking by filename meant an obsolete `aaa-old.json` beat the live
+  // `phoenix.json` on an alphabetical tiebreak the user was never told about, and the
+  // domain name IS the addressing scheme post-#3034 (#3034 review Y10).
+  const parsed: Array<{ name: string; root: string; createdAt: string; sortKey: string }> = [];
   let skipped = 0;
+
   for (const entry of entries.sort()) {
     const name = basename(entry, ".json");
     if (!isValidDomainName(name)) {
@@ -441,9 +568,8 @@ function importScopesAsDomains(
       skipped++;
       continue;
     }
-    const createdAt = typeof scope.created === "string" && scope.created.length > 0 ? scope.created : nowIso();
     // Scopes are local roots, so canonicalize like createDomain does. A relative or
-    // tilde root now throws rather than being anchored at the daemon's cwd.
+    // tilde root throws rather than being anchored at the daemon's cwd.
     let canonicalRoot: string;
     try {
       canonicalRoot = canonicalizeDomainPath(scope.root);
@@ -452,12 +578,34 @@ function importScopesAsDomains(
       skipped++;
       continue;
     }
-    const res = insert.run(name, canonicalRoot, createdAt);
+    const createdAt = typeof scope.created === "string" && scope.created.length > 0 ? scope.created : nowIso();
+    // Undated sidecars sort last, so a dated one always wins a location contest.
+    const sortKey = typeof scope.created === "string" && scope.created.length > 0 ? createdAt : "\uffff";
+    parsed.push({ name, root: canonicalRoot, createdAt, sortKey });
+  }
+
+  // Newest first: the most recently registered scope is the one the user is using.
+  parsed.sort((a, b) => (a.sortKey === b.sortKey ? a.name.localeCompare(b.name) : b.sortKey.localeCompare(a.sortKey)));
+
+  const insert = target.prepare("INSERT OR IGNORE INTO domains (name, host, path, created_at) VALUES (?, NULL, ?, ?)");
+  const winnerByRoot = new Map<string, string>();
+  let imported = 0;
+
+  for (const scope of parsed) {
+    const res = insert.run(scope.name, scope.root, scope.createdAt);
     if (res.changes > 0) {
+      winnerByRoot.set(scope.root, scope.name);
       imported++;
+      continue;
+    }
+    skipped++;
+    const winner = winnerByRoot.get(scope.root);
+    if (winner) {
+      log(
+        `[domain-import] skipped scope "${scope.name}": ${scope.root} is already registered as domain "${winner}" (newer sidecar wins; one domain per location)`,
+      );
     } else {
-      log(`[domain-import] skipped scope "${name}": a domain with that name or location already exists`);
-      skipped++;
+      log(`[domain-import] skipped scope "${scope.name}": a domain with that name already exists`);
     }
   }
   return { imported, skipped };
@@ -477,19 +625,36 @@ function readMarker(legacy: Database): string | null {
   }
 }
 
-function writeMarker(legacy: Database): void {
-  legacy.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_state (
+/** Rows the sealed import reported copying, or null if the marker predates the count. */
+function readImportedRowCount(legacy: Database): number | null {
+  try {
+    const row = legacy
+      .query<{ value: string }, [string]>("SELECT value FROM daemon_state WHERE key = ?")
+      .get(IMPORT_ROWCOUNT_KEY);
+    if (!row) return null;
+    const n = Number.parseInt(row.value, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stamp the legacy database, **through the target connection** so this write is part of
+ * the import's transaction and a rollback undoes it along with the copies.
+ */
+function writeMarker(target: Database, rowsCopied: number): void {
+  target.exec(`
+    CREATE TABLE IF NOT EXISTS legacy.daemon_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
-  legacy.run(
-    `INSERT INTO daemon_state (key, value, updated_at) VALUES (?, ?, unixepoch())
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-    [IMPORT_MARKER_KEY, nowIso()],
-  );
+  const upsert = `INSERT INTO legacy.daemon_state (key, value, updated_at) VALUES (?, ?, unixepoch())
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`;
+  target.run(upsert, [IMPORT_MARKER_KEY, nowIso()]);
+  target.run(upsert, [IMPORT_ROWCOUNT_KEY, String(rowsCopied)]);
 }
 
 // -- Helpers --

@@ -23,7 +23,9 @@ import {
   type UsageStat,
   canonicalizeDomainPath,
   hardenFile,
+  isValidDomainHost,
   isValidDomainName,
+  listPartitionedTables,
   options,
   resolveDomainForPath,
   resolveRealpath,
@@ -69,8 +71,11 @@ export class StateDb {
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { create: true });
     hardenFile(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL");
+    // busy_timeout FIRST: `journal_mode = WAL` itself takes a lock, so setting the
+    // timeout after it leaves a concurrent open able to die with SQLITE_BUSY inside the
+    // constructor. The daemon's flock covers the daemon, not tests or a direct opener.
     this.db.exec("PRAGMA busy_timeout = 3000");
+    this.db.exec("PRAGMA journal_mode = WAL");
     this.migrate();
   }
 
@@ -321,6 +326,16 @@ export class StateDb {
     }
   }
 
+  /**
+   * The v1 schema.
+   *
+   * **Do not add columns or tables to this method, or to any historical `if (version < N)`
+   * branch, in a later PR.** #3034 could write `domain_id` directly into these because
+   * `mcx.db` did not exist yet, so every database was fresh. From PR 2 of this arc
+   * onwards that is no longer true: an edit here silently no-ops on every already-created
+   * `mcx.db`, because `CREATE TABLE IF NOT EXISTS` finds the old shape and keeps it.
+   * New columns get a new `if (version < N)` step with `addColumnIfMissing`.
+   */
   private applyV1Schema(): void {
     this.db.exec(`
       -- Domains: mcx's DNS. A name bound to a location, and nothing else (#3034).
@@ -343,7 +358,6 @@ export class StateDb {
       -- resolveDomainForPath's longest-prefix rule ambiguous.
       CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_location
         ON domains(COALESCE(host, ''), path);
-      CREATE INDEX IF NOT EXISTS idx_domains_path ON domains(path);
 
       CREATE TABLE IF NOT EXISTS tool_cache (
         server_name TEXT NOT NULL,
@@ -458,8 +472,9 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
-      CREATE INDEX IF NOT EXISTS idx_mail_domain_recipient
-        ON mail(domain_id, recipient, read, created_at);
+      -- No domain index on mail yet, for the same reason event-log.ts declines one on
+      -- monitor_events: insertMail has no domainId parameter until #3038, so every row
+      -- is 0 and the index is write amplification for something nothing can use.
 
       CREATE TABLE IF NOT EXISTS notes (
         server_name TEXT NOT NULL,
@@ -1920,6 +1935,14 @@ export class StateDb {
     if (!isValidDomainName(name)) {
       throw new Error(`invalid domain name "${name}": must be alphanumeric, hyphens, or underscores`);
     }
+    // The local/remote branch is `host === null`, so an empty-ish host took the REMOTE
+    // path — stored verbatim, never canonicalized, absoluteness never checked — while
+    // COALESCE(host,'') in idx_domains_location treated it as LOCAL for uniqueness. It
+    // was simultaneously both (#3034 review Y6). Use null for local; anything else must
+    // be a real hostname.
+    if (host !== null && !isValidDomainHost(host)) {
+      throw new Error(`invalid domain host ${JSON.stringify(host)}: use null for a local domain`);
+    }
     const storedPath = host === null ? canonicalizeDomainPath(path) : path;
     const row = this.db
       .query<RawDomainRow, [string, string | null, string]>(
@@ -1960,35 +1983,27 @@ export class StateDb {
     return this.db.run("UPDATE domains SET name = ? WHERE name = ?", [newName, oldName]).changes > 0;
   }
 
-  /** Tables carrying a `domain_id` that would be orphaned by deleting a domain row. */
-  private static readonly DOMAIN_DEPENDENT_TABLES = [
-    "work_items",
-    "work_item_transitions",
-    "ci_run_states",
-    "mail",
-    "agent_sessions",
-    "alias_state",
-    "aliases",
-    "copilot_comment_state",
-    "monitor_events",
-    "derived_cursor",
-  ] as const;
+  /**
+   * Every table in this database that carries a `domain_id`, derived from the schema.
+   *
+   * Deliberately NOT a hand-maintained constant. The same list previously existed in
+   * four places with nothing tying them together, so a later PR that adds a partitioned
+   * table and updates none of them got green tests and a `deleteDomain` that silently
+   * under-counted. A list a future PR can forget to update is prose; a derivation it
+   * cannot forget is a function — which is the principle this whole epic is built on.
+   */
+  listPartitionedTables(): string[] {
+    return listPartitionedTables(this.db);
+  }
 
   /** Per-table counts of rows currently bound to `domainId`. Only non-zero entries. */
   countDomainDependents(domainId: number): Array<{ table: string; rows: number }> {
     const out: Array<{ table: string; rows: number }> = [];
-    for (const table of StateDb.DOMAIN_DEPENDENT_TABLES) {
-      // Tables owned by other schema consumers (WorkItemDb, EventLog, DerivedEvents) may
-      // not exist yet — StateDb is constructible on its own. An absent table has no rows
-      // to orphan, so it contributes nothing rather than throwing.
-      try {
-        const row = this.db
-          .query<{ n: number }, [number]>(`SELECT count(*) AS n FROM ${table} WHERE domain_id = ?`)
-          .get(domainId);
-        if ((row?.n ?? 0) > 0) out.push({ table, rows: row?.n ?? 0 });
-      } catch {
-        // table not created by this database's consumers
-      }
+    for (const table of this.listPartitionedTables()) {
+      const row = this.db
+        .query<{ n: number }, [number]>(`SELECT count(*) AS n FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`)
+        .get(domainId);
+      if ((row?.n ?? 0) > 0) out.push({ table, rows: row?.n ?? 0 });
     }
     return out;
   }
@@ -2010,21 +2025,20 @@ export class StateDb {
   deleteDomain(name: string, opts?: { cascade?: boolean }): boolean {
     const domain = this.getDomainByName(name);
     if (!domain) return false;
-    const dependents = this.countDomainDependents(domain.id);
 
-    if (dependents.length > 0 && !opts?.cascade) {
-      const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
-      const total = dependents.reduce((n, d) => n + d.rows, 0);
-      throw new Error(
-        `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
-      );
-    }
-
+    // Counted INSIDE the transaction: counting first and deleting after let a row
+    // inserted into a table that counted zero survive the cascade as an orphan.
     return this.db.transaction(() => {
-      if (dependents.length > 0) {
-        for (const { table } of dependents) {
-          this.db.run(`DELETE FROM ${table} WHERE domain_id = ?`, [domain.id]);
-        }
+      const dependents = this.countDomainDependents(domain.id);
+      if (dependents.length > 0 && !opts?.cascade) {
+        const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
+        const total = dependents.reduce((n, d) => n + d.rows, 0);
+        throw new Error(
+          `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
+        );
+      }
+      for (const { table } of dependents) {
+        this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
       }
       return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
     })();
@@ -2049,6 +2063,14 @@ export class StateDb {
 }
 
 // -- Helpers --
+
+/**
+ * Quote a SQL identifier. These come from `sqlite_master`, never from user input, but
+ * interpolation into SQL is quoted unconditionally rather than trusted case by case.
+ */
+function quoteSqlIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
 
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
 function formatSqliteDatetime(ms: number): string {

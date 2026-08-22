@@ -230,13 +230,25 @@ export class WorkItemDb {
       version = 2;
     }
     if (version < 3) {
-      this.db.exec("ALTER TABLE work_items ADD COLUMN last_seen_head_oid TEXT");
-      this.setSchemaVersion(CONSUMER, 3);
+      // Transactional, like the v<6 step three cases down. These were dead code for
+      // existing installs; mcx.db is a brand-new file, so #3034 re-arms all of them for
+      // 100% of users — and an interruption between the ALTER and the version bump
+      // bricks the daemon permanently ("duplicate column name" on every later open).
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN last_seen_head_oid TEXT");
+        this.setSchemaVersion(CONSUMER, 3);
+      })();
       version = 3;
     }
     if (version < 4) {
-      this.db.exec("ALTER TABLE work_items ADD COLUMN merge_state_status TEXT");
-      this.setSchemaVersion(CONSUMER, 4);
+      // Transactional, like the v<6 step three cases down. These were dead code for
+      // existing installs; mcx.db is a brand-new file, so #3034 re-arms all of them for
+      // 100% of users — and an interruption between the ALTER and the version bump
+      // bricks the daemon permanently ("duplicate column name" on every later open).
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN merge_state_status TEXT");
+        this.setSchemaVersion(CONSUMER, 4);
+      })();
       version = 4;
     }
     if (version < 5) {
@@ -262,8 +274,14 @@ export class WorkItemDb {
       version = 6;
     }
     if (version < 7) {
-      this.db.exec("ALTER TABLE work_items ADD COLUMN automation_overrides TEXT");
-      this.setSchemaVersion(CONSUMER, 7);
+      // Transactional, like the v<6 step three cases down. These were dead code for
+      // existing installs; mcx.db is a brand-new file, so #3034 re-arms all of them for
+      // 100% of users — and an interruption between the ALTER and the version bump
+      // bricks the daemon permanently ("duplicate column name" on every later open).
+      this.db.transaction(() => {
+        this.db.exec("ALTER TABLE work_items ADD COLUMN automation_overrides TEXT");
+        this.setSchemaVersion(CONSUMER, 7);
+      })();
       version = 7;
     }
   }
@@ -402,10 +420,15 @@ export class WorkItemDb {
     forced: boolean,
     forceReason?: string,
   ): void {
+    // domain_id is inherited from the parent work item rather than defaulted. A
+    // denormalized column with no writer is worse than no column: countDomainDependents
+    // is the function deleteDomain's refusal invariant lives in, and with every row at 0
+    // it reported a confident zero while a cascade orphaned the item's whole history
+    // (#3034 review Y5).
     this.db
       .query(
-        `INSERT INTO work_item_transitions (work_item_id, from_phase, to_phase, forced, force_reason)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO work_item_transitions (domain_id, work_item_id, from_phase, to_phase, forced, force_reason)
+         VALUES (COALESCE((SELECT domain_id FROM work_items WHERE id = ?1), 0), ?1, ?2, ?3, ?4, ?5)`,
       )
       .run(workItemId, fromPhase, toPhase, forced ? 1 : 0, forceReason ?? null);
   }

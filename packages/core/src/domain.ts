@@ -47,6 +47,18 @@ export function isDomainScoped(domainId: number): boolean {
   return domainId > NO_DOMAIN_ID;
 }
 
+/**
+ * A domain's host, when it has one: a hostname or an ssh alias. Never empty — `null` is
+ * how a local domain is spelled, and an empty string was silently taking the remote
+ * branch for canonicalization while colliding with local domains for uniqueness.
+ */
+const DOMAIN_HOST_RE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
+
+/** True when `host` is usable as a domain's host component. `null` (local) is not a host. */
+export function isValidDomainHost(host: string): boolean {
+  return host.length > 0 && host.length <= 253 && DOMAIN_HOST_RE.test(host);
+}
+
 /** Domain names are the mail/CLI addressing vocabulary: alphanumeric, hyphen, underscore. */
 const DOMAIN_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
@@ -162,6 +174,27 @@ export function parseDomainLocation(spec: string): DomainLocation {
   const path = spec.slice(colon + 1);
   if (host.includes("/") || path.length === 0) return { host: null, path: spec };
   return { host, path };
+}
+
+/**
+ * Every table in `db` carrying a `domain_id` column, derived from the schema itself.
+ *
+ * The partitioned set was previously a `const` array duplicated across three files with
+ * nothing tying them together — which, by this epic's own principle, is prose: a later PR
+ * could add a partitioned table, update none of the copies, and get green tests plus a
+ * `deleteDomain` that silently orphaned rows. Derived from `sqlite_master`, that is not
+ * possible.
+ */
+export function listPartitionedTables(db: {
+  query: (sql: string) => { all: () => unknown[] };
+}): string[] {
+  const rows = db
+    .query(
+      `SELECT m.name AS name FROM sqlite_master m JOIN pragma_table_info(m.name) c
+        WHERE m.type = 'table' AND c.name = 'domain_id' ORDER BY m.name`,
+    )
+    .all() as Array<{ name: string }>;
+  return rows.map((r) => r.name);
 }
 
 /** Render a domain's location back to the `[host:]path` form `parseDomainLocation` accepts. */

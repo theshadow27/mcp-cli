@@ -3,27 +3,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { NO_DOMAIN_ID, options } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import { StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 const repoRoot = resolve(import.meta.dir, "../../../..");
-
-/** Every table this schema partitions by domain. */
-const PARTITIONED_TABLES = [
-  "work_items",
-  "work_item_transitions",
-  "ci_run_states",
-  "mail",
-  "agent_sessions",
-  "alias_state",
-  "aliases",
-  "copilot_comment_state",
-  "monitor_events",
-  "derived_cursor",
-] as const;
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -148,7 +134,11 @@ describe("domain schema", () => {
     new EventLog(raw);
     migrateDerivedCursor(raw);
 
-    for (const table of PARTITIONED_TABLES) {
+    // Derived, not listed: this asserts the schema is self-consistent rather than
+    // asserting a literal against itself.
+    const derived = listPartitionedTables(raw);
+    expect(derived.length).toBeGreaterThan(0);
+    for (const table of derived) {
       expect(columnsOf(raw, table).has("domain_id")).toBe(true);
     }
   });
@@ -187,8 +177,53 @@ describe("domain schema", () => {
   });
 
   test("every partitioned table is classified — an 11th cannot be added silently", () => {
+    // This used to compare three hardcoded literals in ONE file against each other and
+    // never read the database, so an 11th partitioned table added to a live mcx.db was
+    // missed entirely (#3034 review Y4). The classification is now checked against the
+    // schema, so a table added without a decision fails here.
+    const state = createStateDb();
+    const raw = state.database;
+    new WorkItemDb(raw);
+    new EventLog(raw);
+    migrateDerivedCursor(raw);
+
     const classified = [...NATURAL_KEYED_TABLES, ...Object.keys(SURROGATE_KEYED_TABLES)].sort();
-    expect(classified).toEqual([...PARTITIONED_TABLES].sort());
+    expect(classified).toEqual(listPartitionedTables(raw).sort());
+  });
+
+  test("the derivation catches a partitioned table nobody classified", () => {
+    // Prove the check above is not another tautology: add an 11th partitioned table to a
+    // live database and confirm the derived set grows while the hand-maintained
+    // classification does not.
+    const state = createStateDb();
+    const raw = state.database;
+    new WorkItemDb(raw);
+    new EventLog(raw);
+    migrateDerivedCursor(raw);
+
+    const before = listPartitionedTables(raw);
+    raw.exec("CREATE TABLE cards (domain_id INTEGER NOT NULL DEFAULT 0, slug TEXT NOT NULL)");
+    const after = listPartitionedTables(raw);
+
+    expect(after).toContain("cards");
+    expect(after.length).toBe(before.length + 1);
+    const classified = [...NATURAL_KEYED_TABLES, ...Object.keys(SURROGATE_KEYED_TABLES)].sort();
+    expect(classified).not.toEqual(after.sort());
+  });
+
+  test("countDomainDependents follows the schema, not a hand-maintained list", () => {
+    // StateDb.DOMAIN_DEPENDENT_TABLES is gone; the refuse-with-counts invariant reads the
+    // same derivation, so a new partitioned table is counted the moment it exists.
+    const state = createStateDb();
+    const raw = state.database;
+    new WorkItemDb(raw);
+    const alpha = state.createDomain("alpha", "/home/u/alpha");
+
+    raw.exec("CREATE TABLE cards (domain_id INTEGER NOT NULL DEFAULT 0, slug TEXT NOT NULL)");
+    raw.run("INSERT INTO cards (domain_id, slug) VALUES (?, 'c1')", [alpha.id]);
+
+    expect(state.countDomainDependents(alpha.id)).toEqual([{ table: "cards", rows: 1 }]);
+    expect(() => state.deleteDomain("alpha")).toThrow(/cards=1/);
   });
 
   test("aliases are partitioned by domain — two domains can each own a phase named impl", () => {
@@ -394,6 +429,68 @@ describe("domain schema", () => {
         unlinkSync(link);
         rmSync(real, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("review round 2 — Y5/Y6", () => {
+    test("Y5: work_item_transitions inherit their parent's domain, so counts do not lie", () => {
+      const state = createStateDb();
+      const raw = state.database;
+      const wi = new WorkItemDb(raw);
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+
+      const item = wi.createWorkItem({ issueNumber: 7 });
+      raw.run("UPDATE work_items SET domain_id = ? WHERE id = ?", [alpha.id, item.id]);
+      wi.recordTransition(item.id, "impl", "qa", false);
+      wi.recordTransition(item.id, "qa", "done", false);
+
+      // Each transition takes the domain its parent held when it was recorded. The
+      // creation transition predates the assignment above and correctly stays at the
+      // sentinel; #3037 gives createWorkItem a domain and closes that gap.
+      const rows = raw
+        .query<{ domain_id: number }, []>(
+          "SELECT domain_id FROM work_item_transitions WHERE to_phase IN ('qa', 'done') ORDER BY id",
+        )
+        .all();
+      expect(rows).toEqual([{ domain_id: alpha.id }, { domain_id: alpha.id }]);
+
+      // The count that deleteDomain's refusal is built on must see them — it previously
+      // reported a confident zero because every row was at 0.
+      const counts = state.countDomainDependents(alpha.id);
+      expect(counts).toContainEqual({ table: "work_item_transitions", rows: 2 });
+      expect(() => state.deleteDomain("alpha")).toThrow(/work_item_transitions=2/);
+
+      // ...and a cascade takes that history with the item rather than orphaning it.
+      state.deleteDomain("alpha", { cascade: true });
+      expect(
+        raw
+          .query<{ n: number }, []>("SELECT count(*) AS n FROM work_item_transitions WHERE to_phase IN ('qa', 'done')")
+          .get()?.n,
+      ).toBe(0);
+    });
+
+    test("Y5: a transition for an unassigned work item stays at the sentinel", () => {
+      const state = createStateDb();
+      const wi = new WorkItemDb(state.database);
+      const item = wi.createWorkItem({ issueNumber: 8 });
+      wi.recordTransition(item.id, null, "impl", false);
+      expect(
+        state.database.query<{ domain_id: number }, []>("SELECT domain_id FROM work_item_transitions").get()?.domain_id,
+      ).toBe(NO_DOMAIN_ID);
+    });
+
+    test("Y6: an empty or malformed host is rejected instead of taking the remote branch", () => {
+      const state = createStateDb();
+      // "" used to be remote for canonicalization (stored verbatim, never checked for
+      // absoluteness) and local for uniqueness (COALESCE(host,'')) at the same time.
+      expect(() => state.createDomain("empty", "relative/not/absolute", "")).toThrow(/invalid domain host/);
+      expect(() => state.createDomain("blank", "/tmp/x", "   ")).toThrow(/invalid domain host/);
+      expect(() => state.createDomain("slashy", "/tmp/x", "has/slash")).toThrow(/invalid domain host/);
+      // A real host still works, and is stored verbatim.
+      const remote = state.createDomain("work", "~/work", "boxen0010");
+      expect(remote.path).toBe("~/work");
+      // ...and null is still how a local domain is spelled.
+      expect(state.createDomain("local", "/tmp").host).toBeNull();
     });
   });
 

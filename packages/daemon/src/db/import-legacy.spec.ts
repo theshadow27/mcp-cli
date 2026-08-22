@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
-import { IMPORTED_TABLES, IMPORT_MARKER_KEY, RECOVERY_INSTRUCTIONS, importLegacyState } from "./import-legacy";
+import { IMPORTED_TABLES, IMPORT_MARKER_KEY, importLegacyState, recoveryInstructions } from "./import-legacy";
 import { StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
@@ -378,7 +378,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(result.totalCopied).toBe(0);
     // The marker must NOT be sealed over a failed import.
     expect(markerOf(ws.legacyPath)).toBeNull();
-    expect(logs.some((l) => l.includes("NOT marking the legacy database as imported"))).toBe(true);
+    expect(logs.some((l) => l.includes("ROLLED BACK"))).toBe(true);
   });
 
   test("B2: a failed import retries on the next start instead of being sealed forever", () => {
@@ -428,9 +428,9 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     expect(result.ran).toBe(false);
     const warning = logs.find((l) => l.includes("WARNING"));
     expect(warning).toBeTruthy();
-    expect(warning).toContain("EMPTY database");
+    expect(warning).toContain("WITHOUT your imported data");
     // The message must carry the incantation that actually works, not "delete mcx.db".
-    expect(warning).toContain(RECOVERY_INSTRUCTIONS);
+    expect(warning).toContain(recoveryInstructions(ws.legacyPath, ws.targetPath));
     expect(warning).toContain(IMPORT_MARKER_KEY);
   });
 
@@ -640,5 +640,253 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     expect(second.failedTables).toEqual([]);
     expect(second.totalCopied).toBe(0);
     expect(target.getState("config_hash")).toBe("prod-hash");
+  });
+});
+
+describe("import atomicity — an unsealed run leaves the target untouched (#3034 review R1)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  function workspace() {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-atomic-"));
+    dirs.push(dir);
+    return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
+  }
+
+  function target(path: string): StateDb {
+    const state = freshTargetDb(path);
+    open.push(state);
+    return state;
+  }
+
+  /** Row counts for every table the import touches, so a run can be proved a no-op. */
+  function snapshot(db: Database): Record<string, number> {
+    // Ask the schema which tables exist rather than probing with try/catch — one of these
+    // tests DROPs a table on purpose, and a swallowed error is indistinguishable from a
+    // real one.
+    const present = new Set(
+      db
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all()
+        .map((r) => r.name),
+    );
+    const out: Record<string, number> = {};
+    for (const t of [...IMPORTED_TABLES, "domains"]) {
+      if (!present.has(t)) continue;
+      out[t] = db.query<{ n: number }, []>(`SELECT count(*) AS n FROM "${t}"`).get()?.n ?? 0;
+    }
+    return out;
+  }
+
+  function markerOf(legacyPath: string): string | null {
+    const legacy = new Database(legacyPath, { readwrite: true, create: false });
+    const row = legacy
+      .query<{ value: string }, [string]>("SELECT value FROM daemon_state WHERE key = ?")
+      .get(IMPORT_MARKER_KEY);
+    legacy.close();
+    return row?.value ?? null;
+  }
+
+  test("(a) one failed table rolls back the other sixteen — nothing is committed", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    mkdirSync(ws.scopesDir, { recursive: true });
+    writeFileSync(join(ws.scopesDir, "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+    const state = target(ws.targetPath);
+    // Remove one target table so exactly one copy fails.
+    state.database.run("DROP TABLE notes");
+
+    const before = snapshot(state.database);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      targetPath: ws.targetPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+
+    expect(result.sealed).toBe(false);
+    expect(result.failedTables).toContain("notes");
+    // The whole point: NOT "17 rows committed, marker withheld".
+    expect(snapshot(state.database)).toEqual(before);
+    expect(markerOf(ws.legacyPath)).toBeNull();
+    // ...including the scope→domain rows, which used to sit outside the transaction.
+    expect(state.listDomains()).toEqual([]);
+  });
+
+  test("(a2) an unsealed pass cannot resurrect rows the user deleted afterwards", () => {
+    // The regression the reviewer asked for: unsealed pass → mutate the target → retry
+    // → the target is unchanged. The old shape committed rows, withheld the marker, and
+    // then re-imported (and resurrected) on every subsequent start, forever.
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const state = target(ws.targetPath);
+    state.database.run("DROP TABLE notes");
+    importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      targetPath: ws.targetPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+
+    // A user doing ordinary work in the target between starts.
+    state.setState("user_key", "user_value");
+    const before = snapshot(state.database);
+
+    const retry = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      targetPath: ws.targetPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(retry.sealed).toBe(false);
+    expect(snapshot(state.database)).toEqual(before);
+    expect(state.getState("user_key")).toBe("user_value");
+  });
+
+  test("(c) a transaction aborted by SQLite commits nothing and reports the real error", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    // Give the legacy DB a payload big enough that copying it MUST allocate new pages —
+    // a handful of small rows fits in the target's existing free pages and never
+    // overflows, which is why pinning max_page_count alone was not enough to trigger it.
+    const seed = new Database(ws.legacyPath, { readwrite: true, create: false });
+    seed.run("INSERT INTO notes (server_name, tool_name, note) VALUES ('big', 'blob', ?)", ["x".repeat(2_000_000)]);
+    seed.close();
+
+    const state = target(ws.targetPath);
+    const before = snapshot(state.database);
+    // Force SQLITE_FULL mid-copy: SQLite ABORTS the transaction, which used to let the
+    // remaining copies run in autocommit and be permanently committed.
+    const pages = state.database.query<{ page_count: number }, []>("PRAGMA page_count").get()?.page_count ?? 2;
+    state.database.exec(`PRAGMA max_page_count = ${pages}`);
+
+    const logs: string[] = [];
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      targetPath: ws.targetPath,
+      scopesDir: ws.scopesDir,
+      log: (m) => logs.push(m),
+    });
+    state.database.exec("PRAGMA max_page_count = 1073741823");
+
+    expect(result.sealed).toBe(false);
+    expect(snapshot(state.database)).toEqual(before);
+    expect(markerOf(ws.legacyPath)).toBeNull();
+    // The rollback's own error must not have replaced the real one.
+    const joined = logs.join("\n");
+    expect(joined).not.toContain("cannot rollback - no transaction is active");
+  });
+
+  test("a successful import still commits everything and seals", () => {
+    const ws = workspace();
+    writeLegacyDb(ws.legacyPath);
+    const state = target(ws.targetPath);
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath: ws.legacyPath,
+      targetPath: ws.targetPath,
+      scopesDir: ws.scopesDir,
+      log: () => {},
+    });
+    expect(result.sealed).toBe(true);
+    expect(result.failedTables).toEqual([]);
+    expect(result.totalCopied).toBeGreaterThan(0);
+    expect(markerOf(ws.legacyPath)).toBeTruthy();
+    expect(state.getState("config_hash")).toBe("abc123");
+  });
+});
+
+describe("recoveryInstructions (#3034 review R2)", () => {
+  test("names the databases this process actually opened, not ~/.mcp-cli", () => {
+    const text = recoveryInstructions("/srv/custom/state.db", "/srv/custom/mcx.db");
+    expect(text).toContain("/srv/custom/mcx.db");
+    expect(text).toContain("/srv/custom/state.db");
+    // The bug: diagnosing the real DB then instructing `rm` of a different, healthy one.
+    expect(text).not.toContain("~/.mcp-cli");
+  });
+
+  test("backs up before deleting, since this arc has no rollback", () => {
+    const text = recoveryInstructions("/srv/s.db", "/srv/m.db");
+    expect(text).toContain("cp /srv/m.db /srv/m.db.bak");
+    expect(text.indexOf("cp ")).toBeLessThan(text.indexOf("rm "));
+  });
+
+  test("clears both marker keys, so the re-armed import is not half-armed", () => {
+    const text = recoveryInstructions("/srv/s.db", "/srv/m.db");
+    expect(text).toContain(IMPORT_MARKER_KEY);
+    expect(text).toContain("mcx_domain_import_rows");
+  });
+});
+
+describe("legacy handle contention (#3034 review Y7)", () => {
+  const dirs: string[] = [];
+  const open: Array<{ close: () => void }> = [];
+
+  afterEach(() => {
+    for (const c of open) c.close();
+    open.length = 0;
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+  });
+
+  test("a held write lock is waited out, not reported in 2ms as a permissions problem", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-lock-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    const targetPath = join(dir, "mcx.db");
+    writeLegacyDb(legacyPath);
+
+    // A concurrent writer holding the write lock — a leftover sqlite3 shell, a second
+    // daemon. The probe used to give up in ~2.4ms with no wait at all and tell the user
+    // to fix permissions on a database whose permissions were fine.
+    const blocker = new Database(legacyPath, { readwrite: true, create: false });
+    blocker.run("BEGIN IMMEDIATE");
+    blocker.run("INSERT INTO daemon_state (key, value) VALUES ('blocker', '1')");
+
+    const state = freshTargetDb(targetPath);
+    open.push(state);
+    const logs: string[] = [];
+    const started = Date.now();
+    const result = importLegacyState({
+      db: state.database,
+      legacyPath,
+      targetPath,
+      scopesDir: join(dir, "scopes"),
+      legacyBusyTimeoutMs: 400,
+      log: (m) => logs.push(m),
+    });
+    const elapsed = Date.now() - started;
+    blocker.run("ROLLBACK");
+    blocker.close();
+
+    // It waited out the configured window instead of failing instantly...
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    // ...and when the lock genuinely does not clear, the outcome is still safe:
+    // nothing copied, marker withheld, retried next start.
+    expect(result.ran).toBe(false);
+    expect(result.reason).toContain("not writable");
+    expect(state.database.query<{ n: number }, []>("SELECT count(*) AS n FROM mail").get()?.n).toBe(0);
+  });
+
+  test("the default wait is 3s, not the 2ms that misdiagnosed contention", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mcx-import-lock2-"));
+    dirs.push(dir);
+    const legacyPath = join(dir, "state.db");
+    writeLegacyDb(legacyPath);
+    const legacy = new Database(legacyPath, { readwrite: true, create: false });
+    legacy.exec("PRAGMA busy_timeout = 3000");
+    expect(legacy.query<{ timeout: number }, []>("PRAGMA busy_timeout").get()?.timeout).toBe(3000);
+    legacy.close();
   });
 });
