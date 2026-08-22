@@ -274,6 +274,127 @@ bricked the pipeline on the next transition.
 - `.claude/memory/project_bedrock_spawns_935.md:14` documents the `resolveModelName` caveat
   removed by #2659. Meta-file, orchestrator-owned — update at retro, not by a worker.
 
+## Results
+
+> Written 2026-08-22 at wind-down, 19 days after the sprint started and 17 days after the last
+> commit landed on it. Sprint 77 did not end — it **stopped**. See "Why this sprint has no
+> ending" below; the honest version, not a euphemism.
+
+- **PRs merged**: 11 of a planned 16 (+1 mid-sprint amendment) — 10 during the run, plus #2964
+  recovered from a 17-day strand at wind-down
+- **Issues closed**: 12 (9 during the run; #1328 + #1372 + #1375 at wind-down via #2964)
+- **Issues never started**: 6 — #935, #1939, #1249, #1510, #1964, #1829
+- **Issues in flight at the freeze**: 1 — #1328 (PR #2964), **merged** at wind-down, 17 days late
+- **New issues filed during the run**: 44 (#2924–#2980) — by far the sprint's largest output
+- **Released**: no. A partial sprint that stopped mid-flight does not warrant a version bump;
+  the merged work is already on `main` and will ride the next intentional release.
+
+### What landed
+
+| Issue | PR | Merged | Note |
+|---|---|---|---|
+| #1831 tls cert/key validation | #2925 | 2026-08-03 13:41Z | |
+| #1459 sites 500 → wiggle + retry | #2930 | 2026-08-03 13:55Z | **issue deliberately left open** — see below |
+| #2659 verbatim model tier passthrough | #2929 | 2026-08-03 13:56Z | found live-degrading every worker to a stale tier |
+| #1750 `bye` keeps the worktree by default | #2942 | 2026-08-04 21:38Z | |
+| #1702 reject tool-wildcard + arg-pattern | #2927 | 2026-08-04 21:39Z | plan mis-sized it as low; triage escalated to high |
+| #1245 vfs adaptive batch sizing | #2950 | 2026-08-04 21:39Z | |
+| #1590 per-server tool-call rate limit | #2941 | 2026-08-04 22:28Z | |
+| #1924 monitor event envelope | #2931 | 2026-08-04 22:32Z | |
+| #1540 sites/owa BaseFolderId + PUID | #2934 | 2026-08-04 22:45Z | |
+| #2690 am-i-done admission control | #2949 | 2026-08-04 23:07Z | mid-sprint amendment; **already paying for itself** |
+
+#2690 is worth calling out: it was added to scope mid-sprint because host CPU contention (not
+API quota) was the real throughput bottleneck, and its gate-lease admission control is what
+made this wind-down's own `am-i-done` run survive a load average of 16 — it queued 192s for a
+slot and then admitted at 45% CPU rather than joining a SIGTERM storm.
+
+**#1459 is the one entry that resists a simple "closed" or "open".** Its implementation
+**merged** (PR #2930, `qa:pass`). The issue is still open *on purpose*: `loadCatalog` seeds
+`catalog.json` only when absent and never reconciles, so the new `retryOn` field reaches no
+existing installation. The PR says "Refs #1459", not "fixes", and states the limitation rather
+than implying the 500-retry problem is solved. It is blocked from reaching users by #2926.
+**Anyone re-planning #1459 should read PR #2930 first — the code is written and merged; what
+remains is seed reconciliation, which is #2926's problem, not a re-implementation.**
+
+### #1328 — the stranded PR (resolved at wind-down)
+
+PR #2964 (transition log → `bun:sqlite`) was the sprint's largest item and the only one still in
+flight when the orchestrator stopped. **It merged 2026-08-22T08:07:28Z as `f471c791`, closing
+#1328, #1372 and #1375.**
+
+It sat **CI-green on all five checks, MERGEABLE, CLEAN, carrying `review:changes`, for 17 days**
+— with a completed adversarial re-review sitting in its sticky comment the whole time, scoping
+the remaining work to one ~3-line blocker and two documentation-honesty edits. Nobody read it.
+Filed as #3031.
+
+Recovery took two further repair rounds and one more adversarial review. Round 3 fixed the two
+prescribed ENOENT sites and then wrote comments asserting the invariant held; a fresh reviewer
+found the other two (`unlinkSync` ×2, `renameSync`) and reproduced the consequence with two real
+processes — **a transition committed to the database while the process exited non-zero**. Round 4
+fixed all four and added `scripts/rules/staging-path-enoent-tolerant.rule.ts`, which is the
+durable half: it holds every staging-path syscall to an ENOENT branch, so the fifth site gets
+caught by machine rather than by a reviewer's diligence.
+
+Deliberately **not** solved, and filed rather than bundled: **#2980** (mixed-binary rollout — an
+old jsonl-era `mcx` silently re-derives phase history after the migration; no importer-level
+predicate can distinguish that from a legitimate declared back-edge, so it is a design gap in the
+migration strategy, not a repair). Also filed off this PR: #2962, #2975–#2979, and #3120, #3121,
+#3122, #3139 found during review.
+
+### What did not land, and why: never started
+
+**#935, #1939, #1249, #1510, #1964, #1829 were never started.** Not attempted-and-failed — no
+branch was ever cut, no session was ever spawned, no PR ever existed for any of them. A
+sprint-78 planner reusing them as fillers is picking up untouched work, and nothing in this
+sprint's history constrains how they should be approached.
+
+Each was gated on something that never arrived:
+
+- **#935** (spawn profiles) — `blockedBy` #2659. #2659 merged 13:56Z, ~4 minutes after the
+  13:52Z freeze began, so the unblock landed into a period where spawning was prohibited.
+- **#1939** (notification cadence) — `blockedBy` #1924. #1924 merged, but its own review found
+  all three documented envelope invariants violable and it went to self-repair; #1939 consumes
+  the severity tag, so it could not launch until that invariant actually held.
+- **#1510** (scoped GH_TOKEN) — `blockedBy` #935, third in the `envOverrides` chain.
+- **#1829** (NODE_USE_SYSTEM_CA) — `blockedBy` #1510, fourth in the same chain. The chain
+  #2659 → #935 → #1510 → #1829 meant one freeze stalled four issues.
+- **#1249** (vfs clone progress) — `blockedBy` #1245. #1245 merged 21:39Z, after the freeze.
+- **#1964** (`ctx.gh` cache backend) — the designated capacity valve, ~400-600 LOC. The
+  orchestrator's own run notes recommended formally dropping it at wind-down rather than
+  launching it late. Dropped. It keeps.
+
+The serialization edges were correct — every one of them predicted a real hot-file collision.
+They just had no slack left once the sprint lost its second half.
+
+### Why this sprint has no ending
+
+Sprint 77 hit an operator-ordered spawn freeze at **2026-08-03 13:52Z** ("usage critical"), and
+the orchestrator stopped. It never resumed. No Results section, no review, no retro, and the
+container PR #2923 left as a draft — for 19 days, until this wind-down.
+
+Two failures compounded:
+
+1. **The quota meter lied, and the orchestrator believed it.** `_metrics quota_status` reported
+   `fiveHour.utilization: 8` while usage was in fact critical, because the upstream quota
+   endpoint was itself returning 429 and the daemon served cached figures with `available: true`
+   and no staleness marker. The orchestrator told the operator "quota is fine" three times while
+   continuing to spawn. Contradicting evidence was visible and under-weighted: every session
+   showed `[RATE LIMITED]` in `mcx claude ls`, and `lastError` held the 429. Filed as #2944.
+
+2. **The freeze handoff had no owner.** The halting orchestrator wrote a careful, correct,
+   numbered resume plan into this file (commit `5a1dc128`) — and then its context ended, taking
+   the only thing that knew about the 14:00 EDT resume trigger with it. Markdown is read by
+   whoever opens it; nothing polls it. There was no work-item row, no scheduled tick, no daemon
+   state, nothing anywhere that could answer "this sprint is frozen and owes a resume at T".
+   Filed as #3033.
+
+The freeze itself was the right call and is not the defect. The defect is that **HALTED had no
+representation outside prose**, so a correctly-executed pause became an indefinite stop that
+nobody detected for two and a half weeks. Every stranded artifact — the draft container PR
+(#3032), the green PR rotting at `review:changes` (#3031) — was recoverable from GitHub metadata
+alone. Nothing was looking.
+
 ## Context
 
 Planned while sprint 76 winds down (6 idle sessions draining; per plan.md Step 7 no spawns until 76 closes). dist/mcx was stale vs origin/main at plan time — run-phase pre-flight must rebuild + restart the daemon before spawning. Scrutiny mix is heavier than the standard 60/25/15 (6 of 16 high) because throwback survivors are disproportionately the meaty ones; the two capacity-dependent picks (#1964, #1829) are the pressure valve. #935/#2659 also unblock Bedrock routing for future sprints — relevant while Anthropic extra-usage remains company-capped (sprint 76 stalled on quota 3×).
