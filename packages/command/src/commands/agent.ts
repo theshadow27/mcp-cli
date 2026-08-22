@@ -52,7 +52,7 @@ import {
   formatToolResult,
   stripErrorPrefix,
 } from "../output";
-import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
+import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   type SharedSessionDeps,
   buildResumePrompt,
@@ -74,6 +74,7 @@ import {
   formatStatusStanza,
   walkTranscript,
 } from "./session-display";
+import { buildSessionScope } from "./session-scope";
 import { looksLikeToolName, parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
@@ -112,7 +113,12 @@ function makeCallTool(provider: AgentProvider): (tool: string, args: Record<stri
   return (tool, args) => {
     const needsLongTimeout = tool === `${p}_prompt` || tool === `${p}_wait`;
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: provider.serverName, tool, arguments: args }, { timeoutMs });
+    // See claude.ts: `cwd` is the spawn-domain fallback only, never read by filtering (#3039).
+    return ipcCall(
+      "callTool",
+      { server: provider.serverName, tool, arguments: args, cwd: process.cwd() },
+      { timeoutMs },
+    );
   };
 }
 
@@ -479,14 +485,20 @@ export function parseAgentSpawnArgs(
 }
 
 async function agentSpawn(
-  args: string[],
+  rawArgs: string[],
   provider: AgentProvider,
   agentOverride: string | undefined,
   d: AgentDeps,
 ): Promise<void> {
-  if (hasHelpFlag(args)) {
+  if (hasHelpFlag(rawArgs)) {
     printSpawnUsage(provider, agentOverride, d.log);
     return;
+  }
+  // `*_prompt` advertises `domain` and `resolveSpawnDomainId` honours it (#3039).
+  const { domain: spawnDomain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
   }
   const parsed = parseAgentSpawnArgs(args, provider, agentOverride);
 
@@ -578,7 +590,14 @@ async function agentSpawn(
   }
   if (parsed.allow.length > 0) toolArgs.allowedTools = parsed.allow;
   if (parsed.allowOnly) toolArgs.allowOnly = true;
+  // Mirrors claude.ts (#1331): without a fallback the session inherits the daemon's
+  // cwd, and since #3039 that also means it records domain 0 and goes invisible to
+  // its own `ls` — codex/acp/opencode/mock have no repoRoot fallback to catch it.
+  // `parsed.cwd` is already absolute (parseSharedSpawnArgs resolves it), which is what
+  // `domainIdForPath` requires; `d.getCwd()` is absolute by construction.
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
+  else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = d.getCwd();
+  if (spawnDomain) toolArgs.domain = spawnDomain;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.wait) toolArgs.wait = true;
@@ -816,22 +835,37 @@ async function agentList(
   d: AgentDeps,
 ): Promise<void> {
   const P = provider.toolPrefix;
-  const { json } = extractJsonFlag(args);
-  const short = args.includes("--short");
-  const showPr = args.includes("--pr") && hasFeature(provider, "repoScoped");
-  const showAll = args.includes("--all");
+  const { domain, rest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
+  const { json } = extractJsonFlag(rest);
+  const short = rest.includes("--short");
+  const showPr = rest.includes("--pr") && hasFeature(provider, "repoScoped");
+  const showAll = rest.includes("--all");
 
   const toolArgs: Record<string, unknown> = {};
 
-  // Repo-scoped filtering (Claude only, unless --all)
-  if (hasFeature(provider, "repoScoped") && !showAll) {
-    const gitRoot = d.getGitRoot();
-    if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-    else if (gitRoot) toolArgs.repoRoot = gitRoot;
-  }
+  // Through the SAME builder `mcx claude` uses. This block previously made the
+  // repoScoped branch a sibling of the `if (domain)` rather than part of its `else`,
+  // so `mcx agent claude ls -d phoenix` also sent repoRoot while `mcx claude ls -d
+  // phoenix` did not — two front doors, different answers to the same command, and
+  // once domain and repoRoot began to AND, silently fewer rows (#3039 review C).
+  Object.assign(
+    toolArgs,
+    buildSessionScope({
+      domain,
+      all: showAll,
+      cwd: d.getCwd(),
+      repoScoped: hasFeature(provider, "repoScoped"),
+      getGitRoot: d.getGitRoot,
+      printError: d.printError,
+    }).args,
+  );
 
   // Agent filter for ACP variants
-  const agentFilter = agentOverride ?? extractFlag(args, "--agent", "-a");
+  const agentFilter = agentOverride ?? extractFlag(rest, "--agent", "-a");
   if (agentFilter && hasFeature(provider, "agentSelect")) toolArgs.agent = agentFilter;
 
   const result = await d.callTool(`${P}_session_list`, toolArgs);
@@ -1183,6 +1217,7 @@ async function agentWait(
     short: { type: "boolean" },
     all: { type: "boolean" },
     "mail-to": { type: "string" },
+    domain: { type: "string", alias: "d" },
   });
 
   // Post-process timeout
@@ -1208,6 +1243,9 @@ async function agentWait(
 
   const short = (flags.short as boolean) ?? false;
   const all = (flags.all as boolean) ?? false;
+  const domainRaw = flags.domain as string | undefined;
+  if (domainRaw === "") error ??= "--domain requires a domain name";
+  const domain = domainRaw === "" ? undefined : domainRaw;
   const sessionPrefix = positionals[0];
 
   // Map parseFlags errors to existing error messages
@@ -1219,6 +1257,8 @@ async function agentWait(
       error = "--after requires a sequence number";
     } else if (e === "--mail-to requires a value") {
       error = "--mail-to requires a recipient name";
+    } else if (e === "--domain requires a value" || e === "-d requires a value") {
+      error = "--domain requires a domain name";
     } else {
       error = e;
     }
@@ -1238,17 +1278,17 @@ async function agentWait(
   if (timeout) toolArgs.timeout = timeout;
   if (afterSeq !== undefined) toolArgs.afterSeq = afterSeq;
 
-  // Repo-scoped filtering (Claude only)
-  let repoFilter: string | undefined;
-  if (hasFeature(provider, "repoScoped") && !all && !sessionPrefix) {
-    const gitRoot = d.getGitRoot();
-    if (isLookupFailure(gitRoot)) {
-      d.printError(gitRoot.message);
-    } else if (gitRoot) {
-      toolArgs.repoRoot = gitRoot;
-      repoFilter = gitRoot;
-    }
-  }
+  // Same builder as `mcx claude wait` — see the note in agentList (#3039 review C).
+  const waitScope = buildSessionScope({
+    domain,
+    all: all || sessionPrefix !== undefined,
+    cwd: d.getCwd(),
+    repoScoped: hasFeature(provider, "repoScoped"),
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  Object.assign(toolArgs, waitScope.args);
+  const repoFilter = waitScope.args.repoRoot as string | undefined;
 
   const waitPromise = d.callTool(`${P}_wait`, toolArgs);
 
@@ -1990,7 +2030,9 @@ function printProviderUsage(
 
 Usage:
   mcx agent ${name} spawn --task "description"   Start a new session (returns immediately — do not background)
-  mcx agent ${name} ls [--short] [--json]        List active sessions
+  mcx agent ${name} ls [--short] [--json]        List active sessions (scoped to current domain)
+  mcx agent ${name} ls -d <domain>               List sessions in a named domain, from anywhere
+                                                   (exact domain: excludes nested sub-domains)
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session> [--keep]       End session (--keep preserves worktree)

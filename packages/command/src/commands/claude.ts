@@ -19,7 +19,6 @@ import {
   cleanupWorktree,
   commitTransition,
   createWorktree,
-  detectScope,
   getDefaultBranch,
   listMcxWorktrees,
   listSpawnProfiles,
@@ -45,7 +44,7 @@ import {
   isToolError,
   stripErrorPrefix,
 } from "../output";
-import { extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
+import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag } from "../parse";
 import {
   colorState,
   extractContentSummary,
@@ -53,6 +52,7 @@ import {
   formatLifecycleLine,
   formatSessionShort,
 } from "./session-display";
+import { buildSessionScope } from "./session-scope";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -119,7 +119,15 @@ export const defaultDeps: ClaudeDeps = {
   callTool: (tool, args) => {
     const needsLongTimeout = (tool === "claude_prompt" && args.wait) || tool === "claude_wait";
     const timeoutMs = needsLongTimeout ? PROMPT_IPC_TIMEOUT_MS : undefined;
-    return ipcCall("callTool", { server: CLAUDE_SERVER_NAME, tool, arguments: args }, { timeoutMs });
+    // `cwd` is the LAST fallback for resolving a spawn's domain (#3039). Safe to send
+    // unconditionally: only `resolveSpawnDomainId` reads it, never the filter path, so
+    // it cannot make `--all` start scoping. Without it `callerCwd` is dead code on
+    // every real CLI path, since no `mcx claude`/`mcx agent` call sent it.
+    return ipcCall(
+      "callTool",
+      { server: CLAUDE_SERVER_NAME, tool, arguments: args, cwd: process.cwd() },
+      { timeoutMs },
+    );
   },
   log: console.log,
   printError: defaultPrintError,
@@ -494,7 +502,14 @@ async function resolveEndedSessionForResume(
   return { claudeSessionId: session.claudeSessionId, cwd: session.cwd };
 }
 
-async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
+async function claudeSpawn(rawArgs: string[], d: ClaudeDeps): Promise<void> {
+  // `*_prompt` advertises `domain`, and `resolveSpawnDomainId` honours it — without a
+  // flag you could filter by a named domain but not spawn into one (#3039 review 12).
+  const { domain: spawnDomain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   if (hasHelpFlag(args)) {
     const spawnHelp = getHelp("claude spawn");
     if (spawnHelp) {
@@ -614,6 +629,9 @@ async function claudeSpawn(args: string[], d: ClaudeDeps): Promise<void> {
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
+  // An explicit `-d` outranks every path the daemon would otherwise resolve from, and
+  // an unregistered name fails the spawn rather than landing it somewhere else.
+  if (spawnDomain) toolArgs.domain = spawnDomain;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
   if (parsed.name) toolArgs.name = parsed.name;
@@ -1126,30 +1144,33 @@ export function formatQuotaBanner(quota: QuotaStatusResult | null): string | nul
 }
 
 async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
-  const { json } = extractJsonFlag(args);
-  const short = args.includes("--short");
-  const showPr = args.includes("--pr");
-  const showAll = args.includes("--all") || args.includes("-a");
-
-  // Pass scopeRoot or repoRoot to daemon for server-side filtering unless --all
-  const toolArgs: Record<string, unknown> = {};
-  let activeFilter: string | undefined;
-  if (!showAll) {
-    const scope = detectScope();
-    if (scope) {
-      toolArgs.scopeRoot = scope.root;
-      activeFilter = scope.root;
-    } else {
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) {
-        d.printError(gitRoot.message);
-      } else if (gitRoot) {
-        toolArgs.repoRoot = gitRoot;
-        activeFilter = gitRoot;
-      }
-    }
+  const { domain, rest: domainRest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
   }
-  const filterLabel = toolArgs.scopeRoot ? "other scopes" : "other repos";
+  const { json } = extractJsonFlag(domainRest);
+  const short = domainRest.includes("--short");
+  const showPr = domainRest.includes("--pr");
+  // `-d <domain>` consumes its value before this runs, so `-a` here is only ever
+  // the --all short form — `-d` can no longer be swallowed as one.
+  const showAll = domainRest.includes("--all") || domainRest.includes("-a");
+
+  // Scope server-side unless --all. `domain` is sent as a NAME: the daemon owns
+  // the domains table and resolves it (#3039). `repoRoot` remains as the coarser
+  // pre-domain fallback for callers whose cwd is in no registered domain —
+  // without it, `mcx claude ls` in repo A would list repo B's sessions.
+  const scope = buildSessionScope({
+    domain,
+    all: showAll,
+    cwd: process.cwd(),
+    repoScoped: true,
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  const toolArgs: Record<string, unknown> = { ...scope.args };
+  const activeFilter = scope.activeFilter;
+  const filterLabel = scope.filterLabel;
 
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
@@ -1454,16 +1475,20 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
   }
 }
 
-/** End all sessions in the detected scope (or all sessions if unscoped). */
+/** End all sessions in the caller's domain (or all sessions if unscoped). */
 async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Promise<void> {
-  // List sessions with scope filtering
+  // List sessions with domain filtering. With no `-d`, the daemon resolves the
+  // domain from the caller's cwd (#3039); `--all` without `--scoped` opts out.
+  const { domain, rest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   const toolArgs: Record<string, unknown> = {};
-  const bypassScope = args.includes("--all") && !args.includes("--scoped");
+  const bypassScope = rest.includes("--all") && !rest.includes("--scoped");
   if (!bypassScope) {
-    const scope = detectScope();
-    if (scope) {
-      toolArgs.scopeRoot = scope.root;
-    }
+    if (domain) toolArgs.domain = domain;
+    else toolArgs.domainCwd = process.cwd();
   }
 
   const listResult = await d.callTool("claude_session_list", toolArgs);
@@ -1897,6 +1922,8 @@ export interface WaitArgs {
   checks: boolean;
   /** Also wake on mail addressed to this recipient (non-consuming peek). */
   mailTo: string | undefined;
+  /** Scope the wait to a named domain (#3039). Resolved daemon-side. */
+  domain: string | undefined;
   error: string | undefined;
 }
 
@@ -1910,6 +1937,7 @@ export function parseWaitArgs(args: string[]): WaitArgs {
     pr: { type: "string" },
     checks: { type: "boolean" },
     "mail-to": { type: "string" },
+    domain: { type: "string", alias: "d" },
   });
 
   let error: string | undefined;
@@ -1946,6 +1974,9 @@ export function parseWaitArgs(args: string[]): WaitArgs {
   const all = (flags.all as boolean) ?? false;
   const any = (flags.any as boolean) ?? false;
   const checks = (flags.checks as boolean) ?? false;
+  const domainRaw = flags.domain as string | undefined;
+  if (domainRaw === "") error ??= "--domain requires a domain name";
+  const domain = domainRaw === "" ? undefined : domainRaw;
 
   // Map parseFlags errors to compat error messages
   if (!error && errors.length > 0) {
@@ -1954,12 +1985,14 @@ export function parseWaitArgs(args: string[]): WaitArgs {
     else if (e === "--after requires a value") error = "--after requires a sequence number";
     else if (e === "--pr requires a value") error = "--pr requires a PR number";
     else if (e === "--mail-to requires a value") error = "--mail-to requires a recipient name";
+    else if (e === "--domain requires a value" || e === "-d requires a value")
+      error = "--domain requires a domain name";
     else error = e;
   }
 
   const sessionPrefix = positionals[0];
 
-  return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, error };
+  return { sessionPrefix, timeout, afterSeq, short, all, any, pr, checks, mailTo, domain, error };
 }
 
 async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
@@ -1992,24 +2025,18 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     toolArgs.checks = true;
   }
 
-  // Pass scopeRoot or repoRoot to daemon for server-side filtering (only when no explicit session and no --all)
-  let repoFilter: string | undefined;
-  let scopeFilter: string | undefined;
-  if (!parsed.all && !parsed.sessionPrefix) {
-    const scope = detectScope();
-    if (scope) {
-      toolArgs.scopeRoot = scope.root;
-      scopeFilter = scope.root;
-    } else {
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) {
-        d.printError(gitRoot.message);
-      } else if (gitRoot) {
-        toolArgs.repoRoot = gitRoot;
-        repoFilter = gitRoot;
-      }
-    }
-  }
+  // Scope server-side, only when no explicit session and no --all — through the same
+  // builder `mcx agent` uses, so the two surfaces cannot drift again (#3039 review C).
+  const waitScope = buildSessionScope({
+    domain: parsed.domain,
+    all: parsed.all || parsed.sessionPrefix !== undefined,
+    cwd: process.cwd(),
+    repoScoped: true,
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  Object.assign(toolArgs, waitScope.args);
+  const repoFilter = waitScope.args.repoRoot as string | undefined;
 
   const waitPromise = d.callTool("claude_wait", toolArgs);
 
@@ -2068,8 +2095,8 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // Guard: if data has BOTH sessions and events, the cursor branch below must win —
   // events live in the events array, not in unified.event, so formatWaitHeader
   // would incorrectly emit event=timeout for the unified branch.
-  const activeFilter = scopeFilter ?? repoFilter;
-  const filterLabel = scopeFilter ? "other scopes" : "other repos";
+  const activeFilter = waitScope.activeFilter;
+  const filterLabel = waitScope.filterLabel;
   if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
@@ -2084,25 +2111,20 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
       const cwd = typeof s.cwd === "string" ? s.cwd : null;
       return cwd !== null && (cwd === repoFilter || cwd.startsWith(`${repoFilter}/`));
     };
-    const matchesScope = (s: Record<string, unknown>): boolean => {
-      if (!scopeFilter) return true;
-      const cwd = typeof s.cwd === "string" ? s.cwd : null;
-      return cwd !== null && (cwd === scopeFilter || cwd.startsWith(`${scopeFilter}/`));
-    };
+    // No client-side domain filter here, deliberately: the daemon already applied
+    // one and `mcx` cannot open the domains table to second-guess it. Re-deriving
+    // the answer here is precisely the duplicate resolution path that `scopeRoot`
+    // was (it re-implemented a prefix match, and got `/foo/barbaz` inside
+    // `/foo/bar` wrong). `repoRoot` keeps its client-side pass because it is a
+    // plain path the CLI does own.
     if (repoFilter) {
       unified.sessions = unified.sessions.filter(matchesRepo);
-    } else if (scopeFilter) {
-      unified.sessions = unified.sessions.filter(matchesScope);
     }
-    // Filter event if its session snapshot is from another repo/scope (fixes #1308).
-    // Drop events without session info when any filter is active — we can't verify scope.
-    if (unified.event && (repoFilter || scopeFilter)) {
+    // Filter event if its session snapshot is from another repo (fixes #1308).
+    // Drop events without session info when a filter is active — we can't verify scope.
+    if (unified.event && repoFilter) {
       const session = unified.event.session as Record<string, unknown> | undefined;
-      if (!session) {
-        unified.event = undefined;
-      } else if (repoFilter && !matchesRepo(session)) {
-        unified.event = undefined;
-      } else if (scopeFilter && !matchesScope(session)) {
+      if (!session || !matchesRepo(session)) {
         unified.event = undefined;
       }
     }
@@ -2355,9 +2377,12 @@ Usage:
   mcx claude resume <worktree> <session>   Resume specific session (--resume <id>)
   mcx claude resume <worktree> --fresh     Resume with git-context prompt (no history)
   mcx claude resume --all                  Resume all orphaned worktrees
-  mcx claude ls [--pr] [--all]             List sessions (scoped to current repo by default)
+  mcx claude ls [--pr] [--all]             List sessions (scoped to current domain/repo by default)
+  mcx claude ls -d <domain>                List sessions in a named domain, from anywhere
+                                           (exact domain: excludes nested sub-domains)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session] [--all]        Block until a session event occurs
+  mcx claude wait -d <domain>              Block on events in a named domain only
   mcx claude bye <session>                 End session and stop process
   mcx claude interrupt <session> [--reason <text>]  Interrupt the current turn
   mcx claude approve <session>              Approve latest pending permission request

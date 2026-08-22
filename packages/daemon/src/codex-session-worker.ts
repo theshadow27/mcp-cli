@@ -19,7 +19,15 @@
  */
 
 import { CodexSession, type CodexSessionConfig } from "@mcp-cli/codex";
-import { AGENT_PROTOCOL_VERSION, type AgentSessionEvent, CODEX_SERVER_NAME, DEFAULT_TIMEOUT_MS } from "@mcp-cli/core";
+import {
+  AGENT_PROTOCOL_VERSION,
+  type AgentSessionEvent,
+  CODEX_SERVER_NAME,
+  DEFAULT_TIMEOUT_MS,
+  NO_DOMAIN_ID,
+  domainFilterArg,
+  matchesDomain,
+} from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { CODEX_TOOLS } from "./codex-session/tools";
@@ -60,6 +68,17 @@ interface BufferedEvent {
   seq: number;
   sessionId: string;
   event: AgentSessionEvent;
+  /**
+   * Domain of the session that emitted this, captured HERE, at buffer time (#3039).
+   *
+   * Deliberately not re-derived from the live `sessions` map when the buffer is read:
+   * `forwardSessionEvent` deletes the map entry on `session:ended`, and the buffer
+   * outlives the map. Re-deriving made a domain-scoped `wait --after <seq>` lose its
+   * OWN domain's events the moment the session ended — the caller was standing in the
+   * right domain and still got `[]`, indistinguishable from "nothing ran".
+   * `ws-server.ts:3313` snapshots the session onto the event for the same reason.
+   */
+  domainId: number;
 }
 
 const MAX_EVENT_BUFFER = 200;
@@ -70,12 +89,17 @@ const eventBuffer: BufferedEvent[] = [];
 const afterSeqWaiters: Array<{
   sessionId: string | null;
   afterSeq: number;
+  /** Daemon-resolved domain the waiter is scoped to; undefined = any domain (#3039). */
+  domainId: number | undefined;
   resolve: (entry: BufferedEvent) => void;
   timer: ReturnType<typeof setTimeout>;
 }> = [];
 
 function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
-  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event };
+  // Read the domain while the session is still in the map — this is the last moment
+  // it is knowable for an event that ends the session.
+  const domainId = sessions.get(sessionId)?.getInfo().domainId ?? NO_DOMAIN_ID;
+  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event, domainId };
   eventBuffer.push(entry);
   if (eventBuffer.length > MAX_EVENT_BUFFER) {
     eventBuffer.shift();
@@ -84,7 +108,11 @@ function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
   // Resolve any afterSeq waiters that match
   for (let i = afterSeqWaiters.length - 1; i >= 0; i--) {
     const w = afterSeqWaiters[i];
-    if (entry.seq > w.afterSeq && (w.sessionId === null || w.sessionId === sessionId)) {
+    if (
+      entry.seq > w.afterSeq &&
+      (w.sessionId === null || w.sessionId === sessionId) &&
+      matchesDomain(entry, w.domainId)
+    ) {
       clearTimeout(w.timer);
       afterSeqWaiters.splice(i, 1);
       w.resolve(entry);
@@ -165,7 +193,7 @@ async function handleToolCall(
       case "codex_prompt":
         return await handlePrompt(args);
       case "codex_session_list":
-        return handleSessionList();
+        return handleSessionList(args);
       case "codex_session_status":
         return handleSessionStatus(args);
       case "codex_interrupt":
@@ -219,6 +247,8 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
       disallowedTools: args.disallowedTools as string[] | undefined,
       worktree: args.worktree as string | undefined,
       repoRoot: args.repoRoot as string | undefined,
+      // Resolved daemon-side (#3039); this worker cannot open the domains table.
+      domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
     };
 
     const sid = sessionId;
@@ -232,6 +262,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
         sessionId,
         state: "connecting",
         cwd,
+        domainId: config.domainId,
         worktree: config.worktree,
       },
     });
@@ -300,8 +331,11 @@ async function handlePrompt(args: Record<string, unknown>): Promise<{
   };
 }
 
-function handleSessionList(): { content: Array<{ type: "text"; text: string }> } {
-  const list = [...sessions.values()].map((s) => s.getInfo());
+function handleSessionList(args: Record<string, unknown>): { content: Array<{ type: "text"; text: string }> } {
+  // The daemon resolved `domainId` before these args crossed the worker boundary
+  // (#3039); absent means the caller is in no domain, so nothing is filtered out.
+  const domainId = domainFilterArg(args);
+  const list = [...sessions.values()].map((s) => s.getInfo()).filter((s) => matchesDomain(s, domainId));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }
 
@@ -377,11 +411,19 @@ async function handleWait(args: Record<string, unknown>): Promise<{
   const sessionId = args.sessionId as string | undefined;
   const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
+  // Resolved by the daemon before these args crossed the worker boundary (#3039).
+  // `session_list` has honoured this since the start; `wait` used to accept it,
+  // advertise it in the tool schema, and then ignore it — so a scoped wait woke on
+  // another domain's session and its timeout fallback dumped every domain's list.
+  const domainId = domainFilterArg(args);
+  const inDomain = (info: { domainId: number }) => matchesDomain(info, domainId);
 
   // afterSeq cursor: check buffer first, then block until a new event arrives
   if (afterSeq !== undefined) {
     // Check buffer for events past the cursor
-    const buffered = eventBuffer.filter((e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId));
+    const buffered = eventBuffer.filter(
+      (e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && matchesDomain(e, domainId),
+    );
     if (buffered.length > 0) {
       const entry = buffered[0];
       return {
@@ -400,10 +442,10 @@ async function handleWait(args: Record<string, unknown>): Promise<{
         const idx = afterSeqWaiters.findIndex((w) => w.resolve === resolve);
         if (idx !== -1) afterSeqWaiters.splice(idx, 1);
         // On timeout, return current session list as fallback
-        const list = [...sessions.values()].map((s) => s.getInfo());
+        const list = [...sessions.values()].map((s) => s.getInfo()).filter(inDomain);
         reject({ timeout: true, sessions: list });
       }, timeoutMs);
-      afterSeqWaiters.push({ sessionId: sessionId ?? null, afterSeq, resolve, timer });
+      afterSeqWaiters.push({ sessionId: sessionId ?? null, afterSeq, domainId, resolve, timer });
     }).catch((err) => {
       if (err && typeof err === "object" && "timeout" in err) {
         return err as { timeout: true; sessions: unknown[] };
@@ -434,12 +476,14 @@ async function handleWait(args: Record<string, unknown>): Promise<{
     return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };
   }
 
-  // Wait for any session
-  if (sessions.size === 0) {
+  // Wait for any session IN THE CALLER'S DOMAIN. Racing every session was the bug:
+  // an orchestrator blocking here read a completion for a session it does not own.
+  const scoped = [...sessions.values()].filter((s) => inDomain(s.getInfo()));
+  if (scoped.length === 0) {
     return { content: [{ type: "text", text: JSON.stringify([]) }] };
   }
 
-  const waiters = [...sessions.values()].map((s) => s.waitForEvent(timeoutMs));
+  const waiters = scoped.map((s) => s.waitForEvent(timeoutMs));
   try {
     const event = await Promise.race(waiters);
     return { content: [{ type: "text", text: JSON.stringify(event, null, 2) }] };

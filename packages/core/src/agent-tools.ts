@@ -84,6 +84,37 @@ const requestIdProp: JsonSchemaProperty = {
   description: "Permission request ID",
 };
 
+/**
+ * The domain scoping a caller may ask for is a NAME or a DIRECTORY — never an id.
+ *
+ * There is deliberately no `domainId` property here. The resolved id is injected by
+ * `packages/daemon/src/session-domain.ts` *after* schema validation, so nothing needs
+ * it declared — and declaring it is what invites a caller to supply one. A supplied
+ * id was a second resolution path that bypassed `UnknownDomainError`, bypassed
+ * `toDomainFilter`, and could write a row against a `domains` id with no row behind
+ * it. Not advertising it is half the fix; `applyDomainScope` stripping it is the
+ * other half, because an undeclared property is not a rejected one.
+ */
+const domainNameProp: JsonSchemaProperty = {
+  type: "string",
+  description: "Domain name to scope to (as registered with `mcx domain add`). Resolved daemon-side to a domain id.",
+};
+
+/**
+ * The caller's directory, for "scope me to whatever domain I am standing in".
+ *
+ * A *tool argument* rather than a transport-level field on purpose: absence of a
+ * scoping argument is how every mcx session filter has always spelled "no filter"
+ * (`--all` simply omits one). If the daemon scoped by the caller's cwd whenever
+ * it happened to know it, `--all` would need a second, opposite flag to undo it —
+ * and a filter you have to remember to switch off is one that will be left on.
+ */
+const domainCwdProp: JsonSchemaProperty = {
+  type: "string",
+  description:
+    "Scope to whichever registered domain owns this directory. Omit for no domain filter; `domain` overrides it.",
+};
+
 // ---------------------------------------------------------------------------
 // Override slots
 // ---------------------------------------------------------------------------
@@ -209,6 +240,7 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             },
             timeout: timeoutProp,
             wait: { type: "boolean", description: "Block until result (default: false)" },
+            domain: domainNameProp,
             ...ov("prompt")?.extraProperties,
           },
           ["prompt", ...(ov("prompt")?.extraRequired ?? [])],
@@ -225,6 +257,8 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
       inputSchema: {
         type: "object" as const,
         ...schema("session_list", {
+          domain: domainNameProp,
+          domainCwd: domainCwdProp,
           ...ov("session_list")?.extraProperties,
         }),
       },
@@ -325,6 +359,8 @@ export function buildAgentTools(opts: BuildAgentToolsOptions): readonly AgentToo
             description: "Session ID or unique prefix to wait on (omit for any session)",
           },
           timeout: timeoutProp,
+          domain: domainNameProp,
+          domainCwd: domainCwdProp,
           ...ov("wait")?.extraProperties,
         }),
       },

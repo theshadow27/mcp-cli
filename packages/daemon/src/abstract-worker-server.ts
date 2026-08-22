@@ -31,6 +31,13 @@ export interface DbUpsertSession {
   repoRoot?: string;
   claudeSessionId?: string;
   transport?: "ws" | "stdio";
+  /**
+   * Domain that owns this session (#3039). Resolved in the daemon before the
+   * spawn args ever reach a worker, and echoed back here so that every provider
+   * populates `agent_sessions.domain_id` through this one shared handler rather
+   * than through five per-provider DB writes that can drift apart.
+   */
+  domainId?: number;
 }
 
 interface DbUpsert {

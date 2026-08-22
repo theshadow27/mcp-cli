@@ -525,6 +525,37 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
   }
 
+  // Adopt pre-domain sessions into the domains that now exist (#3039).
+  //
+  // ORDER IS LOAD-BEARING, in both directions, and `adoption-order.spec.ts` asserts it:
+  //   - AFTER importLegacyState, because that is what copies `agent_sessions` in from
+  //     the legacy db; adopting first finds nothing to adopt and every restored session
+  //     stays at the sentinel, invisible to `-d` — the exact regression this fixes,
+  //     reinstated silently.
+  //   - BEFORE restoreActiveSessions below, so workers rebuild from corrected rows
+  //     rather than from `domain_id = 0`, which they then hold in memory until the next
+  //     restart.
+  //
+  // (An earlier version of this comment claimed adoption had to follow the import
+  // because `importScopesAsDomains` creates domains before the `agent_sessions` copy so
+  // `createDomain`'s own adopt hook could not catch those rows. That mechanism is
+  // invented: `importScopesAsDomains` writes with a raw prepared INSERT on the attached
+  // target and never calls `StateDb.createDomain`, so the hook was never in play. The
+  // conclusion was right for the simpler reason above.)
+  //
+  // Best-effort, like the import directly above: it is idempotent and self-heals on the
+  // next boot, so a SQLITE_BUSY must not take the daemon down with it.
+  try {
+    const adopted = db.adoptSessionsIntoDomains();
+    if (adopted > 0) {
+      logger.warn(`[mcpd] adopted ${adopted} pre-domain session(s) into their domains`);
+    }
+  } catch (err) {
+    logger.warn(
+      `[mcpd] adopting pre-domain sessions failed (retries next start): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Clean up DB records for sessions whose processes are dead.
   // Alive processes are preserved for restoreActiveSessions() to pick up.
   const cleaned = reapOrphanedSessions(db, logger);

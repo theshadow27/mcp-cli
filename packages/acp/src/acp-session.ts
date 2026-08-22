@@ -15,7 +15,14 @@
 
 import { resolve } from "node:path";
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
-import { ContainmentGuard, gateContainment, isPathContained, resolveRealpath, spawnCapture } from "@mcp-cli/core";
+import {
+  ContainmentGuard,
+  NO_DOMAIN_ID,
+  gateContainment,
+  isPathContained,
+  resolveRealpath,
+  spawnCapture,
+} from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { type AcpEventMapState, buildTurnResult, createAcpEventMapState, mapSessionUpdate } from "./acp-event-map";
 import { buildRules, evaluatePermission, findOptionId, mapPermissionRequest } from "./acp-permission-adapter";
@@ -54,6 +61,11 @@ export interface AcpSessionConfig {
   worktree?: string;
   /** Repository root for worktree cleanup. */
   repoRoot?: string;
+  /**
+   * Domain that owns this session (#3039), resolved by the daemon before spawn.
+   * Defaults to `NO_DOMAIN_ID` — an unresolved domain, never a guessed one.
+   */
+  domainId?: number;
   /** Extra environment variables. */
   env?: Record<string, string>;
   /** Watchdog timeout in ms. Defaults to WATCHDOG_TIMEOUT_MS (5 min). Set 0 to disable. */
@@ -335,6 +347,7 @@ export class AcpSession {
       pendingPermissionDetails: [...this.pendingPermissions.values()],
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
+      domainId: this.config.domainId ?? NO_DOMAIN_ID,
       processAlive: this.proc?.alive ?? false,
       rateLimited: false,
       createdAt: this.createdAt,

@@ -28,6 +28,10 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
           },
           "type": "array",
         },
+        "domain": {
+          "description": "Domain name to scope to (as registered with \`mcx domain add\`). Resolved daemon-side to a domain id.",
+          "type": "string",
+        },
         "model": {
           "description": "Model to use",
           "type": "string",
@@ -75,7 +79,16 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
   {
     "description": "List all active OpenCode sessions with their status, model, and token usage.",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "domain": {
+          "description": "Domain name to scope to (as registered with \`mcx domain add\`). Resolved daemon-side to a domain id.",
+          "type": "string",
+        },
+        "domainCwd": {
+          "description": "Scope to whichever registered domain owns this directory. Omit for no domain filter; \`domain\` overrides it.",
+          "type": "string",
+        },
+      },
       "type": "object",
     },
     "name": "opencode_session_list",
@@ -163,6 +176,14 @@ exports[`OPENCODE_TOOLS schema snapshot 1`] = `
         "afterSeq": {
           "description": "Return events after this sequence number. Enables race-free polling.",
           "type": "number",
+        },
+        "domain": {
+          "description": "Domain name to scope to (as registered with \`mcx domain add\`). Resolved daemon-side to a domain id.",
+          "type": "string",
+        },
+        "domainCwd": {
+          "description": "Scope to whichever registered domain owns this directory. Omit for no domain filter; \`domain\` overrides it.",
+          "type": "string",
         },
         "sessionId": {
           "description": "Session ID to wait on (omit for any session)",
