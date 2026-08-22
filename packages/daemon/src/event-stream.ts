@@ -237,6 +237,7 @@ export class EventStreamServer {
    *   src=<pattern>            Source attribution glob filter
    *   phase=<name>             Phase filter on work item phase
    *   repo=<path>              Scope to repo root (pass-through for events with no repoRoot)
+   *   domain=<name>            Scope to one domain; unknown name is a 400, never an empty stream (#3040)
    *   since=<seq>              Replay events after this cursor from the durable log (#1513)
    *   responseTail=<sessionId> Include session.response chunks for this session only
    */
@@ -265,6 +266,19 @@ export class EventStreamServer {
       return new Response("since parameter requires the durable event log; replay is not available on this daemon", {
         status: 400,
       });
+    }
+
+    // An unregistered domain is an error, not an empty stream (#3040). `mcx monitor -d
+    // typo` silently showing nothing is indistinguishable from "that domain is quiet",
+    // which is the worst possible failure for a monitoring surface.
+    const domainName = url.searchParams.get("domain");
+    let replayDomainId: number | undefined;
+    if (domainName !== null && domainName !== "") {
+      const resolved = this.eventBus?.domainResolver.idForName(domainName) ?? null;
+      if (resolved === null) {
+        return new Response(`unknown domain "${domainName}" — see \`mcx domain ls\``, { status: 400 });
+      }
+      replayDomainId = resolved;
     }
 
     // ── EventBus path (unified monitor architecture, #1512/#1515) ──
@@ -403,7 +417,7 @@ export class EventStreamServer {
               let cursor = sinceSeq;
               const batchSize = EventStreamServer.BACKFILL_BATCH_SIZE;
               while (true) {
-                const batch = eventLog.getSince(cursor, batchSize);
+                const batch = eventLog.getSince(cursor, batchSize, { domainId: replayDomainId });
                 for (const event of batch) {
                   highWaterMark = event.seq;
                   if (!shouldDeliver(event)) continue;
@@ -612,7 +626,7 @@ export class EventStreamServer {
           liveBuffer = [];
           let cursor = sinceSeq;
           while (true) {
-            const batch = eventLog.getSince(cursor, 1000);
+            const batch = eventLog.getSince(cursor, 1000, { domainId: replayDomainId });
             for (const event of batch) {
               highWaterMark = event.seq;
               if (!shouldDeliverFallback(event as Record<string, unknown>)) continue;

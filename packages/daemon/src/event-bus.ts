@@ -11,9 +11,10 @@
  * #1512 #1557
  */
 
-import { type MonitorEvent, type MonitorEventInput, enrichMonitorEvent } from "@mcp-cli/core";
+import { type MonitorEvent, type MonitorEventInput, NO_DOMAIN_ID, enrichMonitorEvent } from "@mcp-cli/core";
 import type { CoalescerOptions, SubmitOptions } from "./coalesce";
 import { CoalescingPublisher } from "./coalesce";
+import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "./domain-resolver";
 import type { EventLog } from "./event-log";
 import { metrics } from "./metrics";
 
@@ -36,13 +37,39 @@ export class EventBus {
   private readonly subscribers = new Map<number, Subscription>();
   private readonly log: EventLog | null;
   private readonly now: () => number;
+  private readonly domains: DomainResolver;
 
-  constructor(eventLog?: EventLog, now: () => number = Date.now) {
+  constructor(eventLog?: EventLog, now: () => number = Date.now, domains: DomainResolver = NULL_DOMAIN_RESOLVER) {
     this.log = eventLog ?? null;
     this.now = now;
+    this.domains = domains;
     if (this.log) {
       this.seq = this.log.currentSeq();
     }
+  }
+
+  /** The resolver this bus stamps with — consumers need name↔id to filter a stream by domain. */
+  get domainResolver(): DomainResolver {
+    return this.domains;
+  }
+
+  /**
+   * Which domain owns this event?
+   *
+   * A producer that was handed a domain says so and is believed. Everyone else knows a
+   * `repoRoot`, which goes through the one resolution rule. Neither → `NO_DOMAIN_ID`,
+   * which is the honest answer for the genuinely daemon-wide events (mail, quota,
+   * heartbeat) rather than a shrug: an un-domained event is excluded by a `-d` filter,
+   * so a wrong guess here would silently attribute daemon state to one project.
+   */
+  private stampDomain(input: MonitorEventInput): { domainId: number; domain?: string } {
+    const domainId =
+      typeof input.domainId === "number"
+        ? input.domainId
+        : this.domains.idForPath(typeof input.repoRoot === "string" ? input.repoRoot : undefined);
+    if (domainId === NO_DOMAIN_ID) return { domainId };
+    const name = this.domains.nameForId(domainId);
+    return name === null ? { domainId } : { domainId, domain: name };
   }
 
   publish(rawInput: MonitorEventInput): MonitorEvent {
@@ -50,11 +77,14 @@ export class EventBus {
     // replay, TUI) sees them regardless of which producer emitted the event.
     const input = enrichMonitorEvent(rawInput);
     const ts = new Date().toISOString();
+    // Domain is stamped alongside seq/ts for the same reason: one enforcement point, so
+    // no producer can publish an event the partition cannot see.
+    const domain = this.stampDomain(input);
     let seq: number;
 
     if (this.log) {
       try {
-        const event = { ...input, seq: 0, ts } satisfies MonitorEvent;
+        const event = { ...input, ...domain, seq: 0, ts } satisfies MonitorEvent;
         seq = this.log.append(event);
         this.seq = seq;
       } catch (err) {
@@ -65,7 +95,7 @@ export class EventBus {
       seq = ++this.seq;
     }
 
-    const event = { ...input, seq, ts } satisfies MonitorEvent;
+    const event = { ...input, ...domain, seq, ts } satisfies MonitorEvent;
 
     if (this.subscribers.size === 0) return event;
 

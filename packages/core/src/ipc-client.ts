@@ -251,6 +251,8 @@ export function openEventStream(params?: {
   phase?: string;
   /** Scope to events from sessions in this repo root path. Events with no repoRoot pass through. */
   repo?: string;
+  /** Scope to one domain by name (#3040). Un-domained events do NOT pass through — see EventFilterSpec.domain. */
+  domain?: string;
   /** Include session.response chunks for this session ID only */
   responseTail?: string;
 }): { events: AsyncIterable<import("./monitor-event").MonitorEvent>; abort: () => void } {
@@ -264,6 +266,7 @@ export function openEventStream(params?: {
   if (params?.src) qs.set("src", params.src);
   if (params?.phase) qs.set("phase", params.phase);
   if (params?.repo) qs.set("repo", params.repo);
+  if (params?.domain) qs.set("domain", params.domain);
   if (params?.responseTail) qs.set("responseTail", params.responseTail);
 
   const controller = new AbortController();

@@ -14,6 +14,7 @@ import {
 import type { IpcMethod, Logger, Manifest, WorkItemPhase } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
 import type { WorkItemDb } from "../db/work-items";
+import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 
 export class WorkItemHandlers {
@@ -23,6 +24,7 @@ export class WorkItemHandlers {
     private readonly resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null,
     private readonly loadManifestFn: ((repoRoot: string) => Manifest | null) | null,
     private readonly logger: Logger,
+    private readonly domains: DomainResolver = NULL_DOMAIN_RESOLVER,
   ) {}
 
   /**
@@ -161,31 +163,50 @@ export class WorkItemHandlers {
     });
 
     // -- Alias state (per-work-item / per-alias scratchpad) --
+    //
+    // The domain is derived here, server-side, from the `repoRoot` the caller already
+    // sends — not added to the IPC schema (#3040). Two reasons, both load-bearing:
+    //
+    //  - `ctx.state` is documented to read and write "within the calling session's
+    //    domain", and the caller's domain is a *fact about where it is*, not a parameter
+    //    it gets to assert. A `domain` field on the wire would be a client-supplied
+    //    partition key: any script could read another project's state by sending a
+    //    different name. Deriving it makes that unrepresentable.
+    //  - `(repo_root, namespace, key)` is the precedent this epic generalizes, and
+    //    repo_root is exactly the input `resolveDomainForPath` consumes. The domain is
+    //    the same partition the table already had, promoted to a first-class column.
+    //
+    // Un-registered repo roots resolve to NO_DOMAIN_ID, which is a real partition of its
+    // own: a project with no domain keeps the pre-#3034 behaviour exactly.
 
     handlers.set("aliasStateGet", async (params, _ctx) => {
       const parsed = AliasStateGetParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
-      return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key) };
+      const domainId = this.domains.idForPath(repoRoot);
+      return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key, domainId) };
     });
 
     handlers.set("aliasStateSet", async (params, _ctx) => {
       const parsed = AliasStateSetParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
-      this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value);
+      const domainId = this.domains.idForPath(repoRoot);
+      this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value, domainId);
       return { ok: true as const };
     });
 
     handlers.set("aliasStateDelete", async (params, _ctx) => {
       const parsed = AliasStateDeleteParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
-      const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key);
+      const domainId = this.domains.idForPath(repoRoot);
+      const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key, domainId);
       return { ok: true as const, deleted };
     });
 
     handlers.set("aliasStateAll", async (params, _ctx) => {
       const parsed = AliasStateAllParamsSchema.parse(params);
       const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
-      return { entries: this.db.listAliasState(repoRoot, parsed.namespace) };
+      const domainId = this.domains.idForPath(repoRoot);
+      return { entries: this.db.listAliasState(repoRoot, parsed.namespace, domainId) };
     });
   }
 }

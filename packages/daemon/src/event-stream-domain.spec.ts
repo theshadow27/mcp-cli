@@ -1,0 +1,129 @@
+/**
+ * `GET /events?domain=<name>` — the wire behind `mcx monitor -d` (#3040).
+ */
+
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, test } from "bun:test";
+import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { createDomainResolver } from "./domain-resolver";
+import { EventBus } from "./event-bus";
+import { EventLog } from "./event-log";
+import { EventStreamServer } from "./event-stream";
+import type { ServerPool } from "./server-pool";
+
+const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+
+function domain(id: number, name: string, path: string): Domain {
+  return { id, name, host: null, path, createdAt: "2026-08-22T00:00:00.000Z" };
+}
+
+const RESOLVER = createDomainResolver({
+  listDomains: () => [domain(3, "phoenix", "/tmp/phoenix"), domain(7, "clrg", "/tmp/clrg")],
+});
+
+const servers: EventStreamServer[] = [];
+const dbs: Database[] = [];
+
+afterEach(() => {
+  for (const s of servers) s.dispose();
+  servers.length = 0;
+  for (const d of dbs) d.close();
+  dbs.length = 0;
+});
+
+function setup(): { server: EventStreamServer; bus: EventBus } {
+  const db = new Database(":memory:");
+  db.exec("PRAGMA journal_mode = WAL");
+  dbs.push(db);
+  const log = new EventLog(db);
+  const bus = new EventBus(log, Date.now, RESOLVER);
+  const server = new EventStreamServer(bus, {} as ServerPool, silentLogger, 30_000, log);
+  servers.push(server);
+  return { server, bus };
+}
+
+/** Read NDJSON lines until `want` events have been seen, then cancel the stream. */
+async function drain(res: Response, want: number): Promise<Record<string, unknown>[]> {
+  const body = res.body;
+  if (!body) throw new Error("expected a response body");
+  const out: Record<string, unknown>[] = [];
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (out.length < want) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value as Uint8Array, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (parsed.event === "heartbeat" || parsed.t === "gap") continue;
+        out.push(parsed);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return out;
+}
+
+describe("GET /events domain scoping", () => {
+  // An empty stream and a quiet domain are indistinguishable from the outside, which is
+  // the worst possible answer for a monitoring surface. A typo must be an error.
+  test("an unregistered domain name is a 400, not an empty stream", () => {
+    const { server } = setup();
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?domain=typo"));
+    expect(res.status).toBe(400);
+  });
+
+  test("a registered domain is accepted", async () => {
+    const { server } = setup();
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?domain=phoenix"));
+    expect(res.status).toBe(200);
+    await res.body?.cancel().catch(() => {});
+  });
+
+  test("replay with ?domain= returns only that domain's events", async () => {
+    const { server, bus } = setup();
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
+    bus.publish({ src: "daemon", event: "pr.closed", category: "work_item", repoRoot: "/tmp/phoenix/pkg" });
+    bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
+
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?since=0&domain=phoenix"));
+    expect(res.status).toBe(200);
+    const got = await drain(res, 2);
+    expect(got.map((e) => e.event)).toEqual(["pr.opened", "pr.closed"]);
+    expect(got.every((e) => e.domainId === 3 && e.domain === "phoenix")).toBe(true);
+  });
+
+  test("replay with no ?domain= returns every domain — the daemon-wide stream", async () => {
+    const { server, bus } = setup();
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
+    bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
+
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?since=0"));
+    const got = await drain(res, 3);
+    expect(got.map((e) => e.event)).toEqual(["pr.opened", "pr.merged", "mail.sent"]);
+    expect(got.map((e) => e.domainId)).toEqual([3, 7, NO_DOMAIN_ID]);
+  });
+
+  test("live events are filtered by domain too, not just replay", async () => {
+    const { server, bus } = setup();
+    const res = server.handleEventsNDJSON(new URL("http://localhost/events?domain=clrg"));
+    expect(res.status).toBe(200);
+
+    const drained = drain(res, 1);
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
+    bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
+
+    const got = await drained;
+    expect(got.map((e) => e.event)).toEqual(["pr.merged"]);
+    expect(got[0]?.domain).toBe("clrg");
+  });
+});

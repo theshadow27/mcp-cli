@@ -55,20 +55,43 @@ export class EventLog {
             payload      TEXT    NOT NULL
           );
           CREATE INDEX IF NOT EXISTS idx_monitor_events_ts ON monitor_events(ts);
-          -- No index on domain_id yet, deliberately: append() has no domainId parameter
-          -- until #3040, so every row would be 0 — pure write amplification on the
-          -- daemon's hottest insert for an index nothing can use. #3040 adds both.
         `);
         this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 1]);
       })();
     }
+
+    if (version < 2) {
+      this.db.transaction(() => {
+        // Added here and not at v1 because v1's append() had no domain to write: every
+        // row would have been 0 and the index pure write amplification on the daemon's
+        // hottest insert. It arrives with the writer that populates it and with
+        // getSince({ domainId }), which is the query that uses it — leading column
+        // domain_id for the equality, seq second so the ORDER BY and the `seq > ?`
+        // range are both served by the index rather than by a sort.
+        this.db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_monitor_events_domain ON monitor_events(domain_id, seq);
+        `);
+        this.db.run("INSERT OR REPLACE INTO schema_versions (name, version) VALUES (?, ?)", [CONSUMER, 2]);
+      })();
+    }
   }
 
+  /**
+   * Persist one published event.
+   *
+   * `domain_id` is taken from `event.domainId`, which {@link MonitorEvent} declares
+   * required — there is no `domainId` parameter to forget and no default to fall
+   * through to. Column and payload therefore agree by construction, which is what makes
+   * the indexed `domain_id` filter and the replayed `domain` name the same answer.
+   */
   append(event: MonitorEvent): number {
     const result = this.db
-      .query<{ seq: number }, [string, string, string, string, string | null, string | null, number | null, string]>(
-        `INSERT INTO monitor_events (ts, src, event, category, work_item_id, session_id, pr_number, payload)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      .query<
+        { seq: number },
+        [string, string, string, string, string | null, string | null, number | null, number, string]
+      >(
+        `INSERT INTO monitor_events (ts, src, event, category, work_item_id, session_id, pr_number, domain_id, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING seq`,
       )
       .get(
@@ -79,6 +102,7 @@ export class EventLog {
         (event.workItemId as string | undefined) ?? null,
         (event.sessionId as string | undefined) ?? null,
         (event.prNumber as number | undefined) ?? null,
+        event.domainId,
         JSON.stringify(event),
       );
 
@@ -86,24 +110,46 @@ export class EventLog {
     return result.seq;
   }
 
-  getSince(afterSeq: number, limit = 1000, opts?: { events?: readonly string[] }): MonitorEvent[] {
-    let rows: { seq: number; payload: string }[];
+  /**
+   * Replay events after `afterSeq`.
+   *
+   * `opts.domainId` pushes the domain partition into SQL rather than filtering the rows
+   * in JS after reading them: replaying one domain out of a seven-day log should not
+   * cost a scan of every other domain's events, and it is the query
+   * `idx_monitor_events_domain(domain_id, seq)` exists to serve.
+   */
+  getSince(afterSeq: number, limit = 1000, opts?: { events?: readonly string[]; domainId?: number }): MonitorEvent[] {
+    const where: string[] = ["seq > ?"];
+    const params: (string | number)[] = [afterSeq];
 
-    if (opts?.events?.length) {
-      const placeholders = opts.events.map(() => "?").join(", ");
-      const sql = `SELECT seq, payload FROM monitor_events WHERE seq > ? AND event IN (${placeholders}) ORDER BY seq ASC LIMIT ?`;
-      rows = this.db.prepare(sql).all(afterSeq, ...opts.events, limit) as { seq: number; payload: string }[];
-    } else {
-      rows = this.db
-        .query<{ seq: number; payload: string }, [number, number]>(
-          "SELECT seq, payload FROM monitor_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
-        )
-        .all(afterSeq, limit);
+    if (opts?.domainId !== undefined) {
+      where.push("domain_id = ?");
+      params.push(opts.domainId);
     }
+    if (opts?.events?.length) {
+      where.push(`event IN (${opts.events.map(() => "?").join(", ")})`);
+      params.push(...opts.events);
+    }
+    params.push(limit);
 
-    // Overlay the authoritative seq from the DB column — payload stores seq=0 placeholder.
+    // `query`, not `prepare`: backfill calls this in a loop of 1000-row batches, and
+    // Bun caches prepared statements by SQL text. The four possible WHERE shapes are a
+    // fixed set, so the cache stays effective even though the string is built here.
+    const rows = this.db
+      .query(`SELECT seq, domain_id, payload FROM monitor_events WHERE ${where.join(" AND ")} ORDER BY seq ASC LIMIT ?`)
+      .all(...params) as { seq: number; domain_id: number; payload: string }[];
+
+    // Overlay the authoritative seq and domain_id from the DB columns — the payload
+    // stores a seq=0 placeholder, and rows written before #3040 have no domainId in
+    // their JSON at all, so the column is the only honest source for both.
     // Enrich on read so rows written before summary/severity existed still satisfy the contract.
-    return rows.map((r) => enrichMonitorEvent({ ...(JSON.parse(r.payload) as MonitorEvent), seq: r.seq }));
+    return rows.map((r) =>
+      enrichMonitorEvent({
+        ...(JSON.parse(r.payload) as MonitorEvent),
+        seq: r.seq,
+        domainId: r.domain_id,
+      }),
+    );
   }
 
   prune(olderThan: Date): number {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent } from "@mcp-cli/core";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import {
   CHECKS_FAILED,
   CHECKS_PASSED,
@@ -39,6 +40,7 @@ function makeEvent(event: string, extra: Record<string, unknown> = {}): MonitorE
   return {
     seq: 1,
     ts: "2026-04-20T14:32:01.000Z",
+    domainId: NO_DOMAIN_ID,
     src: "daemon.claude-server",
     event,
     category: "session",
@@ -413,6 +415,14 @@ describe("parseMonitorArgs error branches", () => {
   test("--repo followed by a flag is an error", () => {
     const parsed = parseMonitorArgs(["--repo", "--all-repos"]);
     expect(parsed.error).toBeTruthy();
+  });
+
+  test("--domain requires a value", () => {
+    expect(parseMonitorArgs(["--domain", ""]).error).toBe("--domain requires a domain name");
+  });
+
+  test("-d is an alias for --domain", () => {
+    expect(parseMonitorArgs(["-d", "phoenix"]).domain).toBe("phoenix");
   });
 
   test("--all-repos sets allRepos=true", () => {
@@ -1076,6 +1086,62 @@ describe("cmdMonitor", () => {
     });
     await cmdMonitor([], deps);
     expect(capturedParams?.repo).toBe("/default/repo");
+  });
+
+  test("-d passes the domain to openEventStream", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["-d", "phoenix"], deps);
+    expect(capturedParams?.domain).toBe("phoenix");
+  });
+
+  // Domains supersede `mcx scope`; stacking the implicit cwd repo scope on top of `-d`
+  // would make `mcx monitor -d phoenix` from any other directory an empty stream, which
+  // reads exactly like a quiet domain.
+  test("-d replaces the implicit cwd repo scope", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/other/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["--domain", "phoenix"], deps);
+    expect(capturedParams?.domain).toBe("phoenix");
+    expect(capturedParams?.repo).toBeUndefined();
+  });
+
+  test("an explicit --repo still narrows alongside -d", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      getCwd: () => "/some/other/repo",
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor(["-d", "phoenix", "--repo", "/custom/repo"], deps);
+    expect(capturedParams?.domain).toBe("phoenix");
+    expect(capturedParams?.repo).toBe("/custom/repo");
+  });
+
+  test("no -d passes no domain — the daemon-wide stream is the default", async () => {
+    let capturedParams: Parameters<typeof openEventStream>[0];
+    const deps = makeStreamDeps([], {
+      openEventStream: (params) => {
+        capturedParams = params;
+        return { events: (async function* () {})(), abort: () => {} };
+      },
+    });
+    await cmdMonitor([], deps);
+    expect(capturedParams).toBeDefined();
+    expect(capturedParams?.domain).toBeUndefined();
   });
 
   test("--all-repos passes no repo to openEventStream", async () => {

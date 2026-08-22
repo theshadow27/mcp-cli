@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { NO_DOMAIN_ID } from "./domain";
 import {
   type EventFilterSpec,
   WaitTimeoutError,
+  createEventMatcher,
   createWaitForEvent,
   filterSpecToStreamParams,
   globToRegex,
@@ -15,6 +17,7 @@ function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
     ts: new Date().toISOString(),
+    domainId: NO_DOMAIN_ID,
     src: "test",
     event: "pr.opened",
     category: "work_item",
@@ -441,5 +444,41 @@ describe("createWaitForEvent", () => {
     await expect(waitFor({ type: "ci.finished" }, { timeoutMs: 10 })).rejects.toThrow(WaitTimeoutError);
     // Aborting after timeout resolution must be a no-op
     controller.abort();
+  });
+});
+
+// ── Domain filter (#3040) ──
+
+describe("domain filter", () => {
+  test("matches only the named domain", () => {
+    const match = createEventMatcher({ domain: "phoenix" });
+    expect(match(makeEvent({ domainId: 3, domain: "phoenix" }))).toBe(true);
+    expect(match(makeEvent({ domainId: 7, domain: "clrg" }))).toBe(false);
+  });
+
+  // Deliberately unlike `repo`, which lets an event with no repoRoot pass. `-d phoenix`
+  // showing a daemon-wide mail event would attribute daemon state to one project.
+  test("an un-domained event does NOT pass a domain filter", () => {
+    const match = createEventMatcher({ domain: "phoenix" });
+    expect(match(makeEvent({ domainId: 0 }))).toBe(false);
+  });
+
+  test("no domain filter sees every domain — scoping is a filter, not a wall", () => {
+    const match = createEventMatcher({});
+    expect(match(makeEvent({ domainId: 3, domain: "phoenix" }))).toBe(true);
+    expect(match(makeEvent({ domainId: 7, domain: "clrg" }))).toBe(true);
+    expect(match(makeEvent({ domainId: 0 }))).toBe(true);
+  });
+
+  test("composes with other axes", () => {
+    const match = createEventMatcher({ domain: "phoenix", type: "pr.*" });
+    expect(match(makeEvent({ domain: "phoenix", event: "pr.opened" }))).toBe(true);
+    expect(match(makeEvent({ domain: "phoenix", event: "session.idle" }))).toBe(false);
+    expect(match(makeEvent({ domain: "clrg", event: "pr.opened" }))).toBe(false);
+  });
+
+  test("filterSpecToStreamParams carries domain to the wire", () => {
+    expect(filterSpecToStreamParams({ domain: "phoenix" }).domain).toBe("phoenix");
+    expect(filterSpecToStreamParams({}).domain).toBeUndefined();
   });
 });

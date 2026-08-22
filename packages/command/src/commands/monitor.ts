@@ -32,6 +32,7 @@ export interface MonitorArgs {
   phase: string | undefined;
   repo: string | undefined;
   allRepos: boolean;
+  domain: string | undefined;
   since: number | undefined;
   until: string | undefined;
   timeout: number | undefined;
@@ -81,6 +82,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     phase: { type: "string" },
     repo: { type: "string" },
     "all-repos": { type: "boolean" },
+    domain: { type: "string", alias: "d" },
     since: { type: "number" },
     until: { type: "string" },
     timeout: { type: "number" },
@@ -105,6 +107,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     ["src", "--src requires a value"],
     ["phase", "--phase requires a value"],
     ["repo", "--repo requires a path"],
+    ["domain", "--domain requires a domain name"],
     ["until", "--until requires a value"],
   ];
   for (const [key, msg] of emptyChecks) {
@@ -130,6 +133,7 @@ export function parseMonitorArgs(args: string[]): MonitorArgs {
     phase: flags.phase as string | undefined,
     repo: flags.repo as string | undefined,
     allRepos: (flags["all-repos"] as boolean) ?? false,
+    domain: flags.domain as string | undefined,
     since: flags.since as number | undefined,
     until: flags.until as string | undefined,
     timeout: flags.timeout as number | undefined,
@@ -157,6 +161,7 @@ Filters (evaluated server-side):
   --phase <name>             Only items in this phase
   --repo <path>              Scope to repo root (default: current working directory)
   --all-repos               Disable repo scoping — show events from all repos
+  -d, --domain <name>        Scope to one domain (omit to see every domain)
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:
@@ -183,7 +188,12 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
 
   const useJson = parsed.json || !d.isTTY;
 
-  const repo = parsed.allRepos ? undefined : resolveRealpath(resolve(parsed.repo ?? d.getCwd()));
+  // `-d` replaces the implicit cwd repo scope rather than stacking with it: domains
+  // supersede `mcx scope`, so `mcx monitor -d phoenix` run from anywhere has to mean
+  // phoenix — not "phoenix AND wherever I happen to be standing", which is an empty
+  // stream that reads as a quiet domain. An explicit `--repo` still narrows further.
+  const repoScopeApplies = !parsed.allRepos && (parsed.repo !== undefined || parsed.domain === undefined);
+  const repo = repoScopeApplies ? resolveRealpath(resolve(parsed.repo ?? d.getCwd())) : undefined;
 
   const { events, abort } = d.openEventStream({
     subscribe: parsed.subscribe,
@@ -194,6 +204,7 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     src: parsed.src,
     phase: parsed.phase,
     repo,
+    domain: parsed.domain,
     since: parsed.since,
     responseTail: parsed.responseTail,
   });

@@ -82,6 +82,7 @@ import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
+import { createDomainResolver } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
@@ -704,7 +705,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const eventLog = new EventLog(db.getDatabase());
   const seqBefore = eventLog.currentSeq();
   eventLog.startPruning();
-  const mailEventBus = new EventBus(eventLog);
+  // One resolver for the whole daemon (#3040): the EventBus stamps every event with it
+  // and the IPC server partitions alias_state with it, so "which domain owns this path"
+  // has a single answer and a single memo to invalidate.
+  const domainResolver = createDomainResolver(db);
+  const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
 
   const restartedEvent = mailEventBus.publish({
@@ -841,7 +846,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             };
           },
           getWorkItemState: (workItemId) => {
-            return db.listAliasState(automationRepoRoot, `workitem:${workItemId}`);
+            // Automation state lives in alias_state under `workitem:<id>` — the same
+            // rows `ctx.state` writes from a phase script, so it must be read from the
+            // same partition or a module would see an empty snapshot for a work item
+            // whose phase script had just written to it (#3040).
+            return db.listAliasState(
+              automationRepoRoot,
+              `workitem:${workItemId}`,
+              domainResolver.idForPath(automationRepoRoot),
+            );
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {
@@ -931,6 +944,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       });
     },
     automationDispatcher: automationDispatcher ?? undefined,
+    domains: domainResolver,
   });
   await ipcServer.start();
 

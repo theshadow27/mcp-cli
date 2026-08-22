@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, spyOn, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
-import { MAIL_SENT } from "@mcp-cli/core";
+import { MAIL_SENT, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { createDomainResolver } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
@@ -591,5 +592,88 @@ describe("EventBus with EventLog", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+// ── Domain stamping (#3040) ──
+
+describe("EventBus domain stamping", () => {
+  const resolver = createDomainResolver({
+    listDomains: () => [
+      { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
+    ],
+  });
+
+  test("publish derives the domain from the producer's repoRoot", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix/pkg" });
+    expect(event.domainId).toBe(3);
+    expect(event.domain).toBe("phoenix");
+  });
+
+  test("an event with no repoRoot is un-domained, not guessed onto some domain", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ src: "daemon", event: MAIL_SENT, category: "mail" });
+    expect(event.domainId).toBe(NO_DOMAIN_ID);
+    expect(event.domain).toBeUndefined();
+  });
+
+  test("a repoRoot outside every domain is un-domained", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/var/elsewhere" }).domainId).toBe(NO_DOMAIN_ID);
+  });
+
+  test("a producer that already knows its domain is believed over its repoRoot", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", domainId: 7 });
+    expect(event.domainId).toBe(7);
+    expect(event.domain).toBe("clrg");
+  });
+
+  test("a bus with no resolver stamps the sentinel — never undefined", () => {
+    const bus = new EventBus();
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix" }).domainId).toBe(NO_DOMAIN_ID);
+  });
+
+  test("the stamped domain reaches the durable log's column and survives replay", () => {
+    const db = new Database(":memory:");
+    db.exec("PRAGMA journal_mode = WAL");
+    const log = new EventLog(db);
+    const bus = new EventBus(log, Date.now, resolver);
+
+    bus.publish({ ...sessionEvent("session.result"), repoRoot: "/tmp/phoenix/a" });
+    bus.publish({ ...sessionEvent("session.idle"), repoRoot: "/tmp/clrg/b" });
+    bus.publish({ src: "daemon", event: MAIL_SENT, category: "mail" });
+
+    expect(db.query<{ domain_id: number }, []>("SELECT domain_id FROM monitor_events ORDER BY seq").all()).toEqual([
+      { domain_id: 3 },
+      { domain_id: 7 },
+      { domain_id: NO_DOMAIN_ID },
+    ]);
+
+    const replayed = log.getSince(0, 100, { domainId: 3 });
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]?.domain).toBe("phoenix");
+    expect(replayed[0]?.event).toBe("session.result");
+    db.close();
+  });
+
+  test("subscribers see the domain on the live stream too", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const seen: Array<{ domainId: number; domain?: string }> = [];
+    bus.subscribe((e) => seen.push({ domainId: e.domainId, domain: e.domain }));
+    bus.publish({ ...sessionEvent(), repoRoot: "/tmp/clrg" });
+    expect(seen).toEqual([{ domainId: 7, domain: "clrg" }]);
+  });
+
+  test("the serialized copy handed to subscribers carries the domain", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    let serialized = "";
+    bus.subscribe((_e, s) => {
+      serialized = s;
+    });
+    bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix" });
+    expect(JSON.parse(serialized)).toMatchObject({ domainId: 3, domain: "phoenix" });
   });
 });

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AutomationAction, AutomationConfig, LockedAutomation, MonitorEvent } from "@mcp-cli/core";
+import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { pollUntil } from "../../../test/harness";
 import { AutomationDispatcher } from "./automation-dispatcher";
+import { createDomainResolver } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 
 const SETTLE_MS = 20;
@@ -10,6 +12,7 @@ function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
   return {
     seq: 1,
     ts: new Date().toISOString(),
+    domainId: NO_DOMAIN_ID,
     src: "test",
     event: "pr.merged",
     category: "work_item",
@@ -795,5 +798,90 @@ describe("AutomationDispatcher", () => {
     expect(emitted?.stateKeys).toEqual(["qa_session_id", "session_id"]);
     expect(emitted?.stateSnapshot).toEqual({ session_id: "sess-1", qa_session_id: "sess-2" });
     d.stop();
+  });
+});
+
+// ── Automation state and events are per-domain (#3040) ──
+
+describe("AutomationDispatcher domain attribution", () => {
+  const REPO = "/tmp/phoenix";
+  const resolver = createDomainResolver({
+    listDomains: () => [{ id: 3, name: "phoenix", host: null, path: REPO, createdAt: "2026-08-22T00:00:00.000Z" }],
+  });
+
+  // The dispatcher is still one object bound to the daemon's cwd (per-domain dispatchers
+  // are #3041). Naming the repoRoot it *is* bound to is what lets the bus stamp a domain,
+  // so `mcx monitor -d phoenix` sees this project's automation instead of dropping it as
+  // un-domained.
+  test("audit events carry the dispatcher's domain", async () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: REPO,
+      executeModule: async () => ({ action: "none", reason: "test" }),
+    });
+    const seen: Array<{ event: string; domainId: number; domain?: string }> = [];
+    bus.subscribe((e) => {
+      if (e.category === "automation") seen.push({ event: e.event, domainId: e.domainId, domain: e.domain });
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+    bus.publish(makeEvent());
+    await Bun.sleep(SETTLE_MS);
+    dispatcher.stop();
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((e) => e.domainId === 3 && e.domain === "phoenix")).toBe(true);
+  });
+
+  test("a module's emit-event action inherits the dispatcher's domain", async () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: REPO,
+      executeModule: async () => ({
+        action: "emit-event",
+        event: { event: "custom.thing", category: "automation" },
+      }),
+    });
+    const emitted: Array<{ domainId: number; domain?: string }> = [];
+    bus.subscribe((e) => {
+      if (e.event === "custom.thing") emitted.push({ domainId: e.domainId, domain: e.domain });
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+    bus.publish(makeEvent());
+    await Bun.sleep(SETTLE_MS);
+    dispatcher.stop();
+
+    expect(emitted).toEqual([{ domainId: 3, domain: "phoenix" }]);
+  });
+
+  // A module that sets its own repoRoot is still believed — the dispatcher's is a
+  // default, spread first, not an override.
+  test("a module-supplied repoRoot wins over the dispatcher's", async () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const dispatcher = new AutomationDispatcher({
+      eventBus: bus,
+      repoRoot: REPO,
+      executeModule: async () => ({
+        action: "emit-event",
+        event: { event: "custom.thing", category: "automation", repoRoot: "/var/elsewhere" },
+      }),
+    });
+    const emitted: number[] = [];
+    bus.subscribe((e) => {
+      if (e.event === "custom.thing") emitted.push(e.domainId);
+    });
+
+    dispatcher.load(makeConfig(), [makeLocked()]);
+    dispatcher.start();
+    bus.publish(makeEvent());
+    await Bun.sleep(SETTLE_MS);
+    dispatcher.stop();
+
+    expect(emitted).toEqual([NO_DOMAIN_ID]);
   });
 });

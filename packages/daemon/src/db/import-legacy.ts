@@ -23,7 +23,14 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { NO_DOMAIN_ID, canonicalizeDomainPath, isValidDomainName, options } from "@mcp-cli/core";
+import {
+  type Domain,
+  NO_DOMAIN_ID,
+  canonicalizeDomainPath,
+  isValidDomainName,
+  options,
+  resolveDomainForPath,
+} from "@mcp-cli/core";
 import { DERIVED_CURSOR_ID } from "../derived-events";
 
 /** Shape of a `~/.mcp-cli/scopes/<name>.json` sidecar, as written by `mcx scope init`. */
@@ -307,6 +314,11 @@ function copyEverything(
         return result;
       }
 
+      // Past every rollback path, so this only ever stamps rows that are about to be
+      // sealed — a domain mapping computed for a copy that then rolls back is wasted
+      // work on the one code path where the user is already having a bad day (#3040).
+      stampImportedDomainIds(target, log);
+
       // Inside the transaction, in the legacy database, on this connection.
       writeMarker(target, result.totalCopied);
       target.run("COMMIT");
@@ -586,6 +598,74 @@ function copyTable(
   } catch (err) {
     log(`[domain-import] table ${table} failed: ${errText(err)}`);
     return { table, copied: 0, notCopied: total, failed: true, reason: errText(err) };
+  }
+}
+
+/**
+ * Map imported `alias_state` and `monitor_events` rows onto the domains just created
+ * from the scope sidecars (#3040).
+ *
+ * The legacy tables have no `domain_id`, so `copyTable` lands every row on the sentinel
+ * `NO_DOMAIN_ID`. Left there, the mapping would be an accident rather than a decision:
+ * `mcx phase run` in a domain-registered repo would resolve domain 3, query
+ * `(3, repo_root, …)`, find nothing, and the user's phase state — round counters,
+ * scrutiny, every `ctx.state` key — would read as absent while sitting in the table one
+ * column away. That is silent data loss dressed up as a fresh start.
+ *
+ * The mapping is the same rule everything else uses: `repo_root` (for `alias_state`) or
+ * the event's own `repoRoot` (for `monitor_events`) through `resolveDomainForPath`.
+ * A root outside every domain stays at the sentinel, which is correct — an unregistered
+ * project keeps exactly its pre-domain behaviour.
+ *
+ * Runs inside the import transaction, after the copies: it needs the rows to exist, and
+ * a failure here must roll the whole import back rather than leave a half-stamped table.
+ * Collisions cannot arise because the import only ever runs into an empty `mcx.db`.
+ */
+function stampImportedDomainIds(target: Database, log: (msg: string) => void): void {
+  const domains = target
+    .query<{ id: number; name: string; host: string | null; path: string; created_at: string }, []>(
+      "SELECT id, name, host, path, created_at FROM domains",
+    )
+    .all()
+    .map((r): Domain => ({ id: r.id, name: r.name, host: r.host, path: r.path, createdAt: r.created_at }));
+  if (domains.length === 0) return;
+
+  const idFor = (root: string): number => {
+    try {
+      // Already canonical in both tables: alias_state roots were canonicalized by the
+      // pre-domain StateDb migrations, and event repoRoots by their producers.
+      return resolveDomainForPath(root, domains)?.id ?? NO_DOMAIN_ID;
+    } catch {
+      return NO_DOMAIN_ID;
+    }
+  };
+
+  for (const { table, rootExpr } of [
+    { table: "alias_state", rootExpr: "repo_root" },
+    { table: "monitor_events", rootExpr: "json_extract(payload, '$.repoRoot')" },
+  ]) {
+    try {
+      const roots = target
+        .query<{ root: string | null }, []>(
+          `SELECT DISTINCT ${rootExpr} AS root FROM ${table} WHERE domain_id = ${NO_DOMAIN_ID}`,
+        )
+        .all();
+      let stamped = 0;
+      for (const { root } of roots) {
+        if (typeof root !== "string" || root.length === 0) continue;
+        const id = idFor(root);
+        if (id === NO_DOMAIN_ID) continue;
+        stamped += target.run(
+          `UPDATE ${table} SET domain_id = ? WHERE domain_id = ${NO_DOMAIN_ID} AND ${rootExpr} = ?`,
+          [id, root],
+        ).changes;
+      }
+      if (stamped > 0) log(`[domain-import] ${table}: stamped ${stamped} row(s) with a domain`);
+    } catch (err) {
+      // A table the copy already flagged as failed (the marker is withheld either way).
+      // Must not abort the stamping of the other one.
+      log(`[domain-import] ${table}: could not stamp domain ids — ${errText(err)}`);
+    }
   }
 }
 

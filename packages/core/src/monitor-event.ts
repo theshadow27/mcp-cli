@@ -196,14 +196,39 @@ export interface MonitorEventBase {
   payload?: never;
   /** Repo root path this event is scoped to. Present when known / when session is repo-scoped; absent on global events (mail, quota, heartbeats) and sessions started without a configured or discoverable repo root. */
   repoRoot?: string;
+  /**
+   * Domain that owns this event, as a producer hint (#3040).
+   *
+   * Optional on **input** because almost no producer knows its domain — they know a
+   * `repoRoot`, and `EventBus.publish` turns that into a domain through the one
+   * resolution rule (`resolveDomainForPath`). A producer that genuinely knows better
+   * — because it was handed a domain rather than a path — sets this and publish
+   * honours it. It is **required on {@link MonitorEvent}**: by the time an event is
+   * published it has a domain, even if that domain is `NO_DOMAIN_ID`.
+   */
+  domainId?: number;
+  /** Domain name for `domainId`, when the id names a registered domain. Absent for `NO_DOMAIN_ID`. */
+  domain?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];
   [key: string]: unknown;
 }
 
+/**
+ * A **published** event: the envelope after `EventBus.publish` has stamped it.
+ *
+ * `domainId` is required here and optional on {@link MonitorEventBase} on purpose.
+ * The partition is the point of the domain epic, and "the producer forgot to say which
+ * domain" is exactly the kind of omission that reads as `domain_id = 0` forever and is
+ * invisible until two projects overwrite each other. Making it required on the published
+ * type means the compiler — not a review comment — stops an event from being persisted,
+ * replayed or filtered without one. `NO_DOMAIN_ID` is a legitimate answer (daemon-wide
+ * events genuinely have no domain); *not answering* is not.
+ */
 export interface MonitorEvent extends MonitorEventBase {
   seq: number;
   ts: string;
+  domainId: number;
 }
 
 export type MonitorEventInput = MonitorEventBase;
