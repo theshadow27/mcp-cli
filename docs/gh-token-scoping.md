@@ -39,7 +39,11 @@ mv ~/.mcp-cli/tokens.json.tmp ~/.mcp-cli/tokens.json   # atomic rename
 
 `MCX_GH_TOKEN_WORKER` / `MCX_GH_TOKEN_ORCHESTRATOR` work as a fallback for keys the file
 does not set (the file wins per key). They are **not** a fallback for a file that exists
-but cannot be trusted — see below.
+but cannot be trusted — see below. Either var being *set to an unusable value* (blank,
+embedded whitespace, a control character, over 4096 chars — all legal in a POSIX env var)
+is a config error, not a miss: it denies every spawn, the same way the same value in the
+file does. Silently dropping it would make a malformed declaration look identical to no
+declaration at all, and "nothing declared" is the one input that inherits.
 
 ## The policy
 
@@ -48,7 +52,7 @@ function, `resolveSpawnGhToken(config, ctx)`.
 
 | configuration | outcome |
 |---|---|
-| tokens file present but untrusted | `denied` — fail closed, error logged every spawn |
+| tokens file present but untrusted, or a source var set to an unusable value | `denied` — fail closed, error logged every spawn |
 | worker token set | `scoped` — worker token injected, ambient fallback closed |
 | only an `orchestrator` token declared | `denied` — no GitHub credential reachable |
 | nothing configured | `inherited` — legacy single-token behaviour, warned once per daemon |

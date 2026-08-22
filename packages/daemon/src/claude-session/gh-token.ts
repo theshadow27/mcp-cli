@@ -37,8 +37,10 @@
  *
  * A tokens file that is present but unreadable, loosely permissioned, or
  * malformed resolves to `denied` with a loud, secret-free problem string — never
- * to "inherit the ambient admin credential". Only "no file configured at all"
- * falls through to legacy inherited behaviour.
+ * to "inherit the ambient admin credential". The env source is held to the same
+ * standard: an `MCX_GH_TOKEN_*` var that is *set* but holds an unusable value is
+ * a problem, not a miss. Only "nothing configured at all" — no file, no source
+ * var — falls through to legacy inherited behaviour.
  *
  * Token material reaches exactly one place: the child process env. It is never
  * written to SQLite, the daemon log ring, stderr, an error message, or an event
@@ -52,8 +54,14 @@ import { options } from "@mcp-cli/core";
 /** Env vars a child process reads GitHub credentials from. */
 export const GH_CREDENTIAL_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 
+/** Which env var declares which half of the pair. */
+const GH_TOKEN_ENV_BY_KEY = {
+  worker: "MCX_GH_TOKEN_WORKER",
+  orchestrator: "MCX_GH_TOKEN_ORCHESTRATOR",
+} as const;
+
 /** Env vars mcx itself reads token material from. Never forwarded to a child. */
-export const GH_TOKEN_SOURCE_ENV_KEYS = ["MCX_GH_TOKEN_WORKER", "MCX_GH_TOKEN_ORCHESTRATOR"] as const;
+export const GH_TOKEN_SOURCE_ENV_KEYS = [GH_TOKEN_ENV_BY_KEY.worker, GH_TOKEN_ENV_BY_KEY.orchestrator] as const;
 
 /**
  * Env vars telling the child what its own GitHub reach is, and why.
@@ -148,16 +156,14 @@ export function normalizeGhToken(raw: unknown): string | undefined {
   return trimmed;
 }
 
-/** Normalize an untrusted `{ worker, orchestrator }` shape into a `GhTokenSource`. */
-export function normalizeGhTokens(raw: unknown): GhTokenSource {
-  if (raw === null || typeof raw !== "object") return {};
-  const record = raw as Record<string, unknown>;
-  const worker = normalizeGhToken(record.worker);
-  const orchestrator = normalizeGhToken(record.orchestrator);
-  return {
-    ...(worker !== undefined ? { worker } : {}),
-    ...(orchestrator !== undefined ? { orchestrator } : {}),
-  };
+/**
+ * Why a declared value was rejected, in operator terms.
+ *
+ * Single-sourced across the file and env paths because the security-relevant
+ * half of it is what it leaves out: the offending value is never echoed.
+ */
+function unusableTokenProblem(subject: string): string {
+  return `${subject} is not a usable token — it is blank, contains whitespace or control characters, or exceeds ${MAX_TOKEN_CHARS} characters`;
 }
 
 /**
@@ -174,12 +180,28 @@ export function formatFileMode(mode: number): string {
   return `0${(mode & 0o7777).toString(8).padStart(3, "0")}`;
 }
 
-/** Read the credential pair out of an env snapshot. */
-export function ghTokensFromEnv(env: Record<string, string | undefined>): GhTokenSource {
-  return normalizeGhTokens({
-    worker: env.MCX_GH_TOKEN_WORKER,
-    orchestrator: env.MCX_GH_TOKEN_ORCHESTRATOR,
-  });
+/**
+ * Read the credential pair out of an env snapshot.
+ *
+ * Only an *unset* var is absent. A var that is set but holds an unusable value
+ * is a `problem`, exactly as the same value in `tokens.json` is — dropping it
+ * silently would make a malformed declaration indistinguishable from no
+ * declaration at all, and "no declaration at all" is the one input that falls
+ * through to `inherited`. That is not academic: embedded whitespace is legal in
+ * a POSIX env var (only NUL is not), so `MCX_GH_TOKEN_ORCHESTRATOR="gho_x y"`
+ * from a provisioning bug or a multi-line secrets-manager value used to hand the
+ * child the ambient admin credential the var was set to withhold.
+ */
+export function ghTokensFromEnv(env: Record<string, string | undefined>): GhTokenConfig {
+  const tokens: GhTokenSource = {};
+  for (const [key, envKey] of Object.entries(GH_TOKEN_ENV_BY_KEY) as Array<[keyof GhTokenSource, string]>) {
+    const raw = env[envKey];
+    if (raw === undefined) continue;
+    const token = normalizeGhToken(raw);
+    if (token === undefined) return { tokens: {}, problem: unusableTokenProblem(`${envKey} is set but`) };
+    tokens[key] = token;
+  }
+  return { tokens };
 }
 
 /** Merge the two sources, per key. The tokens file wins over the ambient env. */
@@ -428,10 +450,7 @@ export function parseGhTokensFile(text: string, path: string): GhTokensFileRead 
     if (raw === undefined || raw === null) continue;
     const token = normalizeGhToken(raw);
     if (token === undefined) {
-      return {
-        status: "error",
-        problem: `${path} key "${key}" is not a usable token — it is blank, contains whitespace or control characters, or exceeds ${MAX_TOKEN_CHARS} characters`,
-      };
+      return { status: "error", problem: unusableTokenProblem(`${path} key "${key}"`) };
     }
     tokens[key] = token;
   }
@@ -449,6 +468,11 @@ export function parseGhTokensFile(text: string, path: string): GhTokensFileRead 
  * degraded file read is surfaced as `problem` and resolves to `denied` — the
  * env fallback deliberately does *not* rescue it, since the ambient env is
  * exactly the admin credential the file was written to stop handing down.
+ *
+ * A degraded *env* read is not rescued by the file either, even when the file
+ * alone would have resolved cleanly: a malformed source var means the operator's
+ * intent is unclear, and per-key "was it overridden anyway?" reasoning is how a
+ * fail-open gets reintroduced. Both sources degrade the whole config.
  */
 export function loadGhTokens(
   env: Record<string, string | undefined> = process.env,
@@ -456,8 +480,10 @@ export function loadGhTokens(
 ): GhTokenConfig {
   const read = readGhTokensFile(path);
   if (read.status === "error") return { tokens: {}, problem: read.problem };
+  const envConfig = ghTokensFromEnv(env);
+  if (envConfig.problem !== undefined) return { tokens: {}, problem: envConfig.problem };
   const fileTokens = read.status === "ok" ? read.tokens : {};
-  return { tokens: mergeGhTokens(fileTokens, ghTokensFromEnv(env)) };
+  return { tokens: mergeGhTokens(fileTokens, envConfig.tokens) };
 }
 
 /** Both credential vars set to one value — or unset, when the value is `undefined`. */

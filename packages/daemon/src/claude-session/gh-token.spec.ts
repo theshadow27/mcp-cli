@@ -14,7 +14,6 @@ import {
   loadGhTokens,
   mergeGhTokens,
   normalizeGhToken,
-  normalizeGhTokens,
   parseGhTokensFile,
   readGhTokensFile,
   resolveSpawnGhToken,
@@ -255,20 +254,6 @@ describe("normalizeGhToken", () => {
   });
 });
 
-describe("normalizeGhTokens", () => {
-  test("keeps only valid keys and drops everything else", () => {
-    expect(normalizeGhTokens({ worker: WORKER_TOKEN, orchestrator: "", extra: "x" })).toEqual({
-      worker: WORKER_TOKEN,
-    });
-  });
-
-  test("non-objects yield no tokens", () => {
-    expect(normalizeGhTokens(null)).toEqual({});
-    expect(normalizeGhTokens("ghp_bare")).toEqual({});
-    expect(normalizeGhTokens(undefined)).toEqual({});
-  });
-});
-
 describe("isCredentialNamespaceKey", () => {
   test("matches every shape a GitHub or git credential can arrive under", () => {
     for (const key of [
@@ -332,13 +317,30 @@ describe("parseGhTokensFile", () => {
 
 describe("ghTokensFromEnv", () => {
   test("reads both source vars", () => {
-    expect(ghTokensFromEnv({ MCX_GH_TOKEN_WORKER: WORKER_TOKEN, MCX_GH_TOKEN_ORCHESTRATOR: ADMIN_TOKEN })).toEqual(
-      BOTH,
-    );
+    expect(ghTokensFromEnv({ MCX_GH_TOKEN_WORKER: WORKER_TOKEN, MCX_GH_TOKEN_ORCHESTRATOR: ADMIN_TOKEN })).toEqual({
+      tokens: BOTH,
+    });
+  });
+
+  test("an unset var is absent, not a problem", () => {
+    expect(ghTokensFromEnv({ MCX_GH_TOKEN_WORKER: WORKER_TOKEN })).toEqual({ tokens: WORKER_ONLY });
+    expect(ghTokensFromEnv({})).toEqual({ tokens: NEITHER });
   });
 
   test("ignores GH_TOKEN / GITHUB_TOKEN — ambient credentials are not a configured tier", () => {
-    expect(ghTokensFromEnv({ GH_TOKEN: ADMIN_TOKEN, GITHUB_TOKEN: ADMIN_TOKEN })).toEqual({});
+    expect(ghTokensFromEnv({ GH_TOKEN: ADMIN_TOKEN, GITHUB_TOKEN: ADMIN_TOKEN })).toEqual({ tokens: NEITHER });
+  });
+
+  test("a set-but-unusable var is a problem naming itself, and yields no tokens at all", () => {
+    const config = ghTokensFromEnv({ MCX_GH_TOKEN_WORKER: WORKER_TOKEN, MCX_GH_TOKEN_ORCHESTRATOR: "" });
+    expect(config.tokens).toEqual(NEITHER);
+    expect(config.problem).toContain("MCX_GH_TOKEN_ORCHESTRATOR");
+  });
+
+  test("a rejection never echoes the offending value", () => {
+    const config = ghTokensFromEnv({ MCX_GH_TOKEN_WORKER: `${WORKER_TOKEN} trailing` });
+    expect(config.problem).toContain("MCX_GH_TOKEN_WORKER");
+    expect(JSON.stringify(config)).not.toContain(WORKER_TOKEN);
   });
 });
 
@@ -464,5 +466,87 @@ describe("readGhTokensFile / loadGhTokens — the on-disk path", () => {
     expect(decision.mode).toBe("denied");
     expect(childEnv(decision.env).GH_TOKEN).toBeUndefined();
     expect(childEnv(decision.env).GH_CONFIG_DIR).toBe(ISOLATED_DIR);
+  });
+});
+
+describe("the env source fails closed, exactly as the file does", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mcx-gh-env-"));
+  const ABSENT = join(dir, "no-tokens.json");
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** Admin declared, no worker token, a live ambient credential in the source env. */
+  function adminOnlyEnv(orchestrator: string): Record<string, string | undefined> {
+    return { ...DIRTY_ENV, MCX_GH_TOKEN_WORKER: undefined, MCX_GH_TOKEN_ORCHESTRATOR: orchestrator };
+  }
+
+  test("a well-formed declared admin token denies — the mechanism the regression below defeats", () => {
+    const config = loadGhTokens(adminOnlyEnv(ADMIN_TOKEN), ABSENT);
+    expect(config).toEqual({ tokens: ADMIN_ONLY });
+    expect(resolve(config, adminOnlyEnv(ADMIN_TOKEN)).mode).toBe("denied");
+  });
+
+  test.each([
+    ["embedded whitespace", `${ADMIN_TOKEN} withspace`],
+    ["a newline — a multi-line secrets-manager value", `${ADMIN_TOKEN}\nSECONDLINE`],
+    ["a control character", `${ADMIN_TOKEN}\u0001`],
+    ["blank", "   "],
+    ["empty", ""],
+    ["oversized", "a".repeat(4097)],
+  ])(
+    "a declared admin token with %s denies rather than inheriting the ambient admin credential",
+    (_label, orchestrator) => {
+      const sourceEnv = adminOnlyEnv(orchestrator);
+      const config = loadGhTokens(sourceEnv, ABSENT);
+      // A malformed *declaration* must not read as "nothing declared" — that is
+      // the one input that falls through to `inherited`.
+      expect(config.tokens).toEqual(NEITHER);
+      expect(config.problem).toContain("MCX_GH_TOKEN_ORCHESTRATOR");
+
+      const decision = resolve(config, sourceEnv);
+      expect(decision.mode).toBe("denied");
+      expect(decision.problem).toBe(config.problem);
+      expect(decision.warnSingleToken).toBe(false);
+
+      const child = childEnv(decision.env, sourceEnv);
+      expect(child.GH_TOKEN).toBeUndefined();
+      expect(child.GITHUB_TOKEN).toBeUndefined();
+      expect(child.GH_CONFIG_DIR).toBe(ISOLATED_DIR);
+      expect(JSON.stringify(child)).not.toContain(AMBIENT_TOKEN);
+      expect(`${config.problem} ${decision.reason}`).not.toContain(ADMIN_TOKEN);
+    },
+  );
+
+  test("a declared worker token with embedded whitespace denies rather than silently vanishing", () => {
+    const sourceEnv = {
+      ...DIRTY_ENV,
+      MCX_GH_TOKEN_ORCHESTRATOR: undefined,
+      MCX_GH_TOKEN_WORKER: `${WORKER_TOKEN} withspace`,
+    };
+    const config = loadGhTokens(sourceEnv, ABSENT);
+    expect(config.tokens).toEqual(NEITHER);
+    expect(config.problem).toContain("MCX_GH_TOKEN_WORKER");
+
+    const decision = resolve(config, sourceEnv);
+    expect(decision.mode).toBe("denied");
+    expect(childEnv(decision.env, sourceEnv).GH_TOKEN).toBeUndefined();
+  });
+
+  test("a well-formed tokens file does not rescue a malformed source var", () => {
+    const path = join(dir, "tokens.json");
+    writeFileSync(path, JSON.stringify(WORKER_ONLY), { mode: 0o600 });
+    chmodSync(path, 0o600);
+    const config = loadGhTokens({ MCX_GH_TOKEN_WORKER: "ghp_has space" }, path);
+    expect(config.tokens).toEqual(NEITHER);
+    expect(config.problem).toContain("MCX_GH_TOKEN_WORKER");
+  });
+
+  test("an unset source var is still absent — the unconfigured box still inherits", () => {
+    const bare = { PATH: "/usr/bin", GH_TOKEN: AMBIENT_TOKEN };
+    const config = loadGhTokens(bare, ABSENT);
+    expect(config).toEqual({ tokens: NEITHER });
+    const decision = resolve(config, bare);
+    expect(decision.mode).toBe("inherited");
+    expect(decision.env).toEqual({});
   });
 });
