@@ -2011,8 +2011,10 @@ export class StateDb {
    * Rows whose directory is outside every domain stay at the sentinel, which is the
    * true answer for them rather than a guess.
    *
+   * Only LIVE rows (`ended_at IS NULL`) are adopted — see the SQL comment below.
+   *
    * Returns the number of rows adopted. Idempotent: a second call matches nothing,
-   * because only `domain_id = 0` rows are considered.
+   * because only unassigned live rows are considered.
    *
    * NOTE: this fixes the *database*. Workers hold `SessionConfig.domainId` in memory,
    * so a domain registered while a session is live is not reflected in that worker
@@ -2027,18 +2029,29 @@ export class StateDb {
 
     const rows = this.db
       .query<{ session_id: string; cwd: string | null; repo_root: string | null }, [number]>(
-        "SELECT session_id, cwd, repo_root FROM agent_sessions WHERE domain_id = ?",
+        // LIVE rows only. An ended row is history that predates the domain: adopting it
+        // makes `countDomainDependents` report sessions the domain never ran, which both
+        // inflates the refusal message until an operator reaches for `--cascade`
+        // reflexively AND makes that cascade delete 30 days of history that was never in
+        // this domain. `deleteDomain` re-homes live rows rather than deleting them, so
+        // scoping adoption the same way keeps the two halves consistent (#3039 review D).
+        "SELECT session_id, cwd, repo_root FROM agent_sessions WHERE domain_id = ? AND ended_at IS NULL",
       )
       .all(NO_DOMAIN_ID);
 
-    let adopted = 0;
-    for (const row of rows) {
-      const domainId = resolveStoredPathDomain([row.cwd, row.repo_root], domains);
-      if (domainId === NO_DOMAIN_ID) continue;
-      this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE session_id = ?", [domainId, row.session_id]);
-      adopted++;
-    }
-    return adopted;
+    // One transaction, not N autocommits. This runs on every daemon start, and on a
+    // post-sprint `agent_sessions` that would otherwise be thousands of individually
+    // committed WAL writes blocking boot (#3039 review G).
+    return this.db.transaction(() => {
+      let adopted = 0;
+      for (const row of rows) {
+        const domainId = resolveStoredPathDomain([row.cwd, row.repo_root], domains);
+        if (domainId === NO_DOMAIN_ID) continue;
+        this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE session_id = ?", [domainId, row.session_id]);
+        adopted++;
+      }
+      return adopted;
+    })();
   }
 
   listDomains(): Domain[] {

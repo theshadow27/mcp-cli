@@ -547,15 +547,35 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Adopt pre-domain sessions into the domains that now exist (#3039). Separate from the
   // ADOPTABLE_TABLES sweep above — agent_sessions needs its own rules (skip ended rows,
   // one transaction, cwd-then-repo_root fallback order) that adoptUnassignedRows doesn't
-  // model. This has to run AFTER the import — `importScopesAsDomains` creates the domain
-  // rows before the `agent_sessions` copy, so rows landing later cannot be adopted by
-  // `createDomain` itself — and BEFORE sessions are restored below, so the workers rebuild
-  // from the corrected rows rather than from `domain_id = 0`. Get that order wrong and the
-  // first start after upgrading shows an empty `mcx claude ls` on a box full of live
-  // sessions.
-  const adoptedSessions = db.adoptSessionsIntoDomains();
-  if (adoptedSessions > 0) {
-    logger.warn(`[mcpd] adopted ${adoptedSessions} pre-domain session(s) into their domains`);
+  // model.
+  //
+  // ORDER IS LOAD-BEARING, in both directions, and `adoption-order.spec.ts` asserts it:
+  //   - AFTER importLegacyState, because that is what copies `agent_sessions` in from
+  //     the legacy db; adopting first finds nothing to adopt and every restored session
+  //     stays at the sentinel, invisible to `-d` — the exact regression this fixes,
+  //     reinstated silently.
+  //   - BEFORE restoreActiveSessions below, so workers rebuild from corrected rows
+  //     rather than from `domain_id = 0`, which they then hold in memory until the next
+  //     restart.
+  //
+  // (An earlier version of this comment claimed adoption had to follow the import
+  // because `importScopesAsDomains` creates domains before the `agent_sessions` copy so
+  // `createDomain`'s own adopt hook could not catch those rows. That mechanism is
+  // invented: `importScopesAsDomains` writes with a raw prepared INSERT on the attached
+  // target and never calls `StateDb.createDomain`, so the hook was never in play. The
+  // conclusion was right for the simpler reason above.)
+  //
+  // Best-effort, like the import directly above: it is idempotent and self-heals on the
+  // next boot, so a SQLITE_BUSY must not take the daemon down with it.
+  try {
+    const adoptedSessions = db.adoptSessionsIntoDomains();
+    if (adoptedSessions > 0) {
+      logger.warn(`[mcpd] adopted ${adoptedSessions} pre-domain session(s) into their domains`);
+    }
+  } catch (err) {
+    logger.warn(
+      `[mcpd] adopting pre-domain sessions failed (retries next start): ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // Clean up DB records for sessions whose processes are dead.

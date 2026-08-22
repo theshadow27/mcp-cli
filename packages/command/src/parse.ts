@@ -195,26 +195,44 @@ export function extractQuietFlag(args: string[]): { quiet: boolean; rest: string
  * resolver is the thing this replaced. Also accepts `--domain=<name>` so the
  * flag behaves like the rest of the CLI's long options.
  */
-export function extractDomainFlag(args: string[]): { domain: string | undefined; rest: string[] } {
+export function extractDomainFlag(args: string[]): {
+  domain: string | undefined;
+  rest: string[];
+  error: string | undefined;
+} {
   const rest: string[] = [];
   let domain: string | undefined;
+  let error: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    // The value must not itself look like a flag: `mcx claude ls -d --json` used to
-    // send `domain: "--json"` and fail on a domain nobody typed, while also eating the
-    // `--json` the caller did type. A missing value is left for the caller to notice.
-    if ((arg === "-d" || arg === "--domain") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
-      domain = args[i + 1];
+    if (arg === "-d" || arg === "--domain") {
+      const value = args[i + 1];
+      // A domain name can never begin with `-` (DOMAIN_NAME_RE), so `-d --json` is
+      // unambiguously a user error and must be REPORTED. Swallowing the flag sent a
+      // domain nobody typed; merely declining to swallow it left a bare `-d` in `rest`
+      // with nothing reporting it, so `mcx claude ls -d --all` silently ran the WIDEST
+      // possible query. A scoping flag that quietly widens is the exact failure
+      // direction this whole change exists to remove (#3039 review E).
+      if (value === undefined || value.startsWith("-")) {
+        error ??= "--domain requires a domain name";
+        continue;
+      }
+      domain = value;
       i++; // skip the value
     } else if (arg.startsWith("--domain=")) {
-      domain = arg.slice("--domain=".length);
+      const value = arg.slice("--domain=".length);
+      if (value === "") {
+        error ??= "--domain requires a domain name";
+        continue;
+      }
+      domain = value;
     } else {
       rest.push(arg);
     }
   }
 
-  return { domain, rest };
+  return { domain, rest, error };
 }
 
 /**

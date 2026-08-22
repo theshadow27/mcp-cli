@@ -192,6 +192,12 @@ interface BufferedEvent {
   seq: number;
   sessionId: string;
   event: AgentSessionEvent;
+  /**
+   * Domain captured at buffer time (#3039). The live `sessions` map is cleared on
+   * `session:ended` while the buffer survives, so re-deriving the domain at read time
+   * silently lost a scoped caller its own ended session's events.
+   */
+  domainId: number;
 }
 
 const MAX_EVENT_BUFFER = 200;
@@ -207,18 +213,10 @@ const afterSeqWaiters: Array<{
   timer: ReturnType<typeof setTimeout>;
 }> = [];
 
-/**
- * True when the session that emitted an event is in the domain being waited on.
- * A removed session cannot be attributed, so it does not pass an active filter (#1308).
- */
-function emitterInDomain(sessionId: string, domainId: number | undefined): boolean {
-  if (domainId === undefined) return true;
-  const session = sessions.get(sessionId);
-  return session !== undefined && matchesDomain(session, domainId);
-}
-
 function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
-  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event };
+  // Last moment the domain is knowable for an event that ends the session.
+  const domainId = sessions.get(sessionId)?.domainId ?? NO_DOMAIN_ID;
+  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event, domainId };
   eventBuffer.push(entry);
   if (eventBuffer.length > MAX_EVENT_BUFFER) {
     eventBuffer.shift();
@@ -229,7 +227,7 @@ function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
     if (
       entry.seq > w.afterSeq &&
       (w.sessionId === null || w.sessionId === sessionId) &&
-      emitterInDomain(sessionId, w.domainId)
+      matchesDomain(entry, w.domainId)
     ) {
       clearTimeout(w.timer);
       afterSeqWaiters.splice(i, 1);
@@ -699,8 +697,7 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
   // afterSeq cursor: check buffer first, then block
   if (afterSeq !== undefined) {
     const buffered = eventBuffer.filter(
-      (e) =>
-        e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && emitterInDomain(e.sessionId, domainId),
+      (e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && matchesDomain(e, domainId),
     );
     if (buffered.length > 0) {
       const entry = buffered[0];

@@ -143,35 +143,54 @@ describe("cmdCall flag extraction chain", () => {
 
 describe("extractDomainFlag", () => {
   test("-d and --domain both take the next arg as the name", () => {
-    expect(extractDomainFlag(["-d", "phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"] });
-    expect(extractDomainFlag(["--domain", "phoenix"])).toEqual({ domain: "phoenix", rest: [] });
+    expect(extractDomainFlag(["-d", "phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"], error: undefined });
+    expect(extractDomainFlag(["--domain", "phoenix"])).toEqual({ domain: "phoenix", rest: [], error: undefined });
   });
 
   test("--domain=<name> form", () => {
-    expect(extractDomainFlag(["--domain=phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"] });
+    expect(extractDomainFlag(["--domain=phoenix", "ls"])).toEqual({
+      domain: "phoenix",
+      rest: ["ls"],
+      error: undefined,
+    });
   });
 
-  test("the value is consumed, so it cannot be mistaken for --all's -a or a positional", () => {
-    expect(extractDomainFlag(["-d", "phoenix", "--all"])).toEqual({ domain: "phoenix", rest: ["--all"] });
+  test("a flag-looking value is an ERROR, not a silently dropped flag", () => {
+    // Two wrong answers were tried before this one. Swallowing it sent `domain:
+    // "--json"` — a domain nobody typed. Merely declining to swallow it left a bare
+    // `-d` in `rest` with nothing reporting it, so `mcx claude ls -d --all` ran the
+    // WIDEST possible query. A domain name can never begin with `-`, so this is
+    // unambiguously a user error and has to be reported.
+    const r = extractDomainFlag(["ls", "-d", "--json"]);
+    expect(r.error).toBe("--domain requires a domain name");
+    expect(r.domain).toBeUndefined();
+    // `--json` is the user's real flag and stays in `rest` — the error is about the
+    // missing domain name, and we do not also eat an unrelated flag.
+    expect(r.rest).toEqual(["ls", "--json"]);
+
+    expect(extractDomainFlag(["-d", "--all"]).error).toBe("--domain requires a domain name");
   });
 
-  test("a flag-looking value is NOT swallowed as a domain name", () => {
-    // `mcx claude ls -d --json` used to send domain "--json" — failing on a domain
-    // nobody typed, while also eating the --json the caller did type.
-    expect(extractDomainFlag(["ls", "-d", "--json"])).toEqual({ domain: undefined, rest: ["ls", "-d", "--json"] });
-    expect(extractDomainFlag(["-d", "-a"])).toEqual({ domain: undefined, rest: ["-d", "-a"] });
+  test("a trailing -d with no value is an error too", () => {
+    const r = extractDomainFlag(["ls", "-d"]);
+    expect(r.error).toBe("--domain requires a domain name");
+    expect(r.rest).toEqual(["ls"]);
   });
 
-  test("absent leaves args untouched", () => {
-    expect(extractDomainFlag(["ls", "--short"])).toEqual({ domain: undefined, rest: ["ls", "--short"] });
-    expect(extractDomainFlag([])).toEqual({ domain: undefined, rest: [] });
+  test("an empty --domain= is an error", () => {
+    expect(extractDomainFlag(["--domain="]).error).toBe("--domain requires a domain name");
   });
 
-  test("a trailing -d with no value is not treated as a flag", () => {
-    expect(extractDomainFlag(["ls", "-d"])).toEqual({ domain: undefined, rest: ["ls", "-d"] });
+  test("absent leaves args untouched and reports no error", () => {
+    expect(extractDomainFlag(["ls", "--short"])).toEqual({
+      domain: undefined,
+      rest: ["ls", "--short"],
+      error: undefined,
+    });
+    expect(extractDomainFlag([])).toEqual({ domain: undefined, rest: [], error: undefined });
   });
 
   test("last one wins", () => {
-    expect(extractDomainFlag(["-d", "a", "-d", "b"])).toEqual({ domain: "b", rest: [] });
+    expect(extractDomainFlag(["-d", "a", "-d", "b"])).toEqual({ domain: "b", rest: [], error: undefined });
   });
 });

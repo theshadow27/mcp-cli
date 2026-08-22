@@ -68,6 +68,17 @@ interface BufferedEvent {
   seq: number;
   sessionId: string;
   event: AgentSessionEvent;
+  /**
+   * Domain of the session that emitted this, captured HERE, at buffer time (#3039).
+   *
+   * Deliberately not re-derived from the live `sessions` map when the buffer is read:
+   * `forwardSessionEvent` deletes the map entry on `session:ended`, and the buffer
+   * outlives the map. Re-deriving made a domain-scoped `wait --after <seq>` lose its
+   * OWN domain's events the moment the session ended — the caller was standing in the
+   * right domain and still got `[]`, indistinguishable from "nothing ran".
+   * `ws-server.ts:3313` snapshots the session onto the event for the same reason.
+   */
+  domainId: number;
 }
 
 const MAX_EVENT_BUFFER = 200;
@@ -84,21 +95,11 @@ const afterSeqWaiters: Array<{
   timer: ReturnType<typeof setTimeout>;
 }> = [];
 
-/**
- * True when the session that emitted an event is in the domain being waited on.
- *
- * A session that has already been removed cannot be attributed, so it does NOT pass
- * an active filter — the same rule `wait` learned for repo scoping in #1308. Letting
- * it through is how a scoped wait wakes on another domain's session.
- */
-function emitterInDomain(sessionId: string, domainId: number | undefined): boolean {
-  if (domainId === undefined) return true;
-  const session = sessions.get(sessionId);
-  return session !== undefined && matchesDomain(session.getInfo(), domainId);
-}
-
 function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
-  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event };
+  // Read the domain while the session is still in the map — this is the last moment
+  // it is knowable for an event that ends the session.
+  const domainId = sessions.get(sessionId)?.getInfo().domainId ?? NO_DOMAIN_ID;
+  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event, domainId };
   eventBuffer.push(entry);
   if (eventBuffer.length > MAX_EVENT_BUFFER) {
     eventBuffer.shift();
@@ -110,7 +111,7 @@ function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
     if (
       entry.seq > w.afterSeq &&
       (w.sessionId === null || w.sessionId === sessionId) &&
-      emitterInDomain(sessionId, w.domainId)
+      matchesDomain(entry, w.domainId)
     ) {
       clearTimeout(w.timer);
       afterSeqWaiters.splice(i, 1);
@@ -426,8 +427,7 @@ async function handleWait(args: Record<string, unknown>): Promise<{
   if (afterSeq !== undefined) {
     // Check buffer for events past the cursor
     const buffered = eventBuffer.filter(
-      (e) =>
-        e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && emitterInDomain(e.sessionId, domainId),
+      (e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && matchesDomain(e, domainId),
     );
     if (buffered.length > 0) {
       const entry = buffered[0];

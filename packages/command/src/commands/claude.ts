@@ -52,6 +52,7 @@ import {
   formatLifecycleLine,
   formatSessionShort,
 } from "./session-display";
+import { buildSessionScope } from "./session-scope";
 import type { SharedSpawnArgs } from "./spawn-args";
 import { parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
@@ -504,7 +505,11 @@ async function resolveEndedSessionForResume(
 async function claudeSpawn(rawArgs: string[], d: ClaudeDeps): Promise<void> {
   // `*_prompt` advertises `domain`, and `resolveSpawnDomainId` honours it — without a
   // flag you could filter by a named domain but not spawn into one (#3039 review 12).
-  const { domain: spawnDomain, rest: args } = extractDomainFlag(rawArgs);
+  const { domain: spawnDomain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   if (hasHelpFlag(args)) {
     const spawnHelp = getHelp("claude spawn");
     if (spawnHelp) {
@@ -1139,7 +1144,11 @@ export function formatQuotaBanner(quota: QuotaStatusResult | null): string | nul
 }
 
 async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
-  const { domain, rest: domainRest } = extractDomainFlag(args);
+  const { domain, rest: domainRest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   const { json } = extractJsonFlag(domainRest);
   const short = domainRest.includes("--short");
   const showPr = domainRest.includes("--pr");
@@ -1151,31 +1160,17 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // the domains table and resolves it (#3039). `repoRoot` remains as the coarser
   // pre-domain fallback for callers whose cwd is in no registered domain —
   // without it, `mcx claude ls` in repo A would list repo B's sessions.
-  const toolArgs: Record<string, unknown> = {};
-  let activeFilter: string | undefined;
-  if (!showAll) {
-    if (domain) {
-      toolArgs.domain = domain;
-      activeFilter = domain;
-    } else {
-      // Both are sent and BOTH apply server-side. The CLI cannot tell whether a
-      // domain resolved — it has no domains table, which is exactly why it stopped
-      // trying to (`scopeRoot` used to) — but it does know it ASKED for domain
-      // scoping, which is enough to label honestly and to keep the `--all` hint.
-      toolArgs.domainCwd = process.cwd();
-      activeFilter = process.cwd();
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) {
-        d.printError(gitRoot.message);
-      } else if (gitRoot) {
-        toolArgs.repoRoot = gitRoot;
-        activeFilter = gitRoot;
-      }
-    }
-  }
-  // "other repos" was a lie whenever the domain filter is what excluded them, and the
-  // hint vanished entirely when getGitRoot() failed in a non-git domain directory.
-  const filterLabel = toolArgs.domain ? "other domains" : "other domains or repos";
+  const scope = buildSessionScope({
+    domain,
+    all: showAll,
+    cwd: process.cwd(),
+    repoScoped: true,
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  const toolArgs: Record<string, unknown> = { ...scope.args };
+  const activeFilter = scope.activeFilter;
+  const filterLabel = scope.filterLabel;
 
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
@@ -1484,7 +1479,11 @@ async function claudeBye(args: string[], d: ClaudeDeps): Promise<void> {
 async function claudeByeAll(args: string[], d: ClaudeDeps, clean: boolean): Promise<void> {
   // List sessions with domain filtering. With no `-d`, the daemon resolves the
   // domain from the caller's cwd (#3039); `--all` without `--scoped` opts out.
-  const { domain, rest } = extractDomainFlag(args);
+  const { domain, rest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   const toolArgs: Record<string, unknown> = {};
   const bypassScope = rest.includes("--all") && !rest.includes("--scoped");
   if (!bypassScope) {
@@ -2026,27 +2025,18 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
     toolArgs.checks = true;
   }
 
-  // Scope server-side, only when no explicit session and no --all. `domain` is a
-  // NAME the daemon resolves (#3039); `repoRoot` stays as the coarser fallback for
-  // a cwd that is in no registered domain.
-  let repoFilter: string | undefined;
-  let domainFilter: string | undefined;
-  if (!parsed.all && !parsed.sessionPrefix) {
-    if (parsed.domain) {
-      toolArgs.domain = parsed.domain;
-      domainFilter = parsed.domain;
-    } else {
-      toolArgs.domainCwd = process.cwd();
-      domainFilter = process.cwd();
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) {
-        d.printError(gitRoot.message);
-      } else if (gitRoot) {
-        toolArgs.repoRoot = gitRoot;
-        repoFilter = gitRoot;
-      }
-    }
-  }
+  // Scope server-side, only when no explicit session and no --all — through the same
+  // builder `mcx agent` uses, so the two surfaces cannot drift again (#3039 review C).
+  const waitScope = buildSessionScope({
+    domain: parsed.domain,
+    all: parsed.all || parsed.sessionPrefix !== undefined,
+    cwd: process.cwd(),
+    repoScoped: true,
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  Object.assign(toolArgs, waitScope.args);
+  const repoFilter = waitScope.args.repoRoot as string | undefined;
 
   const waitPromise = d.callTool("claude_wait", toolArgs);
 
@@ -2105,8 +2095,8 @@ async function claudeWait(args: string[], d: ClaudeDeps): Promise<void> {
   // Guard: if data has BOTH sessions and events, the cursor branch below must win —
   // events live in the events array, not in unified.event, so formatWaitHeader
   // would incorrectly emit event=timeout for the unified branch.
-  const activeFilter = repoFilter ?? domainFilter;
-  const filterLabel = parsed.domain ? "other domains" : repoFilter ? "other domains or repos" : "other domains";
+  const activeFilter = waitScope.activeFilter;
+  const filterLabel = waitScope.filterLabel;
   if (data && typeof data === "object" && "sessions" in data && !("events" in data)) {
     const unified = data as {
       source?: string;
@@ -2389,6 +2379,7 @@ Usage:
   mcx claude resume --all                  Resume all orphaned worktrees
   mcx claude ls [--pr] [--all]             List sessions (scoped to current domain/repo by default)
   mcx claude ls -d <domain>                List sessions in a named domain, from anywhere
+                                           (exact domain: excludes nested sub-domains)
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude wait -d <domain>              Block on events in a named domain only

@@ -63,15 +63,33 @@ function functionRegion(source: string, name: string): string | null {
   return lines.slice(start, end).join("\n");
 }
 
+/** Source text of a top-level `interface <name> { … }`, by brace matching from its `{`. */
+function interfaceRegion(source: string, name: string): string | null {
+  const decl = new RegExp(`interface\\s+${name}\\b`).exec(source);
+  if (!decl) return null;
+  const open = source.indexOf("{", decl.index);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  return null;
+}
+
 const rule: CheckRule = {
   id: "session-wait-domain-scoped",
   kind: "check",
   scold:
-    "handleSessionList honours the domain partition but handleWait does not — a scoped wait will wake on another domain's session",
+    "this worker scopes handleSessionList but does not honour the partition in handleWait — a scoped wait will wake on another domain's session, or lose its own after one ends",
   guidance: [
     "read the daemon-injected filter in handleWait: `const domainId = domainFilterArg(args);`",
     "filter the any-session set, the buffered afterSeq replay, and the timeout fallback list",
-    "an event whose session is gone cannot be attributed — drop it when a filter is active (#1308)",
+    "carry the domain ON the BufferedEvent, captured at buffer time — the buffer outlives the live sessions map",
+    "an event whose session is gone cannot be attributed from that map; that is why the record must carry it",
     "see packages/daemon/src/session-domain-roundtrip.spec.ts for what this protects",
   ],
   documentation: "#3039",
@@ -86,13 +104,28 @@ const rule: CheckRule = {
     // and the rule has nothing to say about it.
     if (!listBody?.includes(READS_FILTER)) return;
 
+    const lines = file.content.split("\n");
     const waitBody = functionRegion(file.content, "handleWait");
     if (waitBody === null) return;
-    if (waitBody.includes(READS_FILTER)) return;
 
-    const lines = file.content.split("\n");
-    const idx = lines.findIndex((l) => /^(?:export\s+)?(?:async\s+)?function\s+handleWait\b/.test(l));
-    violated(idx + 1, 1, (lines[idx] ?? "handleWait").trim());
+    if (!waitBody.includes(READS_FILTER)) {
+      const idx = lines.findIndex((l) => /^(?:export\s+)?(?:async\s+)?function\s+handleWait\b/.test(l));
+      violated(idx + 1, 1, (lines[idx] ?? "handleWait").trim());
+      return;
+    }
+
+    // Second half of the invariant. Reading the filter is not honouring it: a worker
+    // with an event buffer must also carry the domain ON the buffered record. The
+    // first version of this rule checked only that the identifier appeared, and every
+    // worker passed while all four lost a scoped `wait --after` its own events the
+    // moment a session ended — the buffer outlives the live `sessions` map, so a
+    // domain re-derived from that map at read time is gone exactly when it is needed.
+    if (!file.content.includes("interface BufferedEvent")) return;
+    const buffered = interfaceRegion(file.content, "BufferedEvent");
+    if (buffered !== null && !/\bdomainId\b/.test(buffered)) {
+      const idx = lines.findIndex((l) => /interface\s+BufferedEvent\b/.test(l));
+      violated(idx + 1, 1, (lines[idx] ?? "interface BufferedEvent").trim());
+    }
   },
 };
 
