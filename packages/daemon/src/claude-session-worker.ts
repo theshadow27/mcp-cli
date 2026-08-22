@@ -21,8 +21,10 @@ import {
   type LiveSpan,
   type SessionInfo,
   type WorkItemEvent,
+  findManifestProfile,
   readCliConfig,
   resolveEffectiveTools,
+  resolveSpawnProfile,
   silentLogger,
   startSpan,
 } from "@mcp-cli/core";
@@ -245,6 +247,17 @@ export async function handlePrompt(
     const transportOverride: "ws" | "stdio" | undefined =
       transportArg === "stdio" ? "stdio" : transportArg === "sdk-url" ? "ws" : undefined;
 
+    // Spawn profile (#935). Resolved here rather than in the CLI so that every
+    // caller — `mcx claude spawn`, a phase script, an internal callTool — gets
+    // the same precedence, and none can silently fall back to the bare daemon
+    // env by forgetting a flag. `profile: null` in the args is `--no-profile`.
+    // Only the NAME is resolved here; ws-server reads the file's values at spawn.
+    const profile = resolveSpawnProfile({
+      flag: typeof args.profile === "string" || args.profile === null ? (args.profile as string | null) : undefined,
+      manifest: findManifestProfile(args.cwd as string | undefined),
+      config: readCliConfig().defaultProfile,
+    });
+
     let sessionName: string;
     let sessionTransport: "ws" | "stdio";
     try {
@@ -261,6 +274,7 @@ export async function handlePrompt(
         repoRoot: args.repoRoot as string | undefined,
         transport: transportOverride,
         binaryPath: binaryOverride,
+        profile: profile.name ?? undefined,
       });
       sessionName = prepared.name;
       sessionTransport = prepared.transport;

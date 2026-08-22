@@ -55,6 +55,7 @@ export default defineAlias({
 |-------|------|----------|---------|
 | `version` | `1` | no | Manifest format discriminator; defaults to `1` when omitted |
 | `runsOn` | string | no | Branch the orchestrator must stand on (e.g. `main`) |
+| `profile` | string \| null | no | Spawn profile applied to sessions started in this repo (see below) |
 | `worktree.setup` | string | no | Command run after worktree creation |
 | `worktree.teardown` | string | no | Command run before worktree removal |
 | `worktree.base` | string | no | Base branch for new worktrees |
@@ -70,6 +71,21 @@ Bare state types are `string`, `number`, `boolean`, each optionally
 suffixed with `?` (e.g. `string?`). The object form (see below) also
 accepts `enum[val1,val2,...]` with optional `?`. Runtime enforcement is
 wired in #1286.
+
+### `profile` — repo-wide spawn profile
+
+`profile: <name>` names an env bundle in `~/.mcp-cli/profiles/<name>.env`
+that every session spawned in this repo receives (see `mcx claude profile
+--help`). It is the middle layer of the precedence chain, highest first:
+
+```
+--profile <name>  >  .mcx.yaml profile:  >  mcx config set default-profile  >  bare daemon env
+```
+
+`profile: null` pins "no profile" for this repo, overriding a machine-wide
+`default-profile`; `mcx claude spawn --no-profile` does the same for one
+session. Resolution is one function — `resolveSpawnProfile` in
+`packages/core/src/spawn-profile.ts` — not a chain of checks at call sites.
 
 ### Trackable metadata fields
 

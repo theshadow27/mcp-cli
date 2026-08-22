@@ -257,6 +257,28 @@ describe("parseAgentSpawnArgs", () => {
     expect(result.error).toContain('--transport must be "stdio" or "sdk-url"');
     expect(result.transport).toBeUndefined();
   });
+
+  // ── Spawn profiles (#935) — same reachability requirement as #2706 above.
+  test("parses --profile and --no-profile for Claude", () => {
+    expect(parseAgentSpawnArgs(["--task", "x", "--profile", "bedrock"], claudeConfig).profile).toBe("bedrock");
+    expect(parseAgentSpawnArgs(["--task", "x", "--no-profile"], claudeConfig).profile).toBeNull();
+    expect(parseAgentSpawnArgs(["--task", "x"], claudeConfig).profile).toBeUndefined();
+  });
+
+  test("rejects --profile / --no-profile for non-Claude providers", () => {
+    expect(parseAgentSpawnArgs(["--task", "x", "--profile", "bedrock"], codexConfig).error).toContain(
+      "--profile is not supported",
+    );
+    expect(parseAgentSpawnArgs(["--task", "x", "--no-profile"], codexConfig).error).toContain(
+      "--no-profile is not supported",
+    );
+  });
+
+  test("--profile without a name errors and leaves the following flag parseable", () => {
+    const result = parseAgentSpawnArgs(["--profile", "--task", "x"], claudeConfig);
+    expect(result.error).toContain("--profile requires a name");
+    expect(result.task).toBe("x");
+  });
 });
 
 // ── Codex via agent ──

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { silentLogger } from "@mcp-cli/core";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { options, silentLogger } from "@mcp-cli/core";
+import { testOptions } from "../../../test/test-options";
 import { handlePrompt, matchesRepoRoot, matchesScopeRoot } from "./claude-session-worker";
 import type { SpawnFn } from "./claude-session/ws-server";
 import { ClaudeWsServer } from "./claude-session/ws-server";
@@ -412,5 +415,85 @@ describe("handlePrompt: per-spawn binary/transport override (#2681)", () => {
 
     expect(result.isError).toBeFalsy();
     expect(recording.lastCmd()[0]).toBe("/canary/2.1.170");
+  });
+});
+
+// ── handlePrompt: spawn profile precedence (#935) ──
+
+/**
+ * Precedence is resolved in the worker, not the CLI, so that internal callers
+ * (phase scripts, `mcx memory`'s audit, any direct callTool) get the same answer
+ * as `mcx claude spawn`. These tests drive the real RPC entry point and assert on
+ * the env that actually reached the child (reusing `makeEnvRecordingSpawn` above).
+ */
+describe("handlePrompt: spawn profile precedence (#935)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  /** Temp state dir with three profiles, a repo carrying a `.mcx.yaml`, and a config default. */
+  function setupProfiles(configDefault?: string) {
+    const opts = testOptions();
+    mkdirSync(options.PROFILES_DIR, { recursive: true, mode: 0o700 });
+    for (const name of ["from-flag", "from-manifest", "from-config"]) {
+      writeFileSync(join(options.PROFILES_DIR, `${name}.env`), `MCX_TEST_PROFILE=${name}\n`, { mode: 0o600 });
+    }
+    const repo = join(opts.dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, ".mcx.yaml"), "version: 1\nprofile: from-manifest\ninitial: impl\nphases: {}\n");
+    if (configDefault) {
+      writeFileSync(options.MCP_CLI_CONFIG_PATH, JSON.stringify({ defaultProfile: configDefault }));
+    }
+    return { opts, repo };
+  }
+
+  async function spawnWith(args: Record<string, unknown>): Promise<Record<string, string | undefined>> {
+    const recording = makeEnvRecordingSpawn();
+    server = new ClaudeWsServer({ spawn: recording.spawn, logger: silentLogger });
+    await server.start();
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    const result = await handlePrompt(server, { prompt: "hi", transport: "stdio", ...args });
+    expect(result.isError).toBeFalsy();
+    return recording.lastEnv() ?? {};
+  }
+
+  test("--profile beats the repo manifest and the config default", async () => {
+    const { opts, repo } = setupProfiles("from-config");
+    using _opts = opts;
+    const env = await spawnWith({ cwd: repo, profile: "from-flag" });
+    expect(env.MCX_TEST_PROFILE).toBe("from-flag");
+  });
+
+  test("the repo manifest beats the config default when no flag is given", async () => {
+    const { opts, repo } = setupProfiles("from-config");
+    using _opts = opts;
+    const env = await spawnWith({ cwd: repo });
+    expect(env.MCX_TEST_PROFILE).toBe("from-manifest");
+  });
+
+  test("the config default applies outside a repo — an internal caller cannot forget it", async () => {
+    const { opts } = setupProfiles("from-config");
+    using _opts = opts;
+    const env = await spawnWith({ cwd: opts.dir });
+    expect(env.MCX_TEST_PROFILE).toBe("from-config");
+  });
+
+  test("no layer set means the bare daemon env", async () => {
+    const { opts } = setupProfiles();
+    using _opts = opts;
+    const env = await spawnWith({ cwd: opts.dir });
+    expect(env.MCX_TEST_PROFILE).toBeUndefined();
+  });
+
+  test("profile: null (--no-profile) opts out even with a repo and a config default", async () => {
+    const { opts, repo } = setupProfiles("from-config");
+    using _opts = opts;
+    const env = await spawnWith({ cwd: repo, profile: null });
+    expect(env.MCX_TEST_PROFILE).toBeUndefined();
   });
 });

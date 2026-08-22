@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
+import { options } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options";
 import type { BudgetIpc, ConfigDeps } from "./config";
 import {
   BUDGET_KEYS,
@@ -1284,5 +1286,62 @@ describe("configSetBudget", () => {
 
     expect(setCalls).toHaveLength(1);
     expect(setCalls[0].quotaDeadband).toBe(10);
+  });
+});
+
+// -- default-profile (#935) --
+
+describe("mcx config set default-profile", () => {
+  it("writes the name and warns when the profile does not exist yet", async () => {
+    using _opts = testOptions();
+    const { deps, logs } = makeDepsWithCapture({});
+    const errors: string[] = [];
+    spyOn(console, "error").mockImplementation((msg: unknown) => errors.push(String(msg)));
+
+    await configSetDispatch(["default-profile", "bedrock"], deps);
+
+    // Setting the default before importing the profile is a legitimate order —
+    // warn, don't block, or the escape hatch is unreachable when you need it.
+    expect(JSON.parse(readFileSync(options.MCP_CLI_CONFIG_PATH, "utf-8")).defaultProfile).toBe("bedrock");
+    expect(errors.join("\n")).toContain("no profile");
+    expect(logs.join("\n")).toContain("default-profile = bedrock");
+  });
+
+  it("does not warn once the profile exists", async () => {
+    using _opts = testOptions();
+    mkdirSync(options.PROFILES_DIR, { recursive: true, mode: 0o700 });
+    writeFileSync(join(options.PROFILES_DIR, "bedrock.env"), "A=1\n", { mode: 0o600 });
+    const { deps } = makeDepsWithCapture({});
+    const errors: string[] = [];
+    spyOn(console, "error").mockImplementation((msg: unknown) => errors.push(String(msg)));
+
+    await configSetDispatch(["default-profile", "bedrock"], deps);
+
+    expect(errors.join("\n")).not.toContain("no profile");
+  });
+
+  it("rejects a name that could never be a filename", async () => {
+    using _opts = testOptions();
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    spyOn(console, "error").mockImplementation(() => {});
+    const { deps } = makeDepsWithCapture({});
+
+    await expect(configSetDispatch(["default-profile", "../escape"], deps)).rejects.toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("is a recognized CLI option key and reads back through config get", async () => {
+    using _opts = testOptions();
+    expect(isCliOptionKey("default-profile")).toBe(true);
+
+    const { deps } = makeDepsWithCapture({});
+    spyOn(console, "error").mockImplementation(() => {});
+    await configSetDispatch(["default-profile", "bedrock"], deps);
+
+    const { deps: getDeps, logs } = makeDepsWithCapture({});
+    await configGetDispatch(["default-profile"], getDeps);
+    expect(logs.join("\n")).toContain("bedrock");
   });
 });

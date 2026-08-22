@@ -7,8 +7,11 @@ import type { BudgetConfig, GetConfigResult, McpConfigFile, ServerConfig } from 
 import {
   CLAUDE_TRANSPORTS,
   DEFAULT_CLAUDE_WS_PORT,
+  SPAWN_PROFILE_NAME_RE,
   ipcCall,
   isStdioConfig,
+  listSpawnProfiles,
+  options,
   readCliConfig,
   writeCliConfig,
 } from "@mcp-cli/core";
@@ -94,15 +97,19 @@ async function configSources(deps: ConfigDeps): Promise<void> {
 
 // -- CLI option keys --
 
-const VALID_KEYS = ["trust-claude", "terminal", "ws-port", "claude-binary", "transport"] as const;
+const VALID_KEYS = ["trust-claude", "terminal", "ws-port", "claude-binary", "transport", "default-profile"] as const;
 type ConfigKey = (typeof VALID_KEYS)[number];
 
-const KEY_MAP: Record<ConfigKey, "trustClaude" | "terminal" | "wsPort" | "claudeBinary" | "transport"> = {
+const KEY_MAP: Record<
+  ConfigKey,
+  "trustClaude" | "terminal" | "wsPort" | "claudeBinary" | "transport" | "defaultProfile"
+> = {
   "trust-claude": "trustClaude",
   terminal: "terminal",
   "ws-port": "wsPort",
   "claude-binary": "claudeBinary",
   transport: "transport",
+  "default-profile": "defaultProfile",
 };
 
 /** Keys whose values are stored as booleans (vs strings) */
@@ -198,6 +205,18 @@ function configSetCliOption(args: string[], log?: (msg: string) => void): void {
   if (enumSpec && !enumSpec.values.includes(value)) {
     printError(`Invalid value for ${key}: ${value}. Valid values: ${enumSpec.values.join(", ")}`);
     process.exit(1);
+  }
+  // `default-profile` names a file in ~/.mcp-cli/profiles — reject a name that
+  // could never resolve, and warn (don't block) on one that doesn't exist yet:
+  // an operator may well set the default before importing the profile (#935).
+  if (key === "default-profile" && value !== "") {
+    if (!SPAWN_PROFILE_NAME_RE.test(value)) {
+      printError(`Invalid value for ${key}: ${value}. Must match ${SPAWN_PROFILE_NAME_RE}`);
+      process.exit(1);
+    }
+    if (!listSpawnProfiles().includes(value)) {
+      printError(`warning: no profile "${value}" in ${options.PROFILES_DIR} yet — spawns will fail until it exists`);
+    }
   }
   if (BOOLEAN_KEYS.has(key as ConfigKey)) {
     (config as Record<string, unknown>)[prop] = value === "true";

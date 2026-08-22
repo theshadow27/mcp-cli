@@ -252,6 +252,12 @@ export const ManifestSchema = z
   .object({
     version: z.number().int().min(1).default(MANIFEST_SCHEMA_VERSION),
     runsOn: z.string().min(1).optional(),
+    /**
+     * Spawn profile this repo's sessions use when a spawn names none (#935).
+     * Middle layer of `resolveSpawnProfile` — see spawn-profile.ts. `null`
+     * pins "no profile", overriding the `defaultProfile` config for this repo.
+     */
+    profile: z.string().min(1).nullable().optional(),
     worktree: ManifestWorktreeSchema.optional(),
     state: ManifestStateSchema.optional(),
     initial: identifier("initial"),

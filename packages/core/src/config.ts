@@ -127,6 +127,14 @@ export interface CliConfig {
    * - `"sdk-url"`: force legacy WS + patcher path.
    */
   transport?: ClaudeTransport;
+  /**
+   * Spawn profile applied when a spawn names none and the repo `.mcx.yaml`
+   * declares none (#935). Lowest-precedence layer of `resolveSpawnProfile` —
+   * it exists so internal call sites (phase scripts, `mcx memory`'s audit)
+   * cannot silently fall back to the bare daemon env by forgetting a flag.
+   * Set via: `mcx config set default-profile <name>`.
+   */
+  defaultProfile?: string;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

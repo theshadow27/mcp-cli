@@ -55,6 +55,7 @@ import {
   consoleLogger,
   findGitRoot,
   generateSessionName,
+  loadSpawnProfile,
   spawnManaged,
 } from "@mcp-cli/core";
 import type { ServerWebSocket } from "bun";
@@ -183,6 +184,13 @@ export interface SessionConfig {
    * single worker without mutating global config.
    */
   binaryPath?: string;
+  /**
+   * Spawn profile NAME (#935) — already resolved through `resolveSpawnProfile`
+   * by the caller (see claude-session-worker.ts). The file is read here, in the
+   * daemon, at spawn time: profile VALUES are credentials and never travel over
+   * IPC, never reach SQLite, and never appear in a log line or event payload.
+   */
+  profile?: string;
 }
 
 export interface TranscriptEntry {
@@ -1001,6 +1009,24 @@ export class ClaudeWsServer {
     opts: { useStdio: boolean; traceparent?: string },
   ): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = {};
+
+    // Spawn profile FIRST: every daemon-derived override below outranks it (#935).
+    // loadSpawnProfile throws when the named profile is missing or malformed, which
+    // fails the spawn: silently running against the bare daemon env is the exact
+    // fragility profiles exist to remove.
+    if (session.config.profile) {
+      const profile = loadSpawnProfile(session.config.profile);
+      Object.assign(env, profile.env);
+      // Key NAMES only — a value here would land in the daemon ring-buffer log.
+      this.logger.info(
+        `[_claude] session ${sessionId} using profile "${profile.name}" (${Object.keys(profile.env).length} vars: ${Object.keys(profile.env).sort().join(", ")})`,
+      );
+      if (profile.insecureMode) {
+        this.logger.warn(
+          `[_claude] profile "${profile.name}" is group/world-readable — run: chmod 600 ${profile.path}`,
+        );
+      }
+    }
 
     // Trace context — propagate this spawn's traceparent to the child.
     if (opts.traceparent) env.TRACEPARENT = opts.traceparent;

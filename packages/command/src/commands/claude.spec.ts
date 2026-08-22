@@ -218,6 +218,31 @@ describe("parseSpawnArgs", () => {
     expect(result.transport).toBeUndefined();
   });
 
+  test("parses --profile (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "bedrock", "-t", "x"]);
+    expect(result.profile).toBe("bedrock");
+    expect(result.task).toBe("x");
+    expect(result.error).toBeUndefined();
+  });
+
+  test("--no-profile is null, distinct from an omitted flag (#935)", () => {
+    // null must survive to the RPC: it is what overrides a configured default.
+    expect(parseSpawnArgs(["--no-profile", "-t", "x"]).profile).toBeNull();
+    expect(parseSpawnArgs(["-t", "x"]).profile).toBeUndefined();
+  });
+
+  test("--profile without a name is an error, and does not eat the next flag (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "-t", "x"]);
+    expect(result.error).toContain("--profile requires a name");
+    expect(result.task).toBe("x");
+  });
+
+  test("--profile rejects a name that could never be a filename (#935)", () => {
+    const result = parseSpawnArgs(["--profile", "../../etc/passwd", "-t", "x"]);
+    expect(result.error).toContain("not a valid profile name");
+    expect(result.profile).toBeUndefined();
+  });
+
   test("parses -w shorthand", () => {
     const result = parseSpawnArgs(["-w", "feat", "-t", "x"]);
     expect(result.worktree).toBe("feat");

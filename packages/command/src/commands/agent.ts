@@ -35,6 +35,7 @@ import {
   getProvider,
   hasWorktreeHooks,
   listMcxWorktrees,
+  listSpawnProfiles,
   options,
   pruneWorktrees,
   readWorktreeConfig,
@@ -73,7 +74,7 @@ import {
   formatStatusStanza,
   walkTranscript,
 } from "./session-display";
-import { looksLikeToolName, parseSharedSpawnArgs } from "./spawn-args";
+import { looksLikeToolName, parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
 // ── Dependency injection ──
@@ -322,6 +323,11 @@ interface AgentSpawnArgs {
   claudeBinary: string | undefined;
   /** Per-spawn transport override (claude provider only). */
   transport: "stdio" | "sdk-url" | undefined;
+  /**
+   * Spawn profile name (claude provider only, #935). `null` = `--no-profile`,
+   * `undefined` = neither flag given (a repo/config default may still apply).
+   */
+  profile: string | null | undefined;
   error: string | undefined;
   warnings: string[];
 }
@@ -339,6 +345,7 @@ export function parseAgentSpawnArgs(
   let llmProvider: string | undefined;
   let claudeBinary: string | undefined;
   let transport: "stdio" | "sdk-url" | undefined;
+  let profile: string | null | undefined;
   let extraError: string | undefined;
   const isClaude = providerConfig.name === "claude";
 
@@ -415,6 +422,29 @@ export function parseAgentSpawnArgs(
       extraError = "--claude-binary requires a path";
       return 0;
     }
+    if (arg === "--no-profile") {
+      if (!isClaude) {
+        extraError = `--no-profile is not supported by ${providerDisplayName(providerConfig)}`;
+        return 0;
+      }
+      profile = null;
+      return 0;
+    }
+    if (arg === "--profile") {
+      if (!isClaude) {
+        extraError = `--profile is not supported by ${providerDisplayName(providerConfig)}`;
+        return 0;
+      }
+      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const parsedProfile = parseProfileFlagValue(next);
+      if (parsedProfile.error) {
+        extraError = parsedProfile.error;
+        // Don't consume a flag-shaped value (matches --transport's error path).
+        return next && !next.startsWith("-") ? 1 : 0;
+      }
+      profile = parsedProfile.name;
+      return 1;
+    }
     if (arg === "--transport") {
       if (!isClaude) {
         extraError = `--transport is not supported by ${providerDisplayName(providerConfig)}`;
@@ -444,6 +474,7 @@ export function parseAgentSpawnArgs(
     resume,
     claudeBinary,
     transport,
+    profile,
   };
 }
 
@@ -510,6 +541,18 @@ async function agentSpawn(
     parsed.claudeBinary = binPath;
   }
 
+  // Fail here rather than after the daemon has created (and torn down) a session:
+  // a missing profile is nearly always a typo, and the list is the fix (#935).
+  if (typeof parsed.profile === "string") {
+    const available = listSpawnProfiles();
+    if (!available.includes(parsed.profile)) {
+      const known = available.length > 0 ? ` (available: ${available.join(", ")})` : " (no profiles defined yet)";
+      d.printError(`--profile "${parsed.profile}": no such profile in ${options.PROFILES_DIR}${known}`);
+      d.exit(1);
+      return;
+    }
+  }
+
   const P = provider.toolPrefix;
   const rawTask = parsed.task ?? "Continue from where you left off.";
   let task = rawTask;
@@ -534,6 +577,10 @@ async function agentSpawn(
   // so a later `mcx config set` cannot change what this session uses (#2681).
   if (parsed.claudeBinary) toolArgs.claudeBinary = parsed.claudeBinary;
   if (parsed.transport) toolArgs.transport = parsed.transport;
+  // Only the profile NAME crosses the wire; the daemon reads its values at spawn
+  // so credentials never reach the RPC args, spans, or the state DB (#935).
+  // `null` is meaningful (--no-profile) — don't collapse it with a truthiness test.
+  if (parsed.profile !== undefined) toolArgs.profile = parsed.profile;
 
   // Handle worktree creation (shared across all providers)
   if (parsed.worktree) {

@@ -40,6 +40,11 @@ registerHelp("claude spawn", {
       "--transport <stdio|sdk-url>",
       "Per-spawn transport override for this session only (bypasses global transport config)",
     ],
+    [
+      "--profile <name>",
+      "Apply the env bundle in ~/.mcp-cli/profiles/<name>.env to this session (e.g. Bedrock credentials). See: mcx claude profile ls",
+    ],
+    ["--no-profile", "Run on the bare daemon env, ignoring a repo .mcx.yaml profile or the default-profile config"],
   ],
   examples: [
     'mcx claude spawn --task "run the test suite and fix failures"',
@@ -228,5 +233,42 @@ registerHelp("claude auth", {
     "mcx claude auth save work           # capture the identity that is logged in right now",
     "mcx claude auth load personal       # switch to another saved identity",
     "mcx claude auth ls --json | jq '.[] | {name, expiresAt}'",
+  ],
+});
+
+registerHelp("claude profile", {
+  name: "mcx claude profile",
+  summary: "Manage spawn profiles — named env-var bundles applied to spawned sessions (see #935)",
+  notes: [
+    "A profile is one dotenv-shaped file: ~/.mcp-cli/profiles/<name>.env (dir 0700, files 0600).",
+    "`KEY=VALUE`, `#` comments, an optional `export ` prefix so a shell file you already",
+    "source imports verbatim. Its motivating use is routing spawned workers at AWS Bedrock",
+    "(CLAUDE_CODE_USE_BEDROCK, AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_DEFAULT_*_MODEL) while",
+    "the interactive session stays on the subscription.",
+    "",
+    "Which profile a spawn uses, highest precedence first:",
+    "  --profile <name>  >  `profile:` in the repo .mcx.yaml  >  default-profile config  >  none",
+    "`--no-profile` opts out at the top of that chain. `mcx config set default-profile <name>`",
+    "sets the bottom one, so internal call sites (phase scripts, `mcx memory`) cannot fall",
+    "back to the bare daemon env by forgetting a flag.",
+    "",
+    "Values never leave the daemon: only the profile NAME travels over IPC, and `show`",
+    "prints variable names only. There is deliberately no `set KEY=VALUE` subcommand —",
+    "a secret in argv lands in shell history and in every `ps` on the box.",
+    "GIT_DIR, GIT_WORK_TREE, PWD, TRACEPARENT and CLAUDECODE are rejected: the daemon",
+    "derives those per-spawn and a profile overriding them would escape containment.",
+  ],
+  usage: [
+    "mcx claude profile ls [--json]",
+    "mcx claude profile show <name> [--json]",
+    "mcx claude profile import <name> <file>",
+  ],
+  options: [["--json", "Structured JSON on stdout instead of human text"]],
+  examples: [
+    "mcx claude profile import bedrock ~/github/claude_bedrock.sh",
+    "mcx claude profile show bedrock            # variable NAMES only, never values",
+    'mcx claude spawn --profile bedrock -t "run the suite"',
+    "mcx config set default-profile bedrock     # every spawn, including internal ones",
+    'mcx claude spawn --no-profile -t "one session on the subscription"',
   ],
 });
