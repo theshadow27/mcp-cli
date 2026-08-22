@@ -24,6 +24,27 @@ export interface RetryOn {
   responseHeaderPresent?: string;
 }
 
+/**
+ * Coerce an untrusted `retryOn` (MCP tool argument) into a well-formed RetryOn.
+ * Malformed fields are dropped rather than persisted: a bad `status` would reach
+ * `retryReason` as a non-array and throw inside the proxy's retry predicate.
+ * Returns undefined when nothing usable survives, which means "401-only".
+ */
+export function normalizeRetryOn(value: unknown): RetryOn | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { status, responseHeaderPresent } = value as Record<string, unknown>;
+
+  const out: RetryOn = {};
+  if (Array.isArray(status)) {
+    const codes = status.filter((s): s is number => typeof s === "number" && Number.isInteger(s));
+    if (codes.length > 0) out.status = codes;
+  }
+  if (typeof responseHeaderPresent === "string" && responseHeaderPresent.length > 0) {
+    out.responseHeaderPresent = responseHeaderPresent;
+  }
+  return out.status || out.responseHeaderPresent ? out : undefined;
+}
+
 export interface NamedCall {
   name: string;
   url: string;
