@@ -12,7 +12,7 @@
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
-import type { WorkItemDb } from "../db/work-items";
+import type { DomainWorkItems } from "../db/work-items";
 import { safeSetTimeout } from "../safe-timers";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
@@ -24,7 +24,12 @@ const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
 
 export interface WorkItemPollerOptions {
-  db: WorkItemDb;
+  /**
+   * Work-item handle for the domain this poller watches (#3037). Already scoped: the
+   * poller polls one GitHub repo, which belongs to one domain, so the partition is a
+   * wiring decision made once at construction rather than per query.
+   */
+  db: DomainWorkItems;
   logger?: Logger;
   /** Override poll interval (ms). If set, disables adaptive interval. */
   intervalMs?: number;
@@ -41,7 +46,7 @@ export interface WorkItemPollerOptions {
 }
 
 export class WorkItemPoller {
-  private db: WorkItemDb;
+  private db: DomainWorkItems;
   private logger: Logger;
   private fixedInterval: number | null;
   private currentIntervalMs: number;

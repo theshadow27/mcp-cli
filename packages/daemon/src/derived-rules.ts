@@ -1,10 +1,11 @@
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { PHASE_CHANGED } from "@mcp-cli/core";
-import type { WorkItemDb } from "./db/work-items";
+import type { DomainWorkItems } from "./db/work-items";
 import type { EventBus } from "./event-bus";
 
 export interface DerivedCtx {
-  workItemDb: WorkItemDb;
+  /** Work-item handle for the domain the daemon is running in (#3037). */
+  workItemDb: DomainWorkItems;
   bus: EventBus;
 }
 

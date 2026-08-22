@@ -6,6 +6,7 @@
  */
 
 import type {
+  AliasDomainInfo,
   AliasValidationResult,
   AliasWorkItemInfo,
   JsonSchema,
@@ -96,6 +97,7 @@ export class AliasServer {
   private executorPath: string;
   private semaphore = new Semaphore(MAX_CONCURRENT_SUBPROCESSES);
   private workItemResolver: ((cwd: string) => Promise<AliasWorkItemInfo | null>) | null = null;
+  private domainResolver: ((cwd: string) => AliasDomainInfo | null) | null = null;
 
   constructor(
     db: StateDb,
@@ -113,6 +115,11 @@ export class AliasServer {
    */
   setWorkItemResolver(resolver: (cwd: string) => Promise<AliasWorkItemInfo | null>): void {
     this.workItemResolver = resolver;
+  }
+
+  /** Late-bound for the same reason as the work-item resolver: StateDb outlives this server. */
+  setDomainResolver(resolver: (cwd: string) => AliasDomainInfo | null): void {
+    this.domainResolver = resolver;
   }
 
   /** Start the in-process MCP server and connect a client. */
@@ -295,6 +302,17 @@ export class AliasServer {
       }
     }
 
+    // Same treatment for the domain: resolved in the daemon, which is the only process
+    // that can see the domains table, and handed to the executor as data (#3037).
+    let domain: AliasDomainInfo | null = null;
+    if (cwd && this.domainResolver) {
+      try {
+        domain = this.domainResolver(cwd);
+      } catch {
+        domain = null;
+      }
+    }
+
     const payload = JSON.stringify({
       bundledJs,
       input: args,
@@ -303,6 +321,7 @@ export class AliasServer {
       ...(callChain && callChain.length > 0 ? { callChain } : {}),
       ...(cwd ? { cwd } : {}),
       ...(workItem ? { workItem } : {}),
+      ...(domain ? { domain } : {}),
     });
 
     return this.spawnExecutor(payload, timeoutMs ?? 30_000) as Promise<unknown>;

@@ -707,7 +707,16 @@ export class ServerPool {
     toolName: string,
     args: Record<string, unknown>,
     timeoutMs: number = MCP_TOOL_TIMEOUT_MS,
-    options: { onRateLimitWait?: (waitedMs: number) => void; signal?: AbortSignal } = {},
+    options: {
+      onRateLimitWait?: (waitedMs: number) => void;
+      signal?: AbortSignal;
+      /**
+       * MCP `_meta` for this request. Out-of-band request context that the caller's
+       * `arguments` cannot reach — used to carry the resolved domain into virtual servers
+       * (see `DOMAIN_META_KEY`). Never populated from session-supplied input.
+       */
+      meta?: Record<string, unknown>;
+    } = {},
   ): Promise<unknown> {
     // One deadline spans the queued rate-limit wait *and* the call itself, so
     // a timeout bounds the whole operation the caller is blocked on.
@@ -742,8 +751,10 @@ export class ServerPool {
       if (!client) throw new Error(`Not connected to "${serverName}" — disconnected while queued`);
       const budgetMs = callBudgetMs(deadlineMs, serverName, toolName, "queued for a rate-limit slot");
 
+      const callParams = { name: toolName, arguments: args, ...(options.meta ? { _meta: options.meta } : {}) };
+
       try {
-        return await client.callTool({ name: toolName, arguments: args }, undefined, { timeout: budgetMs });
+        return await client.callTool(callParams, undefined, { timeout: budgetMs });
       } catch (err) {
         // Surface non-transient errors immediately (auth, config, etc.)
         if (!isTransientCallError(err)) throw err;
@@ -757,7 +768,7 @@ export class ServerPool {
         const reconnected = await this.ensureConnected(serverName);
         if (!reconnected.client) throw new Error(`Reconnect to "${serverName}" failed`);
 
-        return await reconnected.client.callTool({ name: toolName, arguments: args }, undefined, {
+        return await reconnected.client.callTool(callParams, undefined, {
           timeout: callBudgetMs(deadlineMs, serverName, toolName, "reconnecting after a transient failure"),
         });
       }

@@ -17,6 +17,7 @@
 import { readFile } from "node:fs/promises";
 import {
   type AliasContext,
+  type AliasDomainInfo,
   type AliasWorkItemInfo,
   GLOBAL_STATE_NAMESPACE,
   type McpProxy,
@@ -69,6 +70,11 @@ interface ExecutorInput {
    * for this — see the module-level comment for why.
    */
   workItem?: AliasWorkItemInfo | null;
+  /**
+   * Domain owning the invocation, pre-resolved by the daemon from the caller's cwd.
+   * Same reason as `workItem`: the subprocess must not phone home to answer it.
+   */
+  domain?: AliasDomainInfo | null;
 }
 
 /**
@@ -108,7 +114,7 @@ async function main(): Promise<void> {
 
   // Read input from stdin
   const stdinText = await Bun.stdin.text();
-  const { bundledJs, input, isDefineAlias, mode, aliasName, callChain, cwd, workItem } = JSON.parse(
+  const { bundledJs, input, isDefineAlias, mode, aliasName, callChain, cwd, workItem, domain } = JSON.parse(
     stdinText,
   ) as ExecutorInput;
 
@@ -170,6 +176,7 @@ async function main(): Promise<void> {
     state: createAliasState({ repoRoot, namespace: aliasUserNamespace(currentAlias) }),
     globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
     workItem: workItem ?? null,
+    domain: domain ?? null,
     repoRoot,
     gh: createGhClient({ repoRoot }),
     signal: controller.signal,

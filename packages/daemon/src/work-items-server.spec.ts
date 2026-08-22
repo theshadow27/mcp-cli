@@ -3,10 +3,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_DOMAIN_ID } from "@mcp-cli/core";
-import { WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
-import { WorkItemDb } from "./db/work-items";
+import { type DomainWorkItems, WorkItemDb } from "./db/work-items";
+import { DOMAIN_META_KEY } from "./domain-scope";
 import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
 
 function tmpDbPath(): string {
@@ -24,20 +24,28 @@ function cleanupDb(p: string): void {
   }
 }
 
-function createWorkItemDb(): { db: WorkItemDb; raw: Database } {
+// The server takes an unscoped WorkItemDb — it resolves the caller's domain per request.
+// `items` is the same database bound to the unassigned partition, for direct assertions.
+function createWorkItemDb(): { db: WorkItemDb; items: DomainWorkItems; raw: Database } {
   const raw = new Database(":memory:");
   raw.exec("PRAGMA journal_mode = WAL");
   const db = new WorkItemDb(raw);
-  return { db, raw };
+  return { db, items: db.forDomain(NO_DOMAIN_ID), raw };
 }
 
 /** Create a real StateDb (temp file) and a WorkItemDb sharing its underlying database — matches production wiring. */
-function createRealStateDbs(): { stateDb: StateDb; workItemDb: WorkItemDb; raw: Database; dbPath: string } {
+function createRealStateDbs(): {
+  stateDb: StateDb;
+  workItemDb: WorkItemDb;
+  items: DomainWorkItems;
+  raw: Database;
+  dbPath: string;
+} {
   const dbPath = tmpDbPath();
   const stateDb = new StateDb(dbPath);
   const raw = stateDb.getDatabase();
   const workItemDb = new WorkItemDb(raw);
-  return { stateDb, workItemDb, raw, dbPath };
+  return { stateDb, workItemDb, items: workItemDb.forDomain(NO_DOMAIN_ID), raw, dbPath };
 }
 
 describe("WORK_ITEMS_SERVER_NAME", () => {
@@ -719,7 +727,7 @@ describe("WorkItemsServer", () => {
       arguments: { id: "pr:80", phase: "adhoc", repoRoot: "/tmp/any", force: true, forceReason: "undeclared bypass" },
     });
     expect(forced.isError).toBeFalsy();
-    const log = db.listTransitions("pr:80");
+    const log = db.forDomain(NO_DOMAIN_ID).listTransitions("pr:80");
     const last = log[log.length - 1];
     expect(last.toPhase).toBe("adhoc");
     expect(last.forced).toBe(true);
@@ -783,7 +791,7 @@ describe("WorkItemsServer", () => {
       arguments: { id: "pr:70", phase: "impl", force: true, forceReason: "test reopen" },
     });
     expect(forced.isError).toBeFalsy();
-    const log = db.listTransitions("pr:70");
+    const log = db.forDomain(NO_DOMAIN_ID).listTransitions("pr:70");
     const last = log[log.length - 1];
     expect(last.fromPhase).toBe("done");
     expect(last.toPhase).toBe("impl");
@@ -940,12 +948,12 @@ describe("WorkItemsServer", () => {
     // Simulate the concurrent explicit-branch write committing directly to
     // the DB while the slow update is awaiting its resolver. The guard
     // re-reads after the await and must not overwrite this value.
-    db.updateWorkItem("issue:77", { branch: "explicit/winner" });
+    db.forDomain(NO_DOMAIN_ID).updateWorkItem("issue:77", { branch: "explicit/winner" });
     release();
 
     const result = await slowUpdate;
     expect(result.isError).toBeFalsy();
-    const final = db.getWorkItem("issue:77");
+    const final = db.forDomain(NO_DOMAIN_ID).getWorkItem("issue:77");
     expect(final?.branch).toBe("explicit/winner");
   });
 
@@ -1606,5 +1614,213 @@ describe("phase_state tools", () => {
     });
     expect(result.isError).toBe(true);
     expect((result.content as Array<{ text: string }>)[0].text).toContain("reserved phase-runner sentinel");
+  });
+});
+
+/**
+ * Domain scoping through the tools themselves (#3037).
+ *
+ * The acceptance criterion is behavioural: a session in domain X must not be able to reach
+ * domain Y's rows through any tool, by any argument. Asserting that `work_items` carries a
+ * `domain_id` column would prove none of that — the column existed throughout the window in
+ * which two domains could still overwrite each other.
+ */
+describe("WorkItemsServer — domain scoping", () => {
+  let server: WorkItemsServer | undefined;
+  let rawDb: Database | undefined;
+
+  afterEach(async () => {
+    await server?.stop();
+    rawDb?.close();
+    server = undefined;
+    rawDb = undefined;
+  });
+
+  /** Exactly what the daemon's tool handler attaches after resolving the caller's cwd. */
+  function asDomain(id: number, name: string) {
+    return { _meta: { [DOMAIN_META_KEY]: { id, name } } };
+  }
+
+  function parse(result: unknown): Record<string, unknown> {
+    const content = (result as { content: Array<{ text: string }> }).content;
+    return JSON.parse(content[0].text);
+  }
+
+  async function startServer() {
+    const { db, raw } = createWorkItemDb();
+    rawDb = raw;
+    server = new WorkItemsServer(db);
+    const { client } = await server.start();
+    return { client, db };
+  }
+
+  test("two domains each track issue #42, branch fix/foo and PR #7 end to end", async () => {
+    const { client } = await startServer();
+
+    const trackIn = (id: number, name: string) =>
+      client.callTool({
+        name: "work_items_track",
+        arguments: { issueNumber: 42, prNumber: 7, branch: "fix/foo" },
+        ...asDomain(id, name),
+      });
+
+    const alpha = parse(await trackIn(1, "alpha"));
+    const beta = parse(await trackIn(2, "beta"));
+
+    expect(alpha.domainId).toBe(1);
+    expect(beta.domainId).toBe(2);
+    expect(alpha.id).not.toBe(beta.id);
+    expect(alpha.issueNumber).toBe(42);
+    expect(beta.issueNumber).toBe(42);
+    expect(alpha.prNumber).toBe(7);
+    expect(beta.prNumber).toBe(7);
+    expect(alpha.branch).toBe("fix/foo");
+    expect(beta.branch).toBe("fix/foo");
+
+    // And each still resolves to its own row afterwards — the second track did not
+    // silently adopt the first.
+    const againAlpha = parse(await trackIn(1, "alpha"));
+    expect(againAlpha.id).toBe(alpha.id);
+  });
+
+  test("list returns only the calling domain's rows", async () => {
+    const { client } = await startServer();
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 }, ...asDomain(1, "alpha") });
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 }, ...asDomain(1, "alpha") });
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 }, ...asDomain(2, "beta") });
+
+    const alpha = parse(await client.callTool({ name: "work_items_list", arguments: {}, ...asDomain(1, "alpha") }));
+    const beta = parse(await client.callTool({ name: "work_items_list", arguments: {}, ...asDomain(2, "beta") }));
+
+    expect((alpha.items as Array<{ issueNumber: number }>).map((i) => i.issueNumber).sort()).toEqual([1, 2]);
+    expect((beta.items as Array<{ issueNumber: number }>).map((i) => i.issueNumber)).toEqual([3]);
+    expect(alpha.count).toBe(2);
+    expect(beta.count).toBe(1);
+  });
+
+  test("get by another domain's issue, PR or id answers found:false", async () => {
+    const { client } = await startServer();
+    const alpha = parse(
+      await client.callTool({
+        name: "work_items_track",
+        arguments: { issueNumber: 42, prNumber: 7 },
+        ...asDomain(1, "alpha"),
+      }),
+    );
+
+    for (const args of [{ issueNumber: 42 }, { prNumber: 7 }, { id: alpha.id as string }, { id: "pr:7" }]) {
+      const miss = parse(await client.callTool({ name: "work_items_get", arguments: args, ...asDomain(2, "beta") }));
+      expect(miss.found).toBe(false);
+    }
+
+    const hit = parse(
+      await client.callTool({ name: "work_items_get", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") }),
+    );
+    expect(hit.found).toBe(true);
+  });
+
+  test("update and untrack cannot reach another domain's row", async () => {
+    const { client } = await startServer();
+    const alpha = parse(
+      await client.callTool({
+        name: "work_items_track",
+        arguments: { issueNumber: 42, phase: "impl" },
+        ...asDomain(1, "alpha"),
+      }),
+    );
+
+    const update = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: alpha.id as string, phase: "qa" },
+      ...asDomain(2, "beta"),
+    });
+    expect(update.isError).toBe(true);
+
+    const untrack = await client.callTool({
+      name: "work_items_untrack",
+      arguments: { id: alpha.id as string },
+      ...asDomain(2, "beta"),
+    });
+    expect(untrack.isError).toBe(true);
+
+    const still = parse(
+      await client.callTool({ name: "work_items_get", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") }),
+    );
+    expect((still.item as { phase: string }).phase).toBe("impl");
+  });
+
+  // The property the orchestrator asked to be pinned: scoping comes from `_meta`, which is
+  // a sibling of `arguments` in the MCP request. A session writes `arguments` and nothing
+  // else, so it cannot name a domain — and if someone later adds a domain-shaped parameter,
+  // this test fails rather than the guarantee quietly becoming an accident of the schema.
+  describe("a domain in `arguments` is not a scoping channel", () => {
+    test("work_items_update rejects a domain argument outright", async () => {
+      const { client } = await startServer();
+      await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") });
+
+      for (const key of ["domainId", "domain", "domain_id"]) {
+        const result = await client.callTool({
+          name: "work_items_update",
+          arguments: { id: "#42", [key]: 1 },
+          ...asDomain(2, "beta"),
+        });
+        expect(result.isError).toBe(true);
+        const text = (result.content as Array<{ text: string }>)[0].text;
+        expect(text).toContain("Unknown keys");
+        expect(text).toContain(key);
+      }
+    });
+
+    test("a domain argument on the other tools changes nothing about what they see", async () => {
+      const { client } = await startServer();
+      await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") });
+
+      // beta asks for alpha's domain every way a caller could spell it.
+      const forged = parse(
+        await client.callTool({
+          name: "work_items_list",
+          arguments: { domainId: 1, domain: "alpha", domain_id: 1 },
+          ...asDomain(2, "beta"),
+        }),
+      );
+      expect(forged.count).toBe(0);
+
+      const get = parse(
+        await client.callTool({
+          name: "work_items_get",
+          arguments: { issueNumber: 42, domainId: 1, domain: "alpha" },
+          ...asDomain(2, "beta"),
+        }),
+      );
+      expect(get.found).toBe(false);
+
+      // And a track carrying a forged domain lands in the caller's own partition.
+      const tracked = parse(
+        await client.callTool({
+          name: "work_items_track",
+          arguments: { issueNumber: 99, domainId: 1, domain: "alpha" },
+          ...asDomain(2, "beta"),
+        }),
+      );
+      expect(tracked.domainId).toBe(2);
+    });
+
+    test("no tool's inputSchema offers a domain parameter for a model to find", () => {
+      for (const tool of buildWorkItemsToolCache().values()) {
+        const schema = tool.inputSchema as { properties?: Record<string, unknown> };
+        for (const name of Object.keys(schema.properties ?? {})) {
+          expect(name.toLowerCase()).not.toContain("domain");
+        }
+      }
+    });
+  });
+
+  test("a call with no _meta lands in the unassigned partition, unchanged from before domains", async () => {
+    const { client, db } = await startServer();
+    const item = parse(await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 } }));
+    expect(item.domainId).toBe(NO_DOMAIN_ID);
+    // Ids are byte-identical to what this repo has always minted.
+    expect(item.id).toBe("issue:42");
+    expect(db.forDomain(NO_DOMAIN_ID).getWorkItemByIssue(42)?.id).toBe("issue:42");
   });
 });

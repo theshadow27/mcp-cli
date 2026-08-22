@@ -313,3 +313,81 @@ describe("WorkItemHandlers", () => {
     });
   });
 });
+
+/**
+ * The IPC surface partitions the same way the MCP tools do, from the same input: the
+ * caller's cwd. `mcx track` in project A and `mcx track` in project B are two projects,
+ * not one queue.
+ */
+describe("WorkItemHandlers – domain scoping (#3037)", () => {
+  const ALPHA = { id: 1, name: "alpha", host: null, path: "/home/u/alpha", createdAt: "2026-08-22T00:00:00.000Z" };
+  const BETA = { id: 2, name: "beta", host: null, path: "/home/u/beta", createdAt: "2026-08-22T00:00:00.000Z" };
+
+  function buildScopedHandlers() {
+    const sqliteDb = new Database(":memory:");
+    const workItemDb = new WorkItemDb(sqliteDb);
+    const db = {
+      ...makeAliasStateDb(),
+      resolveDomain(path: string) {
+        for (const d of [ALPHA, BETA]) {
+          if (path === d.path || path.startsWith(`${d.path}/`)) return d;
+        }
+        return null;
+      },
+    };
+    const map = new Map<IpcMethod, RequestHandler>();
+    new WorkItemHandlers(workItemDb, db as never, null, null, noopLogger() as never).register(map);
+    return { map, workItemDb };
+  }
+
+  test("two projects each track issue #42 without colliding", async () => {
+    const { map } = buildScopedHandlers();
+    const a = (await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never)) as {
+      id: string;
+      domainId: number;
+    };
+    const b = (await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/beta" }, {} as never)) as {
+      id: string;
+      domainId: number;
+    };
+
+    expect(a.domainId).toBe(1);
+    expect(b.domainId).toBe(2);
+    expect(a.id).not.toBe(b.id);
+  });
+
+  test("list and get see only the calling project", async () => {
+    const { map } = buildScopedHandlers();
+    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never);
+    await invoke(map, "trackWorkItem")({ number: 77, cwd: "/home/u/beta" }, {} as never);
+
+    const alphaList = (await invoke(map, "listWorkItems")({ cwd: "/home/u/alpha" }, {} as never)) as {
+      items: Array<{ issueNumber: number }>;
+    };
+    expect(alphaList.items.map((i) => i.issueNumber)).toEqual([42]);
+
+    expect(await invoke(map, "getWorkItem")({ number: 77, cwd: "/home/u/alpha" }, {} as never)).toBeNull();
+    expect(await invoke(map, "getWorkItem")({ number: 77, cwd: "/home/u/beta" }, {} as never)).not.toBeNull();
+  });
+
+  test("untrack cannot remove another project's item", async () => {
+    const { map } = buildScopedHandlers();
+    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never);
+
+    const wrongDomain = (await invoke(map, "untrackWorkItem")({ number: 42, cwd: "/home/u/beta" }, {} as never)) as {
+      deleted: boolean;
+    };
+    expect(wrongDomain.deleted).toBe(false);
+    expect(await invoke(map, "getWorkItem")({ number: 42, cwd: "/home/u/alpha" }, {} as never)).not.toBeNull();
+  });
+
+  test("no cwd is the unassigned partition — identical to the pre-domain behaviour", async () => {
+    const { map } = buildScopedHandlers();
+    const item = (await invoke(map, "trackWorkItem")({ number: 42 }, {} as never)) as {
+      id: string;
+      domainId: number;
+    };
+    expect(item.domainId).toBe(0);
+    expect(item.id).toBe("#42");
+  });
+});
