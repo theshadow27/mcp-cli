@@ -85,7 +85,7 @@ import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
 import { createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
-import { domainStateRoot, resolveDomainScope } from "./domain-scope";
+import { resolveDomainScope } from "./domain-scope";
 import { DomainSupervisor } from "./domain-supervisor";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
@@ -471,31 +471,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Cached repo info for resolveIssuePr — detected once from daemon startup cwd
   /**
-   * GitHub repo per domain, cached so `git remote` is not re-run on every call.
+   * PRE-EXISTING GAP, deliberately unchanged — see #3193.
    *
-   * Keyed by domain because repo identity IS domain-scoped: two domains are two projects and
-   * therefore two repos, and "PR #7" means different things in each. `NO_DOMAIN_ID` falls
-   * back to the daemon's cwd, which is where unassigned rows were written from — the only
-   * partition for which the daemon's own directory is the right answer.
-   *
-   * A failed detection is cached as `null` for that domain so a non-git path is not retried
-   * on every call.
+   * One repo, detected from the daemon's cwd. Wrong the moment two domains are two different
+   * repos, and wrong before this PR too: the readers were unscoped then, so the poller has
+   * always queried every tracked PR number against this one repo. Making the readers ring 0
+   * restored that behaviour exactly rather than widening it, so #3037 neither caused nor owns
+   * this. Per-domain pollers are #3022.
    */
-  const repoByDomain = new Map<number, RepoInfo | null>();
-  const repoForDomain = async (domainId: number): Promise<RepoInfo | null> => {
-    if (repoByDomain.has(domainId)) return repoByDomain.get(domainId) ?? null;
-    const path = domainId === NO_DOMAIN_ID ? process.cwd() : db.getDomainById(domainId)?.path;
-    let repo: RepoInfo | null = null;
-    if (path) {
-      try {
-        repo = await detectRepo(path);
-      } catch {
-        repo = null;
-      }
-    }
-    repoByDomain.set(domainId, repo);
-    return repo;
-  };
+  let cachedRepo: RepoInfo | null = null;
 
   if (!opts?.skipLogSetup) {
     installDaemonLogCapture();
@@ -950,19 +934,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      // PARTITION BINDING, fixed below rather than at this line. `automationRepoRoot` is
-      // still the daemon's cwd, which is the correct FALLBACK for rows in the unassigned
-      // partition (that is where they were written from). It is NOT correct for a domained
-      // row: phase state is keyed by (repo_root, namespace, key), and the phase runner writes
-      // it under the CALLER's git root — so reading it under the daemon's cwd returns `{}`,
-      // the same silent-empty failure the work-item readers had. `repoRootForWorkItem` below
-      // dispatches per row via the domain's registered path.
+      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3193.
+      //
+      // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
+      // cwd. That is already the wrong key when the daemon starts outside the project, and it
+      // was wrong before this PR too. #3037 does NOT own it: nothing about scoping work_items
+      // by domain requires deriving a phase-state root.
+      //
+      // An earlier round of this PR tried to fix it here by substituting the domain's
+      // registered path. That was worse — `mcx scope add` stores a cwd with no git-root check
+      // and a domain may legally be registered at an ANCESTOR of the repo, so the registered
+      // path and the git root every writer uses coincide only by luck. It replaced a known
+      // stale key with a differently-wrong one and made this file the fifth independent
+      // derivation of a key that already had four. Reverted rather than patched.
       const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
-      /** The root a work item's phase state actually lives under: its domain's path. */
-      const repoRootForWorkItem = (workItemId: string): string => {
-        const item = workItemDb.getWorkItem(workItemId);
-        return domainStateRoot(db, item?.domainId ?? NO_DOMAIN_ID, automationRepoRoot);
-      };
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
@@ -1006,10 +991,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // always the canonical id straight off a DB row (see `resolveWorkItemId` /
             // `resolveWorkItemIdFromEvent` above) — never a caller-typed spelling — so
             // `workItemStateNamespace` is safe to use directly (#3037).
-            //
-            // Per row, not per daemon — see repoRootForWorkItem.
-            const root = repoRootForWorkItem(workItemId);
-            return db.listAliasState(root, workItemStateNamespace(workItemId), domainResolver.idForPath(root));
+            return db.listAliasState(
+              automationRepoRoot,
+              workItemStateNamespace(workItemId),
+              domainResolver.idForPath(automationRepoRoot),
+            );
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {
@@ -1087,15 +1073,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         lastError: quotaPoller.lastError,
       };
     },
-    resolveIssuePr: async (number: number, domainId: number) => {
-      // PARTITION BINDING (repo identity). Which GitHub repo an issue number refers to is a
-      // property of the DOMAIN, not of the directory that happened to start the daemon —
-      // domain A's issue 42 and domain B's issue 42 are different issues in different repos.
-      // Resolved per domain and cached per domain; the daemon's cwd remains the fallback for
-      // the unassigned partition, which is exactly where it was already correct.
-      const repo = await repoForDomain(domainId);
-      if (!repo) return { prNumber: null };
-      const resolved = await resolveNumber(repo, number);
+    resolveIssuePr: async (number: number) => {
+      // Cache repo detection so we don't re-run `git remote` on every track call.
+      // Uses the daemon's startup cwd which is the project root at launch time (#3193).
+      if (!cachedRepo) {
+        cachedRepo = await detectRepo(process.cwd());
+      }
+      const resolved = await resolveNumber(cachedRepo, number);
       return { prNumber: resolved.prNumber };
     },
     eventBus: mailEventBus,
@@ -1454,14 +1438,18 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 return null;
               }
             },
-            resolveBranchFromPr: async (prNumber: number, domainId: number) => {
-              // PARTITION BINDING (repo identity), resolved per domain — see repoForDomain.
-              // The --repo flag stays explicit so `gh pr view` never resolves against an
-              // ambiguous cwd. Returns null when detection fails; the caller treats that as
-              // "branch not known" and continues.
-              const repo = await repoForDomain(domainId);
-              if (!repo) return null;
-              return resolveBranchFromPr(prNumber, { repo });
+            resolveBranchFromPr: async (prNumber: number) => {
+              // Re-use the cached repo (see #3193) so the --repo flag is always explicit,
+              // avoiding `gh pr view` resolving against an ambiguous cwd. Returns null when
+              // detection fails; the caller treats that as "branch not known" and continues.
+              if (!cachedRepo) {
+                try {
+                  cachedRepo = await detectRepo(process.cwd());
+                } catch {
+                  return null;
+                }
+              }
+              return resolveBranchFromPr(prNumber, { repo: cachedRepo });
             },
             logger,
           });

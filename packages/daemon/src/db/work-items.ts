@@ -364,6 +364,24 @@ export class WorkItemDb {
   }
 
   /**
+   * Unassigned rows worth reporting to `scoped`'s caller, or 0 when there is nothing to say.
+   *
+   * **The predicate lives here, once.** Both the IPC handler and the MCP tool need it, and
+   * when they each expressed it themselves they made the same mistake: gating on the count of
+   * the *filtered* list. A domain with 40 live items and a `phase=qa` filter matching none of
+   * them would then be told its data was stranded — a false alarm in the one feature whose
+   * job is to report real ones.
+   *
+   * "The domain holds nothing" means exactly that: no rows at all in this domain, whatever
+   * the caller happened to filter for.
+   */
+  strandedUnassignedCount(scoped: DomainWorkItems): number {
+    if (scoped.domainId === NO_DOMAIN_ID) return 0;
+    if (scoped.countWorkItems() > 0) return 0;
+    return this.countUnassignedWorkItems();
+  }
+
+  /**
    * **Ring 0: the daemon's own readers, which span every domain by design.**
    *
    * The pollers, derived-event rules, automation dispatcher and `ctx.workItem` resolution are
@@ -786,6 +804,15 @@ export class DomainWorkItems {
       .query<WorkItemRow, [number]>(`SELECT * FROM work_items WHERE domain_id = ?${archiveClause} ORDER BY created_at`)
       .all(this.domainId)
       .map(rowToWorkItem);
+  }
+
+  /** Every row in this domain, ignoring any caller filter. See WorkItemDb.strandedUnassignedCount. */
+  countWorkItems(): number {
+    return (
+      this.db
+        .query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM work_items WHERE domain_id = ?")
+        .get(this.domainId)?.n ?? 0
+    );
   }
 
   /** Count items that listWorkItems would hide when excludeArchived=true. */

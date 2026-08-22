@@ -124,7 +124,7 @@ export class IpcServer {
       getWsPortInfo?: () => { actual: number | null; expected: number };
       drainTimeoutMs?: number;
       getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
-      resolveIssuePr?: (number: number, domainId: number) => Promise<{ prNumber: number | null }>;
+      resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
       loadManifest?: (repoRoot: string) => Manifest | null;
       eventBus?: EventBus;
       eventLog?: EventLog;
@@ -421,7 +421,7 @@ export class IpcServer {
     aliasServer: AliasServer | null;
     workItemDb: WorkItemDb;
     eventBus: EventBus | null;
-    resolveIssuePr: ((n: number, domainId: number) => Promise<{ prNumber: number | null }>) | null;
+    resolveIssuePr: ((n: number) => Promise<{ prNumber: number | null }>) | null;
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
     automationDispatcher: AutomationDispatcher | null;

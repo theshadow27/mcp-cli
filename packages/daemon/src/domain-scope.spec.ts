@@ -7,7 +7,6 @@ import {
   type DomainResolver,
   UNSCOPED_DOMAIN,
   domainScopeFromMeta,
-  domainStateRoot,
   resolveDomainId,
   resolveDomainScope,
 } from "./domain-scope";
@@ -106,27 +105,57 @@ describe("DOMAIN_SCOPED_SERVERS", () => {
 });
 
 /**
- * Phase state is keyed by `(repo_root, namespace, key)` and the phase runner writes it under
- * the CALLER's git root. A daemon-internal reader substituting its own cwd reads a different
- * key and gets `{}` — no error, an empty store. Same silent-empty shape as the startup-bound
- * work-item readers, and the reason the automation dispatcher's state lookups were wrong.
+ * Unresolved scope must fail CLOSED (the #3199 shape).
+ *
+ * `mcx claude bye --all` ends every session on the machine when run from outside every
+ * domain, because `domainCwd` is stripped at the daemon boundary and the worker cannot
+ * distinguish "scoping was requested and did not resolve" from "no scoping was requested".
+ * The information is destroyed, and the value it collapses to means NO FILTER — so the
+ * failure is maximally permissive.
+ *
+ * This module collapses exactly the same distinction: absent `_meta`, a missing key, and
+ * malformed input all yield the same scope. That collapse is fine ONLY because the value it
+ * collapses to is `NO_DOMAIN_ID` — one specific, narrow partition — and not "no filter". A
+ * caller whose domain fails to resolve therefore sees LESS than it expected, never another
+ * domain's rows and never everything.
+ *
+ * Cross-domain access exists, but only behind an explicitly named method
+ * (`WorkItemDb.acrossDomains()`), and is unreachable from a resolution failure. These tests
+ * exist so that stays true: if someone later makes the unresolved case mean "all domains",
+ * this file fails rather than a machine-wide command shipping.
  */
-describe("domainStateRoot", () => {
-  const lookup = {
-    getDomainById(id: number): Domain | null {
-      return id === 1 ? domain(1, "alpha", "/home/u/alpha") : null;
-    },
-  };
+describe("unresolved scope fails closed, not open (#3199 class)", () => {
+  const unresolvable: Array<[string, unknown]> = [
+    ["no _meta at all", undefined],
+    ["_meta present but our key absent", { other: 1 }],
+    ["a domain was requested but is malformed", { [DOMAIN_META_KEY]: { id: "not-a-number" } }],
+    ["a domain was requested but the id is negative", { [DOMAIN_META_KEY]: { id: -1 } }],
+    ["a domain was requested but the id is fractional", { [DOMAIN_META_KEY]: { id: 1.5 } }],
+  ];
 
-  test("a domained row is keyed under its OWN domain's path, not the daemon's cwd", () => {
-    expect(domainStateRoot(lookup, 1, "/daemon/cwd")).toBe("/home/u/alpha");
+  test.each(unresolvable)("%s resolves to the sentinel partition, never a wildcard", (_label, meta) => {
+    const scope = domainScopeFromMeta(meta);
+    expect(scope.id).toBe(NO_DOMAIN_ID);
+    // The assertion that matters: it is a REAL partition id, not a sentinel meaning "any".
+    expect(Number.isInteger(scope.id)).toBe(true);
+    expect(scope.id).toBeGreaterThanOrEqual(0);
   });
 
-  test("the unassigned partition falls back to the daemon's cwd — where those rows came from", () => {
-    expect(domainStateRoot(lookup, NO_DOMAIN_ID, "/daemon/cwd")).toBe("/daemon/cwd");
+  test("a failed path resolution is also the sentinel, not every domain", () => {
+    const alwaysFails: DomainResolver = {
+      resolveDomain() {
+        throw new Error("domains table unavailable");
+      },
+    };
+    expect(resolveDomainScope(alwaysFails, "/home/u/alpha")).toEqual(UNSCOPED_DOMAIN);
   });
 
-  test("an unknown domain id falls back rather than inventing a path", () => {
-    expect(domainStateRoot(lookup, 99, "/daemon/cwd")).toBe("/daemon/cwd");
+  test("no unresolved input can produce a different domain's id", () => {
+    // Whatever a caller sends, it cannot land in domain 1, 2, or 3.
+    for (const [, meta] of unresolvable) {
+      expect(domainScopeFromMeta(meta).id).not.toBe(1);
+      expect(domainScopeFromMeta(meta).id).not.toBe(2);
+      expect(domainScopeFromMeta(meta).id).not.toBe(3);
+    }
   });
 });
