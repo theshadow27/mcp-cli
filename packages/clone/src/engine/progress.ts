@@ -51,7 +51,26 @@ export interface VfsProgressEvent extends VfsProgressFields {
  */
 export type VfsProgressSink = (event: VfsProgressEvent) => void | Promise<void>;
 
-/** Emit one update per this share of a known total (5% → up to 20 per stage). */
+/**
+ * Share of a known total between updates — but only where that is *narrower*
+ * than {@link DEFAULT_COUNT_STEP}, which is a hard ceiling on the gap.
+ *
+ * With these defaults the two rules cross at a total of 1000 (5% of 1000 is
+ * exactly 50). Measured updates per stage:
+ *
+ * | items  | with an accurate `count()` | with no `count()` |
+ * |--------|---------------------------|-------------------|
+ * | 40     | 4                         | 0                 |
+ * | 200    | 20                        | 4                 |
+ * | 1000   | 20                        | 20                |
+ * | 5000   | 100                       | 100               |
+ * | 50000  | 1000                      | 1000              |
+ *
+ * So an estimate always buys the denominator and the percentage, and buys a
+ * *finer* cadence only below 1000 items. At and above the crossover the flat
+ * count rule governs — which is the pre-#1249 cadence (`fetched % 50`), and is
+ * deliberate: see {@link shouldReport} for why the ceiling cannot be dropped.
+ */
 export const DEFAULT_PERCENT_STEP = 5;
 
 /**
@@ -94,13 +113,21 @@ export function usableTotal(current: number, total: number | undefined): number 
  *
  * Two rules, and the tighter one wins:
  *
- * - **At most one update per `percentStep` of a usable total**, so a big scope
- *   does not narrate every page — floored at `minStep` so a 40-item scope
- *   reports every 10 rather than every one. The tick that reaches the total
- *   always reports, so a stage never ends mid-bar.
+ * - **At most one update per `percentStep` of a usable total**, floored at
+ *   `minStep` so a 40-item scope reports every 10 rather than every one. The
+ *   tick that reaches the total always reports, so a stage never ends mid-bar.
  * - **At least one update per `countStep` items**, always. This is the rule
  *   that holds when there is no usable total, and it is also a *ceiling* on the
  *   percent-derived step.
+ *
+ * The two are not simultaneously satisfiable: above a total of 1000, 5% of the
+ * total exceeds `countStep`, so the ceiling clamps the percent term away
+ * entirely and a 5000-item stage emits 100 updates rather than 20. That is not
+ * an oversight — it is the ceiling doing its job, and it is also the cadence
+ * this feature replaces. See {@link DEFAULT_PERCENT_STEP} for the measured
+ * table. If the volume above the crossover ever needs to come down, the fix is
+ * a gap bounded by the items *already seen* rather than by a constant; a larger
+ * constant cannot do it without reopening the hole below.
  *
  * The ceiling is the part that is easy to leave out, and leaving it out is
  * strictly worse than having no estimate at all. `usableTotal` guards an

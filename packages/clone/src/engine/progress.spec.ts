@@ -233,12 +233,44 @@ describe("formatProgressLine", () => {
 });
 
 describe("ProgressReporter", () => {
-  test("emits exactly one update per 5% of a known total", async () => {
-    const { events, lines } = await runPhase(1000, 1000);
+  test("below the crossover the 5% rule narrows the cadence", async () => {
+    // 5% of 200 is 10, well under the 50-item ceiling, so the percent rule is
+    // the operative one here. Without it this same input emits 4.
+    const { events, lines } = await runPhase(200, 200);
     expect(events).toHaveLength(20);
     expect(lines).toHaveLength(20);
-    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 50, total: 1000, percent: 5, stage: "list" });
-    expect(events[19]).toMatchObject({ current: 1000, percent: 100 });
+    expect(events[0]).toMatchObject({ event: VFS_PROGRESS, current: 10, total: 200, percent: 5, stage: "list" });
+    expect(events[19]).toMatchObject({ current: 200, percent: 100 });
+  });
+
+  test("cadence across the documented crossover", async () => {
+    // The two rules cross at total = 1000, where 5% of the total is exactly
+    // DEFAULT_COUNT_STEP. A case at 1000 alone cannot tell them apart — they
+    // emit an identical tick set there — so this asserts BOTH sides, and the
+    // real numbers rather than a property, so that changing either constant
+    // shows up here instead of silently.
+    const measured: Array<[number, number]> = [];
+    for (const total of [200, 1000, 5000]) {
+      measured.push([total, (await runPhase(total, total)).events.length]);
+    }
+    expect(measured).toEqual([
+      [200, 20], // percent rule: 5% of 200 = 10 items
+      [1000, 20], // crossover: 5% of 1000 = 50 = countStep
+      [5000, 100], // ceiling: 5% of 5000 = 250, clamped to 50
+    ]);
+  });
+
+  test("above the crossover an accurate count() adds the denominator, not a finer cadence", async () => {
+    // Documents the 5x that round 4's ceiling introduced above 1000, so it is
+    // visible to whoever touches DEFAULT_PERCENT_STEP or DEFAULT_COUNT_STEP.
+    // It is also exactly the pre-#1249 `fetched % 50` cadence.
+    const withCount = await runPhase(5000, 5000);
+    const withoutCount = await runPhase(5000, undefined);
+    expect(withCount.events).toHaveLength(100);
+    expect(withoutCount.events).toHaveLength(100);
+    // What the estimate does buy at this scale is the denominator itself.
+    expect(withCount.events[0]).toMatchObject({ current: 50, total: 5000, percent: 1 });
+    expect(withoutCount.events[0].total).toBeUndefined();
   });
 
   test("an over-estimated count() still reports — never worse than no estimate", async () => {
@@ -429,11 +461,6 @@ describe("ProgressReporter", () => {
     expect(lines.some((l) => l.includes("/100 pages (100%)") && !l.startsWith("  Fetching FOO... 100/100"))).toBe(
       false,
     );
-  });
-
-  test("an accurate count() is unaffected — still 20 updates, constant in n", async () => {
-    const { events } = await runPhase(1000, 1000);
-    expect(events).toHaveLength(20);
   });
 
   test("a sink that throws cannot fail the operation or swallow the terminal event", async () => {
