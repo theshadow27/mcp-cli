@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
-import { PHASE_CHANGED } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, PHASE_CHANGED } from "@mcp-cli/core";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher } from "./derived-events";
 import { DEFAULT_RULES, isDerivedPending, prMergedToDone } from "./derived-rules";
@@ -48,7 +48,7 @@ describe("prMergedToDone rule", () => {
 
   test("applies phase.changed for QA work item", () => {
     const db = freshDb();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
     const bus = new EventBus();
     const ctx: DerivedCtx = { workItemDb, bus };
 
@@ -67,7 +67,7 @@ describe("prMergedToDone rule", () => {
 
   test("updates work item phase to done in DB", () => {
     const db = freshDb();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     const wi = workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
@@ -78,7 +78,7 @@ describe("prMergedToDone rule", () => {
 
   test("returns null for non-QA phase (idempotent)", () => {
     const db = freshDb();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "impl" });
@@ -87,7 +87,7 @@ describe("prMergedToDone rule", () => {
 
   test("returns pending when no work item for PR", () => {
     const db = freshDb();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     const result = prMergedToDone.apply(stampEvent(prMergedInput(999), 5), ctx);
@@ -97,7 +97,7 @@ describe("prMergedToDone rule", () => {
 
   test("second invocation is a no-op after phase transitions to done", () => {
     const db = freshDb();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
     const ctx: DerivedCtx = { workItemDb, bus: new EventBus() };
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
@@ -115,7 +115,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -137,7 +137,7 @@ describe("DerivedEventPublisher", () => {
   test("does not publish for non-QA work item", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -154,7 +154,7 @@ describe("DerivedEventPublisher", () => {
   test("schedules retry when no work item exists (pending)", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -182,7 +182,7 @@ describe("DerivedEventPublisher", () => {
   test("retry succeeds and updates DB", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, retryBaseMs: 10 });
 
@@ -202,7 +202,7 @@ describe("DerivedEventPublisher", () => {
   test("retry exhaustion: drops event after max retries", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -229,7 +229,7 @@ describe("DerivedEventPublisher", () => {
   test("dispose cancels pending retries", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -250,7 +250,7 @@ describe("DerivedEventPublisher", () => {
   test("updates work item phase in DB", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
@@ -265,7 +265,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     bus.subscribe(() => {});
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
@@ -285,7 +285,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
 
@@ -303,7 +303,7 @@ describe("DerivedEventPublisher", () => {
   test("no infinite loop: derived phase.changed does not re-trigger", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -321,7 +321,7 @@ describe("DerivedEventPublisher", () => {
   test("depth cap: events at max depth are not processed", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     let applyCalled = false;
     const alwaysMatch: DerivedRule = {
@@ -344,7 +344,7 @@ describe("DerivedEventPublisher", () => {
   test("causedBy chain grows with derivation depth", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -375,7 +375,7 @@ describe("DerivedEventPublisher", () => {
   test("rules run in registration order", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const order: string[] = [];
 
@@ -408,7 +408,7 @@ describe("DerivedEventPublisher", () => {
   test("dispose unsubscribes: rule does not fire after dispose", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -427,7 +427,7 @@ describe("DerivedEventPublisher", () => {
   test("two publishers on same bus fire rule exactly once each", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -452,7 +452,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db, eventLog });
 
@@ -467,7 +467,7 @@ describe("DerivedEventPublisher", () => {
   test("reconcile replays missed pr.merged and transitions QA work item to done", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // Simulate prior daemon run: pr.merged landed in the event log but no derived publisher processed it.
     const bus1 = new EventBus(eventLog);
@@ -503,7 +503,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     workItemDb.createWorkItem({ prNumber: 42, phase: "qa" });
 
@@ -530,7 +530,7 @@ describe("DerivedEventPublisher", () => {
   test("reconcile handles multiple missed events", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // Simulate two PRs merging while daemon was down.
     const bus1 = new EventBus(eventLog);
@@ -553,7 +553,7 @@ describe("DerivedEventPublisher", () => {
   test("reconcile without eventLog returns 0", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const pub = new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db });
     expect(pub.reconcile()).toBe(0);
@@ -563,7 +563,7 @@ describe("DerivedEventPublisher", () => {
   test("cursor persists across publisher instances", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // First publisher processes one event.
     const bus1 = new EventBus(eventLog);
@@ -587,7 +587,7 @@ describe("DerivedEventPublisher", () => {
   test("publisher stamps src:daemon.derived regardless of rule return value", () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -612,7 +612,7 @@ describe("DerivedEventPublisher", () => {
   test("retry does not re-derive if work item created with non-QA phase", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -633,7 +633,7 @@ describe("DerivedEventPublisher", () => {
   test("retry catches rule exceptions instead of crashing", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -663,7 +663,7 @@ describe("DerivedEventPublisher", () => {
   test("pending rule does not cause infinite loop via depth cap on retried events", async () => {
     const db = freshDb();
     const bus = new EventBus();
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     const received: MonitorEvent[] = [];
     bus.subscribe((e) => received.push(e));
@@ -697,7 +697,7 @@ describe("DerivedEventPublisher", () => {
   test("reconcile: cursor does not leap past unreplayed events when derived events have higher seq", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // Simulate two events in the log from a prior daemon run.
     const bus1 = new EventBus(eventLog);
@@ -726,7 +726,7 @@ describe("DerivedEventPublisher", () => {
   test("reconcile: depth-capped events still advance the cursor", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // Publish an event with causedBy at max depth — it will hit the depth cap.
     const bus1 = new EventBus(eventLog);
@@ -764,7 +764,7 @@ describe("DerivedEventPublisher", () => {
     const eventLog1 = new EventLog(db1);
     const eventLog2 = new EventLog(db2);
     const bus = new EventBus(eventLog1);
-    const workItemDb = new WorkItemDb(db1);
+    const workItemDb = new WorkItemDb(db1).forDomain(NO_DOMAIN_ID);
 
     expect(() => {
       new DerivedEventPublisher({ bus, rules: DEFAULT_RULES, workItemDb, db: db1, eventLog: eventLog2 });
@@ -775,7 +775,7 @@ describe("DerivedEventPublisher", () => {
     const db = freshDb();
     const eventLog = new EventLog(db);
     const bus = new EventBus(eventLog);
-    const workItemDb = new WorkItemDb(db);
+    const workItemDb = new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
 
     // Publish an event before the publisher exists.
     bus.publish({ src: "test", event: "before", category: "work_item" });

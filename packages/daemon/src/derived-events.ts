@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { type MonitorEvent, type MonitorEventInput, NO_DOMAIN_ID } from "@mcp-cli/core";
-import type { WorkItemDb } from "./db/work-items";
+import type { DomainWorkItems } from "./db/work-items";
 import { isDerivedPending } from "./derived-rules";
 import type { DerivedRule } from "./derived-rules";
 import type { EventBus } from "./event-bus";
@@ -43,7 +43,7 @@ export function migrateDerivedCursor(db: Database): void {
 export class DerivedEventPublisher {
   private readonly bus: EventBus;
   private readonly rules: DerivedRule[];
-  private readonly ctx: { workItemDb: WorkItemDb; bus: EventBus };
+  private readonly ctx: { workItemDb: DomainWorkItems; bus: EventBus };
   private readonly db: Database;
   private readonly eventLog: EventLog | null;
   private readonly subId: number;
@@ -55,7 +55,7 @@ export class DerivedEventPublisher {
   constructor(opts: {
     bus: EventBus;
     rules: DerivedRule[];
-    workItemDb: WorkItemDb;
+    workItemDb: DomainWorkItems;
     db: Database;
     eventLog?: EventLog;
     /** Override base delay for retries (ms). Exposed for testing. */

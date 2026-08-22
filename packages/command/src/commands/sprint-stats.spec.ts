@@ -440,6 +440,7 @@ describe("cmdSprintStats", () => {
     const workItems: WorkItem[] = [
       {
         id: "#99",
+        domainId: 0,
         issueNumber: 99,
         branch: "feat/issue-99",
         phase: "impl",
@@ -603,6 +604,7 @@ describe("cmdSprintStats", () => {
     const workItems: WorkItem[] = [
       {
         id: "#1",
+        domainId: 0,
         issueNumber: 1,
         branch: "feat/x",
         phase: "impl",

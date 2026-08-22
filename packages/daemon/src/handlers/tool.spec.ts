@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IpcMethod } from "@mcp-cli/core";
+import { DOMAIN_META_KEY } from "../domain-scope";
 import type { RequestHandler } from "../handler-types";
 import { ToolHandlers } from "./tool";
 
@@ -207,5 +208,62 @@ describe("ToolHandlers – restartServer", () => {
     const result = (await invoke(map, "restartServer")({ server: "s1" }, {} as never)) as { ok: boolean };
     expect(result.ok).toBe(true);
     expect(restartedServer).toBe("s1");
+  });
+});
+
+/**
+ * The domain a `_work_items` call is scoped to is decided HERE, from the caller's cwd, and
+ * travels in MCP `_meta`. These tests pin that it never comes from `arguments` — the
+ * property epic C calls reflexive containment and epic D's `_cards` server will reuse.
+ */
+describe("ToolHandlers – domain scoping of virtual servers", () => {
+  const ALPHA = { id: 1, name: "alpha", host: null, path: "/home/u/alpha", createdAt: "2026-08-22T00:00:00.000Z" };
+
+  function captureMeta(overrides: Record<string, unknown> = {}) {
+    const seen: { meta?: Record<string, unknown> } = {};
+    const pool = mockPool({
+      callTool: async (_s: string, _t: string, _a: unknown, _ms: number, opts: { meta?: Record<string, unknown> }) => {
+        seen.meta = opts?.meta;
+        return { content: [] };
+      },
+    });
+    const db = mockDb({
+      resolveDomain: (path: string) => (path?.startsWith("/home/u/alpha") ? ALPHA : null),
+      ...overrides,
+    });
+    return { map: buildHandlers(pool, db), seen };
+  }
+
+  test("_work_items receives the domain resolved from the caller's cwd", async () => {
+    const { map, seen } = captureMeta();
+    await invoke(map, "callTool")(
+      { server: "_work_items", tool: "work_items_list", arguments: {}, cwd: "/home/u/alpha/src" },
+      mockCtx(),
+    );
+    expect(seen.meta?.[DOMAIN_META_KEY]).toEqual({ id: 1, name: "alpha" });
+  });
+
+  test("a domain named in `arguments` is ignored — the cwd decides", async () => {
+    const { map, seen } = captureMeta();
+    await invoke(map, "callTool")(
+      {
+        server: "_work_items",
+        tool: "work_items_list",
+        arguments: { domainId: 99, domain: "somebody-elses" },
+        cwd: "/var/tmp/outside",
+      },
+      mockCtx(),
+    );
+    // Outside every domain → the unassigned partition, not the id the caller asked for.
+    expect(seen.meta?.[DOMAIN_META_KEY]).toEqual({ id: 0, name: null });
+  });
+
+  test("a third-party server gets no mcx routing metadata at all", async () => {
+    const { map, seen } = captureMeta();
+    await invoke(map, "callTool")(
+      { server: "atlassian", tool: "search", arguments: {}, cwd: "/home/u/alpha" },
+      mockCtx(),
+    );
+    expect(seen.meta).toBeUndefined();
   });
 });

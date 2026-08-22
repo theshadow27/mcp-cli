@@ -38,6 +38,45 @@ than from a list — so a table added later cannot slip through unclassified.
 Domains supersede `mcx scope`, which was the same idea stored as JSON sidecars in
 `~/.mcp-cli/scopes/` with no partition role and no host component.
 
+## How a partitioned table is actually scoped
+
+`work_items` is the worked example (#3037); every table that follows should copy its shape.
+
+**The partition is the object, not an argument.** `WorkItemDb` owns migration and exposes
+exactly one method — `forDomain(domainId)` — returning a handle on which every read and
+write is already constrained. There is no unscoped query to forget to scope, because there
+is no unscoped query. An optional `domainId` parameter with a default was tried first and is
+precisely the shape that let `work_item_transitions.domain_id` ship with no writer at all.
+
+**The caller's domain arrives out-of-band.** The `_work_items` virtual server takes its
+domain from MCP `_meta`, which the daemon attaches after resolving the caller's cwd. `_meta`
+is a sibling of `arguments` in the MCP request and the IPC schema strips unknown keys, so a
+session cannot put a domain on the wire — and no tool's `inputSchema` mentions one, so no
+model is ever shown a parameter that looks like it might widen the scope. The scope is
+settled before the tool sees the call. (Spoofing the *cwd* is a different question and is
+epic C's, not this layer's.)
+
+**Ids are qualified, because they are guessable.** A work-item id is derived from what it
+tracks (`#42`, `pr:7`, `branch:fix/foo`) and is the table's global primary key, so two
+domains tracking issue 42 would collide on the key even though `(domain_id, issue_number)`
+is unique. Inside a registered domain the id becomes `d<id>:<base>`; in the unassigned
+partition it is unchanged, so an installation with no domains sees byte-identical ids to
+before. Lookups accept either spelling and are filtered by `domain_id` either way, so a
+shorter spelling never reaches further.
+
+**"No domains" is not the default state, and code must not assume it is.** `importLegacyState`
+runs on *every* daemon start, and `importScopesAsDomains` inserts a domain row for every
+`~/.mcp-cli/scopes/*.json` sidecar — no user action, and `mcx domain add` does not exist yet
+(it ships in #3035). Any box that ever used `mcx scope` therefore has domains already. This is
+why an id must be treated as opaque: reconstructing one by formatting an issue number produces
+the unqualified spelling, which addresses a different row than the stored id and fails
+silently. Read ids from the database or a tool response and pass them back unchanged.
+
+**The check is a rule, not a convention.** `scripts/rules/domain-scoped-queries.rule.ts`
+fails the build on a statement in a `@domain-partitioned` module that touches a table
+declared with a `domain_id` column without constraining it. It derives the table list from
+the schema rather than keeping a copy, and modules opt in as their behaviour is scoped.
+
 ## What a domain row is not
 
 A domain row has **no state column**. It does not know whether anything is running.

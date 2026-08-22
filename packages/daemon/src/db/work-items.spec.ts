@@ -3,7 +3,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StaleUpdateError, WorkItemDb } from "./work-items";
+import { NO_DOMAIN_ID, type WorkItem } from "@mcp-cli/core";
+import { type DomainWorkItems, StaleUpdateError, WorkItemDb } from "./work-items";
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -28,12 +29,12 @@ describe("WorkItemDb", () => {
     paths.length = 0;
   });
 
-  function createDb(): WorkItemDb {
+  function createDb(): DomainWorkItems {
     const p = tmpDb();
     paths.push(p);
     const db = new Database(p, { create: true });
     db.exec("PRAGMA journal_mode = WAL");
-    return new WorkItemDb(db);
+    return new WorkItemDb(db).forDomain(NO_DOMAIN_ID);
   }
 
   describe("createWorkItem", () => {
@@ -186,7 +187,7 @@ describe("WorkItemDb", () => {
       db.createWorkItem({ issueNumber: 3 });
       const items = db.listWorkItems();
       expect(items).toHaveLength(3);
-      expect(items.map((i) => i.issueNumber)).toEqual([1, 2, 3]);
+      expect(items.map((i: WorkItem) => i.issueNumber)).toEqual([1, 2, 3]);
     });
 
     test("filters by phase", () => {
@@ -197,7 +198,7 @@ describe("WorkItemDb", () => {
 
       const implItems = db.listWorkItems({ phase: "impl" });
       expect(implItems).toHaveLength(2);
-      expect(implItems.map((i) => i.issueNumber)).toEqual([1, 3]);
+      expect(implItems.map((i: WorkItem) => i.issueNumber)).toEqual([1, 3]);
 
       const reviewItems = db.listWorkItems({ phase: "review" });
       expect(reviewItems).toHaveLength(1);
@@ -220,10 +221,10 @@ describe("WorkItemDb", () => {
       rawDb.prepare("UPDATE work_items SET updated_at = datetime('now', '-8 days') WHERE id = ?").run(stale.id);
 
       const active = db.listWorkItems({ excludeArchived: true });
-      expect(active.map((i) => i.issueNumber)).not.toContain(2);
+      expect(active.map((i: WorkItem) => i.issueNumber)).not.toContain(2);
       // issue 3 is done but updated recently — should still appear
-      expect(active.map((i) => i.issueNumber)).toContain(3);
-      expect(active.map((i) => i.issueNumber)).toContain(1);
+      expect(active.map((i: WorkItem) => i.issueNumber)).toContain(3);
+      expect(active.map((i: WorkItem) => i.issueNumber)).toContain(1);
     });
 
     test("excludeArchived combined with phase filter", () => {
@@ -449,7 +450,7 @@ describe("WorkItemDb", () => {
       `);
       raw.exec("INSERT INTO work_items (id, issue_number) VALUES ('legacy-1', 99)");
 
-      const db = new WorkItemDb(raw);
+      const db = new WorkItemDb(raw).forDomain(NO_DOMAIN_ID);
       const seeded = raw
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items");
@@ -480,7 +481,7 @@ describe("WorkItemDb", () => {
       // WorkItemDb must NOT read PRAGMA to infer its own state and must NOT
       // write to PRAGMA. On a fresh DB (no work_items table), it should detect
       // legacy v0, run both migrations, and leave PRAGMA at 5.
-      const db = new WorkItemDb(raw);
+      const db = new WorkItemDb(raw).forDomain(NO_DOMAIN_ID);
       const userVersion = raw.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
       expect(userVersion).toBe(5);
 
@@ -705,7 +706,7 @@ describe("WorkItemDb", () => {
       paths.push(p);
       const raw = new Database(p, { create: true });
       raw.exec("PRAGMA journal_mode = WAL");
-      const db = new WorkItemDb(raw);
+      const db = new WorkItemDb(raw).forDomain(NO_DOMAIN_ID);
 
       const item = db.createWorkItem({ issueNumber: 1, phase: "impl" });
       const N = 20;
@@ -726,7 +727,7 @@ describe("WorkItemDb", () => {
 
       const setup = new Database(p, { create: true });
       setup.exec("PRAGMA journal_mode = WAL");
-      const setupDb = new WorkItemDb(setup);
+      const setupDb = new WorkItemDb(setup).forDomain(NO_DOMAIN_ID);
       const item = setupDb.createWorkItem({ issueNumber: 1, phase: "impl" });
       const itemId = item.id;
       setup.close();
@@ -737,7 +738,7 @@ describe("WorkItemDb", () => {
       for (let i = 0; i < N; i++) {
         const conn = new Database(p);
         conn.exec("PRAGMA busy_timeout = 5000");
-        const wi = new WorkItemDb(conn);
+        const wi = new WorkItemDb(conn).forDomain(NO_DOMAIN_ID);
         try {
           wi.updateWorkItem(itemId, { ciSummary: `conn-${i}` });
           results.push(true);
@@ -752,7 +753,7 @@ describe("WorkItemDb", () => {
       expect(results.every(Boolean)).toBe(true);
 
       const verify = new Database(p);
-      const verifyDb = new WorkItemDb(verify);
+      const verifyDb = new WorkItemDb(verify).forDomain(NO_DOMAIN_ID);
       const final = verifyDb.getWorkItem(itemId);
       expect(final).not.toBeNull();
       expect(final?.version).toBe(N + 1);
@@ -768,7 +769,7 @@ describe("WorkItemDb", () => {
 
       const setup = new Database(p, { create: true });
       setup.exec("PRAGMA journal_mode = WAL");
-      const setupDb = new WorkItemDb(setup);
+      const setupDb = new WorkItemDb(setup).forDomain(NO_DOMAIN_ID);
       const item = setupDb.createWorkItem({ issueNumber: 1, phase: "impl" });
       const itemId = item.id;
       setup.close();
@@ -780,7 +781,7 @@ describe("WorkItemDb", () => {
       for (let i = 0; i < N; i++) {
         const conn = new Database(p);
         conn.exec("PRAGMA busy_timeout = 5000");
-        const wi = new WorkItemDb(conn);
+        const wi = new WorkItemDb(conn).forDomain(NO_DOMAIN_ID);
         const phase = phases[i % phases.length];
         wi.updateWorkItem(itemId, { phase }, { forced: true, forceReason: `writer-${i}` });
         successes++;
@@ -790,7 +791,7 @@ describe("WorkItemDb", () => {
       expect(successes).toBe(N);
 
       const verify = new Database(p);
-      const verifyDb = new WorkItemDb(verify);
+      const verifyDb = new WorkItemDb(verify).forDomain(NO_DOMAIN_ID);
       const final = verifyDb.getWorkItem(itemId);
       expect(final).not.toBeNull();
       expect(final?.version).toBe(N + 1);
@@ -846,6 +847,177 @@ describe("WorkItemDb", () => {
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("work_items")?.version;
       expect(version).toBeGreaterThanOrEqual(1);
+      raw.close();
+    });
+  });
+  // ── Domain partitioning (#3037) ──
+  //
+  // These assert BEHAVIOUR, not schema. A test that checks "work_items has a domain_id
+  // column" passes just as happily while two domains overwrite each other's rows, which is
+  // how the gap these tests close survived #3034's review.
+
+  describe("domain partitioning", () => {
+    function twoDomains(): { raw: Database; alpha: DomainWorkItems; beta: DomainWorkItems; db: WorkItemDb } {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      raw.exec("PRAGMA journal_mode = WAL");
+      const db = new WorkItemDb(raw);
+      return { raw, db, alpha: db.forDomain(1), beta: db.forDomain(2) };
+    }
+
+    test("two domains each hold issue #42, branch fix/foo and PR #7 at the same time", () => {
+      const { alpha, beta } = twoDomains();
+
+      const a = alpha.createWorkItem({ issueNumber: 42, branch: "fix/foo", prNumber: 7 });
+      const b = beta.createWorkItem({ issueNumber: 42, branch: "fix/foo", prNumber: 7 });
+
+      expect(a.domainId).toBe(1);
+      expect(b.domainId).toBe(2);
+      expect(a.id).not.toBe(b.id);
+
+      expect(alpha.getWorkItemByIssue(42)?.id).toBe(a.id);
+      expect(beta.getWorkItemByIssue(42)?.id).toBe(b.id);
+      expect(alpha.getWorkItemByBranch("fix/foo")?.id).toBe(a.id);
+      expect(beta.getWorkItemByBranch("fix/foo")?.id).toBe(b.id);
+      expect(alpha.getWorkItemByPr(7)?.id).toBe(a.id);
+      expect(beta.getWorkItemByPr(7)?.id).toBe(b.id);
+    });
+
+    test("a guessable id from another domain is not readable — id alone is not authorization", () => {
+      const { alpha, beta } = twoDomains();
+      const a = alpha.createWorkItem({ id: "#42", issueNumber: 42 });
+
+      // beta can name alpha's row exactly and still gets nothing back.
+      expect(beta.getWorkItem(a.id)).toBeNull();
+      expect(beta.getWorkItem("#42")).toBeNull();
+      expect(alpha.getWorkItem("#42")?.id).toBe(a.id);
+    });
+
+    test("an unscoped id spelling resolves within the caller's own domain", () => {
+      const { alpha } = twoDomains();
+      const a = alpha.createWorkItem({ id: "#42", issueNumber: 42 });
+      expect(a.id).toBe("d1:#42");
+      expect(alpha.getWorkItem("#42")?.id).toBe("d1:#42");
+      expect(alpha.getWorkItem("d1:#42")?.id).toBe("d1:#42");
+    });
+
+    test("ids are unchanged in the unassigned partition — the no-domain install sees no difference", () => {
+      const db = createDb();
+      expect(db.createWorkItem({ id: "#42", issueNumber: 42 }).id).toBe("#42");
+    });
+
+    test("writes cannot cross the partition: update, delete and branch-set all miss", () => {
+      const { alpha, beta } = twoDomains();
+      const a = alpha.createWorkItem({ id: "#42", issueNumber: 42, phase: "impl" });
+
+      expect(() => beta.updateWorkItem(a.id, { phase: "qa" })).toThrow(/not found/);
+      expect(beta.deleteWorkItem(a.id)).toBe(false);
+      expect(beta.setBranchIfNull(a.id, "beta/hijack")).toBe(false);
+
+      const after = alpha.getWorkItem(a.id);
+      expect(after?.phase).toBe("impl");
+      expect(after?.branch).toBeNull();
+    });
+
+    test("upsert refuses an id owned by another domain instead of updating it", () => {
+      const { beta, raw } = twoDomains();
+      // Planted with raw SQL because the API cannot produce this state — which is the
+      // point. `id` is the global primary key, so if a row carrying the id beta would mint
+      // ever exists under another domain (a hand-edited row, a future importer, a bug),
+      // the ON CONFLICT arm must refuse rather than quietly update the neighbour's row.
+      raw.run("INSERT INTO work_items (id, domain_id, pr_number, phase) VALUES (?, ?, ?, ?)", [
+        "d2:pr:7",
+        1,
+        7,
+        "impl",
+      ]);
+
+      expect(() => beta.upsertWorkItem({ id: "pr:7", prNumber: 7, phase: "qa" })).toThrow(/another domain/);
+
+      const row = raw
+        .query<{ domain_id: number; phase: string }, [string]>("SELECT domain_id, phase FROM work_items WHERE id = ?")
+        .get("d2:pr:7");
+      expect(row?.domain_id).toBe(1);
+      expect(row?.phase).toBe("impl");
+    });
+
+    test("list, archive count and transitions see only the caller's domain", () => {
+      const { alpha, beta } = twoDomains();
+      alpha.createWorkItem({ issueNumber: 1 });
+      alpha.createWorkItem({ issueNumber: 2 });
+      beta.createWorkItem({ issueNumber: 3 });
+
+      expect(
+        alpha
+          .listWorkItems()
+          .map((i: WorkItem) => i.issueNumber)
+          .sort(),
+      ).toEqual([1, 2]);
+      expect(beta.listWorkItems().map((i: WorkItem) => i.issueNumber)).toEqual([3]);
+      expect(alpha.listWorkItems({ phase: "impl" })).toHaveLength(2);
+      expect(beta.listWorkItems({ phase: "impl" })).toHaveLength(1);
+      expect(alpha.countArchivedWorkItems()).toBe(0);
+    });
+
+    test("every transition row carries its work item's domain — the writer #3034 never had", () => {
+      const { alpha, beta, raw } = twoDomains();
+      const a = alpha.createWorkItem({ issueNumber: 42, phase: "impl" });
+      alpha.updateWorkItem(a.id, { phase: "review" });
+      beta.createWorkItem({ issueNumber: 42, phase: "impl" });
+
+      const rows = raw
+        .query<{ domain_id: number }, []>("SELECT domain_id FROM work_item_transitions ORDER BY id")
+        .all();
+      // Two for alpha (create + the phase change), one for beta. None in the sentinel
+      // partition, which is what every row said before this fix.
+      expect(rows.map((r) => r.domain_id)).toEqual([1, 1, 2]);
+
+      const log = alpha.listTransitions(a.id);
+      expect(log).toHaveLength(2);
+      expect(log.every((t) => t.domainId === 1)).toBe(true);
+      expect(beta.listTransitions(a.id)).toEqual([]);
+    });
+
+    test("deleting an item removes only its own domain's transitions and CI state", () => {
+      const { alpha, beta, raw } = twoDomains();
+      const a = alpha.createWorkItem({ id: "#9", issueNumber: 9, prNumber: 9 });
+      const b = beta.createWorkItem({ id: "#9", issueNumber: 9, prNumber: 9 });
+      alpha.upsertCiRunState(9, { suiteId: 1, startedAt: 1, emittedStarted: true, emittedFinished: false });
+      beta.upsertCiRunState(9, { suiteId: 2, startedAt: 2, emittedStarted: true, emittedFinished: false });
+
+      expect(alpha.deleteWorkItem(a.id)).toBe(true);
+
+      expect(alpha.getWorkItem(a.id)).toBeNull();
+      expect(beta.getWorkItem(b.id)?.id).toBe(b.id);
+      expect(alpha.loadCiRunStates().size).toBe(0);
+      expect(beta.loadCiRunStates().get(9)?.suiteId).toBe(2);
+      expect(
+        raw.query<{ n: number }, []>("SELECT count(*) AS n FROM work_item_transitions WHERE domain_id = 2").get()?.n,
+      ).toBe(1);
+    });
+
+    test("last-seen HEAD oid is per domain, so two PR #7s do not share a push watermark", () => {
+      const { alpha, beta } = twoDomains();
+      alpha.createWorkItem({ issueNumber: 1, prNumber: 7 });
+      beta.createWorkItem({ issueNumber: 1, prNumber: 7 });
+
+      alpha.setLastSeenHeadOid(7, "aaa");
+      beta.setLastSeenHeadOid(7, "bbb");
+
+      expect(alpha.getLastSeenHeadOid(7)).toBe("aaa");
+      expect(beta.getLastSeenHeadOid(7)).toBe("bbb");
+    });
+
+    test("forDomain rejects a value that is not a domain id", () => {
+      const p = tmpDb();
+      paths.push(p);
+      const raw = new Database(p, { create: true });
+      const db = new WorkItemDb(raw);
+      expect(() => db.forDomain(-1)).toThrow(/non-negative integer/);
+      expect(() => db.forDomain(1.5)).toThrow(/non-negative integer/);
+      expect(() => db.forDomain(Number.NaN)).toThrow(/non-negative integer/);
+      expect(db.forDomain(NO_DOMAIN_ID).domainId).toBe(NO_DOMAIN_ID);
       raw.close();
     });
   });

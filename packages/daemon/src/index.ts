@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { NdjsonRecorder } from "@mcp-cli/core";
+import { NdjsonRecorder, workItemStateNamespace } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -44,6 +44,7 @@ import {
   METRICS_SERVER_NAME,
   MOCK_SERVER_NAME,
   ManifestVersionError,
+  NO_DOMAIN_ID,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
   PR_REVIEW_COMMENT_POSTED,
@@ -82,6 +83,7 @@ import { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
+import { resolveDomainId, resolveDomainScope } from "./domain-scope";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
@@ -777,7 +779,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
   let automationDispatcher: AutomationDispatcher | null = null;
   {
-    const workItemDb = new WorkItemDb(db.getDatabase());
+    // The daemon's own domain: whichever one owns the directory mcpd was started in.
+    // One daemon still serves one project's automation — epic B (#3022) gives each domain
+    // its own worker; until then this is the honest scope, named rather than implied.
+    const workItemDb = new WorkItemDb(db.getDatabase()).forDomain(resolveDomainId(db, process.cwd()));
     let manifestResult: ReturnType<typeof loadManifest> | null = null;
     try {
       manifestResult = loadManifest(process.cwd());
@@ -834,6 +839,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             if (!item) return null;
             return {
               id: item.id,
+              domainId: item.domainId,
               issueNumber: item.issueNumber,
               prNumber: item.prNumber,
               branch: item.branch,
@@ -841,7 +847,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             };
           },
           getWorkItemState: (workItemId) => {
-            return db.listAliasState(automationRepoRoot, `workitem:${workItemId}`);
+            return db.listAliasState(automationRepoRoot, workItemStateNamespace(workItemId));
           },
           actionExecutor: {
             async byeAndUntrack(workItemId, sessionIds) {
@@ -1169,19 +1175,30 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       WORK_ITEMS_SERVER_NAME,
       (async () => {
         try {
-          const workItemDb = new WorkItemDb(db.database);
+          const workItems = new WorkItemDb(db.database);
+          // Daemon-wide consumers (pollers, derived events, ctx.workItem resolution) watch
+          // the domain mcpd was started in. The MCP server below is NOT bound here: it
+          // scopes per call, from the caller's cwd.
+          const daemonDomain = resolveDomainScope(db, process.cwd());
+          const workItemDb = workItems.forDomain(daemonDomain.id);
 
           // Create the poller first so we can pass pollNow to the server
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, daemonDomain.name),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
           // Wire the alias executor's work-item resolver — resolves the caller
           // cwd's branch → tracked work item in-process, so alias subprocesses
           // don't need to phone home via IPC to answer ctx.workItem.
+          // ctx.domain for phases and aliases executed in the daemon (#3037).
+          aliasServer.setDomainResolver((cwd) => {
+            const resolved = resolveDomainScope(db, cwd);
+            return resolved.id === NO_DOMAIN_ID ? null : { id: resolved.id, name: resolved.name };
+          });
+
           aliasServer.setWorkItemResolver(async (cwd) => {
             try {
               const RESOLVE_TIMEOUT_MS = 500;
@@ -1194,6 +1211,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               if (!item) return null;
               return {
                 id: item.id,
+                domainId: item.domainId,
                 issueNumber: item.issueNumber,
                 prNumber: item.prNumber,
                 branch: item.branch,
@@ -1207,7 +1225,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             }
           });
 
-          workItemsServer = new WorkItemsServer(workItemDb, {
+          workItemsServer = new WorkItemsServer(workItems, {
             stateDb: db,
             onTrack: () => workItemPoller?.pollNow(),
             loadManifest: (repoRoot) => {
@@ -1252,6 +1270,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             workItemDb,
             stateDb: db,
             logger,
+            domain: daemonDomain.name,
             onEvent: (event) => {
               if (event.event === PR_REVIEW_COMMENT_POSTED) {
                 const key = `${event.event}:${event.prNumber}:${event.author}`;
