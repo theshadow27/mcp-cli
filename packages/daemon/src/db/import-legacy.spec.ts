@@ -786,6 +786,12 @@ describe("import atomicity — an unsealed run leaves the target untouched (#303
     // The rollback's own error must not have replaced the real one.
     const joined = logs.join("\n");
     expect(joined).not.toContain("cannot rollback - no transaction is active");
+    // D1.3: the caller must be able to tell a failure from an empty import. Returning
+    // declined()'s zeros here reported "ran:false, totalCopied:0" for a run that had
+    // actually copied and rolled back real rows.
+    expect(result.tables.length).toBeGreaterThan(0);
+    expect(result.reason).toBeTruthy();
+    expect(joined).toMatch(/disk is full|database or disk|rolled back/i);
   });
 
   test("a successful import still commits everything and seals", () => {

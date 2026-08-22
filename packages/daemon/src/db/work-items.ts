@@ -181,52 +181,56 @@ export class WorkItemDb {
     }
 
     if (version < 1) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS work_items (
-          id              TEXT PRIMARY KEY,
-          domain_id       INTEGER NOT NULL DEFAULT 0,
-          issue_number    INTEGER,
-          branch          TEXT,
-          pr_number       INTEGER,
-          pr_state        TEXT DEFAULT 'open',
-          pr_url          TEXT,
-          ci_status       TEXT DEFAULT 'none',
-          ci_run_id       INTEGER,
-          ci_summary      TEXT,
-          review_status   TEXT DEFAULT 'none',
-          phase           TEXT DEFAULT 'impl',
-          created_at      TEXT DEFAULT (datetime('now')),
-          updated_at      TEXT DEFAULT (datetime('now'))
-        );
-        -- Per-domain, not global (#3034). issue_number/branch/pr_number were globally
-        -- unique, so two projects could not both have an issue #42. The column-level
-        -- UNIQUE constraints are gone; these partial indexes replace them.
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_issue
-          ON work_items(domain_id, issue_number) WHERE issue_number IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_branch
-          ON work_items(domain_id, branch) WHERE branch IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_pr
-          ON work_items(domain_id, pr_number) WHERE pr_number IS NOT NULL;
-      `);
-      this.setSchemaVersion(CONSUMER, 1);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS work_items (
+            id              TEXT PRIMARY KEY,
+            domain_id       INTEGER NOT NULL DEFAULT 0,
+            issue_number    INTEGER,
+            branch          TEXT,
+            pr_number       INTEGER,
+            pr_state        TEXT DEFAULT 'open',
+            pr_url          TEXT,
+            ci_status       TEXT DEFAULT 'none',
+            ci_run_id       INTEGER,
+            ci_summary      TEXT,
+            review_status   TEXT DEFAULT 'none',
+            phase           TEXT DEFAULT 'impl',
+            created_at      TEXT DEFAULT (datetime('now')),
+            updated_at      TEXT DEFAULT (datetime('now'))
+          );
+          -- Per-domain, not global (#3034). issue_number/branch/pr_number were globally
+          -- unique, so two projects could not both have an issue #42. The column-level
+          -- UNIQUE constraints are gone; these partial indexes replace them.
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_issue
+            ON work_items(domain_id, issue_number) WHERE issue_number IS NOT NULL;
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_branch
+            ON work_items(domain_id, branch) WHERE branch IS NOT NULL;
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_domain_pr
+            ON work_items(domain_id, pr_number) WHERE pr_number IS NOT NULL;
+        `);
+        this.setSchemaVersion(CONSUMER, 1);
+      })();
       version = 1;
     }
     if (version < 2) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS work_item_transitions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          domain_id INTEGER NOT NULL DEFAULT 0,
-          work_item_id TEXT NOT NULL,
-          from_phase TEXT,
-          to_phase TEXT NOT NULL,
-          forced INTEGER NOT NULL DEFAULT 0,
-          force_reason TEXT,
-          at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-        CREATE INDEX IF NOT EXISTS idx_work_item_transitions_item
-          ON work_item_transitions(work_item_id);
-      `);
-      this.setSchemaVersion(CONSUMER, 2);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS work_item_transitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain_id INTEGER NOT NULL DEFAULT 0,
+            work_item_id TEXT NOT NULL,
+            from_phase TEXT,
+            to_phase TEXT NOT NULL,
+            forced INTEGER NOT NULL DEFAULT 0,
+            force_reason TEXT,
+            at INTEGER NOT NULL DEFAULT (unixepoch())
+          );
+          CREATE INDEX IF NOT EXISTS idx_work_item_transitions_item
+            ON work_item_transitions(work_item_id);
+        `);
+        this.setSchemaVersion(CONSUMER, 2);
+      })();
       version = 2;
     }
     if (version < 3) {
@@ -252,18 +256,20 @@ export class WorkItemDb {
       version = 4;
     }
     if (version < 5) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS ci_run_states (
-          domain_id        INTEGER NOT NULL DEFAULT 0,
-          pr_number        INTEGER NOT NULL,
-          suite_id         INTEGER NOT NULL,
-          started_at       INTEGER NOT NULL,
-          emitted_started  INTEGER NOT NULL DEFAULT 0,
-          emitted_finished INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (domain_id, pr_number)
-        )
-      `);
-      this.setSchemaVersion(CONSUMER, 5);
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS ci_run_states (
+            domain_id        INTEGER NOT NULL DEFAULT 0,
+            pr_number        INTEGER NOT NULL,
+            suite_id         INTEGER NOT NULL,
+            started_at       INTEGER NOT NULL,
+            emitted_started  INTEGER NOT NULL DEFAULT 0,
+            emitted_finished INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (domain_id, pr_number)
+          )
+        `);
+        this.setSchemaVersion(CONSUMER, 5);
+      })();
       version = 5;
     }
     if (version < 6) {

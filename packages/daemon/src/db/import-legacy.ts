@@ -6,15 +6,13 @@
  *
  * The marker lives in the **legacy** database, not in `mcx.db`, so it survives deleting
  * `mcx.db`. That means **deleting `mcx.db` alone is not a recovery** — the import
- * declines and the daemon comes up empty. The recovery is to clear the marker as well:
+ * declines and the daemon comes up empty. The recovery is to back up, delete, and clear
+ * the marker as well; {@link recoveryInstructions} builds that command from the paths
+ * this process actually opened.
  *
- * ```sh
- * rm ~/.mcp-cli/mcx.db
- * sqlite3 ~/.mcp-cli/state.db "DELETE FROM daemon_state WHERE key = 'mcx_domain_import_at';"
- * ```
- *
- * ({@link RECOVERY_INSTRUCTIONS} is this text, so the warning a user actually sees and
- * this comment cannot drift apart.)
+ * No literal path is written here on purpose. This comment used to spell out
+ * `~/.mcp-cli/...`, which is wrong for any install with `MCP_CLI_DIR` set — and the
+ * warning a user sees is generated, so a second copy here could only ever drift.
  *
  * Best-effort applies to *rows*: individual rows that do not map are skipped and counted.
  * It does **not** extend to sealing the marker — a run in which any table failed outright
@@ -318,7 +316,18 @@ function copyEverything(
       // an aborted transaction makes ROLLBACK itself throw "no transaction is active",
       // which is how a disk-full error got reported as a rollback error.
       safeRollback(target);
-      throw err;
+      // Return what actually happened rather than rethrowing into declined()'s zeros:
+      // `ran:false, totalCopied:0` for a run that copied and rolled back 17 tables is
+      // the same false report this whole finding is about. The caller must be able to
+      // tell a failure from an empty import.
+      const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
+      log(`[domain-import] import failed and was rolled back: ${errText(err)}`);
+      return {
+        ...summarize(tables, failedTables, domains),
+        ran: false,
+        sealed: false,
+        reason: `import failed: ${errText(err)}`,
+      };
     }
   } finally {
     target.run("DETACH DATABASE legacy");
