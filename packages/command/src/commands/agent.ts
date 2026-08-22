@@ -74,6 +74,7 @@ import {
   formatStatusStanza,
   walkTranscript,
 } from "./session-display";
+import { buildSessionScope } from "./session-scope";
 import { looksLikeToolName, parseProfileFlagValue, parseSharedSpawnArgs } from "./spawn-args";
 import { ttyOpen } from "./tty";
 
@@ -494,7 +495,11 @@ async function agentSpawn(
     return;
   }
   // `*_prompt` advertises `domain` and `resolveSpawnDomainId` honours it (#3039).
-  const { domain: spawnDomain, rest: args } = extractDomainFlag(rawArgs);
+  const { domain: spawnDomain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   const parsed = parseAgentSpawnArgs(args, provider, agentOverride);
 
   if (parsed.error) {
@@ -830,7 +835,11 @@ async function agentList(
   d: AgentDeps,
 ): Promise<void> {
   const P = provider.toolPrefix;
-  const { domain, rest } = extractDomainFlag(args);
+  const { domain, rest, error: domainError } = extractDomainFlag(args);
+  if (domainError) {
+    d.printError(domainError);
+    d.exit(1);
+  }
   const { json } = extractJsonFlag(rest);
   const short = rest.includes("--short");
   const showPr = rest.includes("--pr") && hasFeature(provider, "repoScoped");
@@ -838,21 +847,22 @@ async function agentList(
 
   const toolArgs: Record<string, unknown> = {};
 
-  if (!showAll) {
-    // Domain scoping applies to EVERY provider (#3039) — unlike `repoScoped`,
-    // which is a Claude-only native feature. That asymmetry is the point: the
-    // domain is a partition key the daemon owns, not something a provider has
-    // to implement.
-    if (domain) toolArgs.domain = domain;
-    else toolArgs.domainCwd = d.getCwd();
-
-    // Repo-scoped filtering (Claude only) — the coarser pre-domain fallback.
-    if (hasFeature(provider, "repoScoped")) {
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) d.printError(gitRoot.message);
-      else if (gitRoot) toolArgs.repoRoot = gitRoot;
-    }
-  }
+  // Through the SAME builder `mcx claude` uses. This block previously made the
+  // repoScoped branch a sibling of the `if (domain)` rather than part of its `else`,
+  // so `mcx agent claude ls -d phoenix` also sent repoRoot while `mcx claude ls -d
+  // phoenix` did not — two front doors, different answers to the same command, and
+  // once domain and repoRoot began to AND, silently fewer rows (#3039 review C).
+  Object.assign(
+    toolArgs,
+    buildSessionScope({
+      domain,
+      all: showAll,
+      cwd: d.getCwd(),
+      repoScoped: hasFeature(provider, "repoScoped"),
+      getGitRoot: d.getGitRoot,
+      printError: d.printError,
+    }).args,
+  );
 
   // Agent filter for ACP variants
   const agentFilter = agentOverride ?? extractFlag(rest, "--agent", "-a");
@@ -1268,22 +1278,17 @@ async function agentWait(
   if (timeout) toolArgs.timeout = timeout;
   if (afterSeq !== undefined) toolArgs.afterSeq = afterSeq;
 
-  let repoFilter: string | undefined;
-  if (!all && !sessionPrefix) {
-    // Domain scoping for every provider (#3039); repoRoot stays Claude-only.
-    if (domain) toolArgs.domain = domain;
-    else toolArgs.domainCwd = d.getCwd();
-
-    if (hasFeature(provider, "repoScoped")) {
-      const gitRoot = d.getGitRoot();
-      if (isLookupFailure(gitRoot)) {
-        d.printError(gitRoot.message);
-      } else if (gitRoot) {
-        toolArgs.repoRoot = gitRoot;
-        repoFilter = gitRoot;
-      }
-    }
-  }
+  // Same builder as `mcx claude wait` — see the note in agentList (#3039 review C).
+  const waitScope = buildSessionScope({
+    domain,
+    all: all || sessionPrefix !== undefined,
+    cwd: d.getCwd(),
+    repoScoped: hasFeature(provider, "repoScoped"),
+    getGitRoot: d.getGitRoot,
+    printError: d.printError,
+  });
+  Object.assign(toolArgs, waitScope.args);
+  const repoFilter = waitScope.args.repoRoot as string | undefined;
 
   const waitPromise = d.callTool(`${P}_wait`, toolArgs);
 
@@ -2027,6 +2032,7 @@ Usage:
   mcx agent ${name} spawn --task "description"   Start a new session (returns immediately — do not background)
   mcx agent ${name} ls [--short] [--json]        List active sessions (scoped to current domain)
   mcx agent ${name} ls -d <domain>               List sessions in a named domain, from anywhere
+                                                   (exact domain: excludes nested sub-domains)
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session> [--keep]       End session (--keep preserves worktree)

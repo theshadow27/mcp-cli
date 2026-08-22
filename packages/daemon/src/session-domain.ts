@@ -58,12 +58,24 @@ const SPAWN_BASENAME = "prompt";
 const FILTER_BASENAMES: ReadonlySet<string> = new Set(["session_list", "wait"]);
 
 /**
+ * True when `serverName` is a registered agent provider's virtual server.
+ *
+ * Derived from the provider registry rather than a hand-written list. A hand-written
+ * list is a mirror, and a mirror of the provider set is exactly how
+ * `work_item_transitions.domain_id` ended up written by one caller and read by four:
+ * registering a provider must be sufficient to get it scoped.
+ */
+export function isAgentServer(serverName: string): boolean {
+  return getAllProviders().some((p) => p.serverName === serverName);
+}
+
+/**
  * Classify an MCP tool name as spawning a session, filtering sessions, or neither.
  *
- * Derived from the provider registry rather than a hand-written list of tool
- * names. A hand-written list is a mirror, and a mirror of the provider set is
- * exactly how `work_item_transitions.domain_id` ended up written by one caller
- * and read by four: registering a provider must be sufficient to get it scoped.
+ * Returns `null` for BOTH "not an agent server" and "an agent server, but a tool that
+ * takes an explicit sessionId". Callers that need to tell those apart must ask
+ * {@link isAgentServer} — collapsing them is what let a strip meant for `claude_bye`
+ * reach `atlassian_search`.
  */
 export function classifyAgentTool(serverName: string, toolName: string): "spawn" | "filter" | null {
   for (const provider of getAllProviders()) {
@@ -191,9 +203,28 @@ export function applyDomainScope(
   args: Record<string, unknown>,
   callerCwd: string | undefined,
 ): Record<string, unknown> {
-  // Strip before classifying, so a non-scoped tool (`claude_bye`) cannot carry a
-  // raw name or id through to a worker either. The old early return left `domain`
-  // on those args, contradicting the promise made three paragraphs up.
+  // THIS FUNCTION MUST BE A NO-OP FOR EVERY SERVER IT DOES NOT OWN, and that is
+  // checked FIRST, before anything is stripped.
+  //
+  // `handlers/tool.ts` calls this for EVERY callTool, with no server guard, so the
+  // blast radius of anything below is every MCP server the user has configured.
+  // A previous revision stripped `domain` before classifying, on the reasoning that
+  // `claude_bye` should not carry a raw domain name to a worker. That reasoning is
+  // right about agent tools and catastrophic everywhere else: `domain` is one of the
+  // most common vendor parameter names there is — Atlassian site, Cloudflare zone,
+  // Auth0 tenant, WHOIS, SSO — and `mcx call atlassian search '{"domain":"…"}'` had
+  // the argument silently deleted. Best case the server rejects a missing required
+  // property and the operator hunts a phantom CLI bug; worst case it is optional and
+  // the tool quietly acts on the account default.
+  //
+  // Ownership is asked of the provider registry, not of `classifyAgentTool` — which
+  // answers `null` both for "not my server" and for "my server, unscoped tool", two
+  // very different things that must not share a branch.
+  if (!isAgentServer(serverName)) return args;
+
+  // From here the server IS ours, so stripping is safe: no third-party tool can be
+  // reached through this path, and an agent tool must never receive a raw name or a
+  // caller-supplied id — including the unscoped ones like `claude_bye`.
   const { domain: _name, domainCwd: _cwd, domainId: _id, ...rest } = args;
 
   const kind = classifyAgentTool(serverName, toolName);

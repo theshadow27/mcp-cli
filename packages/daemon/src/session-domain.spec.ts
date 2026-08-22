@@ -265,12 +265,44 @@ describe("applyDomainScope", () => {
     }
   });
 
-  test("a non-scoped tool still has the raw scoping args stripped", () => {
+  test("NEVER touches a third-party server's arguments — byte-identical pass-through", () => {
+    // `handlers/tool.ts` calls this for EVERY callTool with no server guard, so a strip
+    // that escapes the agent namespace deletes `domain` from `mcx call atlassian search`
+    // — one of the most common vendor parameter names there is. Asserted with `toBe`,
+    // not `toEqual`: the guarantee is that the SAME OBJECT comes back untouched, so no
+    // future rebuild-and-return can weaken this to a shallow copy that drops a key.
+    for (const server of ["atlassian", "github", "cloudflare", "_aliases", "_metrics", "_site"]) {
+      const args = { domain: "acme.atlassian.net", domainCwd: "/x", domainId: 9, query: "bug" };
+      expect(applyDomainScope(db, server, "search", args, "/foo/bar")).toBe(args);
+    }
+  });
+
+  test("a tool name that looks like an agent tool on a foreign server is still untouched", () => {
+    // `classifyAgentTool` answers null for both "not my server" and "my server,
+    // unscoped tool". Only the first may pass through unstripped, so the two must not
+    // share a branch — this pins that they do not.
+    const args = { domain: "acme", prompt: "hi" };
+    expect(applyDomainScope(db, "some-vendor", "claude_prompt", args, "/foo/bar")).toBe(args);
+  });
+
+  test("a non-scoped AGENT tool still has the raw scoping args stripped", () => {
     // Previously these returned `args` untouched, so `claude_bye` forwarded the raw
     // domain NAME to the worker — the seam through which a second key regrows.
     const args = { sessionId: "abc", domain: "phoenix", domainCwd: "/foo/bar", domainId: 7 };
-    expect(applyDomainScope(db, "_claude", "claude_bye", args, undefined)).toEqual({ sessionId: "abc" });
-    expect(applyDomainScope(db, "_aliases", "anything", args, undefined)).toEqual({ sessionId: "abc" });
+    // Every AGENT server strips, whatever the tool — a worker must never see a raw
+    // name or a caller-supplied id.
+    for (const [server, tool] of [
+      ["_claude", "claude_bye"],
+      ["_codex", "codex_interrupt"],
+      ["_acp", "acp_transcript"],
+      ["_opencode", "opencode_session_status"],
+      ["_mock", "mock_approve"],
+    ] as const) {
+      expect(applyDomainScope(db, server, tool, args, undefined)).toEqual({ sessionId: "abc" });
+    }
+    // `_aliases` is NOT an agent server, so it is left alone — this line used to assert
+    // the opposite, which was the bug: the strip had escaped the agent namespace.
+    expect(applyDomainScope(db, "_aliases", "anything", args, undefined)).toBe(args);
   });
 
   test("a listing with no scoping args is left unscoped (--all)", () => {
