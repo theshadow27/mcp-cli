@@ -1596,14 +1596,26 @@ describe("importLegacyState domain mapping", () => {
 
 describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
   /**
-   * Induce a REAL stamp failure rather than a mocked one: a re-run into a target that
-   * already holds `(phoenix, repo, ns, key)`. The legacy copy lands at domain 0 (no PK
-   * clash), and the stamp's `UPDATE ... SET domain_id = phoenix` then collides with the
-   * existing row and throws.
+   * Originally induced a REAL stamp failure rather than a mocked one: a re-run into a
+   * target that already holds `(phoenix, repo, ns, key)`. The legacy copy landed at
+   * domain 0 (no PK clash), and the stamp's `UPDATE ... SET domain_id = phoenix` then
+   * collided with the existing row and threw.
    *
-   * Pre-fix, `stampImportedDomainIds` logged that and CONTINUED, and the run committed
-   * with `sealed: true` — leaving one table stamped, another not, and no signal anywhere
-   * in ImportResult. These assert the repaired seal-or-nothing property extends to it.
+   * That scenario is now UNREACHABLE, and not by accident: `alias_state` is a member of
+   * `IMPORT_WRITTEN_TABLES` (#3160 review N1/N12), so the pre-existing row this test
+   * plants to provoke the collision is exactly what makes the emptiness guard refuse the
+   * import before the stamp step ever runs. Same shape as #3160 review N3 (the derived-
+   * cursor clamp collision) — a test pinning a partial-commit scenario the guard has since
+   * made structurally impossible. Verified rather than assumed: this test failed with
+   * `failedTables: []` (a `declined()` result, not a mid-copy failure) the moment the
+   * guard was rebased in underneath it.
+   *
+   * The general property R4 protects — a failed table's rollback covers a domain stamp
+   * too, not just the row copies — still has coverage: "one table failing rolls
+   * EVERYTHING back" below drives a real mid-copy failure (a target missing `work_items`)
+   * and asserts every `IMPORTED_TABLES` member, `alias_state` included, is empty
+   * afterward. What is retired here is only the specific *collision* trigger, which the
+   * guard now forecloses at the door.
    *
    * One import for the block: every assertion is read-only, and the import is the
    * expensive part (three migrations plus a full copy).
@@ -1627,7 +1639,7 @@ describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
 
     state = freshTargetDb(join(dir, "mcx.db"));
     phoenixId = state.createDomain("phoenix", phoenixRoot).id;
-    // The row the stamp will collide with.
+    // The row that used to make the stamp collide — now what trips the emptiness guard.
     state.setAliasState(phoenixRoot, "workitem:#42", "round", "pre-existing", phoenixId);
 
     result = importLegacyState({ db: state.database, legacyPath, scopesDir, log: () => {} });
@@ -1638,15 +1650,16 @@ describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("a colliding stamp is reported as a failed table, not swallowed", () => {
-    expect(result.failedTables).toContain("alias_state");
+  test("the emptiness guard refuses before any stamp write is attempted", () => {
+    expect(result.ran).toBe(false);
+    expect(result.reason).toContain("alias_state");
   });
 
   test("the run does not seal, so the next start retries", () => {
     expect(result.sealed).toBe(false);
   });
 
-  test("nothing from the import survives — the rollback covers the copied rows too", () => {
+  test("nothing from the import survives — the pre-existing row is the only row", () => {
     // The pre-existing row is untouched...
     expect(state.getAliasState(phoenixRoot, "workitem:#42", "round", phoenixId)).toBe("pre-existing");
     // ...and no half-imported rows were left behind at any partition.
@@ -1761,6 +1774,7 @@ describe("what a failed import actually leaves on disk (#3160 review N2)", () =>
       src: "daemon",
       event: "daemon.restarted",
       category: "server",
+      domainId: NO_DOMAIN_ID,
     } as never);
 
     const retry = importLegacyState({

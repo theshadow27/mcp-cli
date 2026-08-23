@@ -29,6 +29,7 @@ import {
   recoveryInstructions as recoveryInstructionsImpl,
 } from "../db/import-legacy";
 import type { StateDb } from "../db/state";
+import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 
 export class DomainHandlers {
@@ -38,12 +39,19 @@ export class DomainHandlers {
    * would re-arm a destructive one-shot import on their real install. (The constant naming
    * that file is deliberately not referenced here: `domains.spec.ts` asserts that only the
    * importer itself may name it, so nothing else can quietly reopen the old database.)
+   *
+   * `domains` is the daemon's shared {@link DomainResolver} (#3040) — this class is the
+   * `domains` table's only writer, so `createDomain`/`renameDomain`/`deleteDomain` must
+   * invalidate its memo or every later lookup answers from a stale cache
+   * (`domain-mutation-invalidates-resolver` rule). Defaults to the null resolver so a test
+   * that does not care needs no extra wiring.
    */
   constructor(
     private db: StateDb,
     private clearMarker: () => ImportArmState = () => clearImportMarker(),
     private recoveryInstructions: () => string = () => recoveryInstructionsImpl(),
     private readMarker: () => { present: boolean; value: string | null } = () => readImportMarkerValue(),
+    private readonly domains: DomainResolver = NULL_DOMAIN_RESOLVER,
   ) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
@@ -64,7 +72,9 @@ export class DomainHandlers {
         throw new Error(`${formatDomainLocation({ host, path: storedPath })} is already domain "${byLocation.name}"`);
       }
 
-      return this.db.createDomain(name, path, host);
+      const created = this.db.createDomain(name, path, host);
+      this.domains.invalidate();
+      return created;
     });
 
     handlers.set("domainList", async () => this.db.listDomains());
@@ -94,6 +104,7 @@ export class DomainHandlers {
       // A name change and nothing else: `id` is untouched, so every `domain_id`
       // reference survives, and `path` is untouched, so `which` keeps resolving.
       this.db.renameDomain(from, to);
+      this.domains.invalidate();
       const renamed = this.db.getDomainByName(to);
       if (!renamed) throw new Error(`failed to rename domain "${from}" to "${to}"`);
       return renamed satisfies Domain;
@@ -117,6 +128,7 @@ export class DomainHandlers {
       const dependents = cascade ? this.db.countDomainDependents(domain.id) : [];
       try {
         const removed = this.db.deleteDomain(name, { cascade });
+        this.domains.invalidate();
         return { found: true, removed, dependents } satisfies DomainRemoveResult;
       } catch (err) {
         const blocking = this.db.countDomainDependents(domain.id);

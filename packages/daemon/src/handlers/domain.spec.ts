@@ -2,7 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Domain, DomainImportResult, DomainRemoveResult, DomainWhichResult, IpcMethod } from "@mcp-cli/core";
+import {
+  type Domain,
+  type DomainImportResult,
+  type DomainRemoveResult,
+  type DomainWhichResult,
+  type IpcMethod,
+  NO_DOMAIN_ID,
+} from "@mcp-cli/core";
 import { IMPORT_MARKER_KEY, nonEmptyImportedTables } from "../db/import-legacy";
 import { StateDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
@@ -323,6 +330,7 @@ describe("DomainHandlers", () => {
       src: "daemon",
       event: "daemon.restarted",
       category: "server",
+      domainId: NO_DOMAIN_ID,
     } as never);
     expect(nonEmptyImportedTables(db.database).map((t) => t.table)).toContain("monitor_events");
 
@@ -382,6 +390,7 @@ describe("DomainHandlers", () => {
       src: "daemon",
       event: "daemon.restarted",
       category: "server",
+      domainId: NO_DOMAIN_ID,
     } as never);
     const occupied = nonEmptyImportedTables(db.database);
     expect(occupied.map((t) => t.table)).toContain("monitor_events");

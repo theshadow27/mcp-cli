@@ -446,7 +446,7 @@ export class IpcServer {
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
     new NoteHandlers(this.db).register(this.handlers);
-    new DomainHandlers(this.db).register(this.handlers);
+    new DomainHandlers(this.db, undefined, undefined, undefined, deps.domains).register(this.handlers);
     new PrThreadHandlers().register(this.handlers);
     new ToolHandlers(this.pool, this.db, deps.aliasServer, this.daemonId).register(this.handlers);
     new StatusHandler(this.pool, this.db, serveHandlers, this.serveInstances, this.getWsPortInfo).register(
