@@ -6,7 +6,9 @@
  * the server URL, tokens, client info, and discovery state.
  */
 
-import { spawnCapture } from "@mcp-cli/core";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { options, spawnCapture } from "@mcp-cli/core";
 import type { OAuthDiscoveryState } from "@modelcontextprotocol/sdk/client/auth.js";
 
 export interface KeychainTokens {
@@ -124,4 +126,67 @@ export async function readClaudeOAuthToken(): Promise<ClaudeOAuthToken | null> {
   } catch {
     return null;
   }
+}
+
+/** Env value with surrounding whitespace removed, or undefined when unset/blank. */
+function trimmedEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Resolve where Claude Code's on-disk OAuth credentials live, honouring the same
+ * `CLAUDE_SECURESTORAGE_CONFIG_DIR` / `CLAUDE_CONFIG_DIR` precedence verified against
+ * the claude binary in `packages/command/src/claude-auth-store.ts`'s `defaultAuthPaths`.
+ */
+function credentialsFilePath(env: Record<string, string | undefined>): string {
+  const dir = trimmedEnv(env.CLAUDE_SECURESTORAGE_CONFIG_DIR) ?? trimmedEnv(env.CLAUDE_CONFIG_DIR);
+  return dir ? join(dir, ".credentials.json") : options.CLAUDE_CREDENTIALS_PATH;
+}
+
+/**
+ * Read the Claude Code session OAuth token from the on-disk credentials file
+ * Claude Code writes on Linux (`~/.claude/.credentials.json` by default — see
+ * {@link credentialsFilePath}). This is the Linux counterpart of
+ * {@link readClaudeOAuthToken}: macOS keeps the same `claudeAiOauth` payload in the
+ * Keychain instead of a file, so this reader is not platform-gated — it simply finds
+ * nothing on a platform where Claude Code never writes the file.
+ *
+ * Returns null if the file is missing, unreadable, malformed, or the token inside it
+ * is expired.
+ */
+export async function readCredentialsFileToken(
+  env: Record<string, string | undefined> = process.env,
+): Promise<ClaudeOAuthToken | null> {
+  try {
+    const raw = readFileSync(credentialsFilePath(env), "utf-8");
+    const data: KeychainData = JSON.parse(raw);
+    const oauth = data.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+
+    if (oauth.expiresAt && oauth.expiresAt < Date.now()) return null;
+
+    return {
+      accessToken: oauth.accessToken,
+      expiresAt: oauth.expiresAt,
+      subscriptionType: oauth.subscriptionType,
+      rateLimitTier: oauth.rateLimitTier,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the Claude Code session OAuth token, trying macOS Keychain first (a no-op
+ * off-darwin) and falling back to the on-disk credentials file Claude Code writes on
+ * Linux. This is the token source the quota poller (`quota.ts`) uses so it works on
+ * both platforms instead of silently finding nothing forever on Linux (#3223).
+ */
+export async function readClaudeSessionToken(
+  env: Record<string, string | undefined> = process.env,
+): Promise<ClaudeOAuthToken | null> {
+  const keychainToken = await readClaudeOAuthToken();
+  if (keychainToken) return keychainToken;
+  return readCredentialsFileToken(env);
 }

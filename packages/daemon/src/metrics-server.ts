@@ -245,9 +245,19 @@ export class MetricsServer {
   private buildQuotaStatus(): Record<string, unknown> {
     const status = this.quotaPoller?.status;
     if (!status) {
+      const lastAttemptAt = this.quotaPoller?.lastAttemptAt ?? null;
+      // "Quota monitoring not started" is only accurate before the poller's first tick.
+      // Once it has attempted at least once and still has no status, that's a real,
+      // timestamped condition (no OAuth token found on this host) — not a startup race
+      // that will resolve itself, so say so instead of implying "give it time" forever.
+      const defaultError =
+        lastAttemptAt === null
+          ? "Quota monitoring not started"
+          : `No Claude Code OAuth token found as of last attempt (${new Date(lastAttemptAt).toISOString()})`;
       return {
         available: false,
-        lastError: this.quotaPoller?.lastError ?? "Quota monitoring not started",
+        lastError: this.quotaPoller?.lastError ?? defaultError,
+        lastAttemptAt,
       };
     }
     return {
