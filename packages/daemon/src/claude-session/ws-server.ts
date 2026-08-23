@@ -889,11 +889,21 @@ export class ClaudeWsServer {
       state.cost = s.totalCost;
       state.tokens = s.totalTokens;
 
-      // A restored session's original strategy isn't persisted, so it comes
-      // back as `auto` — which since #3119 means "the child's classifier gates"
-      // if it can be given auto mode, and the daemon-side gate otherwise.
-      const permissionMode = this.resolvePermissionModeFor(s.sessionId, "auto", s.worktree != null);
-      const router = new PermissionRouter("auto", undefined, { childGated: permissionMode.childGated });
+      // A restored session's original strategy isn't persisted, so it can only
+      // guess "auto" here. `childGated` is not a property of that guess — it's
+      // a claim about what `--permission-mode` the *live* process actually got,
+      // and restoreSessions cannot verify that (#3137 review, finding F3). If
+      // the pre-restart child is still alive and reconnects without going
+      // through `reviveSession`, it is round-tripping under whatever mode it
+      // was really spawned with; resolving `childGated: true` here would deny
+      // every one of its `can_use_tool` requests regardless of legitimacy —
+      // confirmed: a request that was allowed pre-restart under `rules` comes
+      // back denied post-restart purely from this guess, not from anything the
+      // child did. So a restored session always starts `childGated: false` (the
+      // daemon remains the presumed gate, same posture as before #3119) and is
+      // only promoted to a verified `auto` mode inside `reviveSession`, which
+      // actually spawns the process it then describes.
+      const router = new PermissionRouter("auto", undefined, { childGated: false });
 
       const restoredSignal = makeWorkCompletedSignal();
       this.sessions.set(s.sessionId, {
@@ -918,7 +928,11 @@ export class ClaudeWsServer {
         spawnAlive: false,
         worktree: s.worktree,
         containment: s.worktree && s.cwd ? new ContainmentGuard(s.cwd) : null,
-        permissionMode: permissionMode.mode,
+        // Matches `router.childGated: false` above — see the comment there.
+        // Only matters if `reviveSession` respawns this session without first
+        // re-resolving; `reviveSession` does re-resolve, so this is a safe
+        // starting value rather than the flag that ends up on any real spawn.
+        permissionMode: "default",
         resultWaiters: [],
         keepAliveTimer: null,
         clearing: false,
@@ -975,6 +989,16 @@ export class ClaudeWsServer {
     session.pid = null;
     session.pidStartTime = null;
     session.pidCachedAt = null;
+
+    // restoreSessions couldn't verify what mode the pre-restart child actually
+    // ran under, so it left this session `childGated: false` (#3137 F3). This
+    // call spawns a brand-new process, so — unlike restoreSessions — the mode
+    // decided here is guaranteed to match the flag the child is actually given.
+    // Re-resolve now, so a revived uncontained session on a supported binary
+    // gets the same real auto-mode gating a fresh spawn would.
+    const permissionMode = this.resolvePermissionModeFor(sessionId, "auto", session.worktree != null);
+    session.permissionMode = permissionMode.mode;
+    session.router = new PermissionRouter("auto", undefined, { childGated: permissionMode.childGated });
 
     // Transition disconnected → connecting so handleOpen treats this as a fresh spawn
     // (sends session.config.prompt) rather than a WS reconnect (which skips the initial message).
