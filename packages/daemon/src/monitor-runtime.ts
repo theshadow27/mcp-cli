@@ -168,6 +168,7 @@ export class MonitorRuntime {
     };
 
     const result = spawnManaged(process.execPath, [this.executorPath], {
+      env: process.env,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
