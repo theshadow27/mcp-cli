@@ -107,6 +107,34 @@ labels, CI) with a time fallback, all built-in — no bespoke bash:
    marks high scrutiny. The opinion-agent panel in
    `adversarial-review.md` runs only on round 1 of gated-class reviews.
 
+### Merging: the phase-run path (sprint 79)
+
+Merges go through the phase machinery, never raw `gh pr merge`:
+
+    mcx phase run done --work-item "#<issue>"
+
+`done-fn.ts` performs the merge itself behind the #2804 label-closure
+gate (validates `review:pass`/`qa:pass` freshness against the PR head),
+then records the transition in `work_items`. This is not just hygiene —
+the auto-mode classifier blocks author-side `gh pr merge` whenever
+`review:changes` has stood on the PR, so the raw path dead-ends exactly
+when labels matter most. (Sprint 79: two PRs sat "operator-must-merge"
+for hours; once the work items were restored the phase path merged both
+in seconds.)
+
+Prerequisites the runner needs on the work item: `prNumber` + `branch`
+bound, and `phase: qa`. If bindings are missing (e.g. after a re-track),
+restore them first:
+
+    mcx call _work_items work_items_update \
+      '{"id":"#<issue>","prNumber":<pr>,"branch":"<branch>","phase":"qa"}'
+
+Transitions outside the hardcoded graph (e.g. `impl → repair` when
+reconstructing state) additionally need `"repoRoot":"<repo>"` so the
+`.mcx.yaml` edges are consulted. After repair pushes, advance with a
+`phase=qa` write — never by re-ticking `mcx phase run repair` (that
+spawns a new repair round).
+
 ### What replaces the old machinery
 
 | Old (run.md pipeline) | Lane model |
