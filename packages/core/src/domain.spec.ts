@@ -11,10 +11,12 @@ import {
   isDomainScoped,
   isPathWithin,
   isValidDomainName,
+  matchesDomain,
   normalizeDomainPath,
   parseDomainLocation,
   resolveDomainForPath,
   resolveDomainLocation,
+  toDomainFilter,
 } from "./domain";
 
 function domain(name: string, path: string, host: string | null = null, id = 1): Domain {
@@ -382,5 +384,66 @@ describe("resolveDomainLocation — malformed specs (#3160 review finding 3)", (
         expect(loc.path.split("/").filter(Boolean)[0]).not.toContain(":");
       }
     }
+  });
+});
+
+describe("toDomainFilter", () => {
+  test("a real domain id filters", () => {
+    expect(toDomainFilter(1)).toBe(1);
+    expect(toDomainFilter(42)).toBe(42);
+  });
+
+  test("the unassigned sentinel is NOT a filter", () => {
+    // Filtering on 0 would answer "which sessions are in no domain?" while
+    // reading like a domain filter at the call site — and would hide every
+    // session the moment domains started being registered.
+    expect(toDomainFilter(NO_DOMAIN_ID)).toBeUndefined();
+  });
+
+  test("absent stays absent", () => {
+    expect(toDomainFilter(undefined)).toBeUndefined();
+  });
+});
+
+describe("matchesDomain", () => {
+  test("no filter admits everything, including a session-less event", () => {
+    expect(matchesDomain({ domainId: 3 }, undefined)).toBe(true);
+    expect(matchesDomain(undefined, undefined)).toBe(true);
+  });
+
+  test("an active filter drops an event with no session (#1308)", () => {
+    expect(matchesDomain(undefined, 3)).toBe(false);
+  });
+
+  test("admits only the matching domain", () => {
+    expect(matchesDomain({ domainId: 3 }, 3)).toBe(true);
+    expect(matchesDomain({ domainId: 4 }, 3)).toBe(false);
+    expect(matchesDomain({ domainId: NO_DOMAIN_ID }, 3)).toBe(false);
+  });
+
+  test("sibling-prefix directories RESOLVE to different domains — the historic scopeRoot bug", () => {
+    // The previous version of this test built two sessions with two different ids and
+    // asserted they compared unequal. That is true by construction and cannot fail; it
+    // read as coverage of the scopeRoot bug while testing nothing.
+    //
+    // The bug lived in RESOLUTION, not comparison: `cwd.startsWith(scopeRoot)` put
+    // /foo/barbaz inside /foo/bar. So assert resolution, and assert it against the
+    // string-prefix rule that was wrong — this fails if isPathWithin ever loses its
+    // segment awareness.
+    const bar = domain("bar", "/foo/bar", null, 1);
+    const barbaz = domain("barbaz", "/foo/barbaz", null, 2);
+    const domains = [bar, barbaz];
+
+    for (const path of ["/foo/barbaz", "/foo/barbaz/src", "/foo/barbaz/deep/nested"]) {
+      // The rule that shipped the bug would have said "yes" to all three.
+      expect(path.startsWith("/foo/bar")).toBe(true);
+      expect(isPathWithin(path, "/foo/bar")).toBe(false);
+      expect(resolveDomainForPath(path, domains)).toBe(barbaz);
+    }
+
+    expect(resolveDomainForPath("/foo/bar/src", domains)).toBe(bar);
+    // And the ids that resolution produced are what filtering then compares.
+    expect(matchesDomain({ domainId: barbaz.id }, bar.id)).toBe(false);
+    expect(matchesDomain({ domainId: barbaz.id }, barbaz.id)).toBe(true);
   });
 });

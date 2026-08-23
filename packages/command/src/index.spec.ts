@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { checkDeprecatedName } from "./deprecation";
-import { extractFullFlag, extractJqFlag, extractJsonFlag, extractTimeoutFlag } from "./parse";
+import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag, extractTimeoutFlag } from "./parse";
 
 describe("checkDeprecatedName", () => {
   let stderrOutput: string[] = [];
@@ -138,5 +138,59 @@ describe("cmdCall flag extraction chain", () => {
     const result = extractCallFlags(["server", "tool", "@/tmp/data.json", "--jq", ".foo", "--json"]);
     expect(result.rest).toEqual(["server", "tool", "@/tmp/data.json"]);
     expect(result.jqFilter).toBe(".foo");
+  });
+});
+
+describe("extractDomainFlag", () => {
+  test("-d and --domain both take the next arg as the name", () => {
+    expect(extractDomainFlag(["-d", "phoenix", "ls"])).toEqual({ domain: "phoenix", rest: ["ls"], error: undefined });
+    expect(extractDomainFlag(["--domain", "phoenix"])).toEqual({ domain: "phoenix", rest: [], error: undefined });
+  });
+
+  test("--domain=<name> form", () => {
+    expect(extractDomainFlag(["--domain=phoenix", "ls"])).toEqual({
+      domain: "phoenix",
+      rest: ["ls"],
+      error: undefined,
+    });
+  });
+
+  test("a flag-looking value is an ERROR, not a silently dropped flag", () => {
+    // Two wrong answers were tried before this one. Swallowing it sent `domain:
+    // "--json"` — a domain nobody typed. Merely declining to swallow it left a bare
+    // `-d` in `rest` with nothing reporting it, so `mcx claude ls -d --all` ran the
+    // WIDEST possible query. A domain name can never begin with `-`, so this is
+    // unambiguously a user error and has to be reported.
+    const r = extractDomainFlag(["ls", "-d", "--json"]);
+    expect(r.error).toBe("--domain requires a domain name");
+    expect(r.domain).toBeUndefined();
+    // `--json` is the user's real flag and stays in `rest` — the error is about the
+    // missing domain name, and we do not also eat an unrelated flag.
+    expect(r.rest).toEqual(["ls", "--json"]);
+
+    expect(extractDomainFlag(["-d", "--all"]).error).toBe("--domain requires a domain name");
+  });
+
+  test("a trailing -d with no value is an error too", () => {
+    const r = extractDomainFlag(["ls", "-d"]);
+    expect(r.error).toBe("--domain requires a domain name");
+    expect(r.rest).toEqual(["ls"]);
+  });
+
+  test("an empty --domain= is an error", () => {
+    expect(extractDomainFlag(["--domain="]).error).toBe("--domain requires a domain name");
+  });
+
+  test("absent leaves args untouched and reports no error", () => {
+    expect(extractDomainFlag(["ls", "--short"])).toEqual({
+      domain: undefined,
+      rest: ["ls", "--short"],
+      error: undefined,
+    });
+    expect(extractDomainFlag([])).toEqual({ domain: undefined, rest: [], error: undefined });
+  });
+
+  test("last one wins", () => {
+    expect(extractDomainFlag(["-d", "a", "-d", "b"])).toEqual({ domain: "b", rest: [], error: undefined });
   });
 });

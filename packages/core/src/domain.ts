@@ -59,6 +59,52 @@ export function isValidDomainHost(host: string): boolean {
   return host.length > 0 && host.length <= 253 && DOMAIN_HOST_RE.test(host);
 }
 
+/**
+ * Turn a resolved domain id into a *filter*, or `undefined` for "do not filter".
+ *
+ * `NO_DOMAIN_ID` is the unassigned sentinel, not a domain, so it never filters.
+ * Filtering on it would answer "which sessions are in no domain?" — a question
+ * nobody asks — while looking exactly like a domain filter at the call site,
+ * and it would silently hide every session the moment domains started being
+ * registered. A caller outside every domain gets no domain filter at all and
+ * falls through to whatever coarser scoping it already had.
+ *
+ * The one thing this must never become is a guess: an explicitly named domain
+ * that does not resolve is an error at the call site, never `undefined` here.
+ */
+export function toDomainFilter(domainId: number | undefined): number | undefined {
+  return domainId !== undefined && isDomainScoped(domainId) ? domainId : undefined;
+}
+
+/**
+ * Read the daemon-injected domain filter off a worker tool-call argument bag.
+ *
+ * Shared rather than re-spelled in each of the five session workers: this is the
+ * point where four of them silently dropped the filter on `*_wait` while honouring
+ * it on `*_session_list` twenty lines above. One reader means a provider either
+ * has the filter or does not compile with it.
+ *
+ * Always a number the daemon resolved — never a name, never a path. `undefined`
+ * means no domain scoping applies.
+ */
+export function domainFilterArg(args: Record<string, unknown>): number | undefined {
+  return typeof args.domainId === "number" ? args.domainId : undefined;
+}
+
+/**
+ * True when `session` belongs to the domain being filtered for.
+ *
+ * `domainId === undefined` means no filter, so everything passes. A session that
+ * is missing entirely (an event with no session attached) does **not** pass a
+ * live filter — dropping it is what keeps a cross-domain wakeup from leaking
+ * into a scoped `wait`, the same rule `matchesRepoRoot` learned in #1308.
+ */
+export function matchesDomain(session: { domainId: number } | undefined, domainId: number | undefined): boolean {
+  if (domainId === undefined) return true;
+  if (!session) return false;
+  return session.domainId === domainId;
+}
+
 /** Domain names are the mail/CLI addressing vocabulary: alphanumeric, hyphen, underscore. */
 const DOMAIN_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 

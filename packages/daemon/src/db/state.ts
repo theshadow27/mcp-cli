@@ -52,6 +52,16 @@ export interface AgentSessionRow {
   endedAt: string | null;
   claudeSessionId: string | null;
   transport: string | null;
+  /**
+   * Domain that owns this session, or `NO_DOMAIN_ID` when it was spawned outside
+   * every registered domain (#3039).
+   *
+   * Read back, not just written: `claude-server.ts` rebuilds the worker's live
+   * sessions from these rows after a daemon restart, and a restored session with
+   * no domain disappears from every domain-scoped `mcx claude ls` — at exactly
+   * the moment nobody is watching.
+   */
+  domainId: number;
 }
 
 /** @deprecated Use AgentSessionRow instead. */
@@ -1346,11 +1356,29 @@ export class StateDb {
     repoRoot?: string;
     claudeSessionId?: string;
     transport?: "ws" | "stdio";
+    /**
+     * Domain that owns this session (#3039), resolved daemon-side from the spawn
+     * directory. Omit on a follow-up upsert — every other field here is COALESCEd
+     * so a partial update cannot erase what a previous one set, and `domain_id`
+     * has to behave the same way. It is `NOT NULL DEFAULT 0`, so the *stored*
+     * value is never null; the bind is nullable purely to mean "not supplied",
+     * which is why the parameter is COALESCEd on both branches rather than being
+     * allowed to write a 0 over a resolved domain.
+     */
+    domainId?: number;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport, domain_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?13, 0))
        ON CONFLICT(session_id) DO UPDATE SET
+         -- CASE, not COALESCE: the spawn-side idiom in all five workers is
+         -- \`typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID\`, which
+         -- turns "unknown" into a literal 0 that COALESCE cannot tell from an
+         -- intentional write. The invariant that matters is "0 never overwrites a
+         -- resolved domain", and this is the only place it can be enforced rather
+         -- than relied upon. Re-homing to 0 is done by an explicit UPDATE
+         -- (deleteDomain), never by an upsert.
+         domain_id = CASE WHEN ?13 IS NULL OR ?13 = 0 THEN agent_sessions.domain_id ELSE ?13 END,
          name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
          pid = COALESCE(excluded.pid, agent_sessions.pid),
@@ -1375,6 +1403,7 @@ export class StateDb {
         session.repoRoot ?? null,
         session.claudeSessionId ?? null,
         session.transport ?? null,
+        session.domainId ?? null, // ?13 — null means "not supplied", never "domain 0"
       ],
     );
   }
@@ -1400,7 +1429,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1410,7 +1439,7 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -1954,7 +1983,75 @@ export class StateDb {
       )
       .get(name, host, storedPath);
     if (!row) throw new Error(`failed to create domain "${name}"`);
-    return toDomain(row);
+    const domain = toDomain(row);
+    // Registering a domain ADOPTS the sessions already standing in it. Without this,
+    // creating a domain over a directory that has running sessions instantly hides
+    // them: their rows stay at `domain_id = 0`, and an exact-equality domain filter
+    // excludes 0. The operator sees an empty `mcx claude ls` in the very directory
+    // they just registered, with live children still attached.
+    this.adoptSessionsIntoDomains();
+    return domain;
+  }
+
+  /**
+   * Assign a domain to every session row still carrying `NO_DOMAIN_ID`, resolved from
+   * the directory it was spawned in.
+   *
+   * This is the upgrade path, and it is not optional. `importLegacyState` turns a
+   * user's `~/.mcp-cli/scopes/` sidecars into domain rows automatically on the first
+   * daemon start after the new schema — no flag, no prompt. Every session that existed
+   * before that moment has `domain_id = 0`, and `matchesDomain` is exact equality, so
+   * without a backfill the upgrade silently empties `mcx claude ls` for anyone who ever
+   * ran `mcx scope`. Worse than the empty list: `mcx claude bye --all` also
+   * sees nothing, so the operator can shut the daemon down believing the box is clean
+   * while live children are still running.
+   *
+   * Resolution is `cwd`, then `repo_root` — most specific first, the same order
+   * `resolveSpawnDomainId` uses, so a backfilled row lands where a fresh spawn would.
+   * Rows whose directory is outside every domain stay at the sentinel, which is the
+   * true answer for them rather than a guess.
+   *
+   * Only LIVE rows (`ended_at IS NULL`) are adopted — see the SQL comment below.
+   *
+   * Returns the number of rows adopted. Idempotent: a second call matches nothing,
+   * because only unassigned live rows are considered.
+   *
+   * NOTE: this fixes the *database*. Workers hold `SessionConfig.domainId` in memory,
+   * so a domain registered while a session is live is not reflected in that worker
+   * until the daemon restarts and `restoreSessions` re-reads these rows. That is
+   * sufficient today because the only caller that creates domains at runtime is the
+   * startup import (which runs before sessions are restored); `mcx domain rm`/`add`
+   * (#3035) will need to push the adoption into the workers as well.
+   */
+  adoptSessionsIntoDomains(): number {
+    const domains = this.listDomains();
+    if (domains.length === 0) return 0;
+
+    const rows = this.db
+      .query<{ session_id: string; cwd: string | null; repo_root: string | null }, [number]>(
+        // LIVE rows only. An ended row is history that predates the domain: adopting it
+        // makes `countDomainDependents` report sessions the domain never ran, which both
+        // inflates the refusal message until an operator reaches for `--cascade`
+        // reflexively AND makes that cascade delete 30 days of history that was never in
+        // this domain. `deleteDomain` re-homes live rows rather than deleting them, so
+        // scoping adoption the same way keeps the two halves consistent (#3039 review D).
+        "SELECT session_id, cwd, repo_root FROM agent_sessions WHERE domain_id = ? AND ended_at IS NULL",
+      )
+      .all(NO_DOMAIN_ID);
+
+    // One transaction, not N autocommits. This runs on every daemon start, and on a
+    // post-sprint `agent_sessions` that would otherwise be thousands of individually
+    // committed WAL writes blocking boot (#3039 review G).
+    return this.db.transaction(() => {
+      let adopted = 0;
+      for (const row of rows) {
+        const domainId = resolveStoredPathDomain([row.cwd, row.repo_root], domains);
+        if (domainId === NO_DOMAIN_ID) continue;
+        this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE session_id = ?", [domainId, row.session_id]);
+        adopted++;
+      }
+      return adopted;
+    })();
   }
 
   listDomains(): Domain[] {
@@ -2039,9 +2136,24 @@ export class StateDb {
           `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
         );
       }
+      // A LIVE session row is not project data — it is the daemon's only handle on a
+      // running child process. `orphan-reaper` finds children by iterating
+      // `listSessions(true)`, and `bye` needs the row too, so deleting it leaves a
+      // claude/codex process unreapable, un-endable, and invisible to restart cleanup.
+      // Re-home those to the unassigned sentinel instead; the domain still goes away,
+      // and the handle survives. Ended rows ARE history and cascade normally.
+      //
+      // This PR is what arms the hazard: before `domain_id` had a writer every session
+      // row was 0 and this cascade never matched one (#3039 review 7).
+      const rehomed = this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE domain_id = ? AND ended_at IS NULL", [
+        NO_DOMAIN_ID,
+        domain.id,
+      ]).changes;
+
       for (const { table } of dependents) {
         this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
       }
+      void rehomed; // reported by `mcx domain rm` (#3035); StateDb has no logger by design
       return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
     })();
   }
@@ -2072,6 +2184,27 @@ export class StateDb {
  */
 function quoteSqlIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * First of `paths` that resolves to a registered domain, or `NO_DOMAIN_ID`.
+ *
+ * Stored paths are not trusted to be absolute or to still exist: `canonicalizeDomainPath`
+ * throws on a relative one, and a row written before that rule existed can hold anything.
+ * A path that cannot be resolved is skipped rather than aborting the whole backfill —
+ * one malformed historical row must not stop the rest of a user's sessions being adopted.
+ */
+function resolveStoredPathDomain(paths: Array<string | null>, domains: Domain[]): number {
+  for (const path of paths) {
+    if (!path) continue;
+    try {
+      const domain = resolveDomainForPath(canonicalizeDomainPath(path), domains);
+      if (domain) return domain.id;
+    } catch {
+      // not an absolute path — cannot name a domain; try the next candidate
+    }
+  }
+  return NO_DOMAIN_ID;
 }
 
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
@@ -2139,6 +2272,7 @@ interface RawSessionRow {
   ended_at: string | null;
   claude_session_id: string | null;
   transport: string | null;
+  domain_id: number;
 }
 
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
@@ -2159,6 +2293,7 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
     endedAt: row.ended_at,
     claudeSessionId: row.claude_session_id,
     transport: row.transport,
+    domainId: row.domain_id,
   };
 }
 
