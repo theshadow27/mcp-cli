@@ -12,7 +12,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { StateDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
+import { type DomainSpendResult, queryDomainSpend } from "./metrics-domain-spend";
 import type { QuotaPoller } from "./quota";
 
 const TOOLS = [
@@ -52,6 +54,23 @@ const TOOLS = [
       "Returns null fields if no OAuth token is available or the endpoint cannot be reached.",
     inputSchema: { type: "object" as const, properties: {} },
   },
+  {
+    name: "get_domain_spend",
+    description:
+      "Return per-domain spend rolled up from agent_sessions: totals (cost, tokens, session " +
+      "count) per domain plus the per-session, per-model rows they're built from. Every row " +
+      "and total is labeled with its source — only 'daemon' exists today (sessions the " +
+      "daemon itself spawned); a future transcript-scraped source will never be silently " +
+      "merged into these totals. Sessions whose domain_id names no registered domain are " +
+      "grouped under 'unassigned'.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        domain: { type: "string", description: "Restrict to one domain by name. Omit for all domains." },
+        sinceMs: { type: "number", description: "Only sessions spawned at or after this epoch-ms cutoff." },
+      },
+    },
+  },
 ] as const;
 
 export class MetricsServer {
@@ -61,12 +80,15 @@ export class MetricsServer {
   private clientTransport: Transport | null = null;
 
   private quotaPoller: QuotaPoller | null;
+  private db: StateDb | null;
 
   constructor(
     private metrics: MetricsCollector,
     quotaPoller?: QuotaPoller | null,
+    db?: StateDb | null,
   ) {
     this.quotaPoller = quotaPoller ?? null;
+    this.db = db ?? null;
   }
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
@@ -103,6 +125,9 @@ export class MetricsServer {
 
         case "quota_status":
           return { content: [{ type: "text" as const, text: JSON.stringify(this.buildQuotaStatus(), null, 2) }] };
+
+        case "get_domain_spend":
+          return this.handleGetDomainSpend(args);
 
         default:
           return {
@@ -186,6 +211,35 @@ export class MetricsServer {
     return {
       content: [{ type: "text", text: JSON.stringify({ name: metricName, series: matches }, null, 2) }],
     };
+  }
+
+  private handleGetDomainSpend(args: Record<string, unknown> | undefined): {
+    content: Array<{ type: "text"; text: string }>;
+    isError?: boolean;
+  } {
+    if (!this.db) {
+      return {
+        content: [{ type: "text", text: "get_domain_spend requires a StateDb; none was configured on this daemon" }],
+        isError: true,
+      };
+    }
+
+    const rawDomain = args?.domain;
+    if (rawDomain !== undefined && typeof rawDomain !== "string") {
+      return { content: [{ type: "text", text: '"domain" must be a string' }], isError: true };
+    }
+
+    const rawSinceMs = args?.sinceMs;
+    if (rawSinceMs !== undefined && typeof rawSinceMs !== "number") {
+      return { content: [{ type: "text", text: '"sinceMs" must be a number' }], isError: true };
+    }
+
+    const result: DomainSpendResult = queryDomainSpend(this.db, {
+      domain: rawDomain,
+      sinceMs: rawSinceMs,
+    });
+
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 
   private buildQuotaStatus(): Record<string, unknown> {

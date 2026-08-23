@@ -59,6 +59,7 @@ import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSite } from "./commands/site";
 import { cmdSpans } from "./commands/spans";
+import { cmdSpend } from "./commands/spend";
 import { cmdSprintStats } from "./commands/sprint-stats";
 import { cmdTelemetry } from "./commands/telemetry";
 import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
@@ -351,6 +352,10 @@ async function main(): Promise<void> {
 
       case "spans":
         await cmdSpans(cleanArgs.slice(1));
+        break;
+
+      case "spend":
+        await cmdSpend(cleanArgs.slice(1));
         break;
 
       case "mail":
@@ -1035,6 +1040,7 @@ Utility:
   mcx serve                           Run as stdio MCP server
   mcx scope <subcommand>              Directory scope management
   mcx dump/metrics/spans              Diagnostics and observability
+  mcx spend [-d <domain>] [--json]    Per-domain spend rollup from agent_sessions
   mcx telemetry [on|off|status]       Control anonymous usage telemetry
   mcx version                         Version info
   mcx completions {bash|zsh|fish}     Shell completions
