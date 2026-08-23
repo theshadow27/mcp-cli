@@ -37,6 +37,18 @@ opus only where the work is genuinely design-heavy.
 | 3119 | auto-permission-mode fix (PR #3137: drive F3 once, then merge or simplify-once) | medium | 3.2 | sonnet | filler |
 | 3212 | guard-reachability harness (mechanizes the QA mutation check) | low | 3.3 | sonnet | filler |
 | 3066 | card store entry (no deps — slack) | low | 3.4 | sonnet | filler |
+| 3223 | quota monitoring dead on Linux (keychain-only token source) | medium | 3.5 | sonnet | QoL |
+
+> **Amendment 2026-08-23T00:4xZ (#3223, QoL 1 of 2):** filed during this
+> sprint's own run — the orchestrator's quota gate is blind on this box
+> because `readClaudeOAuthToken` is darwin-only, so `QuotaPoller.poll()`
+> silently skips forever and `quota_status` reports the misleading
+> "Quota monitoring not started". Operator: "that seems like an important
+> fix." Overlap check (run.md amendment gate): surface is
+> `packages/daemon/src/auth/keychain.ts`, `quota.ts`,
+> `metrics-server.ts:196` — **overlaps in-flight PR #3222**
+> (metrics-server.ts), so #3223 is blockedBy #3222's merge. No lane-1
+> contact.
 
 **Scrutiny-mix sign-off required (plan.md Step 3b):** 3 of 12 high (25%),
 above the ~20% cap. Justification, per issue: #3038/PR#3200 carries four
