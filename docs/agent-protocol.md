@@ -44,6 +44,10 @@ The `WorkerClientTransport` (main thread) and `WorkerServerTransport` (worker) h
 | `packages/daemon/src/claude-server.ts` | Claude-specific `monitor:event` extension |
 | `packages/daemon/src/claude-session/session-state.ts` | Claude-specific `SessionEvent` union (superset of `AgentSessionEvent`) |
 | `packages/core/src/agent-session.ts` | `AgentSessionEvent` union, session state types |
+| `packages/daemon/src/domain-worker.ts` | Domain control messages (`init` carrying a `domain`) |
+| `packages/daemon/src/domain-link.ts` | `DomainLink` — the transport-agnostic link a domain worker is reached over |
+| `packages/core/src/domain-protocol.ts` | Domain message types, `ready` identity check, snapshot helpers |
+| `packages/core/src/wire.ts` | `assertWireSafe` — the JSON-survivability check applied to every domain message |
 
 ---
 
@@ -78,15 +82,47 @@ Sent once at worker startup. Worker must reply with `ready` (§3.1) or `error` (
 }
 ```
 
+**Domain-worker extensions** (`domain-worker.ts`, `packages/core/src/domain-protocol.ts`):
+
+```typescript
+{
+  type: "init";
+  protocol_version: number;     // required, not optional
+  daemonId: string | null;      // null, never absent — see below
+  domain: {                     // the domains row this worker is bound to
+    id: number;
+    host: null;                 // a worker in this process serves a local domain only
+    name: string;
+    path: string;
+    createdAt: string;
+  };
+}
+```
+
+A domain worker is bound to exactly one domain, and it learns which one *only* from
+this message — never from a shared database handle or a module-level reference, because
+the same `init` arrives over a socket when the domain lives on another host. The worker
+re-validates the payload (`domain/bind.ts`) and refuses an `init` naming a remote host.
+
+The fields are required and `daemonId` is `string | null` rather than optional for a
+reason that generalizes to every message in this protocol: an optional field admits
+`undefined`, `JSON.stringify` drops it, and the far side then cannot distinguish "not
+sent" from "sent as absent". Domain messages are declared as types constrained to
+`JsonValue` (`packages/core/src/wire.ts`) so this fails at compile time, and every
+message is checked with `assertWireSafe` on the send path so a value that survives
+structured clone but not JSON — a `Date`, a `Map`, a cycle — fails loudly in-process
+today rather than silently over a socket later.
+
 **Provider divergence:**
 
-| Field | claude | codex | acp | opencode | mock |
-|---|---|---|---|---|---|
-| `daemonId` | optional | optional | optional | optional | optional |
-| `protocol_version` | optional | optional | optional | optional | optional |
-| `wsPort` | optional | — | — | — | — |
-| `quiet` | optional | — | — | — | — |
-| `traceparent` | optional | — | — | — | — |
+| Field | claude | codex | acp | opencode | mock | domain |
+|---|---|---|---|---|---|---|
+| `daemonId` | optional | optional | optional | optional | optional | **required** (nullable) |
+| `protocol_version` | optional | optional | optional | optional | optional | **required** |
+| `wsPort` | optional | — | — | — | — | — |
+| `quiet` | optional | — | — | — | — | — |
+| `traceparent` | optional | — | — | — | — | — |
+| `domain` | — | — | — | — | — | **required** |
 
 **Example:**
 
@@ -189,6 +225,12 @@ Signals the worker is initialized and ready to accept MCP JSON-RPC messages.
 ```
 
 **Claude extension:** includes `port: number` — the actual WebSocket server port.
+
+**Domain extension:** includes `domain_id: number` — the domain the worker actually
+bound. The daemon compares it against the id it sent and refuses the worker on a
+mismatch (`assertDomainIdentity`). In-process that is close to tautological; over a
+socket to a host serving several domains it is what catches a mis-routed link, and a
+mis-routed link means one project's code running against another project's path.
 
 **Semantics:** The daemon awaits `ready` before wiring up the MCP `Client` transport. If `ready` is not received within the startup timeout, the daemon treats it as a spawn failure. If `supported_protocol_version` is present and does not match `protocol_version` from init, the daemon rejects the worker with a `ProtocolVersionMismatchError`.
 
