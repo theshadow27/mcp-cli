@@ -1862,7 +1862,7 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
     const { stateDb, workItemDb, dbPath } = createRealStateDbs();
     stateDbInst = stateDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { stateDb });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
     const item = parse(
       await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") }),
@@ -1908,9 +1908,9 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
     // and it is the namespace commands/phase.ts derives from the stored id.
     const runnerNamespace = workItemStateNamespace(storedId);
     expect(runnerNamespace).toBe("workitem:d1:issue:42");
-    expect(stateDb.listAliasState("/repo", runnerNamespace)).toEqual({ typed: 1, canonical: 2 });
+    expect(stateDb.listAliasState("/repo", runnerNamespace, NO_DOMAIN_ID)).toEqual({ typed: 1, canonical: 2 });
     // ...and nothing was written to the namespace the raw argument would have produced.
-    expect(stateDb.listAliasState("/repo", "workitem:issue:42")).toEqual({});
+    expect(stateDb.listAliasState("/repo", "workitem:issue:42", NO_DOMAIN_ID)).toEqual({});
   });
 
   test("list and delete agree with set on which namespace is real", async () => {

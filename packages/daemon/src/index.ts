@@ -471,7 +471,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Cached repo info for resolveIssuePr — detected once from daemon startup cwd
   /**
-   * PRE-EXISTING GAP, deliberately unchanged — see #3193.
+   * PRE-EXISTING GAP, deliberately unchanged — see #3192.
    *
    * One repo, detected from the daemon's cwd. Wrong the moment two domains are two different
    * repos, and wrong before this PR too: the readers were unscoped then, so the poller has
@@ -934,7 +934,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3193.
+      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3192.
       //
       // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
       // cwd. That is already the wrong key when the daemon starts outside the project, and it
@@ -1075,7 +1075,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     },
     resolveIssuePr: async (number: number) => {
       // Cache repo detection so we don't re-run `git remote` on every track call.
-      // Uses the daemon's startup cwd which is the project root at launch time (#3193).
+      // Uses the daemon's startup cwd which is the project root at launch time (#3192).
       if (!cachedRepo) {
         cachedRepo = await detectRepo(process.cwd());
       }
@@ -1439,7 +1439,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               }
             },
             resolveBranchFromPr: async (prNumber: number) => {
-              // Re-use the cached repo (see #3193) so the --repo flag is always explicit,
+              // Re-use the cached repo (see #3192) so the --repo flag is always explicit,
               // avoiding `gh pr view` resolving against an ambiguous cwd. Returns null when
               // detection fails; the caller treats that as "branch not known" and continues.
               if (!cachedRepo) {
