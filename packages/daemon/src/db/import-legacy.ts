@@ -14,10 +14,31 @@
  * `~/.mcp-cli/...`, which is wrong for any install with `MCP_CLI_DIR` set — and the
  * warning a user sees is generated, so a second copy here could only ever drift.
  *
+ * As of #3035 the marker half of that recovery is `mcx domain import --force`, which
+ * {@link clearImportMarker} performs and which arms the *next* start rather than importing
+ * in place. The import runs at exactly one call site, at boot, and refuses a target that
+ * already holds rows — see {@link nonEmptyImportedTables}.
+ *
  * Best-effort applies to *rows*: individual rows that do not map are skipped and counted.
  * It does **not** extend to sealing the marker — a run in which any table failed outright
- * leaves the marker unset so the next start retries. A failed import must not stop the
+ * rolls the whole copy back and leaves the marker unset. A failed import must not stop the
  * daemon from booting, and must not silently become permanent.
+ *
+ * **This does not retry automatically** (#3160 review N2; the code used to promise first a
+ * partial-commit retry it did not implement, then a conditional one it could not honour in
+ * practice). Operator decision on the PR: option (c) — one-shot is real, no exceptions.
+ * Driven, not inferred — force one table to error and the target holds **zero** rows from
+ * the tables that succeeded:
+ *
+ * - A failed run is **all-or-nothing**. Nothing lands. `ran && !sealed` does not mean rows
+ *   are in the target; see {@link ImportResult.sealed}.
+ * - The daemon publishes `daemon.restarted` into `monitor_events` on every boot, including
+ *   the one that just declined or failed. So by the very next start the target is already
+ *   non-empty and {@link nonEmptyImportedTables} declines again — restarting the daemon,
+ *   by itself, never makes this import run a second time, on any failure mode.
+ * - Recovery is manual and explicit, every time: `mcx domain import --force`, then remove
+ *   the target, then restart. {@link recoveryInstructions} prints it with real paths. There
+ *   is no other way back in.
  */
 
 import { Database } from "bun:sqlite";
@@ -58,14 +79,95 @@ export const IMPORT_ROWCOUNT_KEY = "mcx_domain_import_rows";
  * Step 0 is a backup: this arc has no rollback by design, so `rm` would otherwise destroy
  * everything done since the bad import.
  *
- * TODO(#3035): `mcx domain import --reset` is the intended home for this. Shelling out to
- * `sqlite3` is a stopgap — it is not a dependency of this project.
+ * The order matters and is not cosmetic (#3160 review). `state.ts` opens the target in WAL
+ * mode, so `cp <target> <target>.bak` against a LIVE database copies the main file without
+ * the un-checkpointed `-wal` — a backup silently missing the most recent transactions, in
+ * the one step whose entire job is to be the rollback. Arming first and shutting the daemon
+ * down before the copy closes the database, which checkpoints WAL into the main file and
+ * makes the single-file copy valid. It also means the `rm` cannot race a live writer.
+ *
+ * The `sqlite3` stopgap the #3034 TODO described is gone as of #3035 — `mcx domain import
+ * --force` clears both keys through {@link clearImportMarker}, so the instruction no longer
+ * asks for a tool this project does not depend on. `rm` stays, and is now *required* rather
+ * than advisory: the import refuses a non-empty target, so an operator who skips it gets a
+ * refusal instead of silent data loss.
+ *
+ * `legacyPath` is still a parameter even though the command no longer names it, because the
+ * warning that embeds this text also names the database it diagnosed, and the two must not
+ * drift into describing different files (#3034 review R2).
  */
 export function recoveryInstructions(legacyPath = options.LEGACY_DB_PATH, targetPath = options.DB_PATH): string {
-  return (
-    `to re-run the import: cp ${targetPath} ${targetPath}.bak && rm ${targetPath} && ` +
-    `sqlite3 ${legacyPath} "DELETE FROM daemon_state WHERE key IN ('${IMPORT_MARKER_KEY}', '${IMPORT_ROWCOUNT_KEY}');"`
-  );
+  return `to re-run the import from ${legacyPath}: mcx domain import --force && mcx shutdown && cp ${targetPath} ${targetPath}.bak && rm ${targetPath} && mcx status  (the shutdown checkpoints WAL, so the copy is a valid backup)`;
+}
+
+export type ImportArmState =
+  /** The marker is gone: the next daemon start will run the import. */
+  | { state: "armed"; alreadyArmed: boolean }
+  /** Nothing to arm — no legacy database, or it could not be opened or written. */
+  | { state: "unavailable"; reason: string };
+
+/**
+ * Read the marker's current value without changing it. `null` means the import is already
+ * armed; a string is the timestamp it was sealed at.
+ *
+ * Exported so the CLI can *check* rather than assert. `mcx domain import` used to print
+ * "the marker is set in the legacy database" and hand over an `rm` incantation on an
+ * install that had no legacy database at all (#3160 review N1) — a recovery instruction
+ * derived from an assumption rather than from a read.
+ */
+export function readImportMarkerValue(legacyPath = options.LEGACY_DB_PATH): { present: boolean; value: string | null } {
+  if (!existsSync(legacyPath)) return { present: false, value: null };
+  let legacy: Database;
+  try {
+    legacy = new Database(legacyPath, { readonly: true });
+  } catch {
+    return { present: false, value: null };
+  }
+  try {
+    return { present: true, value: readMarker(legacy) };
+  } finally {
+    legacy.close();
+  }
+}
+
+/**
+ * Clear the one-shot marker (and its row count) so the next daemon start re-runs the import.
+ *
+ * This is what `mcx domain import --force` does, and it is deliberately **all** it does.
+ * The import itself stays where it has always been — `index.ts`, at startup, ahead of
+ * `reapOrphanedSessions`, `restoreActiveSessions`, the pollers and the event bus. Running
+ * it against a booted daemon would land `agent_sessions` rows *after* the reaper had already
+ * run, surfacing dead sessions as live until the next restart, and a printed "restart the
+ * daemon" line is an instruction rather than a guarantee (#3035 review finding 2).
+ *
+ * Arming rather than importing also happens to be the only design that works at all: the
+ * daemon publishes `daemon.restarted` into `monitor_events` before it accepts its first
+ * request, so by the time an IPC call arrives the target is never empty, and an in-flight
+ * forced import would be refused by the emptiness guard every single time.
+ *
+ * Idempotent: arming an already-armed install reports `alreadyArmed`, not failure.
+ */
+export function clearImportMarker(legacyPath = options.LEGACY_DB_PATH): ImportArmState {
+  if (!existsSync(legacyPath)) return { state: "unavailable", reason: `no legacy database at ${legacyPath}` };
+  let legacy: Database;
+  try {
+    legacy = new Database(legacyPath, { readwrite: true, create: false });
+  } catch (err) {
+    return { state: "unavailable", reason: `cannot open ${legacyPath}: ${errText(err)}` };
+  }
+  try {
+    const res = legacy.run("DELETE FROM daemon_state WHERE key IN (?, ?)", [IMPORT_MARKER_KEY, IMPORT_ROWCOUNT_KEY]);
+    // `changes === 0` means the marker was ALREADY absent — which is the state this
+    // function exists to produce, not a failure (#3160 review N13). Reporting it as failure
+    // made the command say it failed in both of its live states: re-run after lost
+    // scrollback, and re-run after a failed import, which seal-or-nothing *guarantees*
+    // leaves the marker unset. Idempotent by construction now.
+    return { state: "armed", alreadyArmed: res.changes === 0 };
+  } catch (err) {
+    return { state: "unavailable", reason: errText(err) };
+  } finally {
+    legacy.close();
+  }
 }
 
 /**
@@ -99,6 +201,23 @@ export const IMPORTED_TABLES = [
 ] as const;
 
 /**
+ * Every table the import WRITES — which is `IMPORTED_TABLES` **plus `domains`**.
+ *
+ * `copyEverything` does two things: it copies `IMPORTED_TABLES`, and it calls
+ * `importScopesAsDomains`, which does `INSERT OR IGNORE INTO domains`. Deriving the
+ * emptiness guard from `IMPORTED_TABLES` alone therefore reproduced the exact defect that
+ * guard was written to close (#3160 review N12): a second table set, maintained by
+ * omission, so the guard reported EMPTY for a target already holding `domains` rows and let
+ * the import proceed over them.
+ *
+ * There is no hand-maintained duplicate here — this list is the copied set spread into a
+ * superset — and `import-legacy.spec.ts` pins it behaviourally: it runs a real import into
+ * an empty target and asserts that every table which gained rows is a member. A future
+ * writer added to `copyEverything` fails that test rather than silently escaping the guard.
+ */
+export const IMPORT_WRITTEN_TABLES = [...IMPORTED_TABLES, "domains"] as const;
+
+/**
  * Per-table row filters applied to the legacy SELECT.
  *
  * The import marker is written into the legacy `daemon_state`, so a `--force` re-run
@@ -130,12 +249,19 @@ export interface ImportResult {
   ran: boolean;
   /**
    * True only when the marker was written, i.e. this import will never run again.
-   * `ran && !sealed` means the copy happened but the run is not final — it retries.
+   * `ran && !sealed` means the copy was ATTEMPTED AND ROLLED BACK — the target is
+   * unchanged and the marker is unset. It does **not** mean rows landed. (The row counts
+   * alongside it describe what was copied inside the transaction before the rollback, which
+   * is #3170 part 1 and not fixed here.) Whether the next start actually retries depends on
+   * the target still being empty — see this file's header.
    */
   sealed: boolean;
   reason?: string;
   tables: TableImportResult[];
-  /** Tables whose copy errored outright. Non-empty means the marker was withheld. */
+  /**
+   * Tables whose copy errored outright. Non-empty means the entire transaction was rolled
+   * back and the marker withheld — not that these tables failed while others were kept.
+   */
   failedTables: string[];
   domainsImported: number;
   domainsSkipped: number;
@@ -209,12 +335,34 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
       const expected = readImportedRowCount(legacy);
       if (importedDataMissing(opts.db, expected)) {
         log(
-          `[domain-import] WARNING: ${legacyPath} was already imported at ${existingMarker} (${expected ?? "unknown"} row(s)), but ${targetPath} holds ${countImportedRows(opts.db)} of them. The daemon is starting WITHOUT your imported data — deleting mcx.db does not re-arm the import, because the marker lives in the legacy database. ${recovery}`,
+          `[domain-import] WARNING: ${legacyPath} was already imported at ${existingMarker} (${expected ?? "unknown"} row(s)), but ${targetPath} holds ${countImportedRows(opts.db)} of them. The daemon is starting WITHOUT your imported data — deleting mcx.db does not re-arm the import, because the "${IMPORT_MARKER_KEY}" marker lives in the legacy database. ${recovery}`,
         );
       } else {
         log(`[domain-import] ${reason} — skipping`);
       }
       return declined(reason);
+    }
+
+    // The target must be EMPTY across every imported table (#3035 review finding 1).
+    //
+    // This precondition used to hold by construction: the only caller was daemon startup,
+    // positioned before any subsystem wrote a row, and the documented recovery began with
+    // `rm mcx.db`. Nothing restated it, because nothing had to. `copyTable` uses
+    // `INSERT OR IGNORE` over the shared column set — which includes surrogate primary
+    // keys (`monitor_events.seq`, `mail.id`, both AUTOINCREMENT) — so against a populated
+    // target every legacy row whose id was already reallocated is dropped on the floor,
+    // permanently, on a run that reports `sealed: true` and exits 0. The surviving event
+    // log is a scrambled timeline, and a revoked `auth_tokens` row comes back.
+    //
+    // Atomicity does not help here: no table fails, so there is nothing to roll back. The
+    // seal-or-nothing repair makes this path land *more* completely, not less.
+    const occupied = nonEmptyImportedTables(opts.db);
+    if (occupied.length > 0) {
+      const detail = occupied.map((t) => `${t.table}=${t.rows}`).join(", ");
+      log(
+        `[domain-import] refusing to import into ${targetPath}: it already holds ${detail}. The import can only add rows (INSERT OR IGNORE), so copying into a populated database silently drops every legacy row whose id was already taken. ${recovery}`,
+      );
+      return declined(`target database is not empty (${detail})`);
     }
 
     // Not load-bearing for correctness any more — the marker write happens inside the
@@ -224,7 +372,7 @@ export function importLegacyState(opts: ImportOptions): ImportResult {
     const writeError = probeLegacyWritable(legacy);
     if (writeError !== null) {
       log(
-        `[domain-import] legacy database ${legacyPath} is not writable (${writeError}); skipping the import entirely rather than copying rows we could not mark as imported. Make it writable and restart.`,
+        `[domain-import] legacy database ${legacyPath} is not writable (${writeError}); skipping the import entirely rather than copying rows we could not mark as imported. This does not retry on a plain restart — ${recovery}`,
       );
       return declined(`legacy database not writable: ${writeError}`);
     }
@@ -322,7 +470,7 @@ function copyEverything(
       if (failedTables.length > 0) {
         const undone = safeRollback(target);
         log(
-          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} The legacy database is unmarked, so the import will be retried on the next start.`,
+          `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} This does not retry automatically — recover with: mcx domain import --force`,
         );
         return result;
       }
@@ -481,17 +629,33 @@ function probeLegacyWritable(legacy: Database): string | null {
   }
 }
 
-/** Total rows currently held in `mcx.db` across the tables the import populates. */
-function countImportedRows(target: Database): number {
-  let total = 0;
-  for (const table of IMPORTED_TABLES) {
+/**
+ * Which of the tables the import populates already hold rows, and how many.
+ *
+ * Derived from {@link IMPORTED_TABLES} — the same constant `copyEverything` iterates —
+ * so the emptiness precondition and the copy can never disagree about which tables are
+ * in scope. A second, hand-maintained list is how the predecessor of this function
+ * (`targetLooksEmpty`) came to inspect six tables while omitting `monitor_events`: the
+ * one carrying an AUTOINCREMENT primary key, and the one a live daemon writes at startup
+ * and continuously thereafter. It reported EMPTY over a populated event log, which is
+ * precisely the case a guard built on it would have to catch (#3035 review finding 1).
+ */
+export function nonEmptyImportedTables(target: Database): Array<{ table: string; rows: number }> {
+  const out: Array<{ table: string; rows: number }> = [];
+  for (const table of IMPORT_WRITTEN_TABLES) {
     try {
-      total += target.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${quoteIdent(table)}`).get()?.n ?? 0;
+      const rows = target.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${quoteIdent(table)}`).get()?.n ?? 0;
+      if (rows > 0) out.push({ table, rows });
     } catch {
       // table absent — contributes nothing
     }
   }
-  return total;
+  return out;
+}
+
+/** Total rows currently held in `mcx.db` across the tables the import populates. */
+function countImportedRows(target: Database): number {
+  return nonEmptyImportedTables(target).reduce((n, t) => n + t.rows, 0);
 }
 
 /**

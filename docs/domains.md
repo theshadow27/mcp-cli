@@ -68,13 +68,90 @@ loop is off. Both are normal.
 ```bash
 mcx domain add <name> [host:]<path>   # register
 mcx domain ls [--json]                # list
-mcx domain show <name>                # resolve to host + path
-mcx domain which [path]               # reverse lookup — which domain owns this path?
+mcx domain show <name> [--json]       # resolve to host + path
+mcx domain which [path] [--json]      # reverse lookup — which domain owns this path?
 mcx domain rename <old> <new>
-mcx domain rm <name>
+mcx domain rm <name> [--force]
+mcx domain import [--force]           # re-run the one-shot import from the legacy state.db
 ```
 
 Row: `id`, `name`, `host`, `path`, `created_at`. Nothing else.
+
+`~` and relative paths are expanded **at the CLI**, against the caller's home and cwd, and
+only for a local domain — a host-bound path names a directory on another machine, where
+this filesystem has no say, and is stored verbatim. The daemon rejects a relative local
+path at the IPC boundary rather than anchoring it on its own cwd, which is a different
+directory and would only misbehave after a restart.
+
+`add` refuses a duplicate name, and refuses a location that is **exactly** another domain's
+`[host:]path`, naming it. Exactly — not "inside": **nesting is legal and expected**.
+Registering both `~/github` and `~/github/mcp-cli` is the case the longest-prefix rule below
+exists for, and refusing the inner one would remove the only thing that rule has to decide.
+"Owns" elsewhere in this document means the prefix relation; here it means equality, and the
+two are not the same test.
+
+`rename` changes the name and nothing else **in the table**: `id` and `path` are untouched,
+so every `domain_id` reference and every `which` answer survives it. That is a statement
+about the row, not a claim that a rename is free everywhere — anything currently holding the
+old name (a running domain worker, log correlation, an MCP handshake identity) still sees a
+change. What a rename does to a running worker is the worker section's to state, not this
+one's.
+
+`rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
+cascades. Silently orphaning a thousand work items because a name was typed twice is not a
+recoverable state, so the refusal is the default and the cascade is the flag.
+
+`--cascade` is accepted as an exact synonym for `--force`, because `StateDb.deleteDomain`'s
+own docstring names the option `--cascade` while this command's issue specified `--force`.
+Documented rather than left implicit, and asserted as an equality in
+`domain.spec.ts` rather than as two tests that separately expect the same thing — two
+spellings of one destructive flag are only safe while something compares them to each other.
+There is no third spelling: `parseFlags` rejects any flag it was not told about, so an
+invented `--all` or `--scoped` on this command exits non-zero instead of quietly leaving a
+default in place.
+
+`import --force` **re-arms** the one-shot legacy import (#3034) — it clears the marker and
+the import itself runs at the next daemon start. It does not import in place, and that is
+not a convenience choice:
+
+- The import is positioned at daemon startup **ahead of** `reapOrphanedSessions`,
+  `restoreActiveSessions`, the pollers and the event bus. Landing `agent_sessions` rows
+  after the reaper has run surfaces dead sessions as live until the next restart, and a
+  printed "restart the daemon" line is an instruction, not a guarantee.
+- It **refuses unless the database is empty** across every table the import *writes* —
+  `IMPORT_WRITTEN_TABLES`, which is the copied set plus `domains`, because
+  `importScopesAsDomains` writes that one too. Deriving the guard from the copied set alone
+  reproduced the very defect the guard exists to close: a second table set maintained by
+  omission, reporting EMPTY over a target already holding `domains` rows. The spec pins this
+  behaviourally — a real import runs and every table that gained rows must be a member.
+  `INSERT OR IGNORE` over AUTOINCREMENT surrogate keys (`monitor_events.seq`, `mail.id`)
+  silently drops every legacy row whose id the target already reallocated, permanently, on a
+  run that would otherwise report success.
+- The daemon publishes `daemon.restarted` into `monitor_events` before it accepts its first
+  request, so an in-flight forced import would be refused every time anyway.
+
+The full recovery, which the daemon prints with the real paths it opened. **The order is
+load-bearing**: the target is opened in WAL mode, so copying it while the daemon is live
+takes the main file without the un-checkpointed `-wal` — a backup missing the most recent
+transactions, in the one step whose entire job is to be the rollback. Shutting down first
+checkpoints WAL into the main file and makes the single-file copy valid.
+
+```bash
+mcx domain import --force        # clears the marker (idempotent — safe to re-run)
+mcx shutdown                     # checkpoints WAL, so the next line is a real backup
+cp ~/.mcp-cli/mcx.db ~/.mcp-cli/mcx.db.bak
+rm ~/.mcp-cli/mcx.db
+mcx status                       # starts the daemon; the import runs at boot
+```
+
+A remote path must be absolute or `~`-rooted. `mcx domain add weird a:b` is refused rather
+than registered at relative path `b` on a host called `a` — `a` is a perfectly valid
+hostname, so nothing else would have caught it, and one relative row breaks `which` for
+*every* query because the resolver normalizes each row inside its loop.
+
+The marker lives in the **legacy** `state.db`, deliberately, so it outlives `mcx.db` — which
+is why deleting `mcx.db` alone is not a recovery. Without `--force` the command declines and
+names the marker.
 
 `host` is null for a local domain. When it is set, the daemon routes to a domain
 server on that host instead of a local worker — same control protocol either way.

@@ -5,6 +5,7 @@ import {
   AGENT_SUBCOMMANDS,
   ALIAS_SUBCOMMANDS,
   CONFIG_SUBCOMMANDS,
+  DOMAIN_SUBCOMMANDS,
   SUBCOMMANDS,
   bashScript,
   cmdCompletions,
@@ -337,4 +338,84 @@ describe("cross-script consistency", () => {
       expect(fn()).toContain("2>/dev/null");
     });
   }
+});
+
+describe("DOMAIN_SUBCOMMANDS (#3035)", () => {
+  test("covers every verb mcx domain dispatches", () => {
+    expect([...DOMAIN_SUBCOMMANDS]).toEqual(["add", "ls", "show", "which", "rename", "rm", "import"]);
+  });
+
+  test("`domain` is a registered top-level subcommand", () => {
+    expect((SUBCOMMANDS as readonly string[]).includes("domain")).toBe(true);
+  });
+
+  // `expect(script).toContain("add")` would pass on any script that merely mentions
+  // `mcx add`, so these assert the *rendered subcommand list* each shell actually offers.
+  // A verb added to DOMAIN_SUBCOMMANDS but not threaded into a script is a completion
+  // that silently does nothing.
+  const flat = DOMAIN_SUBCOMMANDS.join(" ");
+  const quoted = DOMAIN_SUBCOMMANDS.map((s) => `'${s}'`).join(" ");
+
+  test("bash: offers every domain subcommand and completes domain names", () => {
+    const script = bashScript();
+    expect(script).toContain(`local domain_subcommands="${flat}"`);
+    expect(script).toContain('local domain_name_commands="show rename rm"');
+    expect(script).toContain("mcx completions --domains 2>/dev/null");
+  });
+
+  test("zsh: offers every domain subcommand and completes domain names", () => {
+    const script = zshScript();
+    expect(script).toContain(`domain_subcommands=(${quoted})`);
+    expect(script).toContain("domain_name_commands=('show' 'rename' 'rm')");
+    expect(script).toContain("mcx completions --domains 2>/dev/null");
+  });
+
+  test("fish: offers every domain subcommand and completes domain names", () => {
+    const script = fishScript();
+    expect(script).toContain(`__mcx_token 2 = domain' -a '${flat}'`);
+    for (const sub of ["show", "rename", "rm"]) {
+      expect(script).toContain(`__mcx_token 3 = ${sub}' -a '(mcx completions --domains 2>/dev/null)'`);
+    }
+  });
+
+  test("--domains prints one domain name per line", async () => {
+    const printed: string[] = [];
+    const realLog = console.log;
+    console.log = (...args: unknown[]) => {
+      printed.push(args.map(String).join(" "));
+    };
+    try {
+      await cmdCompletions(["--domains"], {
+        isDaemonRunning: (async () => true) as CompletionDeps["isDaemonRunning"],
+        ipcCall: (async () => [
+          { id: 1, name: "phoenix", host: null, path: "/srv/phoenix", createdAt: "" },
+          { id: 2, name: "work", host: "boxen0010", path: "~/work", createdAt: "" },
+        ]) as unknown as CompletionDeps["ipcCall"],
+        listRegistry: (async () => ({ servers: [] })) as unknown as CompletionDeps["listRegistry"],
+      });
+    } finally {
+      console.log = realLog;
+    }
+    expect(printed).toEqual(["phoenix", "work"]);
+  });
+
+  test("--domains stays silent when the daemon is not running", async () => {
+    const printed: string[] = [];
+    const realLog = console.log;
+    console.log = (...args: unknown[]) => {
+      printed.push(args.map(String).join(" "));
+    };
+    try {
+      await cmdCompletions(["--domains"], {
+        isDaemonRunning: (async () => false) as CompletionDeps["isDaemonRunning"],
+        ipcCall: (async () => {
+          throw new Error("must not be called");
+        }) as unknown as CompletionDeps["ipcCall"],
+        listRegistry: (async () => ({ servers: [] })) as unknown as CompletionDeps["listRegistry"],
+      });
+    } finally {
+      console.log = realLog;
+    }
+    expect(printed).toEqual([]);
+  });
 });
