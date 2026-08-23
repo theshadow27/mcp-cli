@@ -134,6 +134,19 @@ signing on one box. #3048's neutering follows the `claude` binary prior art
 - No cross-lane edges — lanes 2 and 3 touch no lane-1 file. Re-run the
   overlap check on any amendment (plan.md Step 4).
 
+> **Amendment 2026-08-23T22:1xZ (#3243, QoL 2 of 2):** monitor blindness —
+> a connected `mcx monitor --until 'pr.*'` missed all three tracked-item
+> merges tonight (#3137/#3160/#3181, 3/3 across consecutive windows —
+> looks deterministic), plus 90s-heartbeat warning spam under load. This
+> guts the wait primitive lanes.md now canonizes, so it is pulled into the
+> sprint as the second QoL slot (P1-class daemon/usability bug, operator
+> flagged 2026-08-23). Investigation-first per the verify-hypothesis rule;
+> impl lane only after a reproduced root cause. Overlap check: surface is
+> daemon event/poller path (github/, event-bus, monitor-executor) — no
+> overlap with #3168/#3175/#3200 session/work-item/mail surfaces; the
+> stopgap-daemon-binary-staleness hypothesis, if confirmed, may need no
+> code at all.
+
 ## Explicitly excluded (and why)
 
 - **#3036, #3041, #3042, #3044, #3045** — dependents of unmerged lane-1 work.
