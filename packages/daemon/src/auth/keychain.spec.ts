@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readKeychainTokens } from "./keychain";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readClaudeSessionToken, readCredentialsFileToken, readKeychainTokens } from "./keychain";
 
 // Save original so we can restore after platform override tests
 const originalPlatform = process.platform;
@@ -193,5 +196,143 @@ describe("readKeychainTokens", () => {
       readKeychainTokens("https://api.example.com"),
     );
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * `readCredentialsFileToken` reads Claude Code's on-disk credentials file — the Linux
+ * counterpart of the macOS Keychain (#3223). Each test points `CLAUDE_CONFIG_DIR` at
+ * an isolated temp dir so nothing here ever touches the real `~/.claude`.
+ */
+describe("readCredentialsFileToken", () => {
+  let dir: string;
+
+  function envFor(configDir: string): Record<string, string | undefined> {
+    return { CLAUDE_CONFIG_DIR: configDir };
+  }
+
+  function writeCredentials(configDir: string, contents: unknown): void {
+    writeFileSync(
+      join(configDir, ".credentials.json"),
+      typeof contents === "string" ? contents : JSON.stringify(contents),
+    );
+  }
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("returns null when the file does not exist", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).toBeNull();
+  });
+
+  test("returns null on malformed JSON", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeCredentials(dir, "not-valid-json{{{");
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).toBeNull();
+  });
+
+  test("returns null when claudeAiOauth is absent", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeCredentials(dir, { somethingElse: true });
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).toBeNull();
+  });
+
+  test("returns null when accessToken is missing", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeCredentials(dir, { claudeAiOauth: { expiresAt: Date.now() + 3_600_000 } });
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).toBeNull();
+  });
+
+  test("returns null when the token is expired", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeCredentials(dir, {
+      claudeAiOauth: { accessToken: "expired-tok", expiresAt: Date.now() - 1000 },
+    });
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).toBeNull();
+  });
+
+  test("returns the token when present and unexpired", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeCredentials(dir, {
+      claudeAiOauth: {
+        accessToken: "live-tok",
+        refreshToken: "refresh-tok",
+        expiresAt: Date.now() + 3_600_000,
+        subscriptionType: "max",
+        rateLimitTier: "default_claude_max_20x",
+      },
+    });
+    const result = await readCredentialsFileToken(envFor(dir));
+    expect(result).not.toBeNull();
+    expect(result?.accessToken).toBe("live-tok");
+    expect(result?.subscriptionType).toBe("max");
+    expect(result?.rateLimitTier).toBe("default_claude_max_20x");
+  });
+
+  test("CLAUDE_SECURESTORAGE_CONFIG_DIR takes precedence over CLAUDE_CONFIG_DIR", async () => {
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    const secureDir = mkdtempSync(join(tmpdir(), "mcx-creds-secure-"));
+    try {
+      writeCredentials(dir, { claudeAiOauth: { accessToken: "wrong-dir-tok" } });
+      writeCredentials(secureDir, { claudeAiOauth: { accessToken: "secure-dir-tok" } });
+
+      const result = await readCredentialsFileToken({
+        CLAUDE_CONFIG_DIR: dir,
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: secureDir,
+      });
+      expect(result?.accessToken).toBe("secure-dir-tok");
+    } finally {
+      rmSync(secureDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readClaudeSessionToken", () => {
+  let dir: string;
+
+  afterEach(() => {
+    restorePlatform();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("falls back to the credentials file off-darwin", async () => {
+    setPlatform("linux");
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeFileSync(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "file-tok", expiresAt: Date.now() + 3_600_000 } }),
+    );
+
+    const result = await readClaudeSessionToken({ CLAUDE_CONFIG_DIR: dir });
+    expect(result?.accessToken).toBe("file-tok");
+  });
+
+  test("returns null off-darwin when neither source has a token", async () => {
+    setPlatform("linux");
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    const result = await readClaudeSessionToken({ CLAUDE_CONFIG_DIR: dir });
+    expect(result).toBeNull();
+  });
+
+  test("prefers the Keychain over the credentials file on darwin", async () => {
+    if (originalPlatform !== "darwin") return;
+    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    writeFileSync(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "file-tok", expiresAt: Date.now() + 3_600_000 } }),
+    );
+
+    const result = await withSpawnMock(
+      ["echo", JSON.stringify({ claudeAiOauth: { accessToken: "keychain-tok", expiresAt: Date.now() + 3_600_000 } })],
+      () => readClaudeSessionToken({ CLAUDE_CONFIG_DIR: dir }),
+    );
+    expect(result?.accessToken).toBe("keychain-tok");
   });
 });

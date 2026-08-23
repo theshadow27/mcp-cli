@@ -8,7 +8,7 @@
 
 import type { Logger } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
-import { type ClaudeOAuthToken, readClaudeOAuthToken } from "./auth/keychain";
+import { type ClaudeOAuthToken, readClaudeSessionToken } from "./auth/keychain";
 import { safeSetTimeout } from "./safe-timers";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -127,6 +127,7 @@ export class QuotaPoller {
   private running = false;
   private _status: QuotaStatus | null = null;
   private _lastError: string | null = null;
+  private _lastAttemptAt: number | null = null;
   private _errorLogged = false;
   private _lastErrorType: "rate-limit" | "other" | null = null;
   private _backoffMs: number | null = null;
@@ -145,7 +146,7 @@ export class QuotaPoller {
   }) {
     this.logger = options?.logger ?? consoleLogger;
     this.intervalMs = options?.intervalMs ?? (Number(process.env.MCP_QUOTA_POLL_INTERVAL) || DEFAULT_POLL_INTERVAL_MS);
-    this.readToken = options?.readToken ?? readClaudeOAuthToken;
+    this.readToken = options?.readToken ?? readClaudeSessionToken;
     this.fetchUsage = options?.fetchUsage ?? fetchQuotaUsage;
   }
 
@@ -157,6 +158,16 @@ export class QuotaPoller {
   /** Last error message (null if last fetch succeeded). */
   get lastError(): string | null {
     return this._lastError;
+  }
+
+  /**
+   * When the poller last attempted a fetch (ms epoch), regardless of outcome. Null
+   * before the first tick. Lets a consumer (e.g. `_metrics quota_status`) distinguish
+   * "the poller genuinely hasn't run yet" from "it has been running and still has
+   * nothing" — see `poll()` for why the latter doesn't set `lastError` on its own.
+   */
+  get lastAttemptAt(): number | null {
+    return this._lastAttemptAt;
   }
 
   /** Current backoff delay in ms (null if not backing off). Exposed for testing/observability. */
@@ -189,10 +200,13 @@ export class QuotaPoller {
   }
 
   private async poll(): Promise<void> {
+    this._lastAttemptAt = Date.now();
     try {
       const token = await this.readToken();
       if (!token) {
-        // No token available — skip silently (CI, non-Claude-Code env)
+        // No token available — skip silently (CI, non-Claude-Code env). `lastAttemptAt`
+        // still advances so a consumer can tell "never started" from "tried and found
+        // nothing" without this turning into a logged error on every poll.
         return;
       }
 

@@ -261,6 +261,45 @@ describe("MetricsServer", () => {
     }
   });
 
+  test("quota_status says 'not started' before the poller's first tick, and gives a timestamped reason after (#3223)", async () => {
+    const collector = new MetricsCollector();
+    const { QuotaPoller } = await import("./quota");
+
+    // Never started: still the "not started" message.
+    const neverStarted = new QuotaPoller({ intervalMs: 60_000, readToken: async () => null });
+    const notStartedServer = new MetricsServer(collector, neverStarted);
+    try {
+      const { client } = await notStartedServer.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const data = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).toBe("Quota monitoring not started");
+      expect(data.lastAttemptAt).toBeNull();
+    } finally {
+      await notStartedServer.stop();
+    }
+
+    // Started, but the token source never finds a token (e.g. unconfigured host): a
+    // distinguishable, timestamped reason instead of the misleading default forever.
+    const attemptedNoToken = new QuotaPoller({ intervalMs: 60_000, readToken: async () => null });
+    attemptedNoToken.start();
+    await Bun.sleep(SETTLE_MS);
+    attemptedNoToken.stop();
+
+    const attemptedServer = new MetricsServer(collector, attemptedNoToken);
+    try {
+      const { client } = await attemptedServer.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const data = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).not.toBe("Quota monitoring not started");
+      expect(data.lastError).toContain("No Claude Code OAuth token found");
+      expect(data.lastAttemptAt).toBeGreaterThan(0);
+    } finally {
+      await attemptedServer.stop();
+    }
+  });
+
   test("quota_status returns available:true with data when poller has status", async () => {
     const collector = new MetricsCollector();
     const { QuotaPoller, parseUsageResponse } = await import("./quota");
