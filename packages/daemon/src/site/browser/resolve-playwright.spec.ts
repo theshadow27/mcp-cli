@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { options } from "@mcp-cli/core";
 import { restoreEnv, unsetEnv } from "../../../../../test/env";
+import { testOptions } from "../../../../../test/test-options";
 import {
   _defaultInstall,
   _resetCache,
@@ -16,9 +18,20 @@ afterEach(() => {
 });
 
 describe("playwrightCandidates", () => {
-  test("always includes vendor dir as first candidate", () => {
+  test("always includes the vendor dir under options.MCP_CLI_DIR as first candidate", () => {
     const candidates = playwrightCandidates();
-    expect(candidates[0]).toBe(join(homedir(), ".mcp-cli", "vendor", "playwright", "node_modules", "playwright"));
+    expect(candidates[0]).toBe(join(options.MCP_CLI_DIR, "vendor", "playwright", "node_modules", "playwright"));
+  });
+
+  // Regression guard for #3233: VENDOR_DIR used to be a module-level constant
+  // computed from homedir() + ".mcp-cli", which bypassed MCP_CLI_DIR entirely
+  // and could write to the real ~/.mcp-cli even under test isolation. Prove
+  // the override is actually respected, not just that the default matches
+  // whatever MCP_CLI_DIR the test process happened to start with.
+  test("respects an overridden options.MCP_CLI_DIR — never falls back to the real home", () => {
+    using opts = testOptions();
+    const candidates = playwrightCandidates();
+    expect(candidates[0]).toBe(join(opts.dir, "vendor", "playwright", "node_modules", "playwright"));
   });
 
   test("does not include cwd/node_modules/playwright", () => {

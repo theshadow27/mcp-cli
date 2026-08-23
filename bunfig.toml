@@ -7,7 +7,11 @@
 
 # Pin NO_COLOR=1 before any module loads so ANSI codes never leak into
 # assertions when bun test runs under a PTY. See #2016.
-preload = ["./test/preload-no-color.ts"]
+#
+# preload-mcp-cli-isolation pins MCP_CLI_DIR to a throwaway per-run temp dir
+# before any module (spec or production code) can read the real default —
+# a backstop so no spec can reach the real ~/.mcp-cli even by accident. #3233.
+preload = ["./test/preload-no-color.ts", "./test/preload-mcp-cli-isolation.ts"]
 
 # Prune directories that should not be scanned for tests
 pathIgnorePatterns = [".claude/**", "dist/**", ".git-hooks/**"]

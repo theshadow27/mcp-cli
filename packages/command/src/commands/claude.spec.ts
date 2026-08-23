@@ -60,6 +60,13 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     })),
     readFileWithLimit: mock(() => "file content"),
     getAgentSession: mock(async () => null),
+    // #3233: production defaults call the real (unmocked) daemon IPC —
+    // never let a test fall through to that. Any test exercising the
+    // work-item join / quota banner explicitly overrides these.
+    listWorkItems: mock(async () => []),
+    getQuotaStatus: mock(async () => {
+      throw new Error("getQuotaStatus not mocked");
+    }),
     ...overrides,
   };
 }
