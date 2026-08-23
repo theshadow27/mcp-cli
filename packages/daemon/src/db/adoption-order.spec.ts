@@ -18,8 +18,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { EventLog } from "../event-log";
 import { importLegacyState } from "./import-legacy";
 import { StateDb } from "./state";
+import { WorkItemDb } from "./work-items";
 
 describe("adoption order (#3039)", () => {
   const dirs: string[] = [];
@@ -63,6 +65,12 @@ describe("adoption order (#3039)", () => {
 
     const target = new StateDb(join(dir, "mcx.db"));
     dbs.push(target);
+    // index.ts constructs these two before calling importLegacyState so their tables
+    // (monitor_events, work_items) exist for the domain-stamp step inside the same
+    // transaction; without them the stamp fails on "no such table" and the whole
+    // import — domains included — rolls back.
+    new WorkItemDb(target.getDatabase());
+    new EventLog(target.getDatabase());
     return { target, legacyPath, scopesDir, projectRoot };
   }
 
