@@ -75,7 +75,32 @@ the sticky findings, and the worktree path — never a held-open implementer.
    orchestrator itself — sits idle-hot waiting. If the next action is
    "wait for X", record the resume point in the ledger and end the turn
    (or the session). The orchestrator reacts to task notifications and
-   monitor events, and never polls in a loop.
+   monitor events, and never polls in a loop. **Ending the turn IS the
+   correct wait** when every producer is a harness-tracked background
+   task or a `mcx monitor` command — never emit filler/no-op calls to
+   "stay awake", and never hand-roll a watchdog script. Verify a
+   suspect producer with `ps` at most once, then act or end the turn.
+
+### Waiting on the world: the monitor primitive (sprint 79, #3229/#3231)
+
+The one sanctioned way to wait on external state (PR opened/merged,
+labels, CI) with a time fallback, all built-in — no bespoke bash:
+
+1. Daemon up? `mcx version` (auto-starts; a dead daemon = dead event
+   stream, and other commands report it as a cryptic socket error —
+   #2991). During long sprints run it as a service so the 5-min idle
+   exit can't kill the watcher mid-wait (#3234; stopgap:
+   `systemd-run --user --setenv=MCP_DAEMON_TIMEOUT=86400000 --unit=mcpd-stopgap mcpd`).
+2. Items tracked? `mcx tracked` first — sprint items usually already
+   are. Track by ISSUE number only; NEVER `mcx track`/`untrack` a PR
+   number (`untrack` resolves by-PR first and deletes the real item —
+   #3240 data loss).
+3. Wait: `mcx monitor --until 'pr.*' --timeout 900` via the Bash tool's
+   `run_in_background` (never nohup/`&`). Wakes on the first matching
+   event OR at the timeout, whichever first.
+4. On wake: act on the event, or on timeout re-verify ground truth
+   (worktree git state, `gh pr list`, `ps` for gates), then re-arm and
+   end the turn.
 9. **Model mix.** Implementers per the plan table. Reviewers default
    sonnet; opus/fable review only for the gated class (security,
    isolation/containment, auth, DB schema, spawn path) or where the plan
