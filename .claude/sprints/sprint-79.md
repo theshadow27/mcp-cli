@@ -50,6 +50,22 @@ opus only where the work is genuinely design-heavy.
 > (metrics-server.ts), so #3223 is blockedBy #3222's merge. No lane-1
 > contact.
 
+> **Amendment 2026-08-23T19:0xZ (#3232/#3233/#3234 — operator directive, epic #3231):**
+> after repeated daemon outages disrupted orchestration, the operator directed:
+> "no daemon interruption policy — dev work must never disrupt the real ($PATH)
+> daemon… actual install from a release… real release/upgrade discipline.
+> that's my next priority. Execute." Evidence in #3231: symlink install let
+> `bun build` hot-swap the live daemon (mitigated — copies now); test runs
+> SIGTERM daemons on the production socket (#3233); 300s idle-exit killed the
+> daemon under a connected monitor + 7 tracked items (#3234, stopgap:
+> systemd `mcpd-stopgap.service` with `MCP_DAEMON_TIMEOUT=86400000`); release
+> cadence dead since v1.14.6 (July 13), #2993 folded into #3232. Overlap
+> check: surfaces are commands/upgrade*+release.yml (#3232), test preload+
+> constants.ts+rules (#3233), daemon index.ts+monitor machinery (#3234) —
+> no lane-1 contact, no cross-overlap. Three sonnet implementers spawned
+> 19:05Z. Also this run: #3229 (monitor flags, rescoped), #3230 (track
+> varargs), comment on #2991.
+
 **Scrutiny-mix sign-off required (plan.md Step 3b):** 3 of 12 high (25%),
 above the ~20% cap. Justification, per issue: #3038/PR#3200 carries four
 (a)/(b)-class findings whose fixes are claimed but unreviewed on a
