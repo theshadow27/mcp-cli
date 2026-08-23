@@ -72,6 +72,7 @@ export const SUBCOMMANDS = [
   "metrics",
   "dump",
   "spans",
+  "spend",
   "telemetry",
   "gc",
   "phase",

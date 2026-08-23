@@ -621,7 +621,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const quotaPoller = new QuotaPoller({ logger });
   quotaPoller.start();
 
-  const metricsServer = new MetricsServer(metrics, quotaPoller);
+  const metricsServer = new MetricsServer(metrics, quotaPoller, db);
   const tracingServer = new TracingServer(db);
 
   // Work items server: constructed lazily inside registerPendingVirtualServer
