@@ -4247,6 +4247,93 @@ describe("restoreSessions", () => {
     expect(s2?.worktree).toBe("/b-wt");
   });
 
+  // ── #3137 F3: restoreSessions cannot verify a live child's actual mode ──
+
+  test("restore-path does not falsely deny a still-live pre-restart child's legitimate can_use_tool (#3137 F3)", async () => {
+    // Pre-restart: session spawned under "rules" with a Bash-allow rule. Its
+    // live child was told `--permission-mode default` and rounds trip.
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, claudeVersion: "2.1.239" });
+    const port = await server.start();
+
+    server.prepareSession("f3-session", {
+      prompt: "hello",
+      permissionStrategy: "rules",
+      permissionRules: [{ tool: "Bash", action: "allow" }],
+    });
+    server.spawnClaude("f3-session");
+
+    const preWs = await connectMockClaude(port, "f3-session");
+    await waitForMessage(preWs); // initial user message
+    preWs.send(systemInitMessage("f3-session"));
+    const prePromise = waitForMessage(preWs);
+    preWs.send(canUseToolMessage("req-pre"));
+    const pre = JSON.parse((await prePromise).trim());
+    expect(pre.response.response.behavior).toBe("allow");
+    preWs.close();
+    await server.stop();
+
+    // Simulate a daemon restart: a fresh ClaudeWsServer restores the session
+    // from persisted state. Strategy isn't persisted, so restoreSessions can
+    // only guess "auto" — but the pre-restart child was never told to change
+    // modes, so it is still round-tripping under --permission-mode default
+    // the whole time. Resolving `childGated: true` here (the pre-fix behavior)
+    // denied every one of its requests regardless of legitimacy; restored
+    // sessions must start `childGated: false` instead.
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, claudeVersion: "2.1.239" });
+    const restartedPort = await server.start();
+    server.restoreSessions([
+      {
+        sessionId: "f3-session",
+        pid: 12345,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+      },
+    ]);
+
+    const postWs = await connectMockClaude(restartedPort, "f3-session");
+    const postPromise = waitForMessage(postWs);
+    postWs.send(canUseToolMessage("req-post"));
+    const post = JSON.parse((await postPromise).trim());
+    expect(post.response.response.behavior).toBe("allow");
+    postWs.close();
+  });
+
+  test("reviveSession re-resolves permission mode for the freshly spawned child (#3137 F3)", async () => {
+    // reviveSession spawns a brand-new process, so — unlike restoreSessions —
+    // the mode it resolves is guaranteed to match what the child is actually
+    // given. An uncontained session on a supported binary should be promoted
+    // to real auto-mode gating rather than inheriting restoreSessions' safe
+    // `childGated: false` default forever.
+    const ms = mockSpawn();
+    server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger, claudeVersion: "2.1.239" });
+    await server.start();
+
+    server.restoreSessions([
+      {
+        sessionId: "revive-f3",
+        pid: 12345,
+        state: "idle",
+        model: "claude-sonnet-4-6",
+        cwd: "/test",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-session-abc",
+      },
+    ]);
+
+    server.reviveSession("revive-f3", "continue");
+
+    const idx = ms.lastCmd.indexOf("--permission-mode");
+    expect(idx).toBeGreaterThan(-1);
+    expect(ms.lastCmd[idx + 1]).toBe("auto");
+  });
+
   // ── Session ID prefix matching ──
 
   describe("resolveSessionId", () => {

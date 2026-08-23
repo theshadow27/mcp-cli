@@ -22,6 +22,7 @@ import {
   ResultSuccess,
   SystemInit,
   SystemInitFallback,
+  SystemPermissionDenied,
   interruptRequest,
   permissionAllow,
   permissionDeny,
@@ -35,6 +36,13 @@ export type SessionEvent =
   | { type: "session:init"; sessionId: string; model: string; cwd: string; state: SessionStateEnum }
   | { type: "session:response"; message: AssistantMsg }
   | { type: "session:permission_request"; requestId: string; request: CanUseToolMsg["request"] }
+  | {
+      type: "session:permission_denied";
+      toolName: string;
+      toolUseId?: string;
+      reasonType?: string;
+      reason?: string;
+    }
   | { type: "session:result"; cost: number; tokens: number; numTurns: number; result: string }
   | { type: "session:error"; errors: string[]; cost: number }
   | { type: "session:rate_limited"; sessionId: string; retryAfterMs?: number }
@@ -181,6 +189,8 @@ export class SessionState {
     if (IGNORED_TYPES.has(msg.type)) return [];
     if (msg.type === "system" && msg.subtype === "status") return [];
 
+    if (msg.type === "system" && msg.subtype === "permission_denied") return this.handlePermissionDenied(msg);
+
     if (msg.type === "system" && msg.subtype === "init") return this.handleInit(msg);
     if (msg.type === "assistant") return this.handleAssistant(msg);
     if (msg.type === "result") return this.handleResult(msg);
@@ -303,6 +313,37 @@ export class SessionState {
   }
 
   // ── Private handlers ──
+
+  /**
+   * The child denied a tool call on its own — auto-mode classifier block or a
+   * settings deny rule (#3119). No `can_use_tool` round-trip happens for these,
+   * so without this the daemon sees nothing at all: the session just keeps
+   * running with a tool it silently cannot use, which reads exactly like a
+   * worker thinking hard. Surface it as an event so it reads as a signal.
+   *
+   * Deliberately not a state transition — the child tells the model to carry on
+   * with anything that doesn't depend on the denied call, so the session is
+   * still active.
+   */
+  private handlePermissionDenied(msg: NdjsonMessage): SessionEvent[] {
+    const parsed = SystemPermissionDenied.safeParse(msg);
+    if (!parsed.success) {
+      this.parseMismatch = true;
+      return [];
+    }
+    const d = parsed.data;
+    return [
+      {
+        type: "session:permission_denied",
+        toolName: d.tool_name,
+        ...(d.tool_use_id !== undefined && { toolUseId: d.tool_use_id }),
+        ...(d.decision_reason_type !== undefined && { reasonType: d.decision_reason_type }),
+        // Prefer the short machine-ish reason; the long `message` is guidance
+        // aimed at the model, not at whoever is watching the event stream.
+        ...(d.decision_reason !== undefined && { reason: d.decision_reason }),
+      },
+    ];
+  }
 
   private handleInit(msg: NdjsonMessage): SessionEvent[] {
     const strict = SystemInit.safeParse(msg);

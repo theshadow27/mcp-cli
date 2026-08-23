@@ -62,6 +62,28 @@ export const SystemStatus = z
   })
   .passthrough();
 
+/**
+ * The child denied a tool call itself, without asking us (#3119).
+ *
+ * Emitted under `--permission-mode auto` when the auto-mode classifier blocks,
+ * and for settings-level deny rules on any mode. There is no `can_use_tool`
+ * round-trip for these — the tool_result comes back `is_error` and the model is
+ * told to route around or stop, so from the daemon's side an unhandled denial
+ * is pure silence. `decision_reason_type` is `"classifier"` for an auto-mode
+ * block; other values come from rule matches.
+ */
+export const SystemPermissionDenied = z
+  .object({
+    type: z.literal("system"),
+    subtype: z.literal("permission_denied"),
+    tool_name: z.string(),
+    tool_use_id: z.string().optional(),
+    decision_reason_type: z.string().optional(),
+    decision_reason: z.string().optional(),
+    message: z.string().optional(),
+  })
+  .passthrough();
+
 export const Assistant = z.object({
   type: z.literal("assistant"),
   message: z
@@ -294,6 +316,7 @@ export const PermissionDeny = z.object({
 // ── Inferred types ──
 
 export type SystemInit = z.infer<typeof SystemInit>;
+export type SystemPermissionDenied = z.infer<typeof SystemPermissionDenied>;
 export type SystemInitFallback = z.infer<typeof SystemInitFallback>;
 export type SystemStatus = z.infer<typeof SystemStatus>;
 export type Assistant = z.infer<typeof Assistant>;
