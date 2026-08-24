@@ -151,3 +151,61 @@ is verify/fix/rename + release infra, then cut **v2.0.0**. Risks: the gated
 third sits on two files (state.ts, spawn path) — the serial chains are
 load-bearing; #3013 lands early or a mid-sprint claude auto-update can strand
 spawns; #3273 is 7× bigger than its issue claims (587 sites) and must go last.
+
+## Run log (orchestrator, live)
+
+**Concurrency amendment (operator, at run start):** 4 sessions max — **2 impl +
+2 review/QA** — overriding the plan's "at most 3 sessions". Lane ordering and
+all `blockedBy` edges are unchanged; only the number of simultaneous impl lanes
+is capped.
+
+**Plan-time board actions: DONE.** Closed #3152, #3255 (both verified already
+fixed on main, file:line cited). Commented #3036 (needs-clarification), #3041
+(defer epic B + dup of #3192), #3155 (rescope). Filed splits: #3278 (DDL-in-txn
+rule), #3279 (import-guard regression test), #3280 (#3110 sym1/2 readiness
+design), #3281 (#3246 daemon-side cwd design), #3282 (#3254 merge-on-collision
+design).
+
+### Status
+
+| # | Phase | PR | Session | Note |
+|---|-------|----|---------|------|
+| 3213 | qa | #3287 | impl 20df14e0 / qa 945b4cce | triage scored low (29/15, 1 src file) → QA direct, no review round |
+| 3013 | impl | — | b89804ce | implemented, holds gate baton |
+| 3104 | impl | — | ef3aa49b | launched with live repro captured this session |
+
+### Issues filed during run (beyond the plan-time set)
+
+- **#3284** — work-item poller re-emits actionable `ci.finished` for untracked
+  items on long-merged PRs, **every poll cycle**, and the stale set **rotates**
+  (it is exactly the six items destroyed by the #3240 untrack trap in sprint 79).
+  Structural tell: `observedDurationMs: 0`. Orchestrator workaround is a grep
+  exclusion on that field.
+- **#3286** — `am-i-done` cannot fit its own 5m deadline on a shared box
+  (steps 1-11 ≈3m20s + coverage ≈2m45s ≈ 6m05s; #3261/#3268 kills it mid-coverage).
+- **#3285** — (from #3013's worker) stale patch blocks spawns that would use
+  stdio and never touch the patch.
+- **#3283** — (from #3213's worker) `OR IGNORE` rule, deliberately not bundled.
+- Data points added to existing issues: **#3178** (mail: unknown positional
+  sends an empty message — hit live), **#2690** (starvation signature, with full
+  process ancestry proving a cross-repo cause), **#3284** (recurrence + rotation).
+
+### Decisions
+
+- **#3286 is NOT being fixed mid-sprint — deferred to sprint 81 planning.**
+  The workaround (all 12 steps green across two invocations, never a subset)
+  costs time but leaves nothing unverified, and CI on clean runners is the real
+  arbiter. The actual question — whether 5m is the right deadline, whether it
+  should be per-step, whether it should scale with load — is a design decision,
+  and #3261/#3268 landed it only days ago. Bumping a wall-clock deadline under
+  time pressure is precisely the "accommodating a failure" Red Flag; it gets
+  decided at planning, not improvised by a worker mid-sprint.
+- **Cross-repo contention is the sprint's dominant tax.** `clrg-stats` is
+  running its own multi-lane sprint on this box and cycles gates continuously
+  across worktrees. It cannot be batoned and must not be touched. Gates are
+  released at load < 8 (evidence: a clean run was observed at 7.7), not at a
+  quiet box, which never arrives.
+- **`review-fn.ts:179` hardcodes `--worktree`**, ignoring `worktree_path`, so
+  blind `mcx phase advance` would strand a reviewer on a scratch branch (the
+  sprint-66 failure). `qa.ts` correctly honors `worktree_path`. Orchestrator
+  must hand-build review spawns with `--cwd` until #1286 lands.
