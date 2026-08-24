@@ -149,8 +149,13 @@ export function ensureCoreBareUnset(cwd: string, exec: ExecFn): CoreBareUnsetRes
  * GIT_WORK_TREE, and GIT_COMMON_DIR so that the caller's git-hook environment
  * does not override filesystem-based discovery. findGitRoot is meant to
  * discover repos by path, not by inherited git configuration.
+ *
+ * Exported so any code that spawns `git` from inside a hook context (this
+ * repo's own pre-commit/pre-push, or a test that spawns `git init`/`git
+ * -C <dir>` while am-i-done's own hooks are running) can strip the same
+ * vars rather than re-deriving the list — see card-store.spec.ts.
  */
-function gitDiscoverEnv(): Record<string, string | undefined> {
+export function gitDiscoverEnv(): Record<string, string | undefined> {
   // Strip inherited git-hook env vars so filesystem-based repo discovery works correctly
   // when findGitRoot is called from within a git hook (e.g. pre-commit).
   const {

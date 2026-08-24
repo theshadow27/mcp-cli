@@ -12,6 +12,7 @@ import {
   setCardField,
   setCardScalarField,
 } from "./card-store";
+import { gitDiscoverEnv } from "./git";
 
 describe("resolveCardsDir", () => {
   test("honors an explicit relative cards.dir, resolved against the domain root", () => {
@@ -44,7 +45,10 @@ describe("resolveCardsDir", () => {
     using opts = testOptions();
     const repoDir = mkdtempSync(join(tmpdir(), "cards-git-"));
     try {
-      const init = Bun.spawnSync(["git", "init", "-q", repoDir]);
+      // Strip inherited GIT_DIR/GIT_WORK_TREE/etc — this spec can itself run inside a git
+      // hook (am-i-done's own pre-commit/pre-push), and without stripping them `git init`
+      // silently follows the *hook's* GIT_DIR instead of initializing repoDir (#3066 review).
+      const init = Bun.spawnSync(["git", "init", "-q", repoDir], { env: gitDiscoverEnv() });
       expect(init.success).toBe(true);
       expect(existsSync(join(repoDir, ".git"))).toBe(true);
 
