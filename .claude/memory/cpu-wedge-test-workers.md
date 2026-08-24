@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 17e9dca3-6aa4-46d0-82f2-89bea91bfcc8
+  modified: 2026-08-24T04:12:00.243Z
 ---
 
 **⚠️ This memory previously recorded the WRONG conclusion (that the fix was a concurrency cap + SIGKILL-pgroup watchdog). That prescription was the disease. Corrected in sprint 70 — read the retro `.claude/diary/20260530.70.md` before touching test-runner concurrency.**
@@ -32,3 +33,27 @@ There IS a genuine bun bmalloc `madvise` EAGAIN spin upstream ([bun#27490](https
 - If a genuine spin ever recurs: scope any mitigation to the run's OWN child PIDs (tracked, not `ps`-discovered), pin bun / file upstream, and prefer reducing `--max-concurrency` for THAT run only — never a global killer, never a host-wide `ps` sweep.
 
 See [[feedback_codex_retro]] for other stale-process lessons. The deleted files (`watchdog.ts`/`concurrency.ts`/`orphan-sweep.ts`, #2597/#2415/#2459) stand in git history as the cautionary precedent.
+
+## The mechanism — exact words from the sprint-70 retro (canonical: `.claude/diary/20260530.70.md`)
+
+> "**a minimally-bounded autonomous loop, confronted with a self-reinforcing
+> failure where each patch superficially 'works,' will dig deeper with
+> confidence rather than recognize the hole — and will even produce
+> contaminated evidence that confirms it's on the right track.** The recovery
+> required (a) a human who *remembered the system used to be fast* and refused
+> the framing, and (b) hard permission gates that stopped the most dangerous
+> actions. Both mattered. Neither was the model's own course-correction."
+
+> "**Fix-forward without re-checking the premise.** The single biggest failure.
+> The loop made N locally-reasonable patches that compounded into a far worse
+> state, and never stepped back to 'this used to be fast / used to work — what
+> did *we* change?'"
+
+> "An unattended run would have kept digging."
+
+2026-08-24 addendum: the same accretion happens on the TEST side — 30 spec
+files came to spawn real processes (12 also killing them) in the default unit
+gate, one reasonable diff at a time. Fix is partitioning real-process specs
+into the explicit integration tier (ORPHAN_TOLERANT mechanism, #3262), never
+process hygiene. Root-cause arcs: #2973/#3250 (event-loop spin wedge), #2471
+(ps→/proc).

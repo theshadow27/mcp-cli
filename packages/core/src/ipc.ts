@@ -8,6 +8,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod/v4";
 import type { AliasType, MonitorAliasMetadata } from "./alias-bundle-types";
+import type { Domain } from "./domain";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
 import type { SpanEvent } from "./trace";
@@ -70,7 +71,14 @@ export type IpcMethod =
   | "listAutomation"
   | "getAutomationLog"
   | "getAgentSession"
-  | "getPrThreadSnapshot";
+  | "getPrThreadSnapshot"
+  | "domainAdd"
+  | "domainList"
+  | "domainShow"
+  | "domainWhich"
+  | "domainRename"
+  | "domainRemove"
+  | "domainImport";
 
 // -- Request/Response --
 
@@ -369,38 +377,81 @@ export interface MailMessage {
   body: string | null;
   replyTo: number | null;
   read: boolean;
+  /** The domain partition this row lives in. `0` is the unassigned partition (`NO_DOMAIN_ID`). */
+  domainId: number;
   createdAt: string;
 }
 
-export const SendMailParamsSchema = z.object({
-  sender: z.string(),
-  recipient: z.string(),
-  subject: z.string().optional(),
-  body: z.string().optional(),
-  replyTo: z.number().optional(),
-});
+/**
+ * Every mail method is domain-scoped (#3038). The caller says which partition it is
+ * acting in, by supplying its own `cwd` (resolved through the domains table) or by
+ * naming a domain explicitly with `-d`.
+ *
+ * Both fields are optional individually but **at least one is required**, enforced by
+ * the refine below rather than by daemon-side convention: a mail call that forgot to say
+ * where it is fails at parse with an actionable message, instead of the daemon inventing
+ * an answer from its own `process.cwd()`. That is the closed direction — an unscoped
+ * mail call does nothing rather than reading or writing an arbitrary partition.
+ */
+const MAIL_SCOPE_SHAPE = {
+  /** The caller's working directory, resolved through the domains table. */
+  cwd: z.string().optional(),
+  /** An explicit domain name (`mcx mail -d <domain>`). Wins over `cwd`. */
+  domain: z.string().optional(),
+} as const;
 
-export const ReadMailParamsSchema = z.object({
-  recipient: z.string().optional(),
-  unreadOnly: z.boolean().optional(),
-  limit: z.number().optional(),
-});
+const MAIL_SCOPE_REQUIRED = {
+  message: "mail requires a domain scope: pass the caller's cwd, or name one with -d <domain>",
+} as const;
 
-export const WaitForMailParamsSchema = z.object({
-  recipient: z.string().optional(),
-  timeout: z.number().optional(),
-});
+function hasMailScope(v: { cwd?: string; domain?: string }): boolean {
+  return (v.cwd ?? "").trim().length > 0 || (v.domain ?? "").trim().length > 0;
+}
 
-export const ReplyToMailParamsSchema = z.object({
-  id: z.number(),
-  sender: z.string(),
-  body: z.string(),
-  subject: z.string().optional(),
-});
+export const SendMailParamsSchema = z
+  .object({
+    sender: z.string(),
+    recipient: z.string(),
+    subject: z.string().optional(),
+    body: z.string().optional(),
+    replyTo: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
 
-export const MarkReadParamsSchema = z.object({
-  id: z.number(),
-});
+export const ReadMailParamsSchema = z
+  .object({
+    recipient: z.string().optional(),
+    unreadOnly: z.boolean().optional(),
+    limit: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const WaitForMailParamsSchema = z
+  .object({
+    recipient: z.string().optional(),
+    timeout: z.number().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const ReplyToMailParamsSchema = z
+  .object({
+    id: z.number(),
+    sender: z.string(),
+    body: z.string(),
+    subject: z.string().optional(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
+
+export const MarkReadParamsSchema = z
+  .object({
+    id: z.number(),
+    ...MAIL_SCOPE_SHAPE,
+  })
+  .refine(hasMailScope, MAIL_SCOPE_REQUIRED);
 
 // -- Span schemas --
 
@@ -471,6 +522,12 @@ export const TrackWorkItemParamsSchema = z
     initialPhase: z.string().optional(),
     /** Absolute path to the repo root; used server-side to locate a .mcx manifest for initialPhase validation. */
     repoRoot: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
     /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). Each entry must be name=true or name=false. */
     automationOverrides: z
       .string()
@@ -504,6 +561,12 @@ export const UntrackWorkItemParamsSchema = z
     number: z.number().optional(),
     /** Branch name to untrack. */
     branch: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -517,6 +580,12 @@ export const ListWorkItemsParamsSchema = z.object({
    * Unset or true: show all items. Only `mcx tracked` passes false to opt in to filtering.
    */
   includeArchived: z.boolean().optional(),
+  /**
+   * Caller's working directory, used to resolve the domain this call is scoped to
+   * (#3037). Absent or outside every registered domain → the unassigned partition,
+   * which is where every pre-domain row lives.
+   */
+  cwd: z.string().optional(),
 });
 
 export const GetWorkItemParamsSchema = z
@@ -524,6 +593,12 @@ export const GetWorkItemParamsSchema = z
     id: z.string().optional(),
     number: z.number().optional(),
     branch: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
   })
   .refine((p) => p.id != null || p.number != null || p.branch != null, {
     message: "One of id, number, or branch is required",
@@ -700,10 +775,18 @@ export interface SendMailResult {
 
 export interface ReadMailResult {
   messages: MailMessage[];
+  /**
+   * The partition this read resolved to (`_` for the unassigned partition). Callers use
+   * this to name the partition in an empty result, so "no mail" and "wrong partition"
+   * don't read as the same message (#3038 review finding #9).
+   */
+  domain: string;
 }
 
 export interface WaitForMailResult {
   message: MailMessage | null;
+  /** Same as {@link ReadMailResult.domain}. */
+  domain: string;
 }
 
 export interface ReplyToMailResult {
@@ -854,6 +937,99 @@ export interface PrThreadSnapshot {
   truncated: boolean;
 }
 
+// -- Domains (#3035) --
+
+/**
+ * A local domain path arrives already absolute — `~` expanded, relative resolved — because
+ * only the *caller* knows what "here" and "home" mean. The daemon's cwd is not the user's,
+ * so anchoring a relative path daemon-side would be a guess. Rejecting it at the protocol
+ * boundary is the enforcement; `resolveDomainLocation()` in `domain.ts` is the caller's
+ * half. A host-bound path names a directory on another machine and is stored verbatim.
+ */
+export const DomainAddParamsSchema = z
+  .object({
+    name: z.string().min(1),
+    host: z.string().min(1).nullable().default(null),
+    path: z.string().min(1),
+  })
+  .refine((p) => p.host !== null || isAbsolute(p.path), {
+    message: "a local domain path must be absolute — expand ~ and resolve relative paths before sending",
+    path: ["path"],
+  });
+
+export const DomainShowParamsSchema = z.object({ name: z.string().min(1) });
+
+export const DomainWhichParamsSchema = z.object({
+  path: z.string().refine(isAbsolute, "path must be absolute"),
+});
+
+export const DomainRenameParamsSchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+});
+
+export const DomainRemoveParamsSchema = z.object({
+  name: z.string().min(1),
+  /** Delete the dependent rows along with the domain. Without it, a domain with dependents is refused. */
+  cascade: z.boolean().optional().default(false),
+});
+
+export const DomainImportParamsSchema = z.object({
+  /** Re-run the one-shot legacy import even though the marker is already set. */
+  force: z.boolean().optional().default(false),
+});
+
+export interface DomainWhichResult {
+  domain: Domain | null;
+  /** Every registered domain name, so a miss can say what *is* registered instead of just "no". */
+  registered: string[];
+}
+
+/** Per-table count of rows bound to a domain — what `rm` reports when it refuses. */
+export interface DomainDependentCount {
+  table: string;
+  rows: number;
+}
+
+export interface DomainRemoveResult {
+  found: boolean;
+  removed: boolean;
+  /** Non-empty with `removed: false` means the removal was refused, not that nothing matched. */
+  dependents: DomainDependentCount[];
+}
+
+/**
+ * Result of `mcx domain import`.
+ *
+ * `--force` **arms** the next daemon start rather than importing in place: the import has
+ * exactly one call site, at boot, ahead of the reapers and pollers whose work it would
+ * otherwise invalidate. So there is no `ran`/`sealed`/`totalCopied` here — those describe
+ * a copy this command deliberately does not perform.
+ *
+ * The emptiness precondition is enforced at that one call site, not here: a daemon is
+ * running whenever this command can be issued, and it has already written to the database,
+ * so an arm-time check would refuse the correct recovery path every time.
+ */
+export interface DomainImportResult {
+  /** True when the marker is now clear, i.e. the next daemon start will run the import. */
+  armed: boolean;
+  /**
+   * True when arming found the marker already absent. Still `armed: true` — that is the
+   * state the command exists to produce, so re-running it is a success, not a failure.
+   */
+  alreadyArmed?: boolean;
+  /** When the marker says the legacy database was imported. Absent when it is not set. */
+  markerSetAt?: string;
+  /** Why arming was refused. Absent on success. */
+  reason?: string;
+  /** Key of the marker row in the legacy DB, so the message can name it. */
+  markerKey: string;
+  /** The exact recovery sequence, built from the paths this daemon actually opened. */
+  recovery: string;
+  /** Diagnostics forwarded verbatim for the CLI to print to stderr. */
+  log: string[];
+}
+
 // -- Method → Result type map --
 
 export interface IpcMethodResult {
@@ -898,8 +1074,19 @@ export interface IpcMethodResult {
   listNotes: NoteEntry[];
   deleteNote: { ok: true; deleted: boolean };
   trackWorkItem: WorkItem;
-  untrackWorkItem: { ok: true; deleted: boolean };
-  listWorkItems: { items: WorkItem[]; hiddenCount: number };
+  /**
+   * `id` is the CANONICAL id of the row that was deleted, present only when `deleted`.
+   * The caller needs it to clean up the item's phase-state namespace: once ids are
+   * domain-qualified the caller cannot reconstruct the stored spelling from what it typed,
+   * and after the delete it can no longer look it up (#3037 review R2).
+   */
+  untrackWorkItem: { ok: true; deleted: boolean; id?: string };
+  /**
+   * `unassignedCount` is present only when the caller's domain holds nothing but pre-domain
+   * rows exist in partition 0 — the difference between "nothing tracked" and "your items are
+   * stranded". See WorkItemDb.countUnassignedWorkItems.
+   */
+  listWorkItems: { items: WorkItem[]; hiddenCount: number; unassignedCount?: number };
   getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;
   aliasStateSet: AliasStateSetResult;
@@ -912,6 +1099,13 @@ export interface IpcMethodResult {
   getAutomationLog: GetAutomationLogResult;
   getAgentSession: GetAgentSessionResult;
   getPrThreadSnapshot: PrThreadSnapshot;
+  domainAdd: Domain;
+  domainList: Domain[];
+  domainShow: Domain | null;
+  domainWhich: DomainWhichResult;
+  domainRename: Domain;
+  domainRemove: DomainRemoveResult;
+  domainImport: DomainImportResult;
 }
 
 // -- Error codes --

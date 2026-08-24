@@ -65,6 +65,10 @@ export const SESSION_RESULT = "session.result" as const;
 export const SESSION_RESPONSE = "session.response" as const;
 export const SESSION_PERMISSION_REQUEST = "session.permission_request" as const;
 export const SESSION_PERMISSION_BLOCKED = "session.permission_blocked" as const;
+/** The child denied a tool call itself — auto-mode classifier or a deny rule (#3119). */
+export const SESSION_PERMISSION_DENIED = "session.permission_denied" as const;
+/** A session asked for `auto` but could not be given `--permission-mode auto` (#3119). */
+export const SESSION_PERMISSION_MODE_DOWNGRADED = "session.permission_mode_downgraded" as const;
 export const SESSION_ENDED = "session.ended" as const;
 export const SESSION_DISCONNECTED = "session.disconnected" as const;
 export const SESSION_ERROR = "session.error" as const;
@@ -298,7 +302,13 @@ export interface MonitorEventBase {
    * published it has a domain, even if that domain is `NO_DOMAIN_ID`.
    */
   domainId?: number;
-  /** Domain name for `domainId`, when the id names a registered domain. Absent for `NO_DOMAIN_ID`. */
+  /**
+   * Name of the domain this event belongs to (`domains.name`) — the human-readable
+   * counterpart to `domainId`. Present on events produced by a domain-scoped writer —
+   * every `work_item.*` event carries it (#3037). Absent on genuinely global events,
+   * on `NO_DOMAIN_ID`, and on rows that predate any domain (`domain_id = 0`), where
+   * "unassigned" is the honest answer and a synthesized default would be a lie.
+   */
   domain?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];
@@ -397,6 +407,18 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
   [SESSION_PERMISSION_BLOCKED]: (e) => {
     const tool = typeof e.toolName === "string" ? e.toolName : "";
     return join(wi(e), sid(e), tool);
+  },
+
+  [SESSION_PERMISSION_DENIED]: (e) => {
+    const tool = typeof e.toolName === "string" ? e.toolName : "";
+    const by = typeof e.reasonType === "string" ? `by:${e.reasonType}` : "";
+    const reason = typeof e.reason === "string" ? cap(e.reason, 60) : "";
+    return join(wi(e), sid(e), tool, by, reason);
+  },
+
+  [SESSION_PERMISSION_MODE_DOWNGRADED]: (e) => {
+    const reason = typeof e.reason === "string" ? cap(e.reason, 80) : "";
+    return join(wi(e), sid(e), "auto → default", reason);
   },
 
   [SESSION_ENDED]: (e) => join(wi(e), sid(e), cost(e), turns(e)),
@@ -745,6 +767,10 @@ const SEVERITY_BY_EVENT: Partial<Record<string, MonitorSeverity>> = {
   [SESSION_ENDED]: "actionable",
   [SESSION_RATE_LIMITED]: "actionable",
   [SESSION_CONTAINMENT_DENIED]: "actionable",
+  // A denial the daemon didn't make and can't answer: the worker keeps running
+  // with a capability it silently lacks, so someone has to look (#3119).
+  [SESSION_PERMISSION_DENIED]: "actionable",
+  [SESSION_PERMISSION_MODE_DOWNGRADED]: "notable",
   [ALIAS_CRASHED]: "actionable",
   [PR_MERGED]: "actionable",
   [PR_CLOSED]: "actionable",

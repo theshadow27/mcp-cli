@@ -190,6 +190,10 @@ describe("isCliOptionKey", () => {
     expect(isCliOptionKey("transport")).toBe(true);
   });
 
+  it("recognizes repo-root, the daemon's GitHub-repo-detection cwd override (#3243)", () => {
+    expect(isCliOptionKey("repo-root")).toBe(true);
+  });
+
   it("returns false for server names", () => {
     expect(isCliOptionKey("my-server")).toBe(false);
   });
@@ -1343,5 +1347,23 @@ describe("mcx config set default-profile", () => {
     const { deps: getDeps, logs } = makeDepsWithCapture({});
     await configGetDispatch(["default-profile"], getDeps);
     expect(logs.join("\n")).toContain("bedrock");
+  });
+});
+
+// -- repo-root (#3243) --
+
+describe("mcx config set repo-root", () => {
+  it("is a recognized CLI option key and reads back through config get", async () => {
+    using _opts = testOptions();
+    expect(isCliOptionKey("repo-root")).toBe(true);
+
+    const { deps } = makeDepsWithCapture({});
+    await configSetDispatch(["repo-root", "/opt/repos/mcp-cli"], deps);
+
+    expect(JSON.parse(readFileSync(options.MCP_CLI_CONFIG_PATH, "utf-8")).repoRoot).toBe("/opt/repos/mcp-cli");
+
+    const { deps: getDeps, logs } = makeDepsWithCapture({});
+    await configGetDispatch(["repo-root"], getDeps);
+    expect(logs.join("\n")).toContain("/opt/repos/mcp-cli");
   });
 });

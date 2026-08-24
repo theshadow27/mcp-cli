@@ -188,6 +188,54 @@ export function extractQuietFlag(args: string[]): { quiet: boolean; rest: string
 }
 
 /**
+ * Extract `-d <domain>` / `--domain <domain>` from args (#3039).
+ *
+ * The value is passed to the daemon verbatim as a *name*; `mcx` never resolves a
+ * domain itself, because the domains table lives in the daemon and a second
+ * resolver is the thing this replaced. Also accepts `--domain=<name>` so the
+ * flag behaves like the rest of the CLI's long options.
+ */
+export function extractDomainFlag(args: string[]): {
+  domain: string | undefined;
+  rest: string[];
+  error: string | undefined;
+} {
+  const rest: string[] = [];
+  let domain: string | undefined;
+  let error: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "-d" || arg === "--domain") {
+      const value = args[i + 1];
+      // A domain name can never begin with `-` (DOMAIN_NAME_RE), so `-d --json` is
+      // unambiguously a user error and must be REPORTED. Swallowing the flag sent a
+      // domain nobody typed; merely declining to swallow it left a bare `-d` in `rest`
+      // with nothing reporting it, so `mcx claude ls -d --all` silently ran the WIDEST
+      // possible query. A scoping flag that quietly widens is the exact failure
+      // direction this whole change exists to remove (#3039 review E).
+      if (value === undefined || value.startsWith("-")) {
+        error ??= "--domain requires a domain name";
+        continue;
+      }
+      domain = value;
+      i++; // skip the value
+    } else if (arg.startsWith("--domain=")) {
+      const value = arg.slice("--domain=".length);
+      if (value === "") {
+        error ??= "--domain requires a domain name";
+        continue;
+      }
+      domain = value;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { domain, rest, error };
+}
+
+/**
  * Extract --jq '<filter>' flag from args.
  * Returns the jq filter string (or undefined) and the remaining args.
  */

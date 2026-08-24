@@ -67,6 +67,9 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
       file: (path: string) => Bun.file(path).text(),
       json: async (path: string) => JSON.parse(await Bun.file(path).text()),
       cache: createAliasCache(aliasName),
+      // A standalone `mcx <alias>` run has no daemon-resolved domain: aliases outside a
+      // phase are not domain-partitioned work. Explicitly null rather than a guess.
+      domain: null,
       state: createAliasState({ repoRoot, namespace: aliasUserNamespace(aliasName) }),
       globalState: createAliasState({ repoRoot, namespace: GLOBAL_STATE_NAMESPACE }),
       workItem: null,

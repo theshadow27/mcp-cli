@@ -37,6 +37,7 @@ import { cmdAutomation } from "./commands/automation";
 import { cmdClaude } from "./commands/claude";
 import { cmdCompletions } from "./commands/completions";
 import { cmdConfig } from "./commands/config";
+import { cmdDomain } from "./commands/domain";
 import { cmdDump } from "./commands/dump";
 import { cmdExport } from "./commands/export";
 import { cmdGc } from "./commands/gc";
@@ -59,6 +60,7 @@ import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSite } from "./commands/site";
 import { cmdSpans } from "./commands/spans";
+import { cmdSpend } from "./commands/spend";
 import { cmdSprintStats } from "./commands/sprint-stats";
 import { cmdTelemetry } from "./commands/telemetry";
 import { cmdTrack, cmdTracked, cmdUntrack } from "./commands/track";
@@ -353,6 +355,10 @@ async function main(): Promise<void> {
         await cmdSpans(cleanArgs.slice(1));
         break;
 
+      case "spend":
+        await cmdSpend(cleanArgs.slice(1));
+        break;
+
       case "mail":
         await cmdMail(cleanArgs.slice(1));
         break;
@@ -435,6 +441,10 @@ async function main(): Promise<void> {
 
       case "vfs":
         await cmdVfs(cleanArgs.slice(1), { dryRun: _dryRun });
+        break;
+
+      case "domain":
+        await cmdDomain(cleanArgs.slice(1));
         break;
 
       case "scope":
@@ -1033,8 +1043,10 @@ Utility:
   mcx memory audit [--json]           Haiku-driven memory staleness + contradiction check
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
-  mcx scope <subcommand>              Directory scope management
+  mcx domain <subcommand>             Domains: names bound to [host:]path
+  mcx scope <subcommand>              Directory scope management (superseded by domain)
   mcx dump/metrics/spans              Diagnostics and observability
+  mcx spend [-d <domain>] [--json]    Per-domain spend rollup from agent_sessions
   mcx telemetry [on|off|status]       Control anonymous usage telemetry
   mcx version                         Version info
   mcx completions {bash|zsh|fish}     Shell completions

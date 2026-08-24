@@ -235,6 +235,41 @@ describe("QuotaPoller", () => {
     expect(warnings.some((w) => w.includes("CRITICAL") && w.includes("97%"))).toBe(true);
   });
 
+  test("lastAttemptAt is null before the first poll and set after", async () => {
+    const poller = new QuotaPoller({
+      intervalMs: 60_000,
+      readToken: async () => null,
+      fetchUsage: async () => parseUsageResponse({}),
+    });
+    expect(poller.lastAttemptAt).toBeNull();
+
+    const before = Date.now();
+    poller.start();
+    await waitUntil(() => poller.lastAttemptAt !== null);
+    poller.stop();
+
+    expect(poller.lastAttemptAt).not.toBeNull();
+    expect(poller.lastAttemptAt as number).toBeGreaterThanOrEqual(before);
+  });
+
+  test("lastAttemptAt advances even when no token is available (no error set)", async () => {
+    const poller = new QuotaPoller({
+      intervalMs: 60_000,
+      readToken: async () => null,
+      fetchUsage: async () => {
+        throw new Error("should not be called");
+      },
+    });
+
+    poller.start();
+    await waitUntil(() => poller.lastAttemptAt !== null);
+    poller.stop();
+
+    expect(poller.lastAttemptAt).not.toBeNull();
+    expect(poller.status).toBeNull();
+    expect(poller.lastError).toBeNull(); // distinguishing "attempted, no token" is metrics-server's job, not the poller's
+  });
+
   test("stop is idempotent", () => {
     const poller = new QuotaPoller({
       intervalMs: 60_000,

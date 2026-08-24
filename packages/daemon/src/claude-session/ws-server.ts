@@ -27,6 +27,7 @@ import {
   CHECKS_STARTED,
   CONTAINMENT_WRITE_TOOLS,
   ContainmentGuard,
+  NO_DOMAIN_ID,
   PHASE_CHANGED,
   PR_CLOSED,
   PR_MERGED,
@@ -47,6 +48,8 @@ import {
   SESSION_IDLE,
   SESSION_MODEL_CHANGED,
   SESSION_PERMISSION_BLOCKED,
+  SESSION_PERMISSION_DENIED,
+  SESSION_PERMISSION_MODE_DOWNGRADED,
   SESSION_PERMISSION_REQUEST,
   SESSION_RESULT,
   SESSION_SPAWN_OVERRIDE,
@@ -69,6 +72,8 @@ import type { GhTokenConfig } from "./gh-token";
 import { ghTokensPath, isolatedGhConfigDir, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
 import type { NdjsonMessage } from "./ndjson";
 import { keepAlive, parseFrame, permissionAllow, permissionDeny, setModelRequest, userMessage } from "./ndjson";
+import type { ClaudePermissionMode, PermissionModeResolution } from "./permission-mode";
+import { resolvePermissionMode } from "./permission-mode";
 import type { CanUseToolRequest, PermissionRule, PermissionStrategy } from "./permission-router";
 import { PermissionRouter } from "./permission-router";
 import type { SessionEvent } from "./session-state";
@@ -173,6 +178,16 @@ export interface SessionConfig {
   resumeSessionId?: string;
   /** Repo root captured at spawn time, used for worktree hook config lookup at teardown. */
   repoRoot?: string;
+  /**
+   * Domain that owns this session (#3039), already resolved by the daemon —
+   * `NO_DOMAIN_ID` when the spawn directory is outside every registered domain.
+   *
+   * A number, never a name or a path: the domains table lives in the daemon, so
+   * this worker has no way to resolve one and no business trying. Comparing ids
+   * is all session filtering does now, which is what retired `scopeRoot`'s
+   * per-worker string-prefix match.
+   */
+  domainId?: number;
   /**
    * Per-spawn transport override: `"ws"` (sdk-url WebSocket) or `"stdio"` (pipe).
    * Set by `mcx claude spawn --transport`. When omitted, prepareSession falls
@@ -437,6 +452,11 @@ interface WsSession {
   spawnAlive: boolean;
   worktree: string | null;
   containment: ContainmentGuard | null;
+  /**
+   * `--permission-mode` this session's child is spawned with, resolved once
+   * from the strategy so `buildSpawnCmd` and the router can't disagree (#3119).
+   */
+  permissionMode: ClaudePermissionMode;
   resultWaiters: ResultWaiter[];
   keepAliveTimer: Timer | null;
   clearing: boolean;
@@ -634,6 +654,14 @@ export class ClaudeWsServer {
    */
   private readonly defaultTransport: "ws" | "stdio";
 
+  /**
+   * Detected claude CLI version, or null when the daemon could not determine
+   * one. Read only by `resolvePermissionMode` — a `--permission-mode auto`
+   * spawn against a binary that doesn't list `auto` as a choice exits at
+   * argument parsing, so an unknown version keeps the daemon-side gate (#3119).
+   */
+  private readonly claudeVersion: string | null;
+
   constructor(deps?: {
     spawn?: SpawnFn;
     killTimeoutMs?: number;
@@ -657,6 +685,8 @@ export class ClaudeWsServer {
     defaultTransport?: "ws" | "stdio";
     /** Source of the GitHub credential configuration (#1510). Default: `~/.mcp-cli/tokens.json` + env. */
     ghTokens?: () => GhTokenConfig;
+    /** Detected claude CLI version, gating `--permission-mode auto` (#3119). */
+    claudeVersion?: string | null;
   }) {
     this.spawn = deps?.spawn ?? defaultSpawn;
     this.killTimeoutMs = deps?.killTimeoutMs ?? KILL_TIMEOUT_MS;
@@ -679,6 +709,7 @@ export class ClaudeWsServer {
     this.spawnDisabledReason = deps?.spawnDisabledReason ?? null;
     this.defaultTransport = deps?.defaultTransport ?? "ws";
     this.ghTokens = deps?.ghTokens ?? (() => loadGhTokens());
+    this.claudeVersion = deps?.claudeVersion ?? null;
   }
 
   /** True when the server is running in TLS (wss://) mode. */
@@ -855,6 +886,13 @@ export class ClaudeWsServer {
       spawnedAt?: string | null;
       claudeSessionId?: string | null;
       transport?: "ws" | "stdio";
+      /**
+       * Persisted `agent_sessions.domain_id` (#3039). Restoring this is not
+       * optional polish: a daemon restart that drops it puts every surviving
+       * session back in domain 0, where no domain-scoped `mcx claude ls` will
+       * ever show it again — and a restart is precisely when nobody is looking.
+       */
+      domainId?: number;
     }>,
   ): number {
     let restored = 0;
@@ -869,7 +907,21 @@ export class ClaudeWsServer {
       state.cost = s.totalCost;
       state.tokens = s.totalTokens;
 
-      const router = new PermissionRouter("auto");
+      // A restored session's original strategy isn't persisted, so it can only
+      // guess "auto" here. `childGated` is not a property of that guess — it's
+      // a claim about what `--permission-mode` the *live* process actually got,
+      // and restoreSessions cannot verify that (#3137 review, finding F3). If
+      // the pre-restart child is still alive and reconnects without going
+      // through `reviveSession`, it is round-tripping under whatever mode it
+      // was really spawned with; resolving `childGated: true` here would deny
+      // every one of its `can_use_tool` requests regardless of legitimacy —
+      // confirmed: a request that was allowed pre-restart under `rules` comes
+      // back denied post-restart purely from this guess, not from anything the
+      // child did. So a restored session always starts `childGated: false` (the
+      // daemon remains the presumed gate, same posture as before #3119) and is
+      // only promoted to a verified `auto` mode inside `reviveSession`, which
+      // actually spawns the process it then describes.
+      const router = new PermissionRouter("auto", undefined, { childGated: false });
 
       const restoredSignal = makeWorkCompletedSignal();
       this.sessions.set(s.sessionId, {
@@ -885,7 +937,12 @@ export class ClaudeWsServer {
         // from today's config SUBSTITUTES one, which would put a `--no-profile`
         // session onto billed credentials it was explicitly denied. spawnClaude
         // refuses to guess rather than pick a direction.
-        config: { prompt: "", worktree: s.worktree ?? undefined, profileSource: "unrecorded" },
+        config: {
+          prompt: "",
+          worktree: s.worktree ?? undefined,
+          profileSource: "unrecorded",
+          domainId: s.domainId ?? NO_DOMAIN_ID,
+        },
         name: s.name ?? null,
         pid: s.pid,
         pidStartTime: s.pidStartTime ?? null,
@@ -894,6 +951,11 @@ export class ClaudeWsServer {
         spawnAlive: false,
         worktree: s.worktree,
         containment: s.worktree && s.cwd ? new ContainmentGuard(s.cwd) : null,
+        // Matches `router.childGated: false` above — see the comment there.
+        // Only matters if `reviveSession` respawns this session without first
+        // re-resolving; `reviveSession` does re-resolve, so this is a safe
+        // starting value rather than the flag that ends up on any real spawn.
+        permissionMode: "default",
         resultWaiters: [],
         keepAliveTimer: null,
         clearing: false,
@@ -951,6 +1013,16 @@ export class ClaudeWsServer {
     session.pidStartTime = null;
     session.pidCachedAt = null;
 
+    // restoreSessions couldn't verify what mode the pre-restart child actually
+    // ran under, so it left this session `childGated: false` (#3137 F3). This
+    // call spawns a brand-new process, so — unlike restoreSessions — the mode
+    // decided here is guaranteed to match the flag the child is actually given.
+    // Re-resolve now, so a revived uncontained session on a supported binary
+    // gets the same real auto-mode gating a fresh spawn would.
+    const permissionMode = this.resolvePermissionModeFor(sessionId, "auto", session.worktree != null);
+    session.permissionMode = permissionMode.mode;
+    session.router = new PermissionRouter("auto", undefined, { childGated: permissionMode.childGated });
+
     // Transition disconnected → connecting so handleOpen treats this as a fresh spawn
     // (sends session.config.prompt) rather than a WS reconnect (which skips the initial message).
     session.state.reconnect();
@@ -968,6 +1040,37 @@ export class ClaudeWsServer {
       session.state.state = "disconnected";
       throw err;
     }
+  }
+
+  /**
+   * Resolve the child's permission mode for a session, announcing any downgrade.
+   *
+   * A session that asked for `auto` and didn't get it falls back to the
+   * daemon-side gate, which is safe but is *not* what the caller asked for —
+   * so it goes out as a warn line and a monitor event. A permission posture
+   * that quietly differs from the configured one is the exact failure #3119
+   * exists to remove; replacing it with a different silent fallback would miss
+   * the point.
+   */
+  private resolvePermissionModeFor(
+    sessionId: string,
+    strategy: PermissionStrategy,
+    contained: boolean,
+  ): PermissionModeResolution {
+    const resolution = resolvePermissionMode({ strategy, contained, claudeVersion: this.claudeVersion });
+    if (resolution.downgradeReason) {
+      this.logger.warn(
+        `[_claude] session ${sessionId}: permission strategy "auto" downgraded to the daemon-side gate — ${resolution.downgradeReason}`,
+      );
+      this.onMonitorEvent?.({
+        src: "daemon.claude-server",
+        event: SESSION_PERMISSION_MODE_DOWNGRADED,
+        category: "session",
+        sessionId,
+        reason: resolution.downgradeReason,
+      });
+    }
+    return resolution;
   }
 
   /**
@@ -993,7 +1096,15 @@ export class ClaudeWsServer {
     // Pre-populate state.cwd from config so session info shows the correct
     // cwd even if the Claude process never connects (#1836).
     if (config.cwd) state.cwd = config.cwd;
-    const router = new PermissionRouter(config.permissionStrategy ?? "auto", config.permissionRules);
+    const strategy = config.permissionStrategy ?? "auto";
+    // One decision for the spawn flag and the router (#3119). `contained` keys
+    // off config.worktree rather than the guard instance, because a worktree
+    // session with no cwd yet only gets its ContainmentGuard on system/init —
+    // long after buildSpawnCmd has run.
+    const permissionMode = this.resolvePermissionModeFor(sessionId, strategy, config.worktree != null);
+    const router = new PermissionRouter(strategy, config.permissionRules, {
+      childGated: permissionMode.childGated,
+    });
 
     // Auto-generate a name if not explicitly provided
     // If an explicit name was given, reject duplicates among active sessions
@@ -1022,6 +1133,7 @@ export class ClaudeWsServer {
       spawnAlive: false,
       worktree: config.worktree ?? null,
       containment: config.worktree && config.cwd ? new ContainmentGuard(config.cwd) : null,
+      permissionMode: permissionMode.mode,
       resultWaiters: [],
       keepAliveTimer: null,
       clearing: false,
@@ -1497,9 +1609,12 @@ export class ClaudeWsServer {
       cmd.push("-p", "");
     }
 
+    // Resolved from the strategy at prepare time (#3119) — never hardcoded
+    // here, which is how the flag and the router used to disagree. `auto` hands
+    // the gate to the child's classifier; `default` keeps it in the daemon.
     cmd.push(
       "--permission-mode",
-      "default",
+      session.permissionMode,
       "--print",
       "--output-format",
       "stream-json",
@@ -2784,6 +2899,27 @@ export class ClaudeWsServer {
           logErr("resolveEventWaiters failed", err);
         }
         break;
+      case "session:permission_denied":
+        // The child refused a tool call we never got asked about (#3119). The
+        // session keeps running, so nothing else in here would ever mention it
+        // — log it and wake any `waitForEvent` so an unattended worker losing a
+        // capability is a signal rather than a quiet slowdown.
+        this.logger.warn(
+          `[_claude] session ${sessionId}: child denied ${event.toolName}` +
+            `${event.reasonType ? ` (${event.reasonType})` : ""}${event.reason ? `: ${event.reason}` : ""}`,
+        );
+        try {
+          session.pendingImmediate = true;
+          this.resolveEventWaiters(sessionId, {
+            sessionId,
+            event: "session:permission_denied",
+            toolName: event.toolName,
+            ...(event.reason !== undefined && { result: event.reason }),
+          });
+        } catch (err) {
+          logErr("resolveEventWaiters failed", err);
+        }
+        break;
       case "session:containment_warning":
       case "session:containment_denied":
       case "session:containment_escalated":
@@ -2810,6 +2946,7 @@ export class ClaudeWsServer {
 
   private static readonly SESSION_EVENT_MAP: Record<string, string> = {
     "session:permission_request": SESSION_PERMISSION_REQUEST,
+    "session:permission_denied": SESSION_PERMISSION_DENIED,
     "session:result": SESSION_RESULT,
     "session:error": SESSION_ERROR,
     "session:cleared": SESSION_CLEARED,
@@ -2870,6 +3007,7 @@ export class ClaudeWsServer {
     if ("model" in event) input.model = (event as { model: string }).model;
     if ("strikes" in event) input.strikes = event.strikes;
     if ("reason" in event) input.reason = event.reason;
+    if ("reasonType" in event) input.reasonType = event.reasonType;
 
     this.onMonitorEvent(input);
 
@@ -3202,6 +3340,7 @@ export class ClaudeWsServer {
       pendingPermissionDetails: details,
       worktree: s.config.worktree ?? null,
       repoRoot: s.config.repoRoot ?? null,
+      domainId: s.config.domainId ?? NO_DOMAIN_ID,
       processAlive: s.spawnAlive,
       rateLimited: s.state.rateLimited,
       createdAt: s.createdAt,

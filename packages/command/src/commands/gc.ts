@@ -425,7 +425,15 @@ function getCheckedOutBranches(deps: WorktreeShimDeps, cwd: string): Set<string>
   return set;
 }
 
-export async function cmdGc(args: string[], overrides: { dryRun?: boolean } = {}): Promise<void> {
+export interface CmdGcOverrides {
+  dryRun?: boolean;
+  /** Injected for testability — defaults to `defaultGcDeps()`, which hits the real daemon. */
+  deps?: GcDeps;
+  /** Injected for testability — defaults to a real `ipcCall("publishEvent", ...)`. */
+  publishEvent?: (payload: Record<string, unknown>) => Promise<unknown>;
+}
+
+export async function cmdGc(args: string[], overrides: CmdGcOverrides = {}): Promise<void> {
   let opts: GcOptions;
   try {
     opts = parseGcArgs(args);
@@ -434,11 +442,12 @@ export async function cmdGc(args: string[], overrides: { dryRun?: boolean } = {}
     process.exit(1);
   }
   if (overrides.dryRun) opts.dryRun = true;
-  const result = await runGc(opts, defaultGcDeps());
+  const result = await runGc(opts, overrides.deps ?? defaultGcDeps());
 
   if (!opts.dryRun && (result.prunedWorktrees.length > 0 || result.deletedBranches.length > 0)) {
     try {
-      await ipcCall("publishEvent", {
+      const publishEvent = overrides.publishEvent ?? ((payload) => ipcCall("publishEvent", payload));
+      await publishEvent({
         src: "cli.gc",
         event: GC_PRUNED,
         category: "gc",

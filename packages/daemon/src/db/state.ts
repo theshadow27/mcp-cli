@@ -52,6 +52,16 @@ export interface AgentSessionRow {
   endedAt: string | null;
   claudeSessionId: string | null;
   transport: string | null;
+  /**
+   * Domain that owns this session, or `NO_DOMAIN_ID` when it was spawned outside
+   * every registered domain (#3039).
+   *
+   * Read back, not just written: `claude-server.ts` rebuilds the worker's live
+   * sessions from these rows after a daemon restart, and a restored session with
+   * no domain disappears from every domain-scoped `mcx claude ls` — at exactly
+   * the moment nobody is watching.
+   */
+  domainId: number;
 }
 
 /** @deprecated Use AgentSessionRow instead. */
@@ -324,6 +334,41 @@ export class StateDb {
       })();
       version = 7;
     }
+
+    // v8 (#3038): every mail query is now domain-scoped — insertMail / readMail /
+    // getNextUnread / getMailById / markMailRead all take a required domainId and all
+    // predicate on domain_id, so the partition has to lead the index.
+    //
+    // This is a version step and NOT an edit to applyV1Schema, which is what the warning
+    // on that method forbids: the ladder is already past 1, so an index change written
+    // there would run on fresh test databases (green forever) and never on any mcx.db
+    // that had already booted a #3143 binary (silent production drift). Schema changes
+    // that tests cannot catch are exactly the ones that need a step of their own.
+    //
+    // idx_mail_recipient is dropped rather than kept alongside: no query can use a
+    // (recipient, read, created_at) index once every predicate leads with domain_id, so
+    // leaving it is pure write amplification.
+    if (version < 8) {
+      this.db.transaction(() => {
+        // Guarded on the table existing, the same way v7 guards `agent_sessions`. A
+        // database can sit at version N with the table absent — schema_versions may be
+        // seeded by a racing process before any table is created, and applyV1Schema only
+        // runs at version < 1, so it will not backfill. `CREATE INDEX ... ON mail` would
+        // then throw "no such table" and take the whole daemon start with it.
+        const hasMail =
+          (this.db
+            .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='mail'")
+            .get()?.n ?? 0) > 0;
+        if (hasMail) {
+          this.db.exec("DROP INDEX IF EXISTS idx_mail_recipient");
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_mail_domain_recipient ON mail(domain_id, recipient, read, created_at)",
+          );
+        }
+        this.setSchemaVersion(CONSUMER, 8);
+      })();
+      version = 8;
+    }
   }
 
   /**
@@ -472,9 +517,8 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
-      -- No domain index on mail yet, for the same reason event-log.ts declines one on
-      -- monitor_events: insertMail has no domainId parameter until #3038, so every row
-      -- is 0 and the index is write amplification for something nothing can use.
+      -- The domain-scoped replacement for this index is a v8 step, NOT an edit here.
+      -- See the ladder below and the warning on applyV1Schema.
 
       CREATE TABLE IF NOT EXISTS notes (
         server_name TEXT NOT NULL,
@@ -1211,25 +1255,38 @@ export class StateDb {
     }
   }
 
-  // -- Mail --
+  // -- Mail (domain-partitioned, #3038) --
+  //
+  // `domainId` is the **required first parameter** of every method here, deliberately
+  // not a trailing `domainId: number = NO_DOMAIN_ID`. A defaulted partition key compiles
+  // at every call site that has not thought about the partition, which is how a column
+  // ends up present with no writer; a required leading one makes tsc enumerate them.
+  //
+  // Every read predicates on `domain_id = ?`. There is no code path that omits it, so
+  // there is no path that degrades to a cross-partition read. Resolution of *which*
+  // domain lives in `mail-domain.ts`; this layer only enforces that one was supplied.
 
-  insertMail(sender: string, recipient: string, subject?: string, body?: string, replyTo?: number): number {
-    const result = this.db.run("INSERT INTO mail (sender, recipient, subject, body, reply_to) VALUES (?, ?, ?, ?, ?)", [
-      sender,
-      recipient,
-      subject ?? null,
-      body ?? null,
-      replyTo ?? null,
-    ]);
+  insertMail(
+    domainId: number,
+    sender: string,
+    recipient: string,
+    subject?: string,
+    body?: string,
+    replyTo?: number,
+  ): number {
+    const result = this.db.run(
+      "INSERT INTO mail (domain_id, sender, recipient, subject, body, reply_to) VALUES (?, ?, ?, ?, ?, ?)",
+      [domainId, sender, recipient, subject ?? null, body ?? null, replyTo ?? null],
+    );
     this.maybeRunMailPrune();
     return Number(result.lastInsertRowid);
   }
 
-  readMail(recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
+  readMail(domainId: number, recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
     this.maybeRunMailPrune();
 
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    const conditions: string[] = ["domain_id = ?"];
+    const params: (string | number)[] = [domainId];
 
     if (recipient) {
       conditions.push("(recipient = ? OR recipient = '*')");
@@ -1239,52 +1296,32 @@ export class StateDb {
       conditions.push("read = 0");
     }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = `WHERE ${conditions.join(" AND ")}`;
     const limitClause = limit ? " LIMIT ?" : "";
     if (limit) params.push(limit);
 
     return this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        (string | number)[]
-      >(
-        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail ${where} ORDER BY created_at DESC${limitClause}`,
-      )
+      .query<RawMailRow, (string | number)[]>(`${MAIL_SELECT} ${where} ORDER BY created_at DESC${limitClause}`)
       .all(...params)
       .map(toMailMessage);
   }
 
-  getMailById(id: number): MailMessage | undefined {
+  /**
+   * Fetch one message **within a partition**. A message id from another domain resolves
+   * to `undefined`, exactly as a nonexistent one does — the caller cannot distinguish
+   * "not yours" from "not there", which is the point: message ids are sequential and
+   * probing them must not report on another domain's traffic.
+   */
+  getMailById(id: number, domainId: number): MailMessage | undefined {
     const row = this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        [number]
-      >("SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE id = ?")
-      .get(id);
+      .query<RawMailRow, [number, number]>(`${MAIL_SELECT} WHERE id = ? AND domain_id = ?`)
+      .get(id, domainId);
     return row ? toMailMessage(row) : undefined;
   }
 
-  getNextUnread(recipient?: string): MailMessage | undefined {
-    const conditions = ["read = 0"];
-    const params: (string | number)[] = [];
+  getNextUnread(domainId: number, recipient?: string): MailMessage | undefined {
+    const conditions = ["domain_id = ?", "read = 0"];
+    const params: (string | number)[] = [domainId];
 
     if (recipient) {
       conditions.push("(recipient = ? OR recipient = '*')");
@@ -1293,30 +1330,23 @@ export class StateDb {
 
     const where = conditions.join(" AND ");
     const row = this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        (string | number)[]
-      >(
-        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE ${where} ORDER BY created_at ASC LIMIT 1`,
-      )
+      .query<RawMailRow, (string | number)[]>(`${MAIL_SELECT} WHERE ${where} ORDER BY created_at ASC LIMIT 1`)
       .get(...params);
     return row ? toMailMessage(row) : undefined;
   }
 
-  markMailRead(id: number): void {
-    this.db.run("UPDATE mail SET read = 1 WHERE id = ?", [id]);
+  /** Returns true when a row in this partition was marked read; false for another domain's id. */
+  markMailRead(id: number, domainId: number): boolean {
+    return this.db.run("UPDATE mail SET read = 1 WHERE id = ? AND domain_id = ?", [id, domainId]).changes > 0;
   }
 
-  /** Delete read messages older than ttlMs. Called opportunistically. */
+  /**
+   * Delete read messages older than ttlMs. Called opportunistically.
+   *
+   * Deliberately **not** domain-scoped: this is the TTL janitor, not a read. It moves no
+   * bytes across a partition boundary and exposes nothing to anyone — scoping it would
+   * instead mean a partition whose last caller went away never gets swept.
+   */
   pruneExpiredMail(ttlMs = options.MAIL_TTL_MS): number {
     const cutoff = formatSqliteDatetime(Date.now() - ttlMs);
     const result = this.db.run("DELETE FROM mail WHERE read = 1 AND created_at < ?", [cutoff]);
@@ -1346,11 +1376,29 @@ export class StateDb {
     repoRoot?: string;
     claudeSessionId?: string;
     transport?: "ws" | "stdio";
+    /**
+     * Domain that owns this session (#3039), resolved daemon-side from the spawn
+     * directory. Omit on a follow-up upsert — every other field here is COALESCEd
+     * so a partial update cannot erase what a previous one set, and `domain_id`
+     * has to behave the same way. It is `NOT NULL DEFAULT 0`, so the *stored*
+     * value is never null; the bind is nullable purely to mean "not supplied",
+     * which is why the parameter is COALESCEd on both branches rather than being
+     * allowed to write a 0 over a resolved domain.
+     */
+    domainId?: number;
   }): void {
     this.db.run(
-      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_sessions (session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, claude_session_id, transport, domain_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?13, 0))
        ON CONFLICT(session_id) DO UPDATE SET
+         -- CASE, not COALESCE: the spawn-side idiom in all five workers is
+         -- \`typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID\`, which
+         -- turns "unknown" into a literal 0 that COALESCE cannot tell from an
+         -- intentional write. The invariant that matters is "0 never overwrites a
+         -- resolved domain", and this is the only place it can be enforced rather
+         -- than relied upon. Re-homing to 0 is done by an explicit UPDATE
+         -- (deleteDomain), never by an upsert.
+         domain_id = CASE WHEN ?13 IS NULL OR ?13 = 0 THEN agent_sessions.domain_id ELSE ?13 END,
          name = COALESCE(excluded.name, agent_sessions.name),
          provider = COALESCE(excluded.provider, agent_sessions.provider),
          pid = COALESCE(excluded.pid, agent_sessions.pid),
@@ -1375,6 +1423,7 @@ export class StateDb {
         session.repoRoot ?? null,
         session.claudeSessionId ?? null,
         session.transport ?? null,
+        session.domainId ?? null, // ?13 — null means "not supplied", never "domain 0"
       ],
     );
   }
@@ -1400,7 +1449,7 @@ export class StateDb {
   getSession(sessionId: string): AgentSessionRow | null {
     const row = this.db
       .query<RawSessionRow, [string]>(
-        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions WHERE session_id = ?",
+        "SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions WHERE session_id = ?",
       )
       .get(sessionId);
     return row ? toSessionRow(row) : null;
@@ -1410,7 +1459,7 @@ export class StateDb {
     const where = active === true ? " WHERE ended_at IS NULL" : active === false ? " WHERE ended_at IS NOT NULL" : "";
     return this.db
       .query<RawSessionRow, []>(
-        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport FROM agent_sessions${where} ORDER BY spawned_at DESC`,
+        `SELECT session_id, name, provider, pid, pid_start_time, state, model, cwd, worktree, repo_root, total_cost, total_tokens, spawned_at, ended_at, claude_session_id, transport, domain_id FROM agent_sessions${where} ORDER BY spawned_at DESC`,
       )
       .all()
       .map(toSessionRow);
@@ -1954,7 +2003,75 @@ export class StateDb {
       )
       .get(name, host, storedPath);
     if (!row) throw new Error(`failed to create domain "${name}"`);
-    return toDomain(row);
+    const domain = toDomain(row);
+    // Registering a domain ADOPTS the sessions already standing in it. Without this,
+    // creating a domain over a directory that has running sessions instantly hides
+    // them: their rows stay at `domain_id = 0`, and an exact-equality domain filter
+    // excludes 0. The operator sees an empty `mcx claude ls` in the very directory
+    // they just registered, with live children still attached.
+    this.adoptSessionsIntoDomains();
+    return domain;
+  }
+
+  /**
+   * Assign a domain to every session row still carrying `NO_DOMAIN_ID`, resolved from
+   * the directory it was spawned in.
+   *
+   * This is the upgrade path, and it is not optional. `importLegacyState` turns a
+   * user's `~/.mcp-cli/scopes/` sidecars into domain rows automatically on the first
+   * daemon start after the new schema — no flag, no prompt. Every session that existed
+   * before that moment has `domain_id = 0`, and `matchesDomain` is exact equality, so
+   * without a backfill the upgrade silently empties `mcx claude ls` for anyone who ever
+   * ran `mcx scope`. Worse than the empty list: `mcx claude bye --all` also
+   * sees nothing, so the operator can shut the daemon down believing the box is clean
+   * while live children are still running.
+   *
+   * Resolution is `cwd`, then `repo_root` — most specific first, the same order
+   * `resolveSpawnDomainId` uses, so a backfilled row lands where a fresh spawn would.
+   * Rows whose directory is outside every domain stay at the sentinel, which is the
+   * true answer for them rather than a guess.
+   *
+   * Only LIVE rows (`ended_at IS NULL`) are adopted — see the SQL comment below.
+   *
+   * Returns the number of rows adopted. Idempotent: a second call matches nothing,
+   * because only unassigned live rows are considered.
+   *
+   * NOTE: this fixes the *database*. Workers hold `SessionConfig.domainId` in memory,
+   * so a domain registered while a session is live is not reflected in that worker
+   * until the daemon restarts and `restoreSessions` re-reads these rows. That is
+   * sufficient today because the only caller that creates domains at runtime is the
+   * startup import (which runs before sessions are restored); `mcx domain rm`/`add`
+   * (#3035) will need to push the adoption into the workers as well.
+   */
+  adoptSessionsIntoDomains(): number {
+    const domains = this.listDomains();
+    if (domains.length === 0) return 0;
+
+    const rows = this.db
+      .query<{ session_id: string; cwd: string | null; repo_root: string | null }, [number]>(
+        // LIVE rows only. An ended row is history that predates the domain: adopting it
+        // makes `countDomainDependents` report sessions the domain never ran, which both
+        // inflates the refusal message until an operator reaches for `--cascade`
+        // reflexively AND makes that cascade delete 30 days of history that was never in
+        // this domain. `deleteDomain` re-homes live rows rather than deleting them, so
+        // scoping adoption the same way keeps the two halves consistent (#3039 review D).
+        "SELECT session_id, cwd, repo_root FROM agent_sessions WHERE domain_id = ? AND ended_at IS NULL",
+      )
+      .all(NO_DOMAIN_ID);
+
+    // One transaction, not N autocommits. This runs on every daemon start, and on a
+    // post-sprint `agent_sessions` that would otherwise be thousands of individually
+    // committed WAL writes blocking boot (#3039 review G).
+    return this.db.transaction(() => {
+      let adopted = 0;
+      for (const row of rows) {
+        const domainId = resolveStoredPathDomain([row.cwd, row.repo_root], domains);
+        if (domainId === NO_DOMAIN_ID) continue;
+        this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE session_id = ?", [domainId, row.session_id]);
+        adopted++;
+      }
+      return adopted;
+    })();
   }
 
   listDomains(): Domain[] {
@@ -2039,9 +2156,24 @@ export class StateDb {
           `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
         );
       }
+      // A LIVE session row is not project data — it is the daemon's only handle on a
+      // running child process. `orphan-reaper` finds children by iterating
+      // `listSessions(true)`, and `bye` needs the row too, so deleting it leaves a
+      // claude/codex process unreapable, un-endable, and invisible to restart cleanup.
+      // Re-home those to the unassigned sentinel instead; the domain still goes away,
+      // and the handle survives. Ended rows ARE history and cascade normally.
+      //
+      // This PR is what arms the hazard: before `domain_id` had a writer every session
+      // row was 0 and this cascade never matched one (#3039 review 7).
+      const rehomed = this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE domain_id = ? AND ended_at IS NULL", [
+        NO_DOMAIN_ID,
+        domain.id,
+      ]).changes;
+
       for (const { table } of dependents) {
         this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
       }
+      void rehomed; // reported by `mcx domain rm` (#3035); StateDb has no logger by design
       return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
     })();
   }
@@ -2072,6 +2204,27 @@ export class StateDb {
  */
 function quoteSqlIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * First of `paths` that resolves to a registered domain, or `NO_DOMAIN_ID`.
+ *
+ * Stored paths are not trusted to be absolute or to still exist: `canonicalizeDomainPath`
+ * throws on a relative one, and a row written before that rule existed can hold anything.
+ * A path that cannot be resolved is skipped rather than aborting the whole backfill —
+ * one malformed historical row must not stop the rest of a user's sessions being adopted.
+ */
+function resolveStoredPathDomain(paths: Array<string | null>, domains: Domain[]): number {
+  for (const path of paths) {
+    if (!path) continue;
+    try {
+      const domain = resolveDomainForPath(canonicalizeDomainPath(path), domains);
+      if (domain) return domain.id;
+    } catch {
+      // not an absolute path — cannot name a domain; try the next candidate
+    }
+  }
+  return NO_DOMAIN_ID;
 }
 
 /** Format a JS timestamp as a SQLite-compatible datetime string (`YYYY-MM-DD HH:MM:SS`). */
@@ -2139,6 +2292,7 @@ interface RawSessionRow {
   ended_at: string | null;
   claude_session_id: string | null;
   transport: string | null;
+  domain_id: number;
 }
 
 function toSessionRow(row: RawSessionRow): AgentSessionRow {
@@ -2159,10 +2313,11 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
     endedAt: row.ended_at,
     claudeSessionId: row.claude_session_id,
     transport: row.transport,
+    domainId: row.domain_id,
   };
 }
 
-function toMailMessage(row: {
+interface RawMailRow {
   id: number;
   sender: string;
   recipient: string;
@@ -2170,8 +2325,20 @@ function toMailMessage(row: {
   body: string | null;
   reply_to: number | null;
   read: number;
+  domain_id: number;
   created_at: string;
-}): MailMessage {
+}
+
+/**
+ * The projection every mail read shares. Single-sourced so a column added to one query
+ * and forgotten in another cannot make two reads of the same row disagree — `domain_id`
+ * in particular has to come back from all of them, since it is what callers stamp onto
+ * events.
+ */
+const MAIL_SELECT =
+  "SELECT id, sender, recipient, subject, body, reply_to, read, domain_id, created_at FROM mail" as const;
+
+function toMailMessage(row: RawMailRow): MailMessage {
   return {
     id: row.id,
     sender: row.sender,
@@ -2180,6 +2347,7 @@ function toMailMessage(row: {
     body: row.body,
     replyTo: row.reply_to,
     read: row.read === 1,
+    domainId: row.domain_id,
     createdAt: row.created_at,
   };
 }

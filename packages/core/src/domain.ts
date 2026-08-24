@@ -11,7 +11,7 @@
  * orchestrator could rationalize past is a function, not prose.
  */
 
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute, join, normalize, posix, resolve } from "node:path";
 import { resolveRealpath } from "./fs";
 
 /** A registered domain: a name bound to `[host:]path`. */
@@ -57,6 +57,52 @@ const DOMAIN_HOST_RE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
 /** True when `host` is usable as a domain's host component. `null` (local) is not a host. */
 export function isValidDomainHost(host: string): boolean {
   return host.length > 0 && host.length <= 253 && DOMAIN_HOST_RE.test(host);
+}
+
+/**
+ * Turn a resolved domain id into a *filter*, or `undefined` for "do not filter".
+ *
+ * `NO_DOMAIN_ID` is the unassigned sentinel, not a domain, so it never filters.
+ * Filtering on it would answer "which sessions are in no domain?" — a question
+ * nobody asks — while looking exactly like a domain filter at the call site,
+ * and it would silently hide every session the moment domains started being
+ * registered. A caller outside every domain gets no domain filter at all and
+ * falls through to whatever coarser scoping it already had.
+ *
+ * The one thing this must never become is a guess: an explicitly named domain
+ * that does not resolve is an error at the call site, never `undefined` here.
+ */
+export function toDomainFilter(domainId: number | undefined): number | undefined {
+  return domainId !== undefined && isDomainScoped(domainId) ? domainId : undefined;
+}
+
+/**
+ * Read the daemon-injected domain filter off a worker tool-call argument bag.
+ *
+ * Shared rather than re-spelled in each of the five session workers: this is the
+ * point where four of them silently dropped the filter on `*_wait` while honouring
+ * it on `*_session_list` twenty lines above. One reader means a provider either
+ * has the filter or does not compile with it.
+ *
+ * Always a number the daemon resolved — never a name, never a path. `undefined`
+ * means no domain scoping applies.
+ */
+export function domainFilterArg(args: Record<string, unknown>): number | undefined {
+  return typeof args.domainId === "number" ? args.domainId : undefined;
+}
+
+/**
+ * True when `session` belongs to the domain being filtered for.
+ *
+ * `domainId === undefined` means no filter, so everything passes. A session that
+ * is missing entirely (an event with no session attached) does **not** pass a
+ * live filter — dropping it is what keeps a cross-domain wakeup from leaking
+ * into a scoped `wait`, the same rule `matchesRepoRoot` learned in #1308.
+ */
+export function matchesDomain(session: { domainId: number } | undefined, domainId: number | undefined): boolean {
+  if (domainId === undefined) return true;
+  if (!session) return false;
+  return session.domainId === domainId;
 }
 
 /** Domain names are the mail/CLI addressing vocabulary: alphanumeric, hyphen, underscore. */
@@ -200,4 +246,108 @@ export function listPartitionedTables(db: {
 /** Render a domain's location back to the `[host:]path` form `parseDomainLocation` accepts. */
 export function formatDomainLocation(location: DomainLocation): string {
   return location.host === null ? location.path : `${location.host}:${location.path}`;
+}
+
+/**
+ * The two pieces of ambient state a shell-style path is expanded against. Passed in
+ * rather than read from `process` so the expansion rule is a pure function — the CLI
+ * supplies its own `cwd`, which is *not* the daemon's.
+ */
+export interface PathExpansionEnv {
+  /** Absolute home directory, for `~`. */
+  home: string;
+  /** Absolute working directory, for a relative path. */
+  cwd: string;
+}
+
+/**
+ * Expand a **local** shell-style path into the absolute form the domains table stores.
+ *
+ * `~` and a relative path are resolved here, at the CLI, because this is the only place
+ * where "home" and "here" mean what the person typing them meant. A relative path that
+ * reached the table would resolve against whatever directory the *daemon* happened to
+ * start in — a latent bug that only fires the day the daemon is restarted from somewhere
+ * else, and by then the row looks fine.
+ *
+ * Throws rather than guessing on:
+ * - `~user/...` — another account's home is not ours to resolve, and silently treating it
+ *   as a relative path would register a domain at `<cwd>/~user/...`.
+ * - a non-absolute `home`/`cwd` — the expansion would be anchored on nothing.
+ *
+ * **Local only.** A host-bound path names a directory on another machine, where our home
+ * and our cwd have no say; {@link resolveDomainLocation} passes those through verbatim.
+ */
+export function expandLocalDomainPath(path: string, env: PathExpansionEnv): string {
+  if (path.length === 0) throw new Error("domain path is required");
+  if (!isAbsolute(env.cwd)) throw new Error(`cwd must be absolute, got ${JSON.stringify(env.cwd)}`);
+
+  if (path === "~" || path.startsWith("~/")) {
+    if (!isAbsolute(env.home)) throw new Error(`home must be absolute to expand "~", got ${JSON.stringify(env.home)}`);
+    return normalizeDomainPath(path === "~" ? env.home : join(env.home, path.slice(2)));
+  }
+  if (path.startsWith("~")) {
+    throw new Error(`cannot expand ${JSON.stringify(path)}: only "~" for the current user is supported`);
+  }
+
+  return normalizeDomainPath(isAbsolute(path) ? path : resolve(env.cwd, path));
+}
+
+/**
+ * Parse the `[host:]<path>` argument of `mcx domain add` into the row it becomes.
+ *
+ * Deliberately one function for both forms: `mcx domain add phoenix ~/github/phoenix` and
+ * `mcx domain add phoenix boxen0010:~/github/phoenix` differ only in whether `host` comes
+ * out null, which is what lets a domain move hosts later without a new verb.
+ */
+export function resolveDomainLocation(spec: string, env: PathExpansionEnv): DomainLocation {
+  const location = parseDomainLocation(spec);
+
+  if (location.host !== null) {
+    // A host that survived the split can still be junk: `"  spacey:/tmp/x"` yields a host
+    // with leading whitespace, which becomes a hostname the daemon would later try to route
+    // to. Reuses `isValidDomainHost` rather than spelling the rule a second time — a
+    // near-miss copy here (one that forgot the length bound, say) would accept hosts the
+    // rest of the codebase rejects, and nothing would notice until one was routed to.
+    if (!isValidDomainHost(location.host)) {
+      throw new Error(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
+    }
+    // The PATH half is validated too (#3160 review N6). A host-bound path is stored verbatim
+    // — this filesystem has no say over another machine's — but "verbatim" was doing the work
+    // of "unchecked", and `a` and `C` are perfectly good hostnames, so `a:b` registered a
+    // domain at relative path `b` and `C:\work` invented a host called `C`. Only two shapes
+    // name a directory on a remote machine: absolute, or `~`-rooted at that host's home.
+    //
+    // This also closes the other half of a defect the reviewer found in `which`:
+    // `resolveDomainForPath` calls `normalizeDomainPath` on every row inside its loop, and
+    // that throws on a non-absolute path — so ONE bad row broke `which` for every query,
+    // including the one an operator would use to diagnose it, while `ls` kept working
+    // because it never normalizes. Refusing the row at write time is the containment.
+    // `posix.isAbsolute`, deliberately, not the platform-sensitive `isAbsolute`: on a
+    // Windows host the latter accepts `C:\work`, which is the exact phantom-host input this
+    // rejects. A remote path is interpreted by the REMOTE machine, and every transport this
+    // routes over is POSIX.
+    if (!posix.isAbsolute(location.path) && !location.path.startsWith("~")) {
+      throw new Error(
+        `invalid remote path ${JSON.stringify(location.path)} in ${JSON.stringify(spec)}: a host-bound path must be absolute or start with "~" (it names a directory on ${location.host}, not here)`,
+      );
+    }
+    return location;
+  }
+
+  // `parseDomainLocation` is a purely syntactic split and is deliberately tolerant: a spec
+  // whose colon does not yield BOTH a host and a path falls back to "it is all a local
+  // path". That tolerance is fine for a parser and lethal here, because expansion turns
+  // `":/tmp/x"` and `"boxen:"` into `<cwd>/:/tmp/x` and `<cwd>/boxen:` — absolute-looking
+  // garbage that `normalizeDomainPath` accepts and nothing downstream ever rejects, since
+  // a domain path is not required to exist. This is the `<cwd>/~/...` failure in a sibling
+  // form, so validation lives at the entry point that does the expanding.
+  const separator = location.path.indexOf("/");
+  const colon = location.path.indexOf(":");
+  if (colon !== -1 && (separator === -1 || colon < separator)) {
+    throw new Error(
+      `malformed location ${JSON.stringify(spec)}: expected <path> or <host>:<path> (a host and a path are both required)`,
+    );
+  }
+
+  return { host: null, path: expandLocalDomainPath(location.path, env) };
 }

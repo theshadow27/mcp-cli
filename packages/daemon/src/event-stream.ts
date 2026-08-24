@@ -494,7 +494,24 @@ export class EventStreamServer {
 
             heartbeatTimer = safeSetInterval(() => {
               try {
-                controller.enqueue(encoder.encode("\n"));
+                // A real, parseable event — not a bare "\n" — so the client's NDJSON
+                // parser (packages/core/src/ipc-client.ts) yields it as a MonitorEvent
+                // and `mcx monitor`'s liveness watchdog can treat it as a liveness
+                // signal, not just business events (#3243). Same envelope shape as the
+                // ring-buffer fallback path's heartbeat below, and bypasses `shouldDeliver`
+                // the same way the old bare-newline heartbeat did: this is a transport
+                // liveness signal, not a business event, so it must reach every
+                // subscriber regardless of --type/--subscribe/--src filters.
+                const hb = `${JSON.stringify(
+                  enrichMonitorEvent({
+                    category: "heartbeat" as const,
+                    event: HEARTBEAT,
+                    seq: this.eventSeq,
+                    src: "daemon",
+                    ts: new Date().toISOString(),
+                  }),
+                )}\n`;
+                controller.enqueue(encoder.encode(hb));
               } catch {
                 cleanup();
                 return;

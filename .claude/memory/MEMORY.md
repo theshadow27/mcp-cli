@@ -23,15 +23,18 @@
 - [No rebase of sprint branch](feedback_no_rebase_sprint_branch.md) — sprint-{N} branch is meta-only and main is strict=false; commit on top, never rebase to "catch up" (sprint 59 startup fumble)
 - [Agent briefs run full gate](feedback_agent_briefs_full_gate.md) — tell code-editing agents to run `bun run am-i-done`, not a subset; enumerate ALL packages when partitioning (#2344 missed codex)
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
-- [Don't end on passive wait](feedback_dont_end_on_passive_wait.md) — never terminate a turn on Monitor/wait when the producer might be dead; ~400k cache-miss possible
 - [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
 - [Meta-issue planning guard](feedback_meta_issue_planning_guard.md) — exclude issues whose surface is .claude/phases/**, .mcx.yaml, or .claude/skills/** at plan time (meta; sprint-74 note: #2804 merged with a reload-after-merge protocol but cost 3 lock rounds via #2737)
 - [Halt needs a durable artifact](feedback_halt_needs_durable_artifact.md) — a resume plan in sprint markdown is read by nobody; sprint 77 stalled 19 days undetected
 - [Never bypass gates (--no-verify banned)](feedback_never_bypass_gate.md) — push blocked by a flake → retry (never --no-verify); same tracked signature → wait + retry once more; NEW signature → stop and report. CI on clean runners is the arbiter
 - [Rate-limited sessions: send first, restart never](feedback_rate_limited_send_first.md) — after quota reset, log-read each idle session (some finished, just lost bookkeeping — backfill branch/prNumber), then send a resume nudge; sprint 76 revived 6/6 with zero restarts
+- [Subagent "waiting for background gate" ≠ stalled](feedback_subagent_background_gate_not_stalled.md) — harness auto-resumes the subagent when its background command exits; verify with ps, don't nudge; intervene only after ~10 min of no gate process + idle worker
+- [nohup-detached commands never wake a subagent](feedback_nohup_detached_never_wakes_agent.md) — harness only wakes on *tracked* children; briefs must mandate run_in_background, never nohup/disown/`&` (sprint-79 silent stalls)
+- [No human gates mid-sprint](feedback_no_human_gates_mid_sprint.md) — sprints run unattended end-to-end; approvals live in planning, surprises spike to next planning, catastrophes spike the sprint (sprint 79 lane-2 hold was the anti-pattern)
 
 ## Infra / Known Issues
+- **track/untrack asymmetric resolution DESTROYS work items (#3240)** — `mcx track <n>` treats n as issue-only (a PR number creates a junk dup) but `mcx untrack <n>` resolves **by-PR FIRST** and deletes the real item while printing the input number. NEVER `mcx track`/`untrack` a PR number; check `mcx tracked` before any track call. (Corrected diagnosis: NO db split-brain — the one-shot state.db→mcx.db import worked; state.db is legacy residue. Sprint-79 data loss of #3035/#3119/#3043/#3039/#3037/#3038 phase state was self-inflicted via this trap; items re-tracked, phases reset to impl.)
 - [Bedrock for spawns (#935)](project_bedrock_spawns_935.md) — quota-stall escape hatch: restart daemon from Bedrock-env shell; model-ID caveat with `--model opus`
 - [CPU wedge: bun test-workers](cpu-wedge-test-workers.md) — ⚠️ CORRECTED: the band-aid killers (orphan-sweep preload + watchdog #2597 + cap #2632) WERE the disease, reverted in #2637. No real leak: clean main runs coverage in ~45s. Rule: never fix a leak with a process killer / host-wide `ps`+kill. See retro `.claude/diary/20260530.70.md`
 - [Early segfault = check host load first](false-segfault-orphaned-load.md) — am-i-done aborting ~25-30s with a Bun segfault + mass `worker panicked` cascade is usually host CPU starvation (orphaned `bun build/burn.ts` from investigations), not a code bug; check `uptime` + PPID=1 bun procs before treating as real
@@ -39,6 +42,8 @@
 - [CI suite SIGTERM at ~97%](ci-suite-sigterm-resource-leak.md) — large `bun test` killed near end with 0 failures, Linux-only, passes isolated = resource leak in test files, NOT a size threshold. A hang / near-end SIGTERM is a STOP-and-fix-root-cause signal — never a killer/reaper/timeout-bump (those caused the 69/70 collapse). Diagnose with bias-free adversarial review. #2641→#2644.
 
 ## Orchestration (non-sprint, general facts)
+- [Model tiers](feedback_model_tiers_no_fable_dev.md) — opus implements; sonnet reviews + mechanical tasks only (never diagnostic/tricky work); fable never for implementation/QA; no session idles hot
+- [Orchestrators must follow the /sprint skill](feedback_orchestrator_follows_sprint_skill.md) — operational how-to (waiting/monitor, spawning, merging, labels) lives in `.claude/skills/sprint/references/*.md`, canonical over memory; diverging practice → fix the skill at retro, don't improvise or grow parallel doctrine in memories
 - Orchestrator must never implement directly — always delegate to spawned sessions.
 - **Meta files (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`, `.gitignore`) are orchestrator + retro only.** Never spawn a worker to modify them during a sprint. Sprint 32 had two PRs touching `run.md` in parallel and the orchestrator read inconsistent versions for ~20 minutes. Meta changes go through the retro + next-plan workflow.
 - Never use `git worktree remove --force` — let the safety check catch uncommitted work.
@@ -48,6 +53,7 @@
 - [Remote agent orchestration via sprite](project_sprites_remote_orchestration.md) — `mcx agent claude` subcommands work over `sprite x --` remote exec; stdout JSON + exit codes + no-TTY constraints must be preserved when changing the agent command surface
 
 ## Active programs
+- [Release hold until v2.0.0](project_release_hold_v2.md) — NO releases until the domain chain (#3160→#3200) lands; next release = v2.0.0 (breaking mcx.db schema); never cut 1.14.x from current main. Last release v1.14.6 (July 13); sprints 66–78 skipped review/release
 - [A verdict must reach the PR](feedback_verdict_must_reach_the_pr.md) — every review/QA brief must require label + comment on the PR, not a report back; cost 4h and 7h twice in one day
 - **Compaction recovery: read `.claude/boss/STATE.md` in mcp-cli** — live operational state for the #3019 arc (gated class, decisions made, pending reload, sprint sequence)
 - [Worker escape hatch](feedback_worker_escape_hatch.md) — every brief gets `mcx mail … boss`; watch the mailbox. A blocked worker and a thinking worker are both quiet

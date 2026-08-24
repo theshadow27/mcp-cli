@@ -12,7 +12,7 @@
 import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
-import type { WorkItemDb } from "../db/work-items";
+import { type CrossDomainWorkItems, ciRunStateKey, parseCiRunStateKey } from "../db/work-items";
 import { safeSetTimeout } from "../safe-timers";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
@@ -23,8 +23,39 @@ export { computeSrcChurn };
 const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
 
+// Repo detection retry backoff (#3243): a poller must never give up on repo detection
+// permanently. `detectRepo()` can fail for reasons that resolve themselves without a
+// daemon restart — a missing `WorkingDirectory=` on the systemd unit gets fixed, a repo
+// that didn't exist yet at daemon startup appears, a transient `git`/network hiccup
+// clears. Capped exponential backoff, doubling from the base up to the cap, keeps
+// retrying forever instead of "3 tries, then dead for the rest of the process".
+const REPO_DETECT_BACKOFF_BASE_MS = 30_000;
+const REPO_DETECT_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** Capped exponential backoff delay for the Nth consecutive repo-detect failure (N ≥ 1). */
+export function repoDetectBackoffMs(failureCount: number): number {
+  return Math.min(REPO_DETECT_BACKOFF_BASE_MS * 2 ** (failureCount - 1), REPO_DETECT_BACKOFF_MAX_MS);
+}
+
 export interface WorkItemPollerOptions {
-  db: WorkItemDb;
+  /**
+   * **Ring-0 work-item access, spanning every domain** (see `WorkItemDb.acrossDomains`).
+   *
+   * Not a domain-scoped handle. `mcpd` is auto-started by whichever `mcx` call needed it —
+   * sometimes with no cwd at all — so binding the poller to a domain at construction
+   * partitions it by an accident of process ancestry, and it then reports "no tracked items"
+   * for every item a caller wrote from anywhere else.
+   *
+   * Reads span domains; writes dispatch through `forRow(item)` into the row's own partition.
+   *
+   * KNOWN LIMIT, unchanged by #3037 and stated so it is not mistaken for a new one: the
+   * poller resolves ONE GitHub repo (from the daemon's cwd) and queries every tracked PR
+   * number against it. That is correct only while every domain is the same repo. It was
+   * equally true before domains existed — these reads were unscoped then too — so ring 0
+   * restores the prior behaviour exactly rather than widening it. Per-domain pollers are
+   * #3022.
+   */
+  db: CrossDomainWorkItems;
   logger?: Logger;
   /** Override poll interval (ms). If set, disables adaptive interval. */
   intervalMs?: number;
@@ -41,7 +72,7 @@ export interface WorkItemPollerOptions {
 }
 
 export class WorkItemPoller {
-  private db: WorkItemDb;
+  private db: CrossDomainWorkItems;
   private logger: Logger;
   private fixedInterval: number | null;
   private currentIntervalMs: number;
@@ -52,13 +83,21 @@ export class WorkItemPoller {
   private polling = false;
   private stopped = false;
   private repoDetectFailures = 0;
+  /** Epoch ms (per `nowFn`) before which repo detection is skipped — capped backoff, never permanent. */
+  private nextRepoDetectAttemptMs = 0;
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
   private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
   private lastRateLimitWarnMs = 0;
   private onCiEvent: (event: CiEvent) => void;
   private nowFn: () => number;
-  private readonly ciRunStates: Map<number, CiRunState>;
+  /**
+   * In-flight CI run state, keyed by `domainId:prNumber` (see {@link ciRunStateKey}).
+   *
+   * Keyed by PR number alone this collided the moment two domains each tracked a PR #7 —
+   * one domain's CI transitions would overwrite the other's.
+   */
+  private readonly ciRunStates: Map<string, CiRunState>;
 
   constructor(opts: WorkItemPollerOptions) {
     this.db = opts.db;
@@ -126,22 +165,27 @@ export class WorkItemPoller {
     if (this.polling || this.stopped) return;
     this.polling = true;
     try {
-      // Detect repo (with failure caching — stop retrying after 3 failures)
+      // Detect repo — capped exponential backoff on failure, retried forever (#3243).
+      // Never gives up permanently: a repo that doesn't exist yet at daemon startup,
+      // a cwd fix, or a transient `git`/network failure can all resolve without a
+      // daemon restart.
       if (!this._repo) {
-        if (this.repoDetectFailures >= 3) {
+        const now = this.nowFn();
+        if (now < this.nextRepoDetectAttemptMs) {
           this._pollCount++;
           return;
         }
         try {
           this._repo = await this.detectRepoFn();
+          this.repoDetectFailures = 0;
         } catch (err) {
           this.repoDetectFailures++;
           const msg = err instanceof Error ? err.message : String(err);
-          if (this.repoDetectFailures >= 3) {
-            this.logger.warn(`[mcpd] Repo detection failed ${this.repoDetectFailures} times, giving up: ${msg}`);
-          } else {
-            this.logger.warn(`[mcpd] Repo detection failed (attempt ${this.repoDetectFailures}/3): ${msg}`);
-          }
+          const delayMs = repoDetectBackoffMs(this.repoDetectFailures);
+          this.nextRepoDetectAttemptMs = now + delayMs;
+          this.logger.warn(
+            `[mcpd] Repo detection failed (attempt ${this.repoDetectFailures}): ${msg} — retrying in ${Math.round(delayMs / 1000)}s`,
+          );
           this._lastError = msg;
           this._pollCount++;
           return;
@@ -152,9 +196,10 @@ export class WorkItemPoller {
       const tracked = allItems.filter((item) => item.prNumber !== null);
 
       if (tracked.length === 0) {
-        // Nothing tracked — purge all stale CI run states
-        for (const pr of this.ciRunStates.keys()) {
-          this.db.deleteCiRunState(pr);
+        // Nothing tracked — purge all stale CI run states, each in its own domain
+        for (const key of this.ciRunStates.keys()) {
+          const { domainId, prNumber } = parseCiRunStateKey(key);
+          this.db.forRow({ domainId }).deleteCiRunState(prNumber);
         }
         this.ciRunStates.clear();
         this._lastError = null;
@@ -208,12 +253,15 @@ export class WorkItemPoller {
         this.reconcile(item, status, cascadeHead);
       }
 
-      // Prune ciRunStates for PR numbers no longer tracked (e.g., work item untracked via prNumber clear)
-      const trackedPrNums = new Set(prNumbers);
-      for (const pr of this.ciRunStates.keys()) {
-        if (!trackedPrNums.has(pr)) {
-          this.ciRunStates.delete(pr);
-          this.db.deleteCiRunState(pr);
+      // Prune ciRunStates no longer tracked (e.g. work item untracked via prNumber clear).
+      // Membership is per (domain, PR): another domain's PR #7 must not keep ours alive,
+      // nor ours evict theirs.
+      const trackedKeys = new Set(tracked.map((item) => ciRunStateKey(item.domainId, item.prNumber as number)));
+      for (const key of this.ciRunStates.keys()) {
+        if (!trackedKeys.has(key)) {
+          const { domainId, prNumber } = parseCiRunStateKey(key);
+          this.ciRunStates.delete(key);
+          this.db.forRow({ domainId }).deleteCiRunState(prNumber);
         }
       }
 
@@ -232,6 +280,9 @@ export class WorkItemPoller {
 
   /** Compare fetched PR status against stored work item and emit events for changes. */
   private reconcile(item: WorkItem, status: PRStatus, cascadeHead: number | null): void {
+    // Ring 0 reads across domains; every write below lands in the row's OWN partition.
+    const scoped = this.db.forRow(item);
+    const ciKey = ciRunStateKey(item.domainId, item.prNumber as number);
     const prNumber = item.prNumber as number; // Safe: caller filters for non-null prNumber
     const newPrState = mapPrState(status);
     const newCiStatus = mapCiStatus(status);
@@ -253,7 +304,7 @@ export class WorkItemPoller {
     // Uses headRefOid persisted to SQLite so detection survives daemon restarts
     // and correctly handles force-pushes / rebases that don't change commit count.
     if (newPrState === item.prState && (newPrState === "open" || newPrState === "draft")) {
-      const lastOid = this.db.getLastSeenHeadOid(prNumber);
+      const lastOid = scoped.getLastSeenHeadOid(prNumber);
       if (lastOid !== null && status.headRefOid && status.headRefOid !== lastOid) {
         this.onEvent({
           type: "pr:pushed",
@@ -268,7 +319,7 @@ export class WorkItemPoller {
     }
     // Persist current HEAD OID so next poll can detect changes (and restarts don't lose baseline).
     if (status.headRefOid) {
-      this.db.setLastSeenHeadOid(prNumber, status.headRefOid);
+      scoped.setLastSeenHeadOid(prNumber, status.headRefOid);
     }
 
     // CI status changes
@@ -303,13 +354,13 @@ export class WorkItemPoller {
     }
 
     if (changed) {
-      this.db.updateWorkItem(item.id, patch);
+      scoped.updateWorkItem(item.id, patch);
       this.logger.info(`[mcpd] Work item ${item.id} (PR #${prNumber}) updated: ${JSON.stringify(patch)}`);
     }
 
     // CI run events — separate from the coarse checks:started/passed/failed above
     if (status.ciChecks.length > 0) {
-      const prev = this.ciRunStates.get(prNumber) ?? null;
+      const prev = this.ciRunStates.get(ciKey) ?? null;
       const { events: ciEvents, state: ciState } = computeCiTransitions(
         prNumber,
         item.id,
@@ -324,9 +375,9 @@ export class WorkItemPoller {
           ciState.emittedStarted !== prev.emittedStarted ||
           ciState.emittedFinished !== prev.emittedFinished);
       if (ciState) {
-        this.ciRunStates.set(prNumber, ciState);
+        this.ciRunStates.set(ciKey, ciState);
         if (ciStateChanged) {
-          this.db.upsertCiRunState(prNumber, ciState);
+          scoped.upsertCiRunState(prNumber, ciState);
         }
       }
       for (const ev of ciEvents) {
@@ -336,8 +387,8 @@ export class WorkItemPoller {
 
     // Clean up CI state when PR is no longer active
     if (newPrState === "merged" || newPrState === "closed") {
-      this.ciRunStates.delete(prNumber);
-      this.db.deleteCiRunState(prNumber);
+      this.ciRunStates.delete(ciKey);
+      scoped.deleteCiRunState(prNumber);
     }
   }
 

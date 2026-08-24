@@ -475,7 +475,16 @@ async function startDaemon(): Promise<void> {
   const cmd = resolveDaemonCommand();
   const [bin, ...args] = cmd;
 
+  // Explicit env: process.env — NOT omitted. Bun.spawn's implicit-inherit
+  // fallback (when `env` is undefined) snapshots the environment at Bun
+  // process startup, not the live `process.env` object; a later in-JS
+  // mutation (e.g. this test suite's MCP_CLI_DIR preload, or testOptions())
+  // is invisible to it, so an auto-started daemon silently falls back to
+  // deriving MCP_CLI_DIR from the real homedir() instead of the override.
+  // An explicit reference to `process.env` reads the current value at spawn
+  // time and is passed through correctly. See #3233.
   const result = spawnManaged(bin, args, {
+    env: process.env,
     stdout: "pipe",
     stderr: "pipe",
   });

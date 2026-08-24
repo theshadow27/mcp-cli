@@ -14,7 +14,7 @@
  */
 
 import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
-import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
+import { ContainmentGuard, NO_DOMAIN_ID, gateContainment } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
 import { OpenCodeClient } from "./opencode-client";
 import {
@@ -55,6 +55,11 @@ export interface OpenCodeSessionConfig {
   worktree?: string;
   /** Repository root for worktree cleanup. */
   repoRoot?: string;
+  /**
+   * Domain that owns this session (#3039), resolved by the daemon before spawn.
+   * Defaults to `NO_DOMAIN_ID` — an unresolved domain, never a guessed one.
+   */
+  domainId?: number;
   /** Human-readable session name. */
   name?: string;
   /** Extra environment variables. */
@@ -311,6 +316,7 @@ export class OpenCodeSession {
       pendingPermissionDetails: [...this.pendingPermissions.values()],
       worktree: this.config.worktree ?? null,
       repoRoot: this.config.repoRoot ?? null,
+      domainId: this.config.domainId ?? NO_DOMAIN_ID,
       processAlive: this.proc?.alive ?? false,
       rateLimited: false,
       createdAt: this.createdAt,

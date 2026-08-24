@@ -8,6 +8,8 @@
  * Phase 1a of #1049.
  */
 
+import { NO_DOMAIN_ID } from "./domain";
+
 /** Pipeline phase for a work item. */
 export type WorkItemPhase = "impl" | "review" | "repair" | "qa" | "done";
 
@@ -25,8 +27,25 @@ export type ReviewStatus = "none" | "pending" | "approved" | "changes_requested"
 
 /** A tracked work item matching the SQLite schema from #1049. */
 export interface WorkItem {
-  /** Primary key — e.g. "#1135" (number-tracked) or "branch:feat/foo" (branch-tracked). */
+  /**
+   * Primary key — e.g. "#1135" (number-tracked) or "branch:feat/foo" (branch-tracked).
+   *
+   * Globally unique, and **guessable**: `#42` is the id of issue 42 in every domain that
+   * happens to have used it first. That is why {@link WorkItem.domainId} is part of every
+   * lookup rather than an attribute read off the row afterwards — an id alone is not an
+   * authorization to read the row.
+   */
   id: string;
+  /**
+   * Owning domain (`domains.id`), or `NO_DOMAIN_ID` (0) for rows written before any
+   * domain was resolved. Per-domain uniqueness of `issueNumber` / `branch` / `prNumber`
+   * is what lets two projects each track issue #42 (#3034).
+   *
+   * Deliberately absent from {@link WorkItemPatch}: an update can change what a work item
+   * *is*, never which domain owns it. Re-homing a row would silently collide with the
+   * target domain's own #42.
+   */
+  domainId: number;
   issueNumber: number | null;
   branch: string | null;
   prNumber: number | null;
@@ -143,14 +162,88 @@ export function isReservedPhaseStateKey(key: string): boolean {
   return key.endsWith("_spawned_at") || key.endsWith("_round") || key === "previous_phase";
 }
 
-/** Updatable subset of WorkItem — excludes server-managed fields. */
-export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "createdAt" | "updatedAt" | "version">>;
+/**
+ * Qualify a derived work-item id with its owning domain.
+ *
+ * Work-item ids are *derived* from the thing they track (`#42`, `issue:42`, `pr:7`,
+ * `branch:fix/foo`) and are the table's global primary key. Two domains tracking issue 42
+ * would therefore derive the same id and collide on the PK — the per-domain UNIQUE indexes
+ * from #3034 are not enough on their own, because they constrain `issue_number`, not `id`.
+ *
+ * `NO_DOMAIN_ID` is returned unchanged. That is the whole migration story: with no domain
+ * registered, every id is byte-identical to what this repo has always minted, so nothing
+ * that stored a work-item id anywhere (phase state namespaces, orchestrator scripts,
+ * `mcx tracked` output) has to know this function exists.
+ */
+export function domainScopedWorkItemId(domainId: number, baseId: string): string {
+  return domainId === NO_DOMAIN_ID ? baseId : `d${domainId}:${baseId}`;
+}
 
-/** Create a new WorkItem with sensible defaults. */
-export function createWorkItem(id: string, phase?: WorkItemPhase): WorkItem {
+/**
+ * The candidate ids a lookup inside `domainId` should try, **most-specific first**.
+ *
+ * A caller inside domain 3 that asks for `#42` means *its own* `#42`, which is stored as
+ * `d3:#42`. Both candidates are still filtered by `domain_id` at the query, so this widens
+ * the spelling of an id and never the partition it can reach.
+ *
+ * Order matters twice. The domain-qualified spelling is what rows are actually stored under,
+ * so trying it first turns the common case into one query instead of two. It is also the
+ * unambiguous answer: an unqualified `#42` is what a caller *typed*, while `d3:#42` is what
+ * the table holds, and if some row somehow carried the literal id `#42` inside domain 3 the
+ * qualified row is still the one that caller meant.
+ */
+export function workItemIdCandidates(domainId: number, id: string): string[] {
+  const scoped = domainScopedWorkItemId(domainId, id);
+  if (scoped === id) return [id];
+  // Already qualified for this domain — the phase runner and every tool response hand back
+  // stored ids, so this is the common path. Re-qualifying would only add a guaranteed miss
+  // to step over before the real hit.
+  if (id.startsWith(`d${domainId}:`)) return [id];
+  return [scoped, id];
+}
+
+/**
+ * The `alias_state` namespace holding a work item's phase-scoped key-value store.
+ *
+ * **`workItemId` must be the canonical stored id** — the `id` off a row the database
+ * returned, never the spelling a caller typed. Since ids became domain-qualified, `#42` and
+ * `d1:#42` name the same row but are different strings, so building this namespace from the
+ * raw argument writes to a different namespace than the phase runner reads from, and both
+ * sides succeed silently. That is a split state store, not an error anyone would see.
+ *
+ * This function exists so the namespace is spelled once rather than in the nine places that
+ * previously hand-built it across four files. Callers that hold only a caller-supplied id
+ * must resolve it through the database first.
+ */
+export function workItemStateNamespace(workItemId: string): string {
+  return `workitem:${workItemId}`;
+}
+
+/**
+ * Updatable subset of WorkItem — excludes server-managed fields.
+ *
+ * `domainId` is excluded on purpose and not by oversight: there is no patch, no MCP tool
+ * argument, and no IPC parameter that moves a work item between domains. A caller holding
+ * a domain-scoped handle can only write inside its own partition.
+ */
+export type WorkItemPatch = Partial<Omit<WorkItem, "id" | "domainId" | "createdAt" | "updatedAt" | "version">>;
+
+/**
+ * Create a new in-memory WorkItem with sensible defaults.
+ *
+ * `domainId` is **required and comes first**, ahead of the optional `phase`. A partition key
+ * with a default is the shape this whole epic exists to remove: the caller never has to
+ * decide, so the sentinel becomes what you get by not thinking about it, and the mistake is
+ * invisible at the call site. Required, `tsc` names every caller that has to choose.
+ *
+ * Pass `NO_DOMAIN_ID` explicitly for an item that genuinely belongs to no domain — that is a
+ * decision, and it should read like one.
+ */
+export function createWorkItem(id: string, domainId: number, phase?: WorkItemPhase): WorkItem {
   const now = new Date().toISOString();
   return {
     id,
+    domainId,
     issueNumber: null,
     branch: null,
     prNumber: null,

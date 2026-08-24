@@ -123,13 +123,19 @@ export class ClaudeServer extends AbstractWorkerServer {
     "pr:merge_state_changed": PR_MERGE_STATE_CHANGED,
   };
 
-  forwardWorkItemEvent(event: WorkItemEvent): void {
+  /**
+   * @param domain Name of the domain the emitting poller watches, or null when the daemon's
+   *   cwd is outside every registered domain. Stamped on the monitor event so a consumer
+   *   watching several projects can tell whose PR #7 this is (#3037).
+   */
+  forwardWorkItemEvent(event: WorkItemEvent, domain?: string | null): void {
     const mapped = ClaudeServer.WORK_ITEM_EVENT_MAP[event.type];
     if (mapped && this.onMonitorEvent) {
       const input: MonitorEventInput = {
         src: "daemon.work-item-poller",
         event: mapped,
         category: "work_item",
+        ...(domain ? { domain } : {}),
       };
       if ("prNumber" in event) input.prNumber = event.prNumber;
       if ("branch" in event) input.branch = event.branch;
@@ -375,6 +381,11 @@ export class ClaudeServer extends AbstractWorkerServer {
         totalTokens: row.totalTokens,
         claudeSessionId: row.claudeSessionId,
         transport: row.transport === "ws" || row.transport === "stdio" ? row.transport : undefined,
+        // Unlike `profile` below, the domain IS knowable after a restart — it is
+        // a column on the row (#3039). Carrying it is what keeps a restored
+        // session visible to `mcx claude ls` in the domain it was spawned in;
+        // dropping it would silently re-home every survivor to domain 0.
+        domainId: row.domainId,
         // No profile is carried: `agent_sessions` has no column for it, and the
         // schema is #3034's to change. `restoreSessions` therefore marks these
         // sessions `profileSource: "unrecorded"`, and `resolveSessionProfile`

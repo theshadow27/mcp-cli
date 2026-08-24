@@ -297,6 +297,7 @@ declare module "mcp-cli" {
     state: AliasStateAccessor;
     globalState: AliasStateAccessor;
     workItem: AliasWorkItemInfo | null;
+    domain: AliasDomainInfo | null;
     repoRoot: string;
     signal: AbortSignal;
     waitForEvent(filter: EventFilterSpec, opts?: { timeoutMs?: number; since?: number }): Promise<MonitorEvent>;
@@ -349,7 +350,8 @@ exactly like normal aliases. The handler receives a scoped `ctx`:
 | `ctx.gh` | Typed GitHub API client — see [ctx.gh](#ctxgh--github-api-client) below |
 | `ctx.state` | Per-work-item scratchpad (`get`, `set`, `delete`, `all`) |
 | `ctx.globalState` | Shared scratchpad across all phases in the repo |
-| `ctx.workItem` | `{ id, issueNumber, prNumber, branch, phase }` or null |
+| `ctx.workItem` | `{ id, domainId, issueNumber, prNumber, branch, phase }` or null |
+| `ctx.domain` | `{ id, name }` for the domain this run belongs to, or null outside every domain — informational; see [Domains](#domains-and-phase-scripts) |
 | `ctx.args` | CLI `--key value` pairs |
 | `ctx.file`, `ctx.json` | Read utility helpers |
 | `ctx.cache` | TTL-bounded cached producer |
@@ -358,6 +360,42 @@ exactly like normal aliases. The handler receives a scoped `ctx`:
 
 Bun globals (`Bun.spawnSync`, `fetch`) are available — phases typically use
 `ctx.gh` for GitHub operations and shell out to `git` or project tooling.
+
+## Domains and phase scripts
+
+A phase script does **not** pass a domain to anything. The daemon resolves the calling
+process's domain from its working directory and scopes every `_work_items` tool to it
+before the tool sees the call — the domain travels in MCP `_meta`, which is a sibling of
+`arguments` rather than a member of it, so there is no argument a script (or a model
+editing one) can set to read or write another domain's rows.
+
+`ctx.domain` is therefore **informational**: use it to label output or branch on which
+project you are in, never to select what a tool operates on. `ctx.workItem.domainId` is the
+same partition, read off the item.
+
+```ts
+ctx.log?.(`running in ${ctx.domain?.name ?? "no domain"}`);
+
+// Scoped automatically — this returns THIS domain's items and no others.
+const { items } = await ctx.mcp._work_items.work_items_list({});
+```
+
+Two consequences worth knowing:
+
+- **Work-item ids are qualified by domain** once a domain exists (`d3:#42` rather than
+  `#42`); with no domain, ids are unchanged. Do **not** assume "no domain" is the default
+  state: the daemon's one-shot legacy import runs on every start and creates a domain row
+  for each `~/.mcp-cli/scopes/*.json` sidecar, so an installation that ever used `mcx scope`
+  already has domains and never typed a command to get them. Treat an id as opaque — read it
+  from `ctx.workItem.id` or a tool response and pass it back unchanged; never reconstruct one
+  by formatting an issue number.
+- Under `mcx phase run`, `ctx.domain` is read off the work item, so it is `null` when the
+  phase was invoked without `--work-item` — **even if the cwd is inside a domain**. `null`
+  means "not known from this process", never "outside every domain". `ctx.domain.name` is
+  also `null` there, pending the `mcx domain` IPC surface (#3035 / #3165). Aliases executed
+  inside the daemon get the full `{ id, name }`, resolved from the caller's cwd.
+- Neither gap affects scoping: the daemon scopes the `_work_items` tools from the caller's
+  cwd, so a `null` `ctx.domain` never widens what a phase script can reach.
 
 ## `ctx.gh` — GitHub API client
 

@@ -747,24 +747,37 @@ describe("cmdGc dispatch", () => {
   });
 
   test("overrides.dryRun forces dry-run mode", async () => {
-    // Use a fake cwd and empty exec results — we just care that it doesn't throw
-    // and produces dry-run output paths. Redirect console to capture.
-    const origLog = console.log;
-    const origErr = console.error;
-    const lines: string[] = [];
-    console.log = (msg: unknown) => lines.push(String(msg));
-    console.error = (msg: unknown) => lines.push(String(msg));
-    try {
-      // Pass --worktrees-only so we don't need to mock branch commands
-      // but we will still invoke real git in cwd — that's fine for the test.
-      // Force dry-run via overrides even though args don't include --dry-run.
-      await cmdGc(["--worktrees-only"], { dryRun: true });
-    } finally {
-      console.log = origLog;
-      console.error = origErr;
-    }
-    // Just assert something ran — dry-run output should be present
-    expect(lines.some((l) => l.includes("[dry-run]") || l.includes("would remove") || l.includes("gc:"))).toBe(true);
+    // Deterministic worktree responses (same shape as the "runGc worktrees"
+    // suite above) so the assertion doesn't depend on real filesystem state.
+    // deps is injected (fake callTool + mocked exec) so this never reaches
+    // the real daemon or the real git worktree list — cmdGc's default deps
+    // would otherwise call the real ipcCall("callTool", ...) and try to
+    // auto-start the production daemon against the real ~/.mcp-cli (#3233).
+    const responses = new Map<string, { stdout: string; stderr?: string; exitCode?: number }>();
+    responses.set("git -C /repo worktree list --porcelain", {
+      stdout: [
+        "worktree /repo",
+        "branch refs/heads/main",
+        "",
+        "worktree /repo/.claude/worktrees/wt-a",
+        "branch refs/heads/feat-a",
+        "",
+      ].join("\n"),
+    });
+    responses.set("git -C /repo symbolic-ref refs/remotes/origin/HEAD", { stdout: "refs/remotes/origin/main" });
+    responses.set("git -C /repo branch --merged main", { stdout: "* main\n  feat-a\n" });
+    responses.set("git -C /repo/.claude/worktrees/wt-a status --porcelain", { stdout: "" });
+    const deps = makeDeps({ execResponses: responses });
+
+    // Pass --worktrees-only so we don't need to mock branch-deletion commands.
+    // Force dry-run via overrides even though args don't include --dry-run.
+    // deps.log/deps.logError push into deps.logs/deps.errors directly (not
+    // console) — no console interception needed, unlike the real
+    // defaultGcDeps() this test used to exercise.
+    await cmdGc(["--worktrees-only"], { dryRun: true, deps });
+
+    expect(deps.logs.some((l) => l.includes("would remove 1"))).toBe(true);
+    expect(deps.logs.some((l) => l.includes("wt-a"))).toBe(true);
   });
 });
 

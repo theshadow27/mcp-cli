@@ -43,6 +43,7 @@ const realManifestLoader = (dir: string): Manifest | null => {
 function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
     id: "#1135",
+    domainId: 0,
     issueNumber: 1135,
     branch: "feat/issue-1135-cleanup",
     prNumber: null,
@@ -188,7 +189,7 @@ describe("cmdTrack", () => {
     });
 
     await cmdTrack(["1135"], deps);
-    expect(captured).toEqual({ number: 1135, repoRoot: expect.any(String) });
+    expect(captured).toEqual({ number: 1135, cwd: expect.any(String), repoRoot: expect.any(String) });
   });
 
   test("tracks a branch", async () => {
@@ -202,7 +203,7 @@ describe("cmdTrack", () => {
     });
 
     await cmdTrack(["--branch", "feat/test"], deps);
-    expect(captured).toEqual({ branch: "feat/test", repoRoot: expect.any(String) });
+    expect(captured).toEqual({ branch: "feat/test", cwd: expect.any(String), repoRoot: expect.any(String) });
   });
 
   test("rejects missing args", async () => {
@@ -247,7 +248,7 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["1135"], deps);
-    expect(captured).toEqual({ number: 1135 });
+    expect(captured).toEqual({ number: 1135, cwd: expect.any(String) });
   });
 
   test("untracks a branch", async () => {
@@ -260,7 +261,7 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["--branch", "feat/test"], deps);
-    expect(captured).toEqual({ branch: "feat/test" });
+    expect(captured).toEqual({ branch: "feat/test", cwd: expect.any(String) });
   });
 
   test("untracks branch:NAME format emitted by mcx tracked --json", async () => {
@@ -273,7 +274,7 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["branch:feat/test"], deps);
-    expect(captured).toEqual({ branch: "feat/test" });
+    expect(captured).toEqual({ branch: "feat/test", cwd: expect.any(String) });
   });
 
   test("handles not tracked", async () => {
@@ -303,7 +304,7 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["#1135"], deps);
-    expect(captured).toEqual({ number: 1135 });
+    expect(captured).toEqual({ number: 1135, cwd: expect.any(String) });
   });
 
   test("untracks pr:NNNN format", async () => {
@@ -316,7 +317,7 @@ describe("cmdUntrack", () => {
     });
 
     await cmdUntrack(["pr:1186"], deps);
-    expect(captured).toEqual({ number: 1186 });
+    expect(captured).toEqual({ number: 1186, cwd: expect.any(String) });
   });
 
   test("rejects invalid number", async () => {
@@ -445,7 +446,7 @@ describe("cmdTracked", () => {
     });
 
     await cmdTracked(["--phase", "qa"], deps);
-    expect(captured).toEqual({ phase: "qa", includeArchived: false });
+    expect(captured).toEqual({ phase: "qa", includeArchived: false, cwd: expect.any(String) });
   });
 
   test("passes includeArchived:true when --include-archived flag is set", async () => {
@@ -458,7 +459,7 @@ describe("cmdTracked", () => {
     });
 
     await cmdTracked(["--include-archived"], deps);
-    expect(captured).toEqual({ includeArchived: true });
+    expect(captured).toEqual({ includeArchived: true, cwd: expect.any(String) });
   });
 
   test("passes includeArchived:false when flag is absent", async () => {
@@ -471,7 +472,7 @@ describe("cmdTracked", () => {
     });
 
     await cmdTracked([], deps);
-    expect(captured).toEqual({ includeArchived: false });
+    expect(captured).toEqual({ includeArchived: false, cwd: expect.any(String) });
   });
 
   test("combines --include-archived with --phase", async () => {
@@ -484,7 +485,7 @@ describe("cmdTracked", () => {
     });
 
     await cmdTracked(["--phase", "done", "--include-archived"], deps);
-    expect(captured).toEqual({ phase: "done", includeArchived: true });
+    expect(captured).toEqual({ phase: "done", includeArchived: true, cwd: expect.any(String) });
   });
 
   test("rejects --phase with no value", async () => {
@@ -589,7 +590,12 @@ describe("formatWorkItemRow", () => {
           return cmdTrack(["1135"], deps);
         },
       );
-      expect(captured).toEqual({ number: 1135, initialPhase: "plan", repoRoot: expect.any(String) });
+      expect(captured).toEqual({
+        number: 1135,
+        initialPhase: "plan",
+        cwd: expect.any(String),
+        repoRoot: expect.any(String),
+      });
     });
 
     test("cmdTracked --json annotates phaseValid from manifest", async () => {
@@ -646,7 +652,7 @@ describe("formatWorkItemRow", () => {
       } finally {
         console.error = origErr;
       }
-      expect(captured).toEqual({ phase: "impl", includeArchived: false });
+      expect(captured).toEqual({ phase: "impl", includeArchived: false, cwd: expect.any(String) });
       expect(errs.some((e) => e.includes('phase "impl" is not declared'))).toBe(true);
     });
 
@@ -1102,5 +1108,76 @@ describe("pruneStaleHistory integration (#2463)", () => {
     const remaining = readAllTransitions(logPath);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].ts).toBe("2026-06-01T12:30:00Z");
+  });
+});
+
+/**
+ * R2 regression: untrack must clean up the namespace the daemon actually wrote.
+ *
+ * `persistMetadata` has always used `item.id` (the stored id from the track response), while
+ * `cleanupMetadata` was handed a spelling reconstructed from what the user typed — `#42` /
+ * `branch:foo`. Domain-qualified ids make those different namespaces, so cleanup deleted
+ * nothing and every untracked item leaked its scratchpad forever. The two halves of the same
+ * command disagreed with each other.
+ *
+ * The fix is to clean up using the canonical id the daemon reports deleting, because after
+ * the row is gone the CLI has no other way to learn it.
+ */
+describe("cmdUntrack — phase-state cleanup uses the canonical id (#3037 R2)", () => {
+  function capturingDeps(deletedId: string) {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const deps = makeDeps({
+      untrackWorkItem: () => ({ ok: true, deleted: true, id: deletedId }),
+      aliasStateAll: (params: unknown) => {
+        calls.push({ method: "aliasStateAll", params: params as Record<string, unknown> });
+        return { entries: { session_id: "abc" } };
+      },
+      aliasStateDelete: (params: unknown) => {
+        calls.push({ method: "aliasStateDelete", params: params as Record<string, unknown> });
+        return { ok: true, deleted: true };
+      },
+    });
+    return { deps, calls };
+  }
+
+  test("a number-untrack cleans the domain-qualified namespace, not the typed one", async () => {
+    const { deps, calls } = capturingDeps("d1:#1135");
+    await cmdUntrack(["1135"], deps);
+
+    const namespaces = calls.map((c) => c.params.namespace);
+    expect(namespaces).toEqual(["workitem:d1:#1135", "workitem:d1:#1135"]);
+    // The spelling the user typed must never be the one we delete from.
+    for (const ns of namespaces) expect(ns).not.toBe("workitem:#1135");
+  });
+
+  test("a branch-untrack does the same", async () => {
+    const { deps, calls } = capturingDeps("d2:branch:feat/test");
+    await cmdUntrack(["--branch", "feat/test"], deps);
+
+    expect(calls.map((c) => c.params.namespace)).toEqual([
+      "workitem:d2:branch:feat/test",
+      "workitem:d2:branch:feat/test",
+    ]);
+  });
+
+  test("the key found in the namespace is the key deleted from it", async () => {
+    const { deps, calls } = capturingDeps("d1:#1135");
+    await cmdUntrack(["1135"], deps);
+
+    const del = calls.find((c) => c.method === "aliasStateDelete");
+    expect(del?.params.key).toBe("session_id");
+  });
+
+  test("no id in the response means no cleanup attempted — never a guessed namespace", async () => {
+    const calls: string[] = [];
+    const deps = makeDeps({
+      untrackWorkItem: () => ({ ok: true, deleted: true }),
+      aliasStateAll: () => {
+        calls.push("aliasStateAll");
+        return { entries: {} };
+      },
+    });
+    await cmdUntrack(["1135"], deps);
+    expect(calls).toEqual([]);
   });
 });

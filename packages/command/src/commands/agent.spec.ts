@@ -306,6 +306,50 @@ describe("agent codex spawn", () => {
     expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("Usage"));
   });
 
+  test("-d spawns INTO a named domain (the schema advertised it with no flag to set it)", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "-d", "phoenix"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ domain: "phoenix" }));
+  });
+
+  test("sends the caller's cwd when --cwd is omitted, so the session records a domain", async () => {
+    // Without this the session books into domain 0 and goes INVISIBLE to its own
+    // `mcx agent codex ls` — codex/acp/opencode/mock have no repoRoot fallback to
+    // catch it, so the domain filter is the only filter and it excludes the row.
+    // The claude sibling always had this fallback; agent.ts did not (#3039 review 1).
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x"], deps);
+    expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ cwd: "/fake/cwd" }));
+  });
+
+  test("the cwd that reaches the daemon is always absolute, as domain resolution requires", async () => {
+    // `domainIdForPath` rejects a relative path, so a relative --cwd would book into
+    // domain 0. It cannot: parseSharedSpawnArgs already resolves it. Asserted here as a
+    // regression guard on that guarantee rather than duplicating the resolve() locally —
+    // two places claiming to absolutize is how one of them quietly stops.
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--cwd", "./sub"], deps);
+    const call = (deps.callTool as ReturnType<typeof mock>).mock.calls.find((c) => c[0] === "codex_prompt");
+    const sentCwd = (call?.[1] as { cwd?: string }).cwd;
+    expect(sentCwd?.startsWith("/")).toBe(true);
+    expect(sentCwd?.endsWith("/sub")).toBe(true);
+  });
+
+  test("--worktree still suppresses the cwd fallback", async () => {
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+    });
+    await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "wt"], deps);
+    const call = (deps.callTool as ReturnType<typeof mock>).mock.calls.find((c) => c[0] === "codex_prompt");
+    expect((call?.[1] as { cwd?: string }).cwd).toBeUndefined();
+  });
+
   test("passes worktree name to daemon", async () => {
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1" })),
@@ -437,7 +481,7 @@ describe("agent codex ls", () => {
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
     await cmdAgent(["codex", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
+    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", { domainCwd: "/fake/cwd" });
   });
 
   test("outputs short format with --short", async () => {
@@ -464,8 +508,8 @@ describe("agent codex ls", () => {
       callTool: mock(async () => toolResult(SESSION_LIST)),
     });
     await cmdAgent(["codex", "ls", "-a"], deps);
-    // -a is not --all, so non-repoScoped providers just ignore it
-    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", {});
+    // -a is not --all, so the caller's domain scope still applies
+    expect(deps.callTool).toHaveBeenCalledWith("codex_session_list", { domainCwd: "/fake/cwd" });
   });
 });
 
@@ -700,7 +744,7 @@ describe("agent codex wait", () => {
       callTool: mock(async () => toolResult({ event: "timeout" })),
     });
     await cmdAgent(["codex", "wait", "--timeout", "5000"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { timeout: 5000 });
+    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { timeout: 5000, domainCwd: "/fake/cwd" });
   });
 });
 
@@ -744,7 +788,7 @@ describe("agent copilot", () => {
       callTool: mock(async () => toolResult([])),
     });
     await cmdAgent(["copilot", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
+    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot", domainCwd: "/fake/cwd" });
   });
 });
 
@@ -767,7 +811,10 @@ describe("agent claude ls", () => {
       getGitRoot: mock(() => "/repo/root"),
     });
     await cmdAgent(["claude", "ls"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/root" });
+    expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {
+      repoRoot: "/repo/root",
+      domainCwd: "/fake/cwd",
+    });
   });
 
   test("--pr is gated by repoScoped feature flag", async () => {
@@ -1653,7 +1700,7 @@ describe("agent acp ls -a flag", () => {
     });
     await cmdAgent(["acp", "ls", "-a", "copilot"], deps);
     // Should pass agent filter, not set showAll
-    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot" });
+    expect(deps.callTool).toHaveBeenCalledWith("acp_session_list", { agent: "copilot", domainCwd: "/fake/cwd" });
   });
 });
 
@@ -1936,7 +1983,7 @@ describe("agent codex wait output", () => {
       callTool: mock(async () => toolResult({ event: "session:result", seq: 5 })),
     });
     await cmdAgent(["codex", "wait", "--after", "3"], deps);
-    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { afterSeq: 3 });
+    expect(deps.callTool).toHaveBeenCalledWith("codex_wait", { afterSeq: 3, domainCwd: "/fake/cwd" });
   });
 
   test("array fallback output (timeout: session list)", async () => {
@@ -2295,6 +2342,7 @@ describe("agent wait flags", () => {
       subject: "main is red",
       body: "CI broken",
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -2320,6 +2368,7 @@ describe("agent wait flags", () => {
       subject: "PR #123 failing",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -2359,6 +2408,7 @@ describe("agent wait flags", () => {
       subject: "old message",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() - 60_000).toISOString(), // 1 min ago
     };
@@ -2380,6 +2430,7 @@ describe("agent wait flags", () => {
       subject: "tests passing",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };

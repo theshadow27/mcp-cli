@@ -60,6 +60,13 @@ function makeDeps(overrides?: Partial<ClaudeDeps>): ClaudeDeps {
     })),
     readFileWithLimit: mock(() => "file content"),
     getAgentSession: mock(async () => null),
+    // #3233: production defaults call the real (unmocked) daemon IPC —
+    // never let a test fall through to that. Any test exercising the
+    // work-item join / quota banner explicitly overrides these.
+    listWorkItems: mock(async () => []),
+    getQuotaStatus: mock(async () => {
+      throw new Error("getQuotaStatus not mocked");
+    }),
     ...overrides,
   };
 }
@@ -1532,7 +1539,7 @@ describe("mcx claude ls", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["ls"], deps);
-      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
       // Should have header + 2 session rows
       expect(logSpy.mock.calls.length).toBe(3);
       const header = (logSpy.mock.calls[0] as string[])[0];
@@ -1669,7 +1676,7 @@ describe("mcx claude ls", () => {
     console.error = mock(() => {});
     try {
       await cmdClaude(["list"], deps);
-      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(deps.callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
     } finally {
       console.error = origErr;
     }
@@ -1863,7 +1870,7 @@ describe("mcx claude ls", () => {
     try {
       await cmdClaude(["ls"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_session_list", { repoRoot: "/repo/a", domainCwd: process.cwd() });
       // Header + 1 matching session (not 2)
       expect(logSpy.mock.calls.length).toBe(2);
       const row = (logSpy.mock.calls[1] as string[])[0];
@@ -2241,6 +2248,119 @@ describe("mcx claude send", () => {
 });
 
 // ── bye ──
+
+describe("mcx claude bye — bulk scoping (P1: --all silently ended every session on the box)", () => {
+  // There was NO test anywhere asserting what scoping args claudeByeAll emits, which is
+  // exactly why two review rounds missed that `bye --all -d phoenix` ignored `-d` and
+  // ended every session in every domain and every repo — while `bye -a -d phoenix`
+  // scoped correctly. `--all` was a PRECONDITION for reaching the function, so the
+  // scoping branch was dead code on that spelling. All four combinations are pinned
+  // here, by exact args.
+  async function byeArgs(argv: string[]): Promise<Record<string, unknown> | undefined> {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, args: Record<string, unknown>) => {
+      calls.push([tool, args]);
+      if (tool === "claude_session_list") return toolResult([]);
+      return toolResult({ ended: true });
+    });
+    const deps = makeDeps({ callTool });
+    const origErr = console.error;
+    console.error = mock(() => {});
+    try {
+      await cmdClaude(argv, deps);
+    } finally {
+      console.error = origErr;
+    }
+    return calls.find(([t]) => t === "claude_session_list")?.[1];
+  }
+
+  test("--all and -a are IDENTICAL — they are documented as aliases", async () => {
+    expect(await byeArgs(["bye", "--all"])).toEqual(await byeArgs(["bye", "-a"]));
+    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual(await byeArgs(["bye", "-a", "-d", "phoenix"]));
+  });
+
+  test("--all with no -d scopes to the caller's domain", async () => {
+    expect(await byeArgs(["bye", "--all"])).toEqual({ domainCwd: process.cwd(), requireScope: true });
+  });
+
+  test("--all -d <domain> SCOPES the bye — the chosen repair shape", async () => {
+    // Pre-fix this emitted {} and ended everything on the machine.
+    expect(await byeArgs(["bye", "--all", "-d", "phoenix"])).toEqual({ domain: "phoenix", requireScope: true });
+  });
+
+  test("-a -d <domain> scopes identically", async () => {
+    expect(await byeArgs(["bye", "-a", "-d", "phoenix"])).toEqual({ domain: "phoenix", requireScope: true });
+  });
+
+  test("--all-domains is the ONLY unscoped form, and it must be asked for by name", async () => {
+    expect(await byeArgs(["bye", "--all-domains"])).toEqual({});
+  });
+
+  test("--all-domains with -d is refused rather than resolved by precedence", async () => {
+    const printError = mock(() => {});
+    const exit = mock(() => {
+      throw new ExitError(1);
+    });
+    const deps = makeDeps({ callTool: mock(async () => toolResult([])), printError, exit });
+    await expect(cmdClaude(["bye", "--all-domains", "-d", "phoenix"], deps)).rejects.toThrow(ExitError);
+    expect(printError).toHaveBeenCalledWith(expect.stringContaining("contradictory"));
+  });
+
+  test("#3199: the bulk path ALWAYS demands a scope — no flags needed to reach the hazard", async () => {
+    // The second path to machine-wide destruction: `bye --all` from a cwd outside every
+    // registered domain (which this repo's own checkout is). `domainCwd` alone was the
+    // only scoping arg sent; the daemon strips it once it resolves to nothing, handing the
+    // worker `{}` — so the bulk loop ended every session in every domain on the machine.
+    // Every non---all-domains bulk bye must now carry requireScope, which makes the daemon
+    // refuse rather than widen.
+    for (const argv of [
+      ["bye", "--all"],
+      ["bye", "-a"],
+      ["bye", "--all", "-d", "phoenix"],
+    ]) {
+      const sent = await byeArgs(argv);
+      expect(sent?.requireScope).toBe(true);
+    }
+  });
+
+  test("#3199: --all-domains is the ONLY form that may go unscoped, and it never claims otherwise", async () => {
+    const sent = await byeArgs(["bye", "--all-domains"]);
+    expect(sent).toEqual({});
+    expect(sent).not.toHaveProperty("requireScope");
+  });
+
+  test("#3199: a bulk bye in a git repo still sends repoRoot, so it narrows even outside a domain", async () => {
+    // `ls` survived this bug only because it also sent repoRoot. The bulk bye now does
+    // too — routed through the same buildSessionScope rather than assembling its own args.
+    // With a git root present the daemon has a real scope even when the cwd is in no
+    // domain, so requireScope is satisfied and the bye narrows to the repo.
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const callTool: ClaudeDeps["callTool"] = mock(async (tool: string, args: Record<string, unknown>) => {
+      calls.push([tool, args]);
+      return toolResult([]);
+    });
+    const deps = makeDeps({ callTool, getGitRoot: mock(() => "/repo/a") });
+    const origErr = console.error;
+    console.error = mock(() => {});
+    try {
+      await cmdClaude(["bye", "--all"], deps);
+    } finally {
+      console.error = origErr;
+    }
+    const sent = calls.find(([t]) => t === "claude_session_list")?.[1];
+    expect(sent).toEqual({ domainCwd: process.cwd(), repoRoot: "/repo/a", requireScope: true });
+  });
+
+  test("a malformed -d is refused on the bulk path too", async () => {
+    const printError = mock(() => {});
+    const exit = mock(() => {
+      throw new ExitError(1);
+    });
+    const deps = makeDeps({ callTool: mock(async () => toolResult([])), printError, exit });
+    await expect(cmdClaude(["bye", "--all", "-d", "--clean"], deps)).rejects.toThrow(ExitError);
+    expect(printError).toHaveBeenCalledWith("--domain requires a domain name");
+  });
+});
 
 describe("mcx claude bye", () => {
   test("ends resolved session with message", async () => {
@@ -3138,6 +3258,7 @@ describe("claudeWait --mail-to", () => {
       subject: "main is red",
       body: "CI broken",
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -3168,6 +3289,7 @@ describe("claudeWait --mail-to", () => {
       subject: "old message",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() - 60_000).toISOString(),
     };
@@ -3196,6 +3318,7 @@ describe("claudeWait --mail-to", () => {
       subject: "tests passing",
       body: null,
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -3362,7 +3485,7 @@ describe("mcx claude wait", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["wait"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", {});
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { domainCwd: process.cwd() });
     } finally {
       console.log = origLog;
     }
@@ -3400,7 +3523,7 @@ describe("mcx claude wait", () => {
     console.log = mock(() => {});
     try {
       await cmdClaude(["wait", "--timeout", "60000"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 60000 });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 60000, domainCwd: process.cwd() });
     } finally {
       console.log = origLog;
     }
@@ -3416,7 +3539,7 @@ describe("mcx claude wait", () => {
     console.log = logSpy;
     try {
       await cmdClaude(["wait", "--timeout", "1000"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000 });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000, domainCwd: process.cwd() });
       // First line is the header, second line is JSON
       const header = (logSpy.mock.calls[0] as string[])[0];
       expect(header).toBe("event=timeout");
@@ -3522,7 +3645,11 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--short", "--timeout", "1000"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { timeout: 1000, repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {
+        timeout: 1000,
+        repoRoot: "/repo/a",
+        domainCwd: process.cwd(),
+      });
       // Only 1 session matches /repo/a
       expect(logSpy.mock.calls.length).toBe(1);
       const line = (logSpy.mock.calls[0] as string[])[0];
@@ -3580,7 +3707,11 @@ describe("mcx claude wait", () => {
     try {
       await cmdClaude(["wait", "--short", "--after", "0"], deps);
       // Verify repoRoot is passed to daemon
-      expect(callTool).toHaveBeenCalledWith("claude_wait", { afterSeq: 0, repoRoot: "/repo/a" });
+      expect(callTool).toHaveBeenCalledWith("claude_wait", {
+        afterSeq: 0,
+        repoRoot: "/repo/a",
+        domainCwd: process.cwd(),
+      });
       // Only event for /repo/a
       expect(logSpy.mock.calls.length).toBe(1);
       const line = (logSpy.mock.calls[0] as string[])[0];
@@ -3613,7 +3744,9 @@ describe("mcx claude wait", () => {
       expect(logSpy.mock.calls.length).toBe(0);
       // Stderr note about hidden sessions
       expect(errSpy.mock.calls.length).toBe(1);
-      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 sessions in other repos — use --all to see them)");
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe(
+        "(2 sessions in other domains or repos — use --all to see them)",
+      );
     } finally {
       console.log = origLog;
       console.error = origErr;
@@ -3650,7 +3783,9 @@ describe("mcx claude wait", () => {
       await cmdClaude(["wait", "--short", "--after", "0"], deps);
       expect(logSpy.mock.calls.length).toBe(0);
       expect(errSpy.mock.calls.length).toBe(1);
-      expect((errSpy.mock.calls[0] as string[])[0]).toBe("(2 events in other repos — use --all to see them)");
+      expect((errSpy.mock.calls[0] as string[])[0]).toBe(
+        "(2 events in other domains or repos — use --all to see them)",
+      );
     } finally {
       console.log = origLog;
       console.error = origErr;
@@ -4011,7 +4146,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
       // 2. List — verify the new session appears
       logSpy.mockClear();
       await cmdClaude(["ls"], deps);
-      expect(callTool).toHaveBeenCalledWith("claude_session_list", {});
+      expect(callTool).toHaveBeenCalledWith("claude_session_list", { domainCwd: process.cwd() });
       // Header row + 1 session row
       expect(logSpy.mock.calls.length).toBe(2);
       const row = (logSpy.mock.calls[1] as string[])[0];

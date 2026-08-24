@@ -1,18 +1,22 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   type Domain,
   NO_DOMAIN_ID,
   canonicalizeDomainPath,
+  expandLocalDomainPath,
   formatDomainLocation,
   isDomainScoped,
   isPathWithin,
   isValidDomainName,
+  matchesDomain,
   normalizeDomainPath,
   parseDomainLocation,
   resolveDomainForPath,
+  resolveDomainLocation,
+  toDomainFilter,
 } from "./domain";
 
 function domain(name: string, path: string, host: string | null = null, id = 1): Domain {
@@ -262,5 +266,184 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
 
   test("still refuses a relative path", () => {
     expect(() => canonicalizeDomainPath("relative/path")).toThrow(/must be absolute/);
+  });
+});
+
+describe("expandLocalDomainPath (#3035)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("expands a bare tilde to home", () => {
+    expect(expandLocalDomainPath("~", env)).toBe("/home/tester");
+  });
+
+  test("expands ~/ to a path under home", () => {
+    expect(expandLocalDomainPath("~/github/phoenix", env)).toBe("/home/tester/github/phoenix");
+  });
+
+  test("resolves a relative path against the CALLER's cwd, not the daemon's", () => {
+    // The bug this prevents: a relative path stored verbatim resolves against whatever
+    // directory the daemon happened to start in, and only misbehaves after a restart.
+    expect(expandLocalDomainPath("packages/core", env)).toBe("/home/tester/repo/packages/core");
+    expect(expandLocalDomainPath(".", env)).toBe("/home/tester/repo");
+    expect(expandLocalDomainPath("../other", env)).toBe("/home/tester/other");
+  });
+
+  test("passes an absolute path through, normalized", () => {
+    expect(expandLocalDomainPath("/srv/app/", env)).toBe("/srv/app");
+    expect(expandLocalDomainPath("/srv/./app/../app", env)).toBe("/srv/app");
+  });
+
+  test("refuses ~user — another account's home is not ours to resolve", () => {
+    expect(() => expandLocalDomainPath("~alice/work", env)).toThrow(/only "~" for the current user/);
+  });
+
+  test("refuses an empty path", () => {
+    expect(() => expandLocalDomainPath("", env)).toThrow(/required/);
+  });
+
+  test("refuses to anchor on a relative cwd", () => {
+    expect(() => expandLocalDomainPath("sub", { home: "/home/u", cwd: "relative" })).toThrow(/cwd must be absolute/);
+  });
+
+  test("every expansion is absolute — the property the table depends on", () => {
+    for (const input of ["~", "~/x", ".", "..", "a/b", "/abs", "/abs/"]) {
+      expect(isAbsolute(expandLocalDomainPath(input, env))).toBe(true);
+    }
+  });
+});
+
+describe("resolveDomainLocation (#3035)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("the local and host forms are the same command, differing only in host", () => {
+    const local = resolveDomainLocation("~/github/phoenix", env);
+    const remote = resolveDomainLocation("boxen0010:~/github/phoenix", env);
+    expect(local).toEqual({ host: null, path: "/home/tester/github/phoenix" });
+    expect(remote.host).toBe("boxen0010");
+  });
+
+  test("a host-bound path is stored verbatim — its ~ is that host's home, not ours", () => {
+    expect(resolveDomainLocation("boxen0010:~/github/phoenix", env).path).toBe("~/github/phoenix");
+    expect(resolveDomainLocation("boxen0010:/srv/app", env).path).toBe("/srv/app");
+  });
+
+  test("but verbatim is not unchecked: a relative remote path is refused (#3160 N6)", () => {
+    // `a:b` and `C:\\work` both parse to a VALID hostname plus junk, so the host check
+    // passes and the path is nonsense. And a relative row is not inert: resolveDomainForPath
+    // normalizes every row inside its loop, so one of them breaks `which` for every query.
+    expect(() => resolveDomainLocation("boxen0010:relative/path", env)).toThrow(/invalid remote path/);
+    expect(() => resolveDomainLocation("a:b", env)).toThrow(/invalid remote path/);
+    expect(() => resolveDomainLocation("C:\\work", env)).toThrow(/invalid remote path/);
+  });
+
+  test("round-trips through formatDomainLocation", () => {
+    for (const spec of ["/srv/app", "boxen0010:~/work"]) {
+      expect(formatDomainLocation(resolveDomainLocation(spec, env))).toBe(spec);
+    }
+  });
+
+  test("a colon after a separator is part of a local path, not a host", () => {
+    expect(resolveDomainLocation("/tmp/a:b", env)).toEqual({ host: null, path: "/tmp/a:b" });
+  });
+});
+
+describe("resolveDomainLocation — malformed specs (#3160 review finding 3)", () => {
+  const env = { home: "/home/tester", cwd: "/home/tester/repo" };
+
+  test("rejects a colon form that yields only one half, instead of expanding it to garbage", () => {
+    // Each of these used to become an absolute-looking path under cwd — e.g.
+    // ":/tmp/foo" -> "/home/tester/repo/:/tmp/foo" — which normalizeDomainPath accepts and
+    // nothing downstream rejects, because a domain path need not exist.
+    for (const spec of [":/tmp/foo", "boxen:", ":"]) {
+      expect(() => resolveDomainLocation(spec, env)).toThrow(/malformed location/);
+    }
+  });
+
+  test("rejects a host that is not a hostname", () => {
+    expect(() => resolveDomainLocation("  spacey:/tmp/x", env)).toThrow(/invalid host/);
+    expect(() => resolveDomainLocation("a b:/tmp/x", env)).toThrow(/invalid host/);
+  });
+
+  test("accepts real hostnames, including dotted and hyphenated", () => {
+    expect(resolveDomainLocation("box-1.lan:/srv/x", env)).toEqual({ host: "box-1.lan", path: "/srv/x" });
+  });
+
+  test("a colon AFTER a separator is still an ordinary local path", () => {
+    expect(resolveDomainLocation("/tmp/a:b", env)).toEqual({ host: null, path: "/tmp/a:b" });
+    expect(resolveDomainLocation("~/a:b", env)).toEqual({ host: null, path: "/home/tester/a:b" });
+    expect(resolveDomainLocation("sub/a:b", env)).toEqual({ host: null, path: "/home/tester/repo/sub/a:b" });
+  });
+
+  test("no accepted spec ever expands to a path containing a bare colon segment", () => {
+    // The property, not the cases: whatever survives is either host-bound (stored verbatim)
+    // or an absolute local path whose first segment is not a `host:` fragment.
+    for (const spec of ["/tmp/x", "~/x", "sub/x", "/tmp/a:b", "boxen0010:~/work"]) {
+      const loc = resolveDomainLocation(spec, env);
+      if (loc.host === null) {
+        expect(isAbsolute(loc.path)).toBe(true);
+        expect(loc.path.split("/").filter(Boolean)[0]).not.toContain(":");
+      }
+    }
+  });
+});
+
+describe("toDomainFilter", () => {
+  test("a real domain id filters", () => {
+    expect(toDomainFilter(1)).toBe(1);
+    expect(toDomainFilter(42)).toBe(42);
+  });
+
+  test("the unassigned sentinel is NOT a filter", () => {
+    // Filtering on 0 would answer "which sessions are in no domain?" while
+    // reading like a domain filter at the call site — and would hide every
+    // session the moment domains started being registered.
+    expect(toDomainFilter(NO_DOMAIN_ID)).toBeUndefined();
+  });
+
+  test("absent stays absent", () => {
+    expect(toDomainFilter(undefined)).toBeUndefined();
+  });
+});
+
+describe("matchesDomain", () => {
+  test("no filter admits everything, including a session-less event", () => {
+    expect(matchesDomain({ domainId: 3 }, undefined)).toBe(true);
+    expect(matchesDomain(undefined, undefined)).toBe(true);
+  });
+
+  test("an active filter drops an event with no session (#1308)", () => {
+    expect(matchesDomain(undefined, 3)).toBe(false);
+  });
+
+  test("admits only the matching domain", () => {
+    expect(matchesDomain({ domainId: 3 }, 3)).toBe(true);
+    expect(matchesDomain({ domainId: 4 }, 3)).toBe(false);
+    expect(matchesDomain({ domainId: NO_DOMAIN_ID }, 3)).toBe(false);
+  });
+
+  test("sibling-prefix directories RESOLVE to different domains — the historic scopeRoot bug", () => {
+    // The previous version of this test built two sessions with two different ids and
+    // asserted they compared unequal. That is true by construction and cannot fail; it
+    // read as coverage of the scopeRoot bug while testing nothing.
+    //
+    // The bug lived in RESOLUTION, not comparison: `cwd.startsWith(scopeRoot)` put
+    // /foo/barbaz inside /foo/bar. So assert resolution, and assert it against the
+    // string-prefix rule that was wrong — this fails if isPathWithin ever loses its
+    // segment awareness.
+    const bar = domain("bar", "/foo/bar", null, 1);
+    const barbaz = domain("barbaz", "/foo/barbaz", null, 2);
+    const domains = [bar, barbaz];
+
+    for (const path of ["/foo/barbaz", "/foo/barbaz/src", "/foo/barbaz/deep/nested"]) {
+      // The rule that shipped the bug would have said "yes" to all three.
+      expect(path.startsWith("/foo/bar")).toBe(true);
+      expect(isPathWithin(path, "/foo/bar")).toBe(false);
+      expect(resolveDomainForPath(path, domains)).toBe(barbaz);
+    }
+
+    expect(resolveDomainForPath("/foo/bar/src", domains)).toBe(bar);
+    // And the ids that resolution produced are what filtering then compares.
+    expect(matchesDomain({ domainId: barbaz.id }, bar.id)).toBe(false);
+    expect(matchesDomain({ domainId: barbaz.id }, barbaz.id)).toBe(true);
   });
 });

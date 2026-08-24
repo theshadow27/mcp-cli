@@ -485,19 +485,27 @@ describe("config file operations", () => {
 // -- Scope resolution --
 
 describe("resolveConfigPath", () => {
-  test("user scope resolves to USER_SERVERS_PATH", () => {
+  // Asserts against options.MCP_CLI_DIR rather than a hardcoded ".mcp-cli"
+  // substring: the real default is homedir()/.mcp-cli, but under test
+  // isolation (test/preload-mcp-cli-isolation.ts, #3233) MCP_CLI_DIR is a
+  // throwaway temp dir instead. testOptions() here proves the override is
+  // actually respected, not just that today's default happens to match.
+  test("user scope resolves under options.MCP_CLI_DIR", () => {
+    using opts = testOptions();
     const path = resolveConfigPath("user");
     expect(path).toContain("servers.json");
-    expect(path).toContain(".mcp-cli");
+    expect(path.startsWith(opts.dir)).toBe(true);
   });
 
   test("local scope resolves same as user", () => {
+    using _opts = testOptions();
     expect(resolveConfigPath("local")).toBe(resolveConfigPath("user"));
   });
 
-  test("project scope resolves to mcp-cli project config", () => {
+  test("project scope resolves under options.MCP_CLI_DIR/projects", () => {
+    using opts = testOptions();
     const path = resolveConfigPath("project");
-    expect(path).toContain(".mcp-cli/projects");
+    expect(path).toContain(join(opts.dir, "projects"));
     expect(path).toContain("servers.json");
   });
 });

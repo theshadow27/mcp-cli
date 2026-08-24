@@ -3,26 +3,50 @@
  *
  * Uses an in-process MCP Server with InMemoryTransport (no Workers).
  * Tools: track, untrack, list, get, update — mapping to WorkItemDb CRUD.
+ *
+ * **Domain scoping (#3037).** Every tool here operates on one domain: the one the caller is
+ * standing in, resolved by the daemon from the caller's cwd and delivered in MCP `_meta`
+ * (see `domain-scope.ts`). Three properties follow, and each is a test in this file's spec
+ * rather than a promise in this comment:
+ *
+ * 1. **No tool argument names a domain.** Not in any `inputSchema`, so no model ever sees
+ *    one; and `work_items_update` rejects unknown keys, so passing `domainId` anyway is an
+ *    error rather than a hint.
+ * 2. **A session cannot forge one.** `_meta` is a sibling of `arguments` in the MCP request
+ *    and the IPC schema strips unknown keys, so nothing a session writes reaches it.
+ * 3. **There is no widening argument.** The handle is `workItemDb.forDomain(scope.id)`;
+ *    a tool cannot ask for a second domain's rows because it has no way to name one.
  */
 
 import { isAbsolute, resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import {
+  NO_DOMAIN_ID,
   WORK_ITEMS_SERVER_NAME,
   canTransition,
   consoleLogger,
   isReservedPhaseStateKey,
   isStandardPhase,
   resolveRealpath,
+  workItemStateNamespace,
 } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { WorkItemDb } from "./db/work-items";
+import type { DomainWorkItems, WorkItemDb } from "./db/work-items";
+import { type DomainScope, domainScopeFromMeta } from "./domain-scope";
 
-/** Narrow interface for alias_state operations — avoids coupling to full StateDb. */
+/**
+ * Narrow interface for alias_state operations — avoids coupling to full StateDb.
+ *
+ * `alias_state` carries a `domain_id` column, and by the time this PR rebased onto
+ * #3040's `PhaseStateBinding` (below), both writers of the `phase_state_*` /
+ * `workitem:<id>` namespace — these tools and the phase runner's `aliasStateSet` IPC
+ * path — require the partition key on this interface. See `PhaseStateBinding` for why
+ * it is bundled with the resolver rather than optional.
+ */
 export interface PhaseStateStore {
   getAliasState(repoRoot: string, namespace: string, key: string, domainId: number): unknown;
   setAliasState(repoRoot: string, namespace: string, key: string, value: unknown, domainId: number): void;
@@ -66,6 +90,55 @@ function parseIntOrUndefined(value: unknown): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n)) throw new Error(`Expected integer, got: ${String(value)}`);
   return Math.trunc(n);
+}
+
+/** An MCP error result, ready to return from a tool handler. */
+type ToolError = { content: Array<{ type: "text"; text: string }>; isError: true };
+
+function toolError(text: string): { error: ToolError } {
+  return { error: { content: [{ type: "text" as const, text }], isError: true } };
+}
+
+/**
+ * Validate the arguments common to every `phase_state_*` tool and resolve the work item to
+ * the namespace its state actually lives in.
+ *
+ * **The load-bearing line is `item.id`, not `workItemId`.** The four `phase_state_*` handlers
+ * each used to build `workitem:${workItemId}` from the *raw argument*, while the phase runner
+ * builds its namespace from the **stored** id the daemon returned. Once ids became
+ * domain-qualified those two spellings diverge — `mcx track 42` in domain 1 returns `d1:#42`,
+ * so a caller passing `#42` and a caller passing `d1:#42` addressed **different rows**. Worse,
+ * the existence check accepts both spellings (`workItemIdCandidates`), so both callers
+ * succeeded and neither saw an error: a phase script would read state the tools never wrote.
+ *
+ * Resolving through the database and taking `item.id` collapses both spellings onto the one
+ * namespace. This lives in a single function, rather than being repeated in four handlers,
+ * because four copies of a normalization step is how three of them come to be missing it.
+ */
+function resolvePhaseStateTarget(
+  phaseState: PhaseStateBinding | null,
+  scoped: DomainWorkItems,
+  a: Record<string, unknown>,
+  opts: { requireKey: boolean },
+): { repoRoot: string; key: string; ns: string; domainId: number } | { error: ToolError } {
+  if (!phaseState) return toolError("Phase state not available (no stateDb configured)");
+
+  const workItemId = String(a.workItemId ?? "");
+  const rawRepoRoot = String(a.repoRoot ?? "").trim();
+  if (rawRepoRoot && !isAbsolute(rawRepoRoot)) return toolError("repoRoot must be an absolute path");
+
+  const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
+  const key = String(a.key ?? "");
+  if (!workItemId || !repoRoot || (opts.requireKey && !key)) {
+    return toolError(
+      opts.requireKey ? "workItemId, repoRoot, and key are required" : "workItemId and repoRoot are required",
+    );
+  }
+
+  const item = scoped.getWorkItem(workItemId);
+  if (!item) return toolError(`Work item not found: ${workItemId}`);
+
+  return { repoRoot, key, ns: workItemStateNamespace(item.id), domainId: phaseState.domainIdFor(repoRoot) };
 }
 
 /** Parse a value to integer, throwing if NaN. */
@@ -307,6 +380,12 @@ export class WorkItemsServer {
       const { name, arguments: args } = request.params;
       const a = args ?? {};
 
+      // The caller's domain, decided by the daemon before this request was built. Read from
+      // `_meta`, never from `args` — see the file header. An absent or malformed value is
+      // the unassigned partition, which is where every pre-domain row already lives.
+      const scope = domainScopeFromMeta(request.params._meta);
+      const scoped = this.workItemDb.forDomain(scope.id);
+
       try {
         switch (name) {
           case "work_items_track": {
@@ -327,12 +406,12 @@ export class WorkItemsServer {
             }
 
             // Look up existing item by PR, issue, or branch — first match wins
-            let existing = prNumber ? this.workItemDb.getWorkItemByPr(prNumber) : null;
+            let existing = prNumber ? scoped.getWorkItemByPr(prNumber) : null;
             if (!existing && issueNumber) {
-              existing = this.workItemDb.getWorkItemByIssue(issueNumber);
+              existing = scoped.getWorkItemByIssue(issueNumber);
             }
             if (!existing && branch) {
-              existing = this.workItemDb.getWorkItemByBranch(branch);
+              existing = scoped.getWorkItemByBranch(branch);
             }
 
             // Derive an ID from identifiers (PR takes priority)
@@ -340,7 +419,7 @@ export class WorkItemsServer {
               existing?.id ?? (prNumber ? `pr:${prNumber}` : issueNumber ? `issue:${issueNumber}` : `branch:${branch}`);
 
             // Atomic upsert — avoids TOCTOU race between concurrent track calls
-            let item = this.workItemDb.upsertWorkItem({
+            let item = scoped.upsertWorkItem({
               id,
               issueNumber: issueNumber ?? undefined,
               prNumber: prNumber ?? undefined,
@@ -352,9 +431,9 @@ export class WorkItemsServer {
             // Auto-populate branch when prNumber is known but branch isn't —
             // fires on the initial track call too, not just update (#1449).
             if (prNumber != null && item.branch == null) {
-              const wrote = await this.maybeResolveAndSetBranch(id, prNumber);
+              const wrote = await this.maybeResolveAndSetBranch(scoped, item.id, prNumber);
               if (wrote) {
-                const refreshed = this.workItemDb.getWorkItem(id);
+                const refreshed = scoped.getWorkItem(id);
                 if (refreshed) item = refreshed;
               }
             }
@@ -368,7 +447,7 @@ export class WorkItemsServer {
             if (!id) {
               return { content: [{ type: "text" as const, text: "id is required" }], isError: true };
             }
-            const deleted = this.workItemDb.deleteWorkItem(id);
+            const deleted = scoped.deleteWorkItem(id);
             if (!deleted) {
               return { content: [{ type: "text" as const, text: `Work item not found: ${id}` }], isError: true };
             }
@@ -379,11 +458,20 @@ export class WorkItemsServer {
             const phase = a.phase !== undefined ? String(a.phase) : undefined;
             // Only filter when caller explicitly opts out of archived items (include_archived === false).
             const excludeArchived = a.include_archived === false;
-            const items = this.workItemDb.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
-            const hiddenCount = excludeArchived ? this.workItemDb.countArchivedWorkItems() : 0;
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({ items, count: items.length, hiddenCount }) }],
-            };
+            const items = scoped.listWorkItems({ ...(phase ? { phase } : {}), excludeArchived });
+            const hiddenCount = excludeArchived ? scoped.countArchivedWorkItems() : 0;
+            // "Nothing tracked here" and "your rows predate domains and are stranded in
+            // partition 0" are the same empty list; say which. The predicate is shared with
+            // the IPC handler rather than restated — gating on the FILTERED count (as both
+            // sites first did) reports stranded rows for a domain that simply has no matches
+            // for this filter.
+            const unassignedCount = this.workItemDb.strandedUnassignedCount(scoped);
+            const body: Record<string, unknown> = { items, count: items.length, hiddenCount };
+            if (unassignedCount > 0) {
+              body.unassignedCount = unassignedCount;
+              body.note = `0 work items in domain ${scope.name ?? scope.id}, but ${unassignedCount} unassigned item(s) exist from before this directory belonged to a domain. They are readable from outside every domain.`;
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
           }
 
           case "work_items_get": {
@@ -398,9 +486,9 @@ export class WorkItemsServer {
               };
             }
 
-            let item = id ? this.workItemDb.getWorkItem(id) : null;
-            if (!item && prNumber) item = this.workItemDb.getWorkItemByPr(prNumber);
-            if (!item && issueNumber) item = this.workItemDb.getWorkItemByIssue(issueNumber);
+            let item = id ? scoped.getWorkItem(id) : null;
+            if (!item && prNumber) item = scoped.getWorkItemByPr(prNumber);
+            if (!item && issueNumber) item = scoped.getWorkItemByIssue(issueNumber);
 
             // Absence is a queryable answer, not a failure (#2834): return a
             // non-error discriminable payload so `mcx call` (which exits 1 on
@@ -449,7 +537,7 @@ export class WorkItemsServer {
 
             // Validate phase if a new phase is being set
             if (a.phase !== undefined) {
-              const existing = this.workItemDb.getWorkItem(id);
+              const existing = scoped.getWorkItem(id);
               if (!existing) {
                 return { content: [{ type: "text" as const, text: `work item not found: ${id}` }], isError: true };
               }
@@ -524,7 +612,7 @@ export class WorkItemsServer {
             if (a.issueNumber !== undefined)
               patch.issueNumber = a.issueNumber === null ? null : requireInt(a.issueNumber, "issueNumber");
 
-            let updated = this.workItemDb.updateWorkItem(id, patch, { forced: force, forceReason });
+            let updated = scoped.updateWorkItem(id, patch, { forced: force, forceReason });
 
             // Auto-populate branch when prNumber is being set and the patch didn't
             // supply a branch. Runs AFTER the main update so the helper's atomic
@@ -533,9 +621,9 @@ export class WorkItemsServer {
             // does not fail the update. See #1424 for the DX rationale.
             const newPrNumber = patch.prNumber;
             if (newPrNumber != null && patch.branch === undefined) {
-              const wrote = await this.maybeResolveAndSetBranch(id, newPrNumber);
+              const wrote = await this.maybeResolveAndSetBranch(scoped, updated.id, newPrNumber);
               if (wrote) {
-                const refreshed = this.workItemDb.getWorkItem(id);
+                const refreshed = scoped.getWorkItem(id);
                 if (refreshed) updated = refreshed;
               }
             }
@@ -544,74 +632,22 @@ export class WorkItemsServer {
           }
 
           case "phase_state_get": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
-            if (!this.workItemDb.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
-            const ns = `workitem:${workItemId}`;
-            const value = this.phaseState.store.getAliasState(repoRoot, ns, key, this.phaseState.domainIdFor(repoRoot));
-            return { content: [{ type: "text" as const, text: JSON.stringify({ key, value }) }] };
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const value = this.phaseState?.store.getAliasState(target.repoRoot, target.ns, target.key, target.domainId);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ key: target.key, value }) }] };
           }
 
           case "phase_state_set": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
             if (a.value === undefined) {
               return {
                 content: [{ type: "text" as const, text: "value is required; use phase_state_delete to remove a key" }],
                 isError: true,
               };
             }
-            if (!this.workItemDb.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const { repoRoot, key, ns, domainId } = target;
             if (isReservedPhaseStateKey(key)) {
               return {
                 content: [
@@ -623,40 +659,14 @@ export class WorkItemsServer {
                 isError: true,
               };
             }
-            const ns = `workitem:${workItemId}`;
-            this.phaseState.store.setAliasState(repoRoot, ns, key, a.value, this.phaseState.domainIdFor(repoRoot));
+            this.phaseState?.store.setAliasState(repoRoot, ns, key, a.value, domainId);
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key }) }] };
           }
 
           case "phase_state_delete": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            const key = String(a.key ?? "");
-            if (!workItemId || !repoRoot || !key) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId, repoRoot, and key are required" }],
-                isError: true,
-              };
-            }
-            if (!this.workItemDb.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: true });
+            if ("error" in target) return target.error;
+            const { repoRoot, key, ns, domainId } = target;
             if (isReservedPhaseStateKey(key)) {
               return {
                 content: [
@@ -668,46 +678,14 @@ export class WorkItemsServer {
                 isError: true,
               };
             }
-            const ns = `workitem:${workItemId}`;
-            const deleted = this.phaseState.store.deleteAliasState(
-              repoRoot,
-              ns,
-              key,
-              this.phaseState.domainIdFor(repoRoot),
-            );
+            const deleted = this.phaseState?.store.deleteAliasState(repoRoot, ns, key, domainId) ?? false;
             return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, key, deleted }) }] };
           }
 
           case "phase_state_list": {
-            if (!this.phaseState) {
-              return {
-                content: [{ type: "text" as const, text: "Phase state not available (no stateDb configured)" }],
-                isError: true,
-              };
-            }
-            const workItemId = String(a.workItemId ?? "");
-            const rawRepoRoot = String(a.repoRoot ?? "").trim();
-            if (rawRepoRoot && !isAbsolute(rawRepoRoot)) {
-              return {
-                content: [{ type: "text" as const, text: "repoRoot must be an absolute path" }],
-                isError: true,
-              };
-            }
-            const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
-            if (!workItemId || !repoRoot) {
-              return {
-                content: [{ type: "text" as const, text: "workItemId and repoRoot are required" }],
-                isError: true,
-              };
-            }
-            if (!this.workItemDb.getWorkItem(workItemId)) {
-              return {
-                content: [{ type: "text" as const, text: `Work item not found: ${workItemId}` }],
-                isError: true,
-              };
-            }
-            const ns = `workitem:${workItemId}`;
-            const entries = this.phaseState.store.listAliasState(repoRoot, ns, this.phaseState.domainIdFor(repoRoot));
+            const target = resolvePhaseStateTarget(this.phaseState, scoped, a, { requireKey: false });
+            if ("error" in target) return target.error;
+            const entries = this.phaseState?.store.listAliasState(target.repoRoot, target.ns, target.domainId) ?? {};
             return {
               content: [
                 { type: "text" as const, text: JSON.stringify({ entries, count: Object.keys(entries).length }) },
@@ -745,9 +723,9 @@ export class WorkItemsServer {
    *
    * Returns true when the branch was written, false on any failure or skip.
    */
-  private async maybeResolveAndSetBranch(id: string, prNumber: number): Promise<boolean> {
+  private async maybeResolveAndSetBranch(scoped: DomainWorkItems, id: string, prNumber: number): Promise<boolean> {
     if (!this.resolveBranchFromPr) return false;
-    const existing = this.workItemDb.getWorkItem(id);
+    const existing = scoped.getWorkItem(id);
     if (!existing || existing.branch != null) return false;
     let resolved: string | null = null;
     try {
@@ -758,7 +736,7 @@ export class WorkItemsServer {
       return false;
     }
     if (!resolved) return false;
-    return this.workItemDb.setBranchIfNull(id, resolved);
+    return scoped.setBranchIfNull(id, resolved);
   }
 
   async stop(): Promise<void> {

@@ -13,11 +13,23 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { spawnCapture } from "@mcp-cli/core";
+import { options, spawnCapture } from "@mcp-cli/core";
 import type { BrowserType } from "playwright";
 
-const VENDOR_DIR = join(homedir(), ".mcp-cli", "vendor", "playwright");
-const VENDOR_PKG = join(VENDOR_DIR, "node_modules", "playwright");
+// Functions, not module-level constants: `options.MCP_CLI_DIR` is mutable
+// (every test harness and any non-default MCP_CLI_DIR retargets it — see
+// packages/core/src/constants.ts). A constant computed at import time would
+// freeze in whatever MCP_CLI_DIR happened to be set before this module's
+// first import, so any later override (a test's testOptions(), a spawned
+// subprocess's env) would be silently ignored and this would keep writing
+// to the FIRST-resolved directory — the real ~/.mcp-cli in production, or a
+// stale temp dir in tests. See #3233.
+function vendorDir(): string {
+  return join(options.MCP_CLI_DIR, "vendor", "playwright");
+}
+function vendorPkg(): string {
+  return join(vendorDir(), "node_modules", "playwright");
+}
 
 // Keep in sync with devDependencies in package.json.
 const PLAYWRIGHT_VERSION = "1.59.1";
@@ -29,7 +41,7 @@ const PLAYWRIGHT_VERSION = "1.59.1";
  * using it would poison the cache with whatever project the user was in.
  */
 export function playwrightCandidates(): string[] {
-  const candidates = [VENDOR_PKG];
+  const candidates = [vendorPkg()];
 
   if (process.env.BUN_INSTALL) {
     candidates.push(join(process.env.BUN_INSTALL, "install", "global", "node_modules", "playwright"));
@@ -50,7 +62,7 @@ let pending: Promise<BrowserType> | null = null;
 export function resolvePlaywright(opts?: {
   candidates?: string[];
   install?: (vendorDir: string) => { exitCode: number; stderr: string } | Promise<{ exitCode: number; stderr: string }>;
-  /** Override the path checked after a successful install. Defaults to VENDOR_PKG. For testing only. */
+  /** Override the path checked after a successful install. Defaults to vendorPkg(). For testing only. */
   vendorPkg?: string;
 }): Promise<BrowserType> {
   if (!pending) {
@@ -84,21 +96,22 @@ async function doResolve(opts?: {
   // No candidate found — auto-install to vendor dir.
   console.error("[site] playwright not found locally — installing to vendor dir…");
 
+  const resolvedVendorDir = vendorDir();
   const doInstall = opts?.install ?? _defaultInstall;
-  const result = await doInstall(VENDOR_DIR);
+  const result = await doInstall(resolvedVendorDir);
 
   if (result.exitCode !== 0) {
     throw new Error(
       `Failed to auto-install playwright (exit ${result.exitCode}): ${result.stderr.trim() || "(no output)"}. ` +
-        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
+        `Install manually: cd ${resolvedVendorDir} && bun add playwright`,
     );
   }
 
-  const resolvedVendorPkg = opts?.vendorPkg ?? VENDOR_PKG;
+  const resolvedVendorPkg = opts?.vendorPkg ?? vendorPkg();
   if (!existsSync(resolvedVendorPkg)) {
     throw new Error(
       `playwright install succeeded but package not found at ${resolvedVendorPkg}. ` +
-        `Install manually: cd ${VENDOR_DIR} && bun add playwright`,
+        `Install manually: cd ${resolvedVendorDir} && bun add playwright`,
     );
   }
 

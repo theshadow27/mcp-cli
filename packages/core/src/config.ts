@@ -137,6 +137,16 @@ export interface CliConfig {
    * Set via: `mcx config set default-profile <name>`.
    */
   defaultProfile?: string;
+  /**
+   * Explicit repo root for the daemon's GitHub repo detection (`git remote get-url
+   * origin`), overriding the daemon's startup `process.cwd()` (#3243). No
+   * non-interactive launcher (systemd, Docker, etc.) can guarantee the daemon's cwd
+   * is the project root — a missing `WorkingDirectory=` on a systemd unit silently
+   * defaults cwd to `$HOME`, which isn't a git repo, permanently starving the daemon
+   * of PR/CI events. Set via: `mcx config set repo-root /path/to/repo`. The
+   * `MCP_DAEMON_REPO_ROOT` env var takes precedence.
+   */
+  repoRoot?: string;
 }
 
 /** Claude Code project settings (.claude/settings.local.json) */

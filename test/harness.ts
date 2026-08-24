@@ -266,6 +266,7 @@ export async function pollUntil(
  */
 export async function startMockServer(scriptPath: string): Promise<MockServer> {
   const result = spawnManaged("bun", [resolve(scriptPath)], {
+    env: process.env,
     stdout: "pipe",
     stderr: "pipe",
   });

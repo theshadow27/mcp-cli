@@ -1,7 +1,33 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { METRICS_SERVER_NAME } from "@mcp-cli/core";
+import { StateDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 import { MetricsServer } from "./metrics-server";
+
+const dbPaths: string[] = [];
+
+function tmpDbPath(): string {
+  const p = join(tmpdir(), `mcp-metrics-server-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  dbPaths.push(p);
+  return p;
+}
+
+afterEach(() => {
+  for (const p of dbPaths) {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        unlinkSync(`${p}${suffix}`);
+        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  dbPaths.length = 0;
+});
 
 const SETTLE_MS = 50;
 
@@ -12,16 +38,17 @@ describe("METRICS_SERVER_NAME", () => {
 });
 
 describe("start() returns tool cache", () => {
-  test("returns 4 tools with correct server name", async () => {
+  test("returns 5 tools with correct server name", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector);
     try {
       const { tools } = await server.start();
-      expect(tools.size).toBe(4);
+      expect(tools.size).toBe(5);
       expect(tools.has("get_metrics")).toBe(true);
       expect(tools.has("get_metric")).toBe(true);
       expect(tools.has("get_health")).toBe(true);
       expect(tools.has("quota_status")).toBe(true);
+      expect(tools.has("get_domain_spend")).toBe(true);
       for (const [, info] of tools) {
         expect(info.server).toBe("_metrics");
       }
@@ -204,15 +231,15 @@ describe("MetricsServer", () => {
     }
   });
 
-  test("listTools returns all 4 tools", async () => {
+  test("listTools returns all 5 tools", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector);
     try {
       const { client } = await server.start();
       const result = await client.listTools();
-      expect(result.tools).toHaveLength(4);
+      expect(result.tools).toHaveLength(5);
       expect(result.tools.map((t) => t.name).sort()).toEqual(
-        ["get_health", "get_metric", "get_metrics", "quota_status"].sort(),
+        ["get_domain_spend", "get_health", "get_metric", "get_metrics", "quota_status"].sort(),
       );
     } finally {
       await server.stop();
@@ -231,6 +258,45 @@ describe("MetricsServer", () => {
       expect(data.lastError).toBeDefined();
     } finally {
       await server.stop();
+    }
+  });
+
+  test("quota_status says 'not started' before the poller's first tick, and gives a timestamped reason after (#3223)", async () => {
+    const collector = new MetricsCollector();
+    const { QuotaPoller } = await import("./quota");
+
+    // Never started: still the "not started" message.
+    const neverStarted = new QuotaPoller({ intervalMs: 60_000, readToken: async () => null });
+    const notStartedServer = new MetricsServer(collector, neverStarted);
+    try {
+      const { client } = await notStartedServer.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const data = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).toBe("Quota monitoring not started");
+      expect(data.lastAttemptAt).toBeNull();
+    } finally {
+      await notStartedServer.stop();
+    }
+
+    // Started, but the token source never finds a token (e.g. unconfigured host): a
+    // distinguishable, timestamped reason instead of the misleading default forever.
+    const attemptedNoToken = new QuotaPoller({ intervalMs: 60_000, readToken: async () => null });
+    attemptedNoToken.start();
+    await Bun.sleep(SETTLE_MS);
+    attemptedNoToken.stop();
+
+    const attemptedServer = new MetricsServer(collector, attemptedNoToken);
+    try {
+      const { client } = await attemptedServer.start();
+      const result = await client.callTool({ name: "quota_status", arguments: {} });
+      const data = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+      expect(data.available).toBe(false);
+      expect(data.lastError).not.toBe("Quota monitoring not started");
+      expect(data.lastError).toContain("No Claude Code OAuth token found");
+      expect(data.lastAttemptAt).toBeGreaterThan(0);
+    } finally {
+      await attemptedServer.stop();
     }
   });
 
@@ -291,6 +357,74 @@ describe("MetricsServer", () => {
       expect(data.lastError).toContain("503");
     } finally {
       await server.stop();
+    }
+  });
+
+  test("get_domain_spend returns error when no StateDb is configured", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector); // no db
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "get_domain_spend", arguments: {} });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      expect(text).toContain("StateDb");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("get_domain_spend rolls up agent_sessions by domain", async () => {
+    const collector = new MetricsCollector();
+    const db = new StateDb(tmpDbPath());
+    const phoenix = db.createDomain("phoenix", "/repo/phoenix");
+    db.upsertSession({ sessionId: "p1", model: "opus" });
+    db.updateSessionCost("p1", 1.5, 1000);
+    db.database.run("UPDATE agent_sessions SET domain_id = ? WHERE session_id = ?", [phoenix.id, "p1"]);
+
+    const server = new MetricsServer(collector, undefined, db);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "get_domain_spend", arguments: { domain: "phoenix" } });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      const data = JSON.parse(text);
+      expect(data.totals).toHaveLength(1);
+      expect(data.totals[0].domain).toBe("phoenix");
+      expect(data.totals[0].totalCost).toBe(1.5);
+      expect(data.totals[0].source).toBe("daemon");
+      expect(data.sessions[0].sessionId).toBe("p1");
+    } finally {
+      await server.stop();
+      db.close();
+    }
+  });
+
+  test("get_domain_spend rejects a non-string domain argument", async () => {
+    const collector = new MetricsCollector();
+    const db = new StateDb(tmpDbPath());
+    const server = new MetricsServer(collector, undefined, db);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "get_domain_spend", arguments: { domain: 42 } });
+      expect(result.isError).toBe(true);
+    } finally {
+      await server.stop();
+      db.close();
+    }
+  });
+
+  test("get_domain_spend rejects a non-number sinceMs argument", async () => {
+    const collector = new MetricsCollector();
+    const db = new StateDb(tmpDbPath());
+    const server = new MetricsServer(collector, undefined, db);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "get_domain_spend", arguments: { sinceMs: "yesterday" } });
+      expect(result.isError).toBe(true);
+    } finally {
+      await server.stop();
+      db.close();
     }
   });
 });

@@ -178,6 +178,17 @@ describe("createCaptureLogger", () => {
     expect(seen).toEqual(["D d-msg", "I i-msg", "W w-msg", "E e-msg"]);
   });
 
+  it("isEmpty() distinguishes 'said nothing yet' from 'buffered output'", () => {
+    // The deadline path uses this to tell a step that wedged before it spoke
+    // from one whose partial output is worth dumping (#3261).
+    const cap = createCaptureLogger();
+    expect(cap.isEmpty()).toBe(true);
+    cap.debug("something");
+    expect(cap.isEmpty()).toBe(false);
+    cap.clear();
+    expect(cap.isEmpty()).toBe(true);
+  });
+
   it("clear() empties the buffer so a later show() produces nothing", () => {
     const cap = createCaptureLogger();
     cap.info("dropped");

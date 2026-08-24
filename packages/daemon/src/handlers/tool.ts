@@ -10,9 +10,11 @@ import {
 import type { IpcMethod } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
 import type { StateDb } from "../db/state";
+import { DOMAIN_META_KEY, DOMAIN_SCOPED_SERVERS, resolveDomainScope } from "../domain-scope";
 import type { RequestHandler } from "../handler-types";
 import { metrics } from "../metrics";
 import type { ServerPool } from "../server-pool";
+import { applyDomainScope } from "../session-domain";
 
 export class ToolHandlers {
   constructor(
@@ -89,13 +91,32 @@ export class ToolHandlers {
         //
         // For _claude, inject the per-request traceparent so the spawned
         // Claude process becomes a child of this IPC operation span.
-        const resolvedArgs = server === CLAUDE_SERVER_NAME ? { ...args, __traceparent: toolSpan.traceparent() } : args;
+        //
+        // Domain scoping (#3039) is applied to EVERY provider here rather than in
+        // each session worker: the domains table lives in this process, so this is
+        // the only point that can turn `-d phoenix` (or the caller's cwd) into the
+        // numeric `domainId` a worker filters on. Workers compare ids and nothing
+        // else — there is no second resolution path, which is the whole reason
+        // this replaces `scopeRoot`. `applyDomainScope` is a strict no-op for every
+        // server it does not own (agent-session servers only), so it never touches
+        // the partitioned virtual servers below.
+        const scopedArgs = applyDomainScope(this.db, server, tool, args, cwd);
+        const resolvedArgs =
+          server === CLAUDE_SERVER_NAME ? { ...scopedArgs, __traceparent: toolSpan.traceparent() } : scopedArgs;
+        // Domain scoping for partitioned virtual servers (#3037). Resolved here from the
+        // caller's cwd and carried in MCP `_meta`, which is a sibling of `arguments` rather
+        // than a member of it — the caller's JSON cannot reach this channel, so a session
+        // cannot name a domain other than the one it is standing in.
+        const meta = DOMAIN_SCOPED_SERVERS.has(server)
+          ? { [DOMAIN_META_KEY]: resolveDomainScope(this.db, cwd) }
+          : undefined;
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
             ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
             : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs, {
                 onRateLimitWait: (waitedMs) => toolSpan.setAttribute("ratelimit.waitMs", waitedMs),
                 signal: ctx.signal,
+                ...(meta ? { meta } : {}),
               });
         toolSpan.setStatus("OK");
         const finished = toolSpan.end();

@@ -36,6 +36,9 @@ import {
   type AgentSessionEvent,
   DEFAULT_TIMEOUT_MS,
   MOCK_SERVER_NAME,
+  NO_DOMAIN_ID,
+  domainFilterArg,
+  matchesDomain,
 } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -170,6 +173,8 @@ interface MockSession {
   interrupted: boolean;
   transcript: Array<{ role: string; text: string }>;
   createdAt: number;
+  /** Domain that owns this session (#3039), resolved daemon-side before spawn. */
+  domainId: number;
   pendingPermissions: Map<string, PermissionWaiter>;
   totalCost: number;
   totalTokens: number;
@@ -187,6 +192,12 @@ interface BufferedEvent {
   seq: number;
   sessionId: string;
   event: AgentSessionEvent;
+  /**
+   * Domain captured at buffer time (#3039). The live `sessions` map is cleared on
+   * `session:ended` while the buffer survives, so re-deriving the domain at read time
+   * silently lost a scoped caller its own ended session's events.
+   */
+  domainId: number;
 }
 
 const MAX_EVENT_BUFFER = 200;
@@ -196,12 +207,16 @@ const eventBuffer: BufferedEvent[] = [];
 const afterSeqWaiters: Array<{
   sessionId: string | null;
   afterSeq: number;
+  /** Daemon-resolved domain the waiter is scoped to; undefined = any domain (#3039). */
+  domainId: number | undefined;
   resolve: (entry: BufferedEvent) => void;
   timer: ReturnType<typeof setTimeout>;
 }> = [];
 
 function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
-  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event };
+  // Last moment the domain is knowable for an event that ends the session.
+  const domainId = sessions.get(sessionId)?.domainId ?? NO_DOMAIN_ID;
+  const entry: BufferedEvent = { seq: nextSeq++, sessionId, event, domainId };
   eventBuffer.push(entry);
   if (eventBuffer.length > MAX_EVENT_BUFFER) {
     eventBuffer.shift();
@@ -209,7 +224,11 @@ function bufferEvent(sessionId: string, event: AgentSessionEvent): void {
 
   for (let i = afterSeqWaiters.length - 1; i >= 0; i--) {
     const w = afterSeqWaiters[i];
-    if (entry.seq > w.afterSeq && (w.sessionId === null || w.sessionId === sessionId)) {
+    if (
+      entry.seq > w.afterSeq &&
+      (w.sessionId === null || w.sessionId === sessionId) &&
+      matchesDomain(entry, w.domainId)
+    ) {
       clearTimeout(w.timer);
       afterSeqWaiters.splice(i, 1);
       w.resolve(entry);
@@ -473,7 +492,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       case "mock_prompt":
         return await handlePrompt(args);
       case "mock_session_list":
-        return handleSessionList();
+        return handleSessionList(args);
       case "mock_session_status":
         return handleSessionStatus(args);
       case "mock_interrupt":
@@ -544,6 +563,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
     interrupted: false,
     transcript: [{ role: "user", text: prompt }],
     createdAt: Date.now(),
+    domainId: typeof args.domainId === "number" ? args.domainId : NO_DOMAIN_ID,
     pendingPermissions: new Map(),
     totalCost: 0,
     totalTokens: 0,
@@ -556,7 +576,7 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
   // Post initial DB upsert
   self.postMessage({
     type: "db:upsert",
-    session: { sessionId, state: "connecting", cwd },
+    session: { sessionId, state: "connecting", cwd, domainId: session.domainId },
   });
 
   // Run script in background
@@ -590,16 +610,21 @@ async function handlePrompt(args: Record<string, unknown>): Promise<ToolResult> 
   };
 }
 
-function handleSessionList(): ToolResult {
-  const list = [...sessions.values()].map((s) => ({
-    sessionId: s.sessionId,
-    state: s.state,
-    model: "mock",
-    cwd: s.cwd,
-    cost: s.totalCost,
-    tokens: s.totalTokens > 0 ? s.totalTokens : s.entries.length,
-    createdAt: s.createdAt,
-  }));
+function handleSessionList(args: Record<string, unknown>): ToolResult {
+  // Resolved daemon-side (#3039); absent means the caller is in no domain.
+  const domainId = domainFilterArg(args);
+  const list = [...sessions.values()]
+    .filter((s) => matchesDomain(s, domainId))
+    .map((s) => ({
+      sessionId: s.sessionId,
+      state: s.state,
+      model: "mock",
+      cwd: s.cwd,
+      cost: s.totalCost,
+      tokens: s.totalTokens > 0 ? s.totalTokens : s.entries.length,
+      domainId: s.domainId,
+      createdAt: s.createdAt,
+    }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }
 
@@ -666,10 +691,14 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
   const sessionId = args.sessionId as string | undefined;
   const timeoutMs = (args.timeout as number) ?? DEFAULT_TIMEOUT_MS;
   const afterSeq = args.afterSeq as number | undefined;
+  // Resolved by the daemon (#3039). `wait` used to advertise this filter and ignore it.
+  const domainId = domainFilterArg(args);
 
   // afterSeq cursor: check buffer first, then block
   if (afterSeq !== undefined) {
-    const buffered = eventBuffer.filter((e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId));
+    const buffered = eventBuffer.filter(
+      (e) => e.seq > afterSeq && (sessionId == null || e.sessionId === sessionId) && matchesDomain(e, domainId),
+    );
     if (buffered.length > 0) {
       const entry = buffered[0];
       return {
@@ -686,10 +715,12 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
       const timer = safeSetTimeout(() => {
         const idx = afterSeqWaiters.findIndex((w) => w.resolve === res);
         if (idx !== -1) afterSeqWaiters.splice(idx, 1);
-        const list = [...sessions.values()].map((s) => ({ sessionId: s.sessionId, state: s.state }));
+        const list = [...sessions.values()]
+          .filter((s) => matchesDomain(s, domainId))
+          .map((s) => ({ sessionId: s.sessionId, state: s.state }));
         reject({ timeout: true, sessions: list });
       }, timeoutMs);
-      afterSeqWaiters.push({ sessionId: sessionId ?? null, afterSeq, resolve: res, timer });
+      afterSeqWaiters.push({ sessionId: sessionId ?? null, afterSeq, domainId, resolve: res, timer });
     }).catch((err) => {
       if (err && typeof err === "object" && "timeout" in err) {
         return err as { timeout: true; sessions: unknown[] };
@@ -754,14 +785,16 @@ async function handleWait(args: Record<string, unknown>): Promise<ToolResult> {
     };
   }
 
-  // Wait for any session
-  if (sessions.size === 0) {
+  // Wait for any session IN THE CALLER'S DOMAIN — racing every session let a scoped
+  // wait return a completion for a session the caller does not own.
+  const scoped = [...sessions.values()].filter((s) => matchesDomain(s, domainId));
+  if (scoped.length === 0) {
     return { content: [{ type: "text", text: JSON.stringify([]) }] };
   }
 
-  const waiters = [...sessions.values()].map((s) => s.done);
+  const waiters = scoped.map((s) => s.done);
   await Promise.race([...waiters, Bun.sleep(timeoutMs)]);
-  const list = [...sessions.values()].map((s) => ({ sessionId: s.sessionId, state: s.state }));
+  const list = scoped.map((s) => ({ sessionId: s.sessionId, state: s.state }));
   return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
 }
 

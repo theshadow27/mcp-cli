@@ -416,9 +416,26 @@ mcx memory audit         # Haiku-driven staleness + contradiction check
 mcx memory audit --json  # machine-readable (consumed by retro skills)
 ```
 
+### Domains
+
+A domain is a name bound to a location — the table mcx routes and partitions by. See
+[`docs/domains.md`](docs/domains.md).
+
+```bash
+mcx domain add phoenix ~/github/phoenix          # register a local domain
+mcx domain add phoenix boxen0010:~/github/phoenix # same command, on another host
+mcx domain ls [--json]                           # list domains
+mcx domain show <name> [--json]                  # resolve to host + path
+mcx domain which [path]                          # which domain owns this path? (default: cwd)
+mcx domain rename <old> <new>                    # rename; path and domain_id are untouched
+mcx domain rm <name> [--force]                   # refuses while dependent rows exist
+mcx domain import --force                        # re-arm the one-shot legacy import
+                                                 #   (refuses unless mcx.db is empty; runs on next daemon start)
+```
+
 ### Scopes
 
-Register directory roots by name for use with other commands:
+Superseded by `mcx domain` — kept for now; existing scopes are imported as domains.
 
 ```bash
 mcx scope init [name]            # register current dir as a named scope

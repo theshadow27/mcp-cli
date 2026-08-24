@@ -556,6 +556,67 @@ describe("SessionState", () => {
 
   // -- can_use_tool --
 
+  // A denial the child made on its own — the auto-mode classifier blocking, or
+  // a settings deny rule. There is no can_use_tool round-trip for these, so
+  // before #3119 the daemon dropped the frame and the worker looked merely slow.
+  describe("system/permission_denied (#3119)", () => {
+    const PERMISSION_DENIED = {
+      type: "system",
+      subtype: "permission_denied",
+      tool_name: "Bash",
+      tool_use_id: "toolu_01ACo74EpdNMJf6Q4yN5bpTK",
+      decision_reason_type: "classifier",
+      decision_reason: "Blocked by classifier",
+      message: "Permission for this action was denied by the Claude Code auto mode classifier. Reason: …",
+      uuid: "uuid-pd",
+      session_id: "sess-1",
+    };
+
+    test("emits a permission_denied event carrying the tool and the reason", () => {
+      const session = activeSession();
+      const events = session.handleMessage(PERMISSION_DENIED);
+
+      expect(events).toEqual([
+        {
+          type: "session:permission_denied",
+          toolName: "Bash",
+          toolUseId: "toolu_01ACo74EpdNMJf6Q4yN5bpTK",
+          reasonType: "classifier",
+          reason: "Blocked by classifier",
+        },
+      ]);
+    });
+
+    // The child tells the model to carry on with anything that doesn't depend
+    // on the denied call, so the session is still working — a state transition
+    // here would misreport it as blocked.
+    test("does not change session state", () => {
+      const session = activeSession();
+      session.handleMessage(PERMISSION_DENIED);
+      expect(session.state).toBe("active");
+      expect(session.pendingPermissions.size).toBe(0);
+    });
+
+    test("tolerates a frame carrying only the tool name", () => {
+      const session = activeSession();
+      const events = session.handleMessage({
+        type: "system",
+        subtype: "permission_denied",
+        tool_name: "Write",
+      });
+
+      expect(events).toEqual([{ type: "session:permission_denied", toolName: "Write" }]);
+    });
+
+    test("flags a parse mismatch rather than inventing an event", () => {
+      const session = activeSession();
+      const events = session.handleMessage({ type: "system", subtype: "permission_denied" });
+
+      expect(events).toEqual([]);
+      expect(session.parseMismatch).toBe(true);
+    });
+  });
+
   describe("permission flow", () => {
     test("transitions to waiting_permission on can_use_tool", () => {
       const session = activeSession();

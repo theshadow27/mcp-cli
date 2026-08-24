@@ -739,7 +739,8 @@ describe("AutomationDispatcher", () => {
       repoRoot: fixtureDir,
       resolveWorkItemId: () => "#55",
       getWorkItem: (id) => {
-        if (id === "#55") return { id: "#55", issueNumber: 55, prNumber: 100, branch: "feat/x", phase: "qa" };
+        if (id === "#55")
+          return { id: "#55", domainId: 0, issueNumber: 55, prNumber: 100, branch: "feat/x", phase: "qa" };
         return null;
       },
     });

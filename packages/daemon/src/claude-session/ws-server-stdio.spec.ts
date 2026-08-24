@@ -1031,6 +1031,51 @@ describe("ClaudeWsServer — stdio transport", () => {
     expect(response?.behavior).toBe("allow");
   });
 
+  // The test above uses `permissionStrategy: "auto"`, which allows by default —
+  // so it proves containment doesn't *deny* the write, not that the production
+  // path allows it. Production spawns with `rules` (claude-session-worker.ts),
+  // where the in-worktree allow rests on an asymmetry nothing pinned: `Write`
+  // stays in the permission *rules* while being stripped from `--allowedTools`.
+  // Strip it from both and every worktree write dies; keep it in both and
+  // ContainmentGuard never sees one. This pins both halves at once.
+  test("worktree write under the `rules` strategy: stripped from --allowedTools, still allowed by rule", async () => {
+    const mock = mockStdioSpawn();
+    server = new ClaudeWsServer({ spawn: mock.spawn, logger: silentLogger });
+    await server.start(0);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, {
+      prompt: "test",
+      transport: "stdio",
+      worktree: "wt",
+      cwd: WORKTREE,
+      permissionStrategy: "rules",
+      allowedTools: ["Read", "Write", "Edit"],
+      permissionRules: [
+        { tool: "Read", action: "allow" },
+        { tool: "Write", action: "allow" },
+        { tool: "Edit", action: "allow" },
+      ],
+    });
+    server.spawnClaude(sessionId);
+
+    // Half one: the CLI must not pre-approve the write tools, or the call never
+    // round-trips and the guard is bypassed.
+    const allowIdx = mock.lastCmd.indexOf("--allowedTools");
+    expect(allowIdx).toBeGreaterThanOrEqual(0);
+    const variadic: string[] = [];
+    for (let i = allowIdx + 1; i < mock.lastCmd.length && !mock.lastCmd[i]?.startsWith("--"); i++) {
+      variadic.push(mock.lastCmd[i] as string);
+    }
+    expect(variadic).toEqual(["Read"]);
+
+    // Half two: the rule still allows it once ContainmentGuard has confirmed
+    // the path is inside the worktree.
+    mock.pushStdout(`${canUseWriteMessage("req-rules-allow", `${WORKTREE}/src/main.ts`)}\n`);
+    await pollUntil(() => permissionResponses(mock.stdinWrites).length > 0, 1000);
+    expect(permissionResponses(mock.stdinWrites)[0]?.behavior).toBe("allow");
+  });
+
   test("non-worktree stdio spawn is allowed", async () => {
     const mock = mockStdioSpawn();
     server = new ClaudeWsServer({
