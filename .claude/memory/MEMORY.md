@@ -31,6 +31,7 @@
 - [Rate-limited sessions: send first, restart never](feedback_rate_limited_send_first.md) — after quota reset, log-read each idle session (some finished, just lost bookkeeping — backfill branch/prNumber), then send a resume nudge; sprint 76 revived 6/6 with zero restarts
 - [Subagent "waiting for background gate" ≠ stalled](feedback_subagent_background_gate_not_stalled.md) — harness auto-resumes the subagent when its background command exits; verify with ps, don't nudge; intervene only after ~10 min of no gate process + idle worker
 - [nohup-detached commands never wake a subagent](feedback_nohup_detached_never_wakes_agent.md) — harness only wakes on *tracked* children; briefs must mandate run_in_background, never nohup/disown/`&` (sprint-79 silent stalls)
+- [No human gates mid-sprint](feedback_no_human_gates_mid_sprint.md) — sprints run unattended end-to-end; approvals live in planning, surprises spike to next planning, catastrophes spike the sprint (sprint 79 lane-2 hold was the anti-pattern)
 
 ## Infra / Known Issues
 - **track/untrack asymmetric resolution DESTROYS work items (#3240)** — `mcx track <n>` treats n as issue-only (a PR number creates a junk dup) but `mcx untrack <n>` resolves **by-PR FIRST** and deletes the real item while printing the input number. NEVER `mcx track`/`untrack` a PR number; check `mcx tracked` before any track call. (Corrected diagnosis: NO db split-brain — the one-shot state.db→mcx.db import worked; state.db is legacy residue. Sprint-79 data loss of #3035/#3119/#3043/#3039/#3037/#3038 phase state was self-inflicted via this trap; items re-tracked, phases reset to impl.)
@@ -41,6 +42,7 @@
 - [CI suite SIGTERM at ~97%](ci-suite-sigterm-resource-leak.md) — large `bun test` killed near end with 0 failures, Linux-only, passes isolated = resource leak in test files, NOT a size threshold. A hang / near-end SIGTERM is a STOP-and-fix-root-cause signal — never a killer/reaper/timeout-bump (those caused the 69/70 collapse). Diagnose with bias-free adversarial review. #2641→#2644.
 
 ## Orchestration (non-sprint, general facts)
+- [Model tiers](feedback_model_tiers_no_fable_dev.md) — opus implements; sonnet reviews + mechanical tasks only (never diagnostic/tricky work); fable never for implementation/QA; no session idles hot
 - [Orchestrators must follow the /sprint skill](feedback_orchestrator_follows_sprint_skill.md) — operational how-to (waiting/monitor, spawning, merging, labels) lives in `.claude/skills/sprint/references/*.md`, canonical over memory; diverging practice → fix the skill at retro, don't improvise or grow parallel doctrine in memories
 - Orchestrator must never implement directly — always delegate to spawned sessions.
 - **Meta files (`.claude/skills/**`, `.claude/memory/**`, `CLAUDE.md`, `.gitignore`) are orchestrator + retro only.** Never spawn a worker to modify them during a sprint. Sprint 32 had two PRs touching `run.md` in parallel and the orchestrator read inconsistent versions for ~20 minutes. Meta changes go through the retro + next-plan workflow.
