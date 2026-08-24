@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
@@ -38,7 +38,6 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
 
   const defaults = {
     version: "1.0.0",
-    execPath: "/usr/local/bin/mcx",
     fetch: (() => Promise.resolve(new Response("", { status: 200 }))) as unknown as typeof fetch,
     checkForUpdate: (_v: string, _d?: Partial<FetchReleaseDeps & { skipCache: boolean }>): Promise<UpdateCheckResult> =>
       Promise.resolve({
@@ -46,6 +45,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
         latest: "1.0.0",
         updateAvailable: false,
         asset: "mcx-darwin-arm64.tar.gz",
+        devBuild: false,
       }),
     fetchLatestRelease: (_d?: Partial<FetchReleaseDeps>): Promise<ReleaseInfo> =>
       Promise.resolve({
@@ -79,6 +79,7 @@ describe("cmdUpgrade --check", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
         }),
     });
     await cmdUpgrade(["--check"], deps);
@@ -93,6 +94,23 @@ describe("cmdUpgrade --check", () => {
     expect(parsed.latest).toBe("1.0.0");
     expect(parsed.updateAvailable).toBe(false);
   });
+
+  test("reports a dev build honestly instead of claiming up to date (#3232)", async () => {
+    const { deps, logs } = makeDeps({
+      version: "1.14.6+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "1.14.6+1787442054",
+          latest: "1.14.6",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          devBuild: true,
+        }),
+    });
+    await cmdUpgrade(["--check"], deps);
+    expect(logs.some((l) => l.includes("dev build"))).toBe(true);
+    expect(logs.some((l) => l.includes("Up to date"))).toBe(false);
+  });
 });
 
 describe("cmdUpgrade (install)", () => {
@@ -106,6 +124,41 @@ describe("cmdUpgrade (install)", () => {
     expect(logs.some((l) => l.includes("Already up to date"))).toBe(true);
   });
 
+  test("reports a dev build honestly instead of 'Already up to date' (#3232)", async () => {
+    const { deps, logs } = makeDeps({
+      version: "1.14.6+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "1.14.6+1787442054",
+          latest: "1.14.6",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          devBuild: true,
+        }),
+    });
+    await cmdUpgrade(["--yes"], deps);
+    expect(logs.some((l) => l.includes("dev build"))).toBe(true);
+    expect(logs.some((l) => l.includes("Already up to date"))).toBe(false);
+  });
+
+  test("outputs JSON status dev_build for a dev build (#3232)", async () => {
+    const { deps, logs } = makeDeps({
+      version: "1.14.6+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "1.14.6+1787442054",
+          latest: "1.14.6",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          devBuild: true,
+        }),
+    });
+    await cmdUpgrade(["--yes", "--json"], deps);
+    const parsed = JSON.parse(logs[0]);
+    expect(parsed.status).toBe("dev_build");
+    expect(parsed.version).toBe("1.14.6+1787442054");
+  });
+
   test("returns early when user declines confirmation", async () => {
     const { deps, errors } = makeDeps({
       checkForUpdate: () =>
@@ -114,6 +167,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
         }),
       confirm: () => Promise.resolve(false),
     });
@@ -130,6 +184,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: null,
+          devBuild: false,
         }),
     });
     await cmdUpgrade(["--yes"], deps);
@@ -152,6 +207,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
         }),
       fetchLatestRelease: () =>
         Promise.resolve({
@@ -172,6 +228,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
         }),
       fetch: (() => Promise.resolve(new Response("error", { status: 500 }))) as unknown as typeof fetch,
     });
@@ -200,13 +257,10 @@ describe("cmdUpgrade (install)", () => {
 
 describe("cmdUpgrade full flow", () => {
   let tmpDir: string;
-  let installDir: string;
   let origMcpCliDir: string;
 
   beforeEach(() => {
     tmpDir = join(tmpdir(), `mcx-upgrade-flow-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    installDir = join(tmpDir, "bin");
-    mkdirSync(installDir, { recursive: true });
     origMcpCliDir = options.MCP_CLI_DIR;
     options.MCP_CLI_DIR = join(tmpDir, ".mcp-cli");
     mkdirSync(options.MCP_CLI_DIR, { recursive: true });
@@ -218,13 +272,23 @@ describe("cmdUpgrade full flow", () => {
     process.exitCode = 0;
   });
 
-  async function createTarball(): Promise<Uint8Array> {
+  function binDir(): string {
+    return join(options.MCP_CLI_DIR, "bin");
+  }
+
+  function versionDir(version: string): string {
+    return join(binDir(), "versions", version);
+  }
+
+  async function createTarball(versionOutput = "2.0.0"): Promise<Uint8Array> {
     // Create a temp staging area with fake binaries
     const stageDir = join(tmpDir, "tar-source");
     mkdirSync(stageDir, { recursive: true });
 
-    // Create a fake mcx that exits 0 when called with "version --json"
-    const script = '#!/bin/sh\necho \'{"version":"2.0.0"}\'\n';
+    // Fake mcx/mcpd/mcpctl: `--version` (used for staged-binary verification,
+    // see upgrade.ts — it must never touch the daemon/IPC layer) prints the
+    // plain-text format main.ts's real --version flag prints.
+    const script = `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'mcp-cli ${versionOutput}'; else echo ok; fi\n`;
     writeFileSync(join(stageDir, "mcx"), script, { mode: 0o755 });
     writeFileSync(join(stageDir, "mcpd"), script, { mode: 0o755 });
     writeFileSync(join(stageDir, "mcpctl"), script, { mode: 0o755 });
@@ -239,17 +303,23 @@ describe("cmdUpgrade full flow", () => {
     return new Uint8Array(data);
   }
 
-  test("downloads, extracts, verifies, and swaps binaries", async () => {
+  test("downloads, extracts, verifies, and installs into a versioned dir with stable symlinks", async () => {
     const tarball = await createTarball();
 
-    // Write existing "old" binaries
-    writeFileSync(join(installDir, "mcx"), "old-mcx", { mode: 0o755 });
+    // Simulate a pre-existing install (a prior version's symlinks) to prove
+    // the old binaries are untouched and only the symlink target moves.
+    const oldVersionDir = versionDir("1.0.0");
+    mkdirSync(oldVersionDir, { recursive: true });
+    writeFileSync(join(oldVersionDir, "mcx"), "old-mcx", { mode: 0o755 });
+    mkdirSync(binDir(), { recursive: true });
+    symlinkSync(join(oldVersionDir, "mcx"), join(binDir(), "mcx"));
 
     const updateResult: UpdateCheckResult = {
       current: "1.0.0",
       latest: "2.0.0",
       updateAvailable: true,
       asset: "mcx-darwin-arm64.tar.gz",
+      devBuild: false,
     };
 
     const logs: string[] = [];
@@ -257,7 +327,6 @@ describe("cmdUpgrade full flow", () => {
 
     await cmdUpgrade(["--yes"], {
       version: "1.0.0",
-      execPath: join(installDir, "mcx"),
       fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
       checkForUpdate: () => Promise.resolve(updateResult),
@@ -276,25 +345,40 @@ describe("cmdUpgrade full flow", () => {
 
     expect(logs.some((l) => l.includes("Updated 1.0.0"))).toBe(true);
     expect(logs.some((l) => l.includes("2.0.0"))).toBe(true);
-    expect(existsSync(join(installDir, "mcx"))).toBe(true);
-    expect(existsSync(join(installDir, "mcpd"))).toBe(true);
+
+    // Versioned install location — the owned, never-a-git-checkout location.
+    expect(existsSync(join(versionDir("2.0.0"), "mcx"))).toBe(true);
+    expect(existsSync(join(versionDir("2.0.0"), "mcpd"))).toBe(true);
+    expect(existsSync(join(versionDir("2.0.0"), "mcpctl"))).toBe(true);
+
+    // The prior version's files are untouched (installs are additive, not overwritten in place).
+    expect(existsSync(join(oldVersionDir, "mcx"))).toBe(true);
+
+    // The stable $PATH-facing symlink now points at the new version.
+    const linkPath = join(binDir(), "mcx");
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkPath)).toBe(join(versionDir("2.0.0"), "mcx"));
+
     // Stage dir should be cleaned up
     expect(existsSync(join(options.MCP_CLI_DIR, "staged"))).toBe(false);
   });
 
-  test("outputs JSON on successful upgrade", async () => {
+  test("outputs JSON on successful upgrade, including install locations", async () => {
     const tarball = await createTarball();
-    writeFileSync(join(installDir, "mcx"), "old-mcx", { mode: 0o755 });
-
     const logs: string[] = [];
 
     await cmdUpgrade(["--yes", "--json"], {
       version: "1.0.0",
-      execPath: join(installDir, "mcx"),
       fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
       checkForUpdate: () =>
-        Promise.resolve({ current: "1.0.0", latest: "2.0.0", updateAvailable: true, asset: "mcx-darwin-arm64.tar.gz" }),
+        Promise.resolve({
+          current: "1.0.0",
+          latest: "2.0.0",
+          updateAvailable: true,
+          asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
+        }),
       fetchLatestRelease: () =>
         Promise.resolve({
           tag: "v2.0.0",
@@ -312,6 +396,8 @@ describe("cmdUpgrade full flow", () => {
     expect(parsed.status).toBe("updated");
     expect(parsed.from).toBe("1.0.0");
     expect(parsed.to).toBe("2.0.0");
+    expect(parsed.installDir).toBe(versionDir("2.0.0"));
+    expect(parsed.binDir).toBe(binDir());
   });
 
   test("fails when extraction produces no mcx binary", async () => {
@@ -328,11 +414,16 @@ describe("cmdUpgrade full flow", () => {
 
     await cmdUpgrade(["--yes"], {
       version: "1.0.0",
-      execPath: join(installDir, "mcx"),
       fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
       checkForUpdate: () =>
-        Promise.resolve({ current: "1.0.0", latest: "2.0.0", updateAvailable: true, asset: "mcx-darwin-arm64.tar.gz" }),
+        Promise.resolve({
+          current: "1.0.0",
+          latest: "2.0.0",
+          updateAvailable: true,
+          asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
+        }),
       fetchLatestRelease: () =>
         Promise.resolve({
           tag: "v2.0.0",
@@ -349,8 +440,7 @@ describe("cmdUpgrade full flow", () => {
     expect(process.exitCode).toBe(1);
   });
 
-  test("fails when staged binary verification fails", async () => {
-    // Create a tarball with a mcx that exits non-zero
+  test("fails when staged binary verification fails (non-zero exit)", async () => {
     const stageDir = join(tmpDir, "bad-bin-source");
     mkdirSync(stageDir, { recursive: true });
     writeFileSync(join(stageDir, "mcx"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
@@ -363,11 +453,16 @@ describe("cmdUpgrade full flow", () => {
 
     await cmdUpgrade(["--yes"], {
       version: "1.0.0",
-      execPath: join(installDir, "mcx"),
       fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
         Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
       checkForUpdate: () =>
-        Promise.resolve({ current: "1.0.0", latest: "2.0.0", updateAvailable: true, asset: "mcx-darwin-arm64.tar.gz" }),
+        Promise.resolve({
+          current: "1.0.0",
+          latest: "2.0.0",
+          updateAvailable: true,
+          asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
+        }),
       fetchLatestRelease: () =>
         Promise.resolve({
           tag: "v2.0.0",
@@ -382,5 +477,39 @@ describe("cmdUpgrade full flow", () => {
     });
 
     expect(process.exitCode).toBe(1);
+  });
+
+  test("fails when staged binary reports the wrong version (mismatch, not up-to-date passthrough)", async () => {
+    // Staged binary reports 1.9.9 while the release we downloaded is 2.0.0 —
+    // must fail loudly rather than install a binary that doesn't match.
+    const tarball = await createTarball("1.9.9");
+
+    await cmdUpgrade(["--yes"], {
+      version: "1.0.0",
+      fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
+        Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "1.0.0",
+          latest: "2.0.0",
+          updateAvailable: true,
+          asset: "mcx-darwin-arm64.tar.gz",
+          devBuild: false,
+        }),
+      fetchLatestRelease: () =>
+        Promise.resolve({
+          tag: "v2.0.0",
+          version: "2.0.0",
+          assets: [{ name: "mcx-darwin-arm64.tar.gz", url: "https://example.com/asset", size: tarball.length }],
+        }),
+      selectAsset: () => "mcx-darwin-arm64.tar.gz",
+      confirm: () => Promise.resolve(true),
+      spawn: Bun.spawn,
+      log: () => {},
+      error: () => {},
+    });
+
+    expect(process.exitCode).toBe(1);
+    expect(existsSync(versionDir("2.0.0"))).toBe(false);
   });
 });

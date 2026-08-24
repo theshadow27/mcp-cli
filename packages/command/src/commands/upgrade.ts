@@ -1,5 +1,20 @@
 /**
- * `mcx upgrade` — download and install latest mcx release binaries.
+ * `mcx upgrade` — download and install versioned mcx release binaries.
+ *
+ * Install layout (owned by mcx, never a git checkout — see #3231/#3232):
+ *   ~/.mcp-cli/bin/versions/<version>/{mcx,mcpd,mcpctl}   versioned, immutable once installed
+ *   ~/.mcp-cli/bin/{mcx,mcpd,mcpctl}                       stable symlinks → the active version
+ *                                                           (this is the directory install.sh
+ *                                                           already tells users to put on $PATH)
+ *
+ * A running daemon is NOT restarted automatically — an upgrade only swaps
+ * the on-disk symlinks, and a live daemon keeps running against its
+ * already-loaded binary until explicitly restarted. This is a deliberate
+ * "restart required" policy for this iteration (#3232): automatically
+ * killing a daemon mid-upgrade could drop in-flight tracked work items and
+ * live `mcx monitor` streams, which is exactly the interruption #3231
+ * exists to prevent. The operator (or a future automation) restarts via
+ * `mcx daemon restart` on their own schedule.
  *
  * Flags:
  *   --check       Check for update without installing
@@ -7,9 +22,18 @@
  *   --json / -j   JSON output
  */
 
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { VERSION, options } from "@mcp-cli/core";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
+import { basename, join } from "node:path";
+import { BUILD_VERSION, options } from "@mcp-cli/core";
 import {
   type FetchReleaseDeps,
   type ReleaseInfo,
@@ -21,8 +45,8 @@ import {
 } from "@mcp-cli/core";
 
 export interface UpgradeDeps {
+  /** Current binary's version — must carry build metadata (BUILD_VERSION), not the bare package version. */
   version: string;
-  execPath: string;
   fetch: typeof globalThis.fetch;
   checkForUpdate: (
     version: string,
@@ -37,8 +61,7 @@ export interface UpgradeDeps {
 }
 
 const defaultDeps: UpgradeDeps = {
-  version: VERSION,
-  execPath: process.execPath,
+  version: BUILD_VERSION,
   fetch: globalThis.fetch,
   checkForUpdate,
   fetchLatestRelease,
@@ -95,9 +118,16 @@ async function runCheck(d: UpgradeDeps, json: boolean): Promise<void> {
   if (result.updateAvailable) {
     d.log(`Update available: ${result.current} → ${result.latest}`);
     d.log(`Run 'mcx upgrade' to install.`);
+  } else if (result.devBuild) {
+    d.log(devBuildMessage(result));
   } else {
     d.log(`Up to date (${result.current})`);
   }
+}
+
+/** Honest status line for a dev/local build at (or ahead of) the latest release's version number. */
+function devBuildMessage(result: UpdateCheckResult): string {
+  return `You are running a dev build (${result.current}) — newer than the latest release (${result.latest}). No release upgrade is available; this is expected for a locally built binary and is not the same as an installed release.`;
 }
 
 async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
@@ -113,7 +143,15 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
 
   if (!result.updateAvailable) {
     if (parsed.json) {
-      d.log(JSON.stringify({ status: "up_to_date", version: result.current }, null, 2));
+      d.log(
+        JSON.stringify(
+          { status: result.devBuild ? "dev_build" : "up_to_date", version: result.current, latest: result.latest },
+          null,
+          2,
+        ),
+      );
+    } else if (result.devBuild) {
+      d.log(devBuildMessage(result));
     } else {
       d.log(`Already up to date (${result.current})`);
     }
@@ -182,8 +220,15 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     return;
   }
 
+  // Verify with the process-level `--version` flag: it's handled before any
+  // command dispatch (packages/command/src/main.ts) and never touches the
+  // daemon/IPC layer. Deliberately NOT `mcx version --json` — that call
+  // path auto-starts a daemon (see daemon-lifecycle.ts's ipcCall →
+  // ensureDaemon), which would risk a *second* daemon racing the real
+  // production one on the same socket mid-upgrade — exactly the
+  // interruption #3231 exists to prevent.
   d.error("Verifying staged binary...");
-  const verify = d.spawn([stagedMcx, "version", "--json"], { stdout: "pipe", stderr: "ignore" });
+  const verify = d.spawn([stagedMcx, "--version"], { stdout: "pipe", stderr: "ignore" });
   const verifyOut = await new Response(verify.stdout).text();
   const verifyExit = await verify.exited;
   if (verifyExit !== 0) {
@@ -193,56 +238,66 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  // Confirm the staged binary reports the expected version
-  try {
-    const verifyVersion = (JSON.parse(verifyOut) as { version: string }).version;
-    if (verifyVersion !== release.version) {
-      d.error(`Version mismatch: staged binary reports ${verifyVersion}, expected ${release.version}`);
-      cleanup(stageDir);
-      process.exitCode = 1;
-      return;
-    }
-  } catch {
-    d.error("Verification failed: could not parse version output from staged binary");
+  // Confirm the staged binary reports the expected version ("mcp-cli <version>")
+  const verifyMatch = verifyOut.trim().match(/^mcp-cli (.+)$/);
+  if (!verifyMatch || verifyMatch[1] !== release.version) {
+    d.error(`Version mismatch: staged binary reports "${verifyOut.trim()}", expected mcp-cli ${release.version}`);
     cleanup(stageDir);
     process.exitCode = 1;
     return;
   }
 
-  // Swap: install staged binaries with backup-based rollback
-  const installDir = dirname(d.execPath);
-  d.error(`Installing to ${installDir}...`);
+  // Install: an owned, versioned location under MCP_CLI_DIR — never derived
+  // from where the currently-running binary happens to live (that could be
+  // a git worktree's dist/, see #3231). `<bin>/versions/<version>/` is
+  // immutable once installed; `<bin>/{mcx,mcpd,mcpctl}` are stable symlinks
+  // into it, matching the directory scripts/install.sh already tells users
+  // to put on $PATH.
+  const binDir = join(options.MCP_CLI_DIR, "bin");
+  const versionDir = join(binDir, "versions", release.version);
+  d.error(`Installing ${release.version} → ${versionDir}...`);
 
   const binaries: Array<[string, string]> = [
-    [stagedMcx, join(installDir, "mcx")],
-    [stagedMcpd, join(installDir, "mcpd")],
-    [stagedMcpctl, join(installDir, "mcpctl")],
+    [stagedMcx, join(versionDir, "mcx")],
+    [stagedMcpd, join(versionDir, "mcpd")],
+    [stagedMcpctl, join(versionDir, "mcpctl")],
   ];
 
   // Filter to only binaries that exist in the staging dir
   const toInstall = binaries.filter(([staged]) => existsSync(staged));
 
-  // Phase 1: back up existing binaries
-  const backedUp: Array<[string, string]> = [];
+  // Phase 1: lay down the versioned install directory. Nothing on $PATH is
+  // touched yet, so a failure here leaves the previous install fully intact.
   try {
-    for (const [, target] of toInstall) {
-      const bak = `${target}.bak`;
-      if (existsSync(target)) {
-        moveFile(target, bak);
-        backedUp.push([target, bak]);
-      }
-    }
-
-    // Phase 2: move staged binaries into place
+    mkdirSync(versionDir, { recursive: true });
     for (const [staged, target] of toInstall) {
       moveFile(staged, target);
     }
   } catch (err) {
-    // Rollback: restore backups
     d.error(`Install failed: ${err instanceof Error ? err.message : String(err)}`);
-    for (const [target, bak] of backedUp) {
+    rmSync(versionDir, { recursive: true, force: true });
+    cleanup(stageDir);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Phase 2: atomically repoint the stable symlinks at the new version.
+  // Best-effort rollback to the previous target if any relink fails partway.
+  mkdirSync(binDir, { recursive: true });
+  const relinked: Array<{ link: string; previousTarget: string | null }> = [];
+  try {
+    for (const [, target] of toInstall) {
+      const name = basename(target);
+      const linkPath = join(binDir, name);
+      const previousTarget = readSymlink(linkPath);
+      relinkAtomic(linkPath, target);
+      relinked.push({ link: linkPath, previousTarget });
+    }
+  } catch (err) {
+    d.error(`Symlink swap failed: ${err instanceof Error ? err.message : String(err)}`);
+    for (const { link, previousTarget } of relinked) {
       try {
-        moveFile(bak, target);
+        if (previousTarget) relinkAtomic(link, previousTarget);
       } catch {
         /* best effort rollback */
       }
@@ -252,24 +307,26 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  // Phase 3: clean up backups and staging
-  for (const [, bak] of backedUp) {
-    try {
-      rmSync(bak, { force: true });
-    } catch {
-      /* best effort */
-    }
-  }
   cleanup(stageDir);
 
   // Invalidate update-check cache so --check reflects new version
   writeCheckCache(result.latest);
 
   if (parsed.json) {
-    d.log(JSON.stringify({ status: "updated", from: result.current, to: result.latest }, null, 2));
+    d.log(
+      JSON.stringify(
+        { status: "updated", from: result.current, to: result.latest, installDir: versionDir, binDir },
+        null,
+        2,
+      ),
+    );
   } else {
     d.log(`Updated ${result.current} → ${result.latest}`);
-    d.log("Restart daemon to use new version: mcx daemon restart");
+    d.log(`Installed to ${versionDir}`);
+    d.log(`${binDir}/{mcx,mcpd,mcpctl} now point at ${release.version}`);
+    d.log(
+      "Restart required: a running daemon keeps using its already-loaded binary until you run 'mcx daemon restart'.",
+    );
   }
 }
 
@@ -293,6 +350,31 @@ function moveFile(src: string, dst: string): void {
       throw err;
     }
   }
+}
+
+/** Read a symlink's target, or null if `linkPath` doesn't exist / isn't a symlink. */
+function readSymlink(linkPath: string): string | null {
+  try {
+    return readlinkSync(linkPath);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Point `linkPath` at `target`, atomically on POSIX (create a sibling
+ * symlink, then rename over the old one — never a window with no link or a
+ * half-written one).
+ */
+function relinkAtomic(linkPath: string, target: string): void {
+  const tmpLink = `${linkPath}.new-${process.pid}`;
+  try {
+    unlinkSync(tmpLink);
+  } catch {
+    /* didn't exist */
+  }
+  symlinkSync(target, tmpLink);
+  renameSync(tmpLink, linkPath);
 }
 
 function formatBytes(bytes: number): string {

@@ -27,6 +27,18 @@ export interface UpdateCheckResult {
   latest: string;
   updateAvailable: boolean;
   asset: string | null;
+  /**
+   * True when `current` carries build metadata (`+epoch`, injected by
+   * `scripts/build.ts` for every compiled binary — see #3232) and there is
+   * no strictly-newer numbered release to install. In that state we cannot
+   * tell "official release artifact of this version" apart from "locally
+   * compiled binary of the same version" — both embed a `+epoch` stamp by
+   * design — so we refuse to claim "up to date" and surface the ambiguity
+   * instead. A `-dev` suffix (uncompiled `bun dev:mcx`) is not affected:
+   * semver already orders it strictly below the release, so it always
+   * reports a real update as available.
+   */
+  devBuild: boolean;
 }
 
 export interface UpdateCheckCache {
@@ -180,11 +192,13 @@ export async function checkForUpdate(
   if (!deps?.skipCache) {
     const cached = readCheckCache();
     if (cached) {
+      const updateAvailable = compareVersions(cached.latest, currentVersion) > 0;
       return {
         current: currentVersion,
         latest: cached.latest,
-        updateAvailable: compareVersions(cached.latest, currentVersion) > 0,
+        updateAvailable,
         asset,
+        devBuild: !updateAvailable && currentVersion.includes("+"),
       };
     }
   }
@@ -192,10 +206,12 @@ export async function checkForUpdate(
   const release = await fetchLatestRelease(deps);
   writeCheckCache(release.version);
 
+  const updateAvailable = compareVersions(release.version, currentVersion) > 0;
   return {
     current: currentVersion,
     latest: release.version,
-    updateAvailable: compareVersions(release.version, currentVersion) > 0,
+    updateAvailable,
     asset,
+    devBuild: !updateAvailable && currentVersion.includes("+"),
   };
 }
