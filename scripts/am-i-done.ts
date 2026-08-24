@@ -39,6 +39,7 @@ import {
 } from "./_runner/ci-steps";
 import { detectContext, isCi, isPreCommit, isPrePush } from "./_runner/context";
 import { createAiFileLogger, createConsoleLogger } from "./_runner/logger";
+import { killTrackedTree } from "./_runner/process-tree";
 import { StepRunner } from "./_runner/runner";
 import type { Step } from "./_runner/types";
 import { doingItWrongStep } from "./doing-it-wrong";
@@ -363,12 +364,29 @@ export function parseRepeatableFlag(argv: string[], flag: string): string[] {
   return out;
 }
 
+/**
+ * Steps run in their own process groups (#3261) so the wall-clock deadline can
+ * reap a wedged tree. The cost of `detached` is that a terminal Ctrl-C no
+ * longer reaches them — it goes to the foreground group, which is now just
+ * this process. Without these handlers, interrupting the gate would strand a
+ * whole `bun test` fan-out.
+ */
+function installSignalHandlers(): void {
+  const onSignal = (sig: NodeJS.Signals, code: number): void => {
+    process.stderr.write(`\n${sig} — killing child process tree\n`);
+    void killTrackedTree().then(() => process.exit(code));
+  };
+  process.once("SIGINT", () => onSignal("SIGINT", 130));
+  process.once("SIGTERM", () => onSignal("SIGTERM", 143));
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(HELP);
     return;
   }
+  installSignalHandlers();
 
   const { steps, label } = selectSteps();
   const xc = detectContext();
@@ -397,6 +415,9 @@ async function main(): Promise<void> {
   if (report.success) {
     process.stdout.write(`\n✅ all checks passed (${report.totalMs}ms)\n`);
     process.exit(0);
+  } else if (report.timedOut) {
+    process.stderr.write(`\n⏱ am-i-done timed out in ${label} mode after ${report.totalMs}ms (#3261)\n`);
+    process.exit(1);
   } else {
     process.stderr.write(`\n❌ ${report.failures.length} step(s) failed in ${label} mode\n`);
     process.exit(1);
@@ -446,6 +467,18 @@ fraction, default 0.6; 0 disables the headroom wait) and MCX_GATE_LEASE_WAIT_MS
 (default 300s, capped at 400s so the wait plus the run it admits stays inside the
 600s timeout workers wrap this in; each process jitters its own deadline down by
 up to 25% so losers don't all give up at once).
+
+The whole run is bounded by a strict wall-clock deadline — 300s by default,
+AM_I_DONE_TIMEOUT_MS to override (<= 0 disables). On expiry the runner names
+the in-flight step, dumps the output that step had produced so far, kills the
+entire child process TREE (each step runs in its own process group, so a
+grandchild test worker cannot be orphaned by the kill), and exits non-zero.
+Time spent QUEUED on the gate lease is credited back to the budget — that wait
+is bounded and self-reporting, so it must not consume the liveness ceiling.
+This is a liveness ceiling, not a flake fix: nothing is retried, nothing is
+signalled during a healthy run, and the underlying wedge (#2973 / #3250) is
+unaffected. CI raises the budget in .github/workflows/ci.yml — the \`check\` job
+legitimately runs ~240s. See #3261.
 
 In a Claude / AI context (CLAUDECODE / AGENT / MCP_CLI_AI env var set),
 step output is captured to build/am-i-done-<timestamp>.txt and only the
