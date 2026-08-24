@@ -12,7 +12,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, capturingLogger, silentLogger } from "@mcp-cli/core";
+import {
+  ALIAS_SERVER_NAME,
+  CLAUDE_SERVER_NAME,
+  NO_DOMAIN_ID,
+  PROTOCOL_VERSION,
+  capturingLogger,
+  silentLogger,
+} from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
 import { restoreEnv } from "../../../test/env";
 import { pollUntil, rpc } from "../../../test/harness";
@@ -435,7 +442,7 @@ describe("daemon index.ts", () => {
       const { logger, texts } = capturingLogger();
       await withDaemonTimeout("150", async () => {
         handle = await startTestDaemonInProcess({ logger });
-        const workItemDb = new WorkItemDb(handle.db.getDatabase());
+        const workItemDb = new WorkItemDb(handle.db.getDatabase()).forDomain(NO_DOMAIN_ID);
         workItemDb.upsertWorkItem({ id: "wi-3234-active", phase: "impl" });
 
         await pollUntil(
