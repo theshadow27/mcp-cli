@@ -532,6 +532,22 @@ export class CrossDomainWorkItems {
     }
     return map;
   }
+
+  /**
+   * Count tracked work items not yet in the terminal "done" phase, across every domain
+   * (#3234). The GitHub work-item poller does scheduled work for every one of these
+   * regardless of domain, so this backs the idle-shutdown inhibitor in
+   * packages/daemon/src/index.ts (resetIdleTimer) — a single daemon-lifetime concern,
+   * not a per-domain one.
+   */
+  countActiveWorkItems(): number {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — daemon-wide idle-shutdown check spans every domain by design (see WorkItemDb.acrossDomains)
+        .query<{ n: number }, []>("SELECT COUNT(*) as n FROM work_items WHERE phase != 'done'")
+        .get()?.n ?? 0
+    );
+  }
 }
 
 /** Composite key for a CI run state held across domains. See {@link CrossDomainWorkItems.loadCiRunStates}. */

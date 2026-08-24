@@ -371,6 +371,8 @@ export interface DaemonHandle {
   readonly pool: ServerPool;
   readonly ipcServer: IpcServer;
   readonly watcher: ConfigWatcher;
+  /** Exposed so tests can drive an active session without a real worker (#3234 idle-inhibit coverage). */
+  readonly mockServer: MockServer;
 }
 
 export interface StartDaemonOptions {
@@ -770,6 +772,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const idleTimeoutMs = Number(process.env.MCP_DAEMON_TIMEOUT) || DAEMON_IDLE_TIMEOUT_MS;
   let idleTimer: Timer | null = null;
   let inFlightCount = 0;
+  // Own instance rather than reaching into the automation-dispatcher block's
+  // scoped one (#3234) — cheap to construct (WorkItemDb.migrate() is a no-op once
+  // the schema is current) and this one lives for the daemon's whole lifetime so
+  // the idle-timer callback (declared below, invoked well after this point) can
+  // always close over it. `.acrossDomains()`: the idle-shutdown check is a single
+  // daemon-lifetime concern, not scoped to any one domain — see
+  // CrossDomainWorkItems.countActiveWorkItems.
+  const idleWorkItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
 
   let lastIdleReset = Date.now();
   /** Monotonic timestamp (ms) when the current idle timer was scheduled */
@@ -818,6 +828,21 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         mockServer.hasActiveSessions()
       ) {
         logger.debug("[mcpd] Idle timeout deferred: session(s) not yet bye'd");
+        resetIdleTimer();
+        return;
+      }
+      // #3234: an open `mcx monitor` / event-stream connection or a tracked work
+      // item still short of "done" both mean the daemon is doing — or is expected
+      // to keep doing — real work (the GitHub work-item poller, the event bus fan-out
+      // to that connected client) even with zero in-flight IPC requests. Checked at
+      // fire time, not just reset-on-event, so a connection opened between resets is
+      // still caught.
+      const monitorSubs = ipcServer.activeStreamCount;
+      const activeWorkItems = idleWorkItemDb.countActiveWorkItems();
+      if (monitorSubs > 0 || activeWorkItems > 0) {
+        logger.info(
+          `[mcpd] Idle timer fired but ${monitorSubs} monitor subscription(s), ${activeWorkItems} active work item(s) — staying up`,
+        );
         resetIdleTimer();
         return;
       }
@@ -1741,5 +1766,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     pool,
     ipcServer,
     watcher,
+    mockServer,
   };
 }

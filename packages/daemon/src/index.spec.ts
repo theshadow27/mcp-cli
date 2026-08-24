@@ -12,12 +12,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, silentLogger } from "@mcp-cli/core";
+import { ALIAS_SERVER_NAME, CLAUDE_SERVER_NAME, PROTOCOL_VERSION, capturingLogger, silentLogger } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
 import { restoreEnv } from "../../../test/env";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { StateDb } from "./db/state";
+import { WorkItemDb } from "./db/work-items";
 import type { DaemonHandle, PruneGitOps } from "./index";
 import { checkSqliteVersion, pruneOrphanedWorktrees, resolveHeadBranch, startDaemon, sweepCoreBare } from "./index";
 import { metrics } from "./metrics";
@@ -373,6 +374,103 @@ describe("daemon index.ts", () => {
       opts = testOptions();
       await withDaemonTimeout("100", async () => {
         handle = await startTestDaemonInProcess();
+        await pollUntil(() => handle?.isShuttingDown);
+        expect(handle?.isShuttingDown).toBe(true);
+      });
+    });
+
+    // #3234: the daemon idle-killed itself in production on 2026-08-23 while a
+    // connected `mcx monitor` stream and 7 tracked work items were the only
+    // things making it look "idle" (zero in-flight IPC requests). These three
+    // inhibitors are checked at fire time inside the idle timer callback, not
+    // just reset-on-event, so the tests below poll for the timer to have
+    // *fired and deferred itself* at least twice (via its log line) — a real
+    // condition on the check-at-fire behavior itself, not a fixed sleep that
+    // merely hopes enough wall-clock time passed.
+    const REARM_COUNT_TIMEOUT_MS = 3_000;
+
+    test("an open monitor/event-stream subscription inhibits idle shutdown", async () => {
+      opts = testOptions();
+      const { logger, texts } = capturingLogger();
+      await withDaemonTimeout("150", async () => {
+        handle = await startTestDaemonInProcess({ logger });
+        const socketPath = join(opts?.dir ?? "", "mcpd.sock");
+
+        const res = await fetch("http://localhost/events", {
+          method: "GET",
+          unix: socketPath,
+        } as RequestInit);
+        expect(res.status).toBe(200);
+        const reader = res.body?.getReader();
+        // Drain in the background so server-side backpressure never blocks the stream.
+        // reader.cancel() below resolves any pending read() with done:true rather
+        // than throwing, so this loop exits on its own — no try/catch needed.
+        const drain = (async () => {
+          while (reader) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        })();
+
+        // The idle timer fired, saw the open subscription, logged why, and
+        // re-armed itself — at least twice, proving the connection holds the
+        // daemon up across repeated fire cycles, not just once.
+        await pollUntil(
+          () => texts.filter((t) => t.includes("monitor subscription(s)") && t.includes("staying up")).length >= 2,
+          REARM_COUNT_TIMEOUT_MS,
+        );
+        expect(handle?.isShuttingDown).toBe(false);
+
+        await reader?.cancel();
+        await drain;
+
+        // Connection closed — now it should idle out like any other quiet daemon.
+        await pollUntil(() => handle?.isShuttingDown);
+        expect(handle?.isShuttingDown).toBe(true);
+      });
+    });
+
+    test("a tracked work item in a non-done phase inhibits idle shutdown, and logs why", async () => {
+      opts = testOptions();
+      const { logger, texts } = capturingLogger();
+      await withDaemonTimeout("150", async () => {
+        handle = await startTestDaemonInProcess({ logger });
+        const workItemDb = new WorkItemDb(handle.db.getDatabase());
+        workItemDb.upsertWorkItem({ id: "wi-3234-active", phase: "impl" });
+
+        await pollUntil(
+          () => texts.filter((t) => t.includes("active work item(s) — staying up")).length >= 2,
+          REARM_COUNT_TIMEOUT_MS,
+        );
+        expect(handle?.isShuttingDown).toBe(false);
+
+        // Flip to done — the poller's definition of "nothing left to do".
+        workItemDb.upsertWorkItem({ id: "wi-3234-active", phase: "done" });
+
+        await pollUntil(() => handle?.isShuttingDown);
+        expect(handle?.isShuttingDown).toBe(true);
+      });
+    });
+
+    test("a live agent session inhibits idle shutdown (pre-existing hasActiveSessions() gate)", async () => {
+      opts = testOptions();
+      const { logger, texts } = capturingLogger();
+      await withDaemonTimeout("150", async () => {
+        handle = await startTestDaemonInProcess({ logger });
+        const handleWorkerEvent = (
+          handle.mockServer as unknown as { handleWorkerEvent: (e: unknown) => void }
+        ).handleWorkerEvent.bind(handle.mockServer);
+        handleWorkerEvent({ type: "db:upsert", session: { sessionId: "wi-3234-session", state: "active" } });
+        expect(handle.mockServer.hasActiveSessions()).toBe(true);
+
+        await pollUntil(
+          () => texts.filter((t) => t.includes("session(s) not yet bye'd")).length >= 2,
+          REARM_COUNT_TIMEOUT_MS,
+        );
+        expect(handle?.isShuttingDown).toBe(false);
+
+        handleWorkerEvent({ type: "db:end", sessionId: "wi-3234-session" });
+
         await pollUntil(() => handle?.isShuttingDown);
         expect(handle?.isShuttingDown).toBe(true);
       });
