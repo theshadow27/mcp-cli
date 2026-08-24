@@ -107,6 +107,19 @@ labels, CI) with a time fallback, all built-in — no bespoke bash:
    marks high scrutiny. The opinion-agent panel in
    `adversarial-review.md` runs only on round 1 of gated-class reviews.
 
+### The gate baton (sprint 79, operator-directed)
+
+**Only ONE `am-i-done` gate (or gated push) runs on the box at a time.**
+Concurrent gates starve each other — four in parallel ran 3-5× slower
+than serial, pegged the CPU, and caused spurious load-flake failures
+(openssl/tls specs, SIGTERMs) that cost retry rounds. The orchestrator
+holds the baton: a worker whose next step is a gate or push ends its
+turn and waits for an explicit "BATON: go" message; the orchestrator
+hands the baton to exactly one worker at a time, ordered by
+readiness/priority (finishing pipelines before starting new ones).
+Worker briefs must say so. Cross-session neighbors can't be batoned —
+check `uptime` before handing it, and expect some ambient load.
+
 ### Merging: the phase-run path (sprint 79)
 
 Merges go through the phase machinery, never raw `gh pr merge`:
