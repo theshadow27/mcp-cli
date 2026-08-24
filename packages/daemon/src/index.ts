@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { NdjsonRecorder } from "@mcp-cli/core";
+import { NdjsonRecorder, workItemStateNamespace } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -44,6 +44,7 @@ import {
   METRICS_SERVER_NAME,
   MOCK_SERVER_NAME,
   ManifestVersionError,
+  NO_DOMAIN_ID,
   OPENCODE_SERVER_NAME,
   PROTOCOL_VERSION,
   PR_REVIEW_COMMENT_POSTED,
@@ -84,6 +85,7 @@ import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
 import { createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
+import { resolveDomainScope } from "./domain-scope";
 import { DomainSupervisor } from "./domain-supervisor";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
@@ -442,12 +444,41 @@ export async function resolveHeadBranch(cwd: string): Promise<string | null> {
  * Start the daemon and return a handle for lifecycle management.
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
+/**
+ * Pick one row when a ring-0 lookup legitimately matched several domains.
+ *
+ * A PR/branch/issue number is unique **per domain**, so a cross-domain lookup can return
+ * more than one row. Callers whose interface is single-valued take the first — but say so,
+ * because a silently-chosen row is the ambiguity #3034 removed from the schema creeping back
+ * in at the consumer. Per-domain dispatch removes the choice entirely (#3022).
+ */
+function firstOf<T extends { domainId: number }>(matches: T[], label: string, warn: (msg: string) => void): T | null {
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    warn(
+      `[mcpd] ${label} matches ${matches.length} work items across domains (${matches
+        .map((m) => m.domainId)
+        .join(", ")}); acting on domain ${matches[0].domainId}. Per-domain dispatch is #3022.`,
+    );
+  }
+  return matches[0];
+}
+
 export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
   // Allow env-based override for subprocess integration tests
   const skipVirtualServers = opts?.skipVirtualServers ?? process.env.MCP_DAEMON_SKIP_VIRTUAL_SERVERS === "1";
   const logger = opts?.logger ?? consoleLogger;
 
   // Cached repo info for resolveIssuePr — detected once from daemon startup cwd
+  /**
+   * PRE-EXISTING GAP, deliberately unchanged — see #3192.
+   *
+   * One repo, detected from the daemon's cwd. Wrong the moment two domains are two different
+   * repos, and wrong before this PR too: the readers were unscoped then, so the poller has
+   * always queried every tracked PR number against this one repo. Making the readers ring 0
+   * restored that behaviour exactly rather than widening it, so #3037 neither caused nor owns
+   * this. Per-domain pollers are #3022.
+   */
   let cachedRepo: RepoInfo | null = null;
 
   if (!opts?.skipLogSetup) {
@@ -857,7 +888,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
   let automationDispatcher: AutomationDispatcher | null = null;
   {
-    const workItemDb = new WorkItemDb(db.getDatabase());
+    // Ring 0: the dispatcher's work-item lookups span every domain. It must not be bound to
+    // "the daemon's domain" — mcpd is auto-started by whichever mcx call needed it, sometimes
+    // with no cwd, so a startup-time binding partitions it by process ancestry (see
+    // WorkItemDb.acrossDomains).
+    const workItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
+    // KNOWN GAP, not an oversight: the automation manifest and its lockfile are still read
+    // from the daemon's cwd, so which project's automation runs depends on where mcpd was
+    // started. This is the same class of defect the ring-0 change above removes from the
+    // work-item readers, but it cannot be fixed the same way: automation is inherently
+    // per-project, so the fix is one dispatcher per domain (epic B / #3022), not one
+    // dispatcher reading across domains. Tracked separately; deliberately NOT bundled into
+    // #3037. The startup log below names the root it bound to so the choice is visible
+    // rather than implied.
     let manifestResult: ReturnType<typeof loadManifest> | null = null;
     try {
       manifestResult = loadManifest(process.cwd());
@@ -891,7 +934,20 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      const automationRepoRoot = daemonRepoRoot;
+      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3192.
+      //
+      // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
+      // cwd. That is already the wrong key when the daemon starts outside the project, and it
+      // was wrong before this PR too. #3037 does NOT own it: nothing about scoping work_items
+      // by domain requires deriving a phase-state root.
+      //
+      // An earlier round of this PR tried to fix it here by substituting the domain's
+      // registered path. That was worse — `mcx scope add` stores a cwd with no git-root check
+      // and a domain may legally be registered at an ANCESTOR of the repo, so the registered
+      // path and the git root every writer uses coincide only by luck. It replaced a known
+      // stale key with a differently-wrong one and made this file the fifth independent
+      // derivation of a key that already had four. Reverted rather than patched.
+      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
@@ -900,20 +956,27 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             const item = workItemDb.getWorkItem(workItemId);
             return item?.automationOverrides ?? undefined;
           },
-          resolveWorkItemId: (prNumber) => {
-            const item = workItemDb.getWorkItemByPr(prNumber);
-            return item?.id ?? undefined;
-          },
-          getWorkItemByBranch: (branch) => workItemDb.getWorkItemByBranch(branch),
-          getWorkItemByIssue: (issueNumber) => workItemDb.getWorkItemByIssue(issueNumber),
+          // The dispatcher's callbacks are single-valued, but a PR/branch/issue number can
+          // name one item per domain. Take the first and SAY SO when there are more, rather
+          // than silently picking one — this restores the pre-#3037 behaviour (these reads
+          // were unscoped) while making the ambiguity visible instead of implicit. Per-domain
+          // dispatch is #3022.
+          resolveWorkItemId: (prNumber) => firstOf(workItemDb.findByPr(prNumber), `PR #${prNumber}`, logger.warn)?.id,
+          getWorkItemByBranch: (branch) => firstOf(workItemDb.findByBranch(branch), `branch ${branch}`, logger.warn),
+          getWorkItemByIssue: (issueNumber) =>
+            firstOf(workItemDb.findByIssue(issueNumber), `issue #${issueNumber}`, logger.warn),
           updateWorkItem: (id, patch) => {
-            workItemDb.updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
+            const item = workItemDb.getWorkItem(id);
+            if (!item) return;
+            // Write into the row's OWN partition, not a partition the daemon guessed.
+            workItemDb.forRow(item).updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
           },
           getWorkItem: (workItemId) => {
             const item = workItemDb.getWorkItem(workItemId);
             if (!item) return null;
             return {
               id: item.id,
+              domainId: item.domainId,
               issueNumber: item.issueNumber,
               prNumber: item.prNumber,
               branch: item.branch,
@@ -924,10 +987,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // Automation state lives in alias_state under `workitem:<id>` — the same
             // rows `ctx.state` writes from a phase script, so it must be read from the
             // same partition or a module would see an empty snapshot for a work item
-            // whose phase script had just written to it (#3040).
+            // whose phase script had just written to it (#3040). `workItemId` here is
+            // always the canonical id straight off a DB row (see `resolveWorkItemId` /
+            // `resolveWorkItemIdFromEvent` above) — never a caller-typed spelling — so
+            // `workItemStateNamespace` is safe to use directly (#3037).
             return db.listAliasState(
               automationRepoRoot,
-              `workitem:${workItemId}`,
+              workItemStateNamespace(workItemId),
               domainResolver.idForPath(automationRepoRoot),
             );
           },
@@ -953,15 +1019,19 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                   logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
                 }
               }
-              try {
-                workItemDb.updateWorkItem(workItemId, { phase: "done" });
-              } catch {
-                logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
-              }
-              try {
-                workItemDb.deleteWorkItem(workItemId);
-              } catch {
-                logger.warn(`[automation] failed to untrack ${workItemId}`);
+              const owning = workItemDb.getWorkItem(workItemId);
+              if (owning) {
+                const rowScoped = workItemDb.forRow(owning);
+                try {
+                  rowScoped.updateWorkItem(workItemId, { phase: "done" });
+                } catch {
+                  logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
+                }
+                try {
+                  rowScoped.deleteWorkItem(workItemId);
+                } catch {
+                  logger.warn(`[automation] failed to untrack ${workItemId}`);
+                }
               }
             },
           },
@@ -969,7 +1039,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         automationDispatcher.load(manifestResult.manifest.automation, automations);
         automationDispatcher.start();
         logger.info(
-          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"})`,
+          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"}) — manifest root ${automationRepoRoot} (from daemon cwd; per-domain dispatch is #3022)`,
         );
       }
     }
@@ -1005,7 +1075,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     },
     resolveIssuePr: async (number: number) => {
       // Cache repo detection so we don't re-run `git remote` on every track call.
-      // Uses the daemon's startup cwd which is the project root at launch time.
+      // Uses the daemon's startup cwd which is the project root at launch time (#3192).
       if (!cachedRepo) {
         cachedRepo = await detectRepo(process.cwd());
       }
@@ -1281,19 +1351,53 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       WORK_ITEMS_SERVER_NAME,
       (async () => {
         try {
-          const workItemDb = new WorkItemDb(db.database);
+          const workItems = new WorkItemDb(db.database);
+          // Ring 0 (see WorkItemDb.acrossDomains): the pollers, derived events and
+          // ctx.workItem resolution are daemon-internal machinery and read EVERY domain.
+          // They used to bind to resolveDomainScope(db, process.cwd()) here, which meant the
+          // daemon read whichever partition it happened to wake up in while every writer
+          // scoped per request — so listWorkItems() returned [] and PR state, CI events and
+          // automation silently stopped for every tracked item.
+          //
+          // The MCP server below is deliberately NOT ring 0: it is a caller-facing surface
+          // and scopes per call, from the caller's cwd.
+          const workItemDb = workItems.acrossDomains();
+
+          /**
+           * Domain name for a work-item event, resolved PER EVENT from the row it concerns.
+           *
+           * Previously a single name captured at startup from the daemon's cwd, which was
+           * wrong for every item outside that partition — and the daemon has no cwd of its
+           * own worth trusting. `null` when the item is unassigned or unknown; never a guess.
+           */
+          const domainNameFor = (event: import("@mcp-cli/core").WorkItemEvent): string | null => {
+            const item =
+              "itemId" in event
+                ? workItemDb.getWorkItem(event.itemId)
+                : "prNumber" in event
+                  ? firstOf(workItemDb.findByPr(event.prNumber), `PR #${event.prNumber}`, logger.warn)
+                  : null;
+            if (!item || item.domainId === NO_DOMAIN_ID) return null;
+            return db.getDomainById(item.domainId)?.name ?? null;
+          };
 
           // Create the poller first so we can pass pollNow to the server
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, domainNameFor(event)),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
           // Wire the alias executor's work-item resolver — resolves the caller
           // cwd's branch → tracked work item in-process, so alias subprocesses
           // don't need to phone home via IPC to answer ctx.workItem.
+          // ctx.domain for phases and aliases executed in the daemon (#3037).
+          aliasServer.setDomainResolver((cwd) => {
+            const resolved = resolveDomainScope(db, cwd);
+            return resolved.id === NO_DOMAIN_ID ? null : { id: resolved.id, name: resolved.name };
+          });
+
           aliasServer.setWorkItemResolver(async (cwd) => {
             try {
               const RESOLVE_TIMEOUT_MS = 500;
@@ -1302,10 +1406,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 Bun.sleep(RESOLVE_TIMEOUT_MS).then(() => null),
               ]);
               if (!resolved) return null;
-              const item = workItemDb.getWorkItemByBranch(resolved);
+              const item = firstOf(workItemDb.findByBranch(resolved), `branch ${resolved}`, logger.warn);
               if (!item) return null;
               return {
                 id: item.id,
+                domainId: item.domainId,
                 issueNumber: item.issueNumber,
                 prNumber: item.prNumber,
                 branch: item.branch,
@@ -1319,7 +1424,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             }
           });
 
-          workItemsServer = new WorkItemsServer(workItemDb, {
+          workItemsServer = new WorkItemsServer(workItems, {
             // Bundled with the resolver so `_work_items` phase_state_* partitions on the
             // same domain `ctx.state` does. These were split-brain until #3040 review R1.
             phaseState: { store: db, domainIdFor: (repoRoot) => domainResolver.idForPath(repoRoot) },
@@ -1334,10 +1439,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               }
             },
             resolveBranchFromPr: async (prNumber: number) => {
-              // Re-use the cached repo detected from daemon startup cwd so the
-              // --repo flag is always explicit (avoids `gh pr view` resolving
-              // against an ambiguous cwd). Returns null when repo detection
-              // fails; caller treats that as "branch not known" and continues.
+              // Re-use the cached repo (see #3192) so the --repo flag is always explicit,
+              // avoiding `gh pr view` resolving against an ambiguous cwd. Returns null when
+              // detection fails; the caller treats that as "branch not known" and continues.
               if (!cachedRepo) {
                 try {
                   cachedRepo = await detectRepo(process.cwd());

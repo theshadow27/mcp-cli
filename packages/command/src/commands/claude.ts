@@ -1175,7 +1175,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
     d.callTool("claude_session_list", toolArgs),
-    ipcCall("listWorkItems", {}, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS })
+    ipcCall("listWorkItems", { cwd: process.cwd() }, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS })
       .then((r) => r.items)
       .catch((): WorkItem[] => []),
   ]);

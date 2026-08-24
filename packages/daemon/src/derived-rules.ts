@@ -1,10 +1,14 @@
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { PHASE_CHANGED } from "@mcp-cli/core";
-import type { WorkItemDb } from "./db/work-items";
+import type { CrossDomainWorkItems } from "./db/work-items";
 import type { EventBus } from "./event-bus";
 
 export interface DerivedCtx {
-  workItemDb: WorkItemDb;
+  /**
+   * **Ring-0 work-item access, spanning every domain** (see `WorkItemDb.acrossDomains`).
+   * Derived rules react to events from every project the daemon serves.
+   */
+  workItemDb: CrossDomainWorkItems;
   bus: EventBus;
 }
 
@@ -32,10 +36,13 @@ export const prMergedToDone: DerivedRule = {
   match: (e) => e.event === "pr.merged" && typeof e.prNumber === "number",
   apply: (e, ctx) => {
     const prNumber = e.prNumber as number;
-    const wi = ctx.workItemDb.getWorkItemByPr(prNumber);
-    if (!wi) return { pending: true, reason: `no work item for PR #${prNumber}` };
-    if (wi.phase !== "qa") return null;
-    ctx.workItemDb.updateWorkItem(wi.id, { phase: "done" });
+    // Every domain's item for this PR, not an arbitrary one: two projects can each have a
+    // PR #7, and both should advance when theirs merges.
+    const matches = ctx.workItemDb.findByPr(prNumber);
+    if (matches.length === 0) return { pending: true, reason: `no work item for PR #${prNumber}` };
+    const wi = matches.find((m) => m.phase === "qa");
+    if (!wi) return null;
+    ctx.workItemDb.forRow(wi).updateWorkItem(wi.id, { phase: "done" });
     return {
       src: "daemon.derived",
       event: PHASE_CHANGED,

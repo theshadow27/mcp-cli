@@ -302,7 +302,13 @@ export interface MonitorEventBase {
    * published it has a domain, even if that domain is `NO_DOMAIN_ID`.
    */
   domainId?: number;
-  /** Domain name for `domainId`, when the id names a registered domain. Absent for `NO_DOMAIN_ID`. */
+  /**
+   * Name of the domain this event belongs to (`domains.name`) — the human-readable
+   * counterpart to `domainId`. Present on events produced by a domain-scoped writer —
+   * every `work_item.*` event carries it (#3037). Absent on genuinely global events,
+   * on `NO_DOMAIN_ID`, and on rows that predate any domain (`domain_id = 0`), where
+   * "unassigned" is the honest answer and a synthesized default would be a lie.
+   */
   domain?: string;
   /** Causal chain of seq IDs — present on events from DerivedEventPublisher (src:"daemon.derived"). Depth is capped at 4. */
   causedBy?: number[];

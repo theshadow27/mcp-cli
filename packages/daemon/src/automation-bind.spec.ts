@@ -22,7 +22,7 @@ function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
 
 function makeWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
-    ...createWorkItem("#100"),
+    ...createWorkItem("#100", NO_DOMAIN_ID),
     issueNumber: 100,
     branch: "feat/issue-100-foo",
     ...overrides,

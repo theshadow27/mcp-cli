@@ -114,10 +114,30 @@ export interface AliasStateAccessor {
  */
 export interface AliasWorkItemInfo {
   id: string;
+  /** Owning domain id, or 0 when the item predates domain resolution. See {@link AliasDomainInfo}. */
+  domainId: number;
   issueNumber: number | null;
   prNumber: number | null;
   branch: string | null;
   phase: string;
+}
+
+/**
+ * The domain the current invocation runs in, resolved from the caller's cwd.
+ *
+ * Informational only. A phase script never *passes* this to a `_work_items` tool —
+ * the daemon scopes those calls out-of-band from the same cwd, so there is no argument
+ * a script (or a model editing one) can set to read another domain's rows (#3037).
+ */
+export interface AliasDomainInfo {
+  /** Partition id. `0` means the invocation is outside every registered domain. */
+  id: number;
+  /**
+   * Domain name, or `null` when the runtime knows the id but not the label — the
+   * CLI-side phase runner reads the id off the work item and has no domains-table access
+   * until `mcx domain` lands its IPC surface (#3035). Never invent a name for id 0.
+   */
+  name: string | null;
 }
 
 /** The context available inside a defineAlias handler function */
@@ -148,6 +168,12 @@ export interface AliasContext {
    * `null` when the current repo/branch does not map to a tracked work item.
    */
   workItem: AliasWorkItemInfo | null;
+  /**
+   * Domain owning the current invocation, resolved from the caller's cwd by the daemon.
+   * `null` when the cwd is outside every registered domain — never a guess, and never
+   * a synthesized default (see `docs/domains.md`).
+   */
+  domain: AliasDomainInfo | null;
   /**
    * Absolute path to the git repository root for the current invocation.
    * Resolved from the caller's cwd via findGitRoot, so it is correct even

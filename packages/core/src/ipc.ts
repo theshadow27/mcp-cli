@@ -479,6 +479,12 @@ export const TrackWorkItemParamsSchema = z
     initialPhase: z.string().optional(),
     /** Absolute path to the repo root; used server-side to locate a .mcx manifest for initialPhase validation. */
     repoRoot: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
     /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). Each entry must be name=true or name=false. */
     automationOverrides: z
       .string()
@@ -512,6 +518,12 @@ export const UntrackWorkItemParamsSchema = z
     number: z.number().optional(),
     /** Branch name to untrack. */
     branch: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -525,6 +537,12 @@ export const ListWorkItemsParamsSchema = z.object({
    * Unset or true: show all items. Only `mcx tracked` passes false to opt in to filtering.
    */
   includeArchived: z.boolean().optional(),
+  /**
+   * Caller's working directory, used to resolve the domain this call is scoped to
+   * (#3037). Absent or outside every registered domain → the unassigned partition,
+   * which is where every pre-domain row lives.
+   */
+  cwd: z.string().optional(),
 });
 
 export const GetWorkItemParamsSchema = z
@@ -532,6 +550,12 @@ export const GetWorkItemParamsSchema = z
     id: z.string().optional(),
     number: z.number().optional(),
     branch: z.string().optional(),
+    /**
+     * Caller's working directory, used to resolve the domain this call is scoped to
+     * (#3037). Absent or outside every registered domain → the unassigned partition,
+     * which is where every pre-domain row lives.
+     */
+    cwd: z.string().optional(),
   })
   .refine((p) => p.id != null || p.number != null || p.branch != null, {
     message: "One of id, number, or branch is required",
@@ -999,8 +1023,19 @@ export interface IpcMethodResult {
   listNotes: NoteEntry[];
   deleteNote: { ok: true; deleted: boolean };
   trackWorkItem: WorkItem;
-  untrackWorkItem: { ok: true; deleted: boolean };
-  listWorkItems: { items: WorkItem[]; hiddenCount: number };
+  /**
+   * `id` is the CANONICAL id of the row that was deleted, present only when `deleted`.
+   * The caller needs it to clean up the item's phase-state namespace: once ids are
+   * domain-qualified the caller cannot reconstruct the stored spelling from what it typed,
+   * and after the delete it can no longer look it up (#3037 review R2).
+   */
+  untrackWorkItem: { ok: true; deleted: boolean; id?: string };
+  /**
+   * `unassignedCount` is present only when the caller's domain holds nothing but pre-domain
+   * rows exist in partition 0 — the difference between "nothing tracked" and "your items are
+   * stranded". See WorkItemDb.countUnassignedWorkItems.
+   */
+  listWorkItems: { items: WorkItem[]; hiddenCount: number; unassignedCount?: number };
   getWorkItem: WorkItem | null;
   aliasStateGet: AliasStateGetResult;
   aliasStateSet: AliasStateSetResult;

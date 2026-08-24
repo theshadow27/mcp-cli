@@ -23,7 +23,7 @@ import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
-import type { WorkItemDb } from "../db/work-items";
+import type { CrossDomainWorkItems } from "../db/work-items";
 import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
@@ -100,7 +100,11 @@ export interface FetchIssueCommentsResult {
 }
 
 export interface CopilotPollerOptions {
-  workItemDb: WorkItemDb;
+  /**
+   * **Ring-0 work-item access, spanning every domain** (see `WorkItemDb.acrossDomains`).
+   * A daemon-internal poller has no domain of its own to be scoped to.
+   */
+  workItemDb: CrossDomainWorkItems;
   stateDb: StateDb;
   logger?: Logger;
   intervalMs?: number;
@@ -115,7 +119,7 @@ export interface CopilotPollerOptions {
 // ── Poller ──
 
 export class CopilotPoller {
-  private workItemDb: WorkItemDb;
+  private workItemDb: CrossDomainWorkItems;
   private stateDb: StateDb;
   private logger: Logger;
   private fixedInterval: number | null;
@@ -146,7 +150,12 @@ export class CopilotPoller {
     this.fetchIssueCommentsFn = opts.fetchIssueComments ?? fetchIssueEndpointComments;
     this.detectRepoFn = opts.detectRepo ?? detectRepo;
     this.getTokenFn = opts.getToken ?? getGhToken;
-    this.onEvent = opts.onEvent ?? (() => {});
+    // Domain is stamped by EventBus.publish from the `repoRoot` the caller attaches to
+    // each event (see index.ts), not here — see #3040 review R3. A per-poller `domain`
+    // option used to wrap `onEvent` and stamp it directly; that was a second, competing
+    // derivation of the same field EventBus already owns, so it was removed rather than
+    // kept alongside the repoRoot path.
+    this.onEvent = opts.onEvent ?? ((): void => {});
   }
 
   get lastError(): string | null {

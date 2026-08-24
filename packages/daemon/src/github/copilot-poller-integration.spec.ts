@@ -27,13 +27,14 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import {
+  NO_DOMAIN_ID,
   PR_COMMENT,
   REVIEW_APPROVED,
   REVIEW_CHANGES_REQUESTED,
   REVIEW_COMMENTED,
   REVIEW_STICKY_UPDATED,
 } from "@mcp-cli/core";
-import { WorkItemDb } from "../db/work-items";
+import { type CrossDomainWorkItems, type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import {
   CopilotPoller,
   type CopilotPollerOptions,
@@ -76,12 +77,17 @@ function okPRComments(comments: IssueComment[]): FetchIssueCommentsResult {
 
 describe("CopilotPoller — review/sticky integration", () => {
   let rawDb: Database;
-  let workItemDb: WorkItemDb;
+  /** Ring-0 handle handed to the poller — the thing under test. */
+  let workItemDb: CrossDomainWorkItems;
+  /** Scoped handle used only to ARRANGE rows. */
+  let seed: DomainWorkItems;
   let stateDb: ReturnType<typeof createCopilotStateDb>;
 
   beforeEach(() => {
     rawDb = new Database(":memory:");
-    workItemDb = new WorkItemDb(rawDb);
+    const wdb = new WorkItemDb(rawDb);
+    workItemDb = wdb.acrossDomains();
+    seed = wdb.forDomain(NO_DOMAIN_ID);
     stateDb = createCopilotStateDb(rawDb);
   });
 
@@ -110,7 +116,7 @@ describe("CopilotPoller — review/sticky integration", () => {
 
   describe("review event types", () => {
     test("APPROVED review emits review.approved with reviewer and prNumber", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-1", prNumber: 100, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-1", prNumber: 100, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchReviews: async () =>
@@ -136,7 +142,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     });
 
     test("CHANGES_REQUESTED review emits review.changes_requested with body", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-2", prNumber: 101, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-2", prNumber: 101, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchReviews: async () =>
@@ -159,7 +165,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     });
 
     test("COMMENTED review emits review.commented", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-3", prNumber: 102, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-3", prNumber: 102, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchReviews: async () =>
@@ -176,7 +182,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     });
 
     test("second poll does not re-emit already-seen reviews", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-4", prNumber: 103, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-4", prNumber: 103, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviews([makeReview({ id: 9004, state: "APPROVED", user: { login: "alice" } })]),
@@ -194,7 +200,7 @@ describe("CopilotPoller — review/sticky integration", () => {
 
   describe("in-place edit (same review ID, body changes)", () => {
     test("changed body on second poll emits review.sticky_updated", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-5", prNumber: 200, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-5", prNumber: 200, prState: "open" });
 
       let pollCount = 0;
       const { poller, events } = makePoller({
@@ -224,7 +230,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     });
 
     test("identical body on subsequent polls does not emit review.sticky_updated", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-6", prNumber: 201, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-6", prNumber: 201, prState: "open" });
 
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviews([makeReview({ id: 10002, body: "No changes needed." })]),
@@ -249,7 +255,7 @@ describe("CopilotPoller — review/sticky integration", () => {
      * the sticky hash is overwritten with the new review's hash.
      */
     test("dismiss-and-repost emits new review event, not review.sticky_updated", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-7", prNumber: 300, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-7", prNumber: 300, prState: "open" });
 
       let pollCount = 0;
       const { poller, events } = makePoller({
@@ -283,7 +289,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     });
 
     test("subsequent identical poll after dismiss-and-repost does not re-emit", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-8", prNumber: 301, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-8", prNumber: 301, prState: "open" });
 
       let pollCount = 0;
       const { poller, events } = makePoller({
@@ -310,7 +316,7 @@ describe("CopilotPoller — review/sticky integration", () => {
 
   describe("top-level PR comment pipeline", () => {
     test("new comment emits pr.comment, second poll does not re-emit", async () => {
-      workItemDb.createWorkItem({ id: "wi:pr-9", prNumber: 400, prState: "open" });
+      seed.createWorkItem({ id: "wi:pr-9", prNumber: 400, prState: "open" });
 
       let pollCount = 0;
       const { poller, events } = makePoller({

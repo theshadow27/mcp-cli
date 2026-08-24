@@ -3,7 +3,21 @@
  *
  * Standalone module — takes a bun:sqlite Database instance so it can share
  * the daemon's existing connection or be used independently in tests.
+ *
+ * @domain-partitioned — see the `domain-scoped-queries` rule in `scripts/rules/`. Every
+ * statement in this file that touches a table declared with a `domain_id` column must
+ * constrain that column; the rule fails the build otherwise. The marker is what opts this
+ * file in, so the check ratchets module-by-module as the #3019 epic migrates them.
+ *
+ * The shape enforces the same thing at the type level: `WorkItemDb` owns migration and
+ * nothing else, and every read and write lives on {@link DomainWorkItems}, which can only
+ * be obtained from {@link WorkItemDb.forDomain}. There is no unscoped query to forget to
+ * scope — an invariant an orchestrator could rationalize past is a function, not prose
+ * (`docs/domain-scoped-mcx.md`).
  */
+
+// @domain-partitioned — enforced by scripts/rules/domain-scoped-queries.rule.ts. Keep this
+// marker on a line comment: it is what opts the module into the check.
 
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
@@ -17,6 +31,8 @@ import {
   type WorkItem,
   type WorkItemPatch,
   type WorkItemPhase,
+  domainScopedWorkItemId,
+  workItemIdCandidates,
 } from "@mcp-cli/core";
 import type { CiRunState } from "../github/ci-events";
 
@@ -24,6 +40,8 @@ import type { CiRunState } from "../github/ci-events";
 export interface WorkItemTransition {
   id: number;
   workItemId: string;
+  /** Owning domain, copied from the work item at transition time. */
+  domainId: number;
   fromPhase: string | null;
   toPhase: string;
   forced: boolean;
@@ -34,6 +52,7 @@ export interface WorkItemTransition {
 interface WorkItemTransitionRow {
   id: number;
   work_item_id: string;
+  domain_id: number;
   from_phase: string | null;
   to_phase: string;
   forced: number;
@@ -45,6 +64,7 @@ function rowToTransition(row: WorkItemTransitionRow): WorkItemTransition {
   return {
     id: row.id,
     workItemId: row.work_item_id,
+    domainId: row.domain_id,
     fromPhase: row.from_phase,
     toPhase: row.to_phase,
     forced: row.forced !== 0,
@@ -56,6 +76,7 @@ function rowToTransition(row: WorkItemTransitionRow): WorkItemTransition {
 /** Snake-case row shape from SQLite. */
 interface WorkItemRow {
   id: string;
+  domain_id: number;
   issue_number: number | null;
   branch: string | null;
   pr_number: number | null;
@@ -77,6 +98,7 @@ interface WorkItemRow {
 function rowToWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: row.id,
+    domainId: row.domain_id,
     issueNumber: row.issue_number,
     branch: row.branch,
     prNumber: row.pr_number,
@@ -300,15 +322,262 @@ export class WorkItemDb {
       .run(name, version);
   }
 
-  createWorkItem(item: Partial<WorkItem>): WorkItem {
-    const id = item.id ?? randomUUIDv7();
+  /**
+   * The only way to read or write work items: a handle bound to one domain.
+   *
+   * Deliberately not "an optional `domainId` argument with a sensible default". A default
+   * is a decision the caller never had to make, and #3034's audit found exactly that shape
+   * failing silently — `WHERE pr_number = 42` returning an arbitrary domain's row. Here the
+   * partition is the object, so a query with no domain filter is not something a reviewer
+   * has to notice; it does not typecheck.
+   *
+   * Pass `NO_DOMAIN_ID` explicitly for rows that predate domain resolution — the sentinel
+   * is a real partition with a real name, not an absence.
+   */
+  forDomain(domainId: number): DomainWorkItems {
+    if (!Number.isInteger(domainId) || domainId < NO_DOMAIN_ID) {
+      throw new Error(`invalid domain id ${String(domainId)}: expected a non-negative integer (0 = unassigned)`);
+    }
+    return new DomainWorkItems(this.db, domainId);
+  }
+
+  /**
+   * How many work items sit in the unassigned partition.
+   *
+   * A **count of the sentinel partition only** — never a peer domain, and never row contents.
+   * It exists to make one specific failure legible: rows written before domains existed are
+   * imported at `domain_id = 0`, while `importScopesAsDomains` auto-creates a domain per
+   * `~/.mcp-cli/scopes/*.json` sidecar on daemon boot. A user standing in their own project
+   * therefore queries domain N, their items are all in partition 0, and they get an empty
+   * list with no explanation.
+   *
+   * The empty list is the honest answer for that domain; the silence is not. Callers use this
+   * to say "0 here, but N unassigned" instead of just "0" — the same lesson this PR learned
+   * when a startup-bound daemon reader reported no tracked items rather than an error.
+   */
+  countUnassignedWorkItems(): number {
+    return (
+      this.db
+        .query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM work_items WHERE domain_id = ?")
+        .get(NO_DOMAIN_ID)?.n ?? 0
+    );
+  }
+
+  /**
+   * Unassigned rows worth reporting to `scoped`'s caller, or 0 when there is nothing to say.
+   *
+   * **The predicate lives here, once.** Both the IPC handler and the MCP tool need it, and
+   * when they each expressed it themselves they made the same mistake: gating on the count of
+   * the *filtered* list. A domain with 40 live items and a `phase=qa` filter matching none of
+   * them would then be told its data was stranded — a false alarm in the one feature whose
+   * job is to report real ones.
+   *
+   * "The domain holds nothing" means exactly that: no rows at all in this domain, whatever
+   * the caller happened to filter for.
+   */
+  strandedUnassignedCount(scoped: DomainWorkItems): number {
+    if (scoped.domainId === NO_DOMAIN_ID) return 0;
+    if (scoped.countWorkItems() > 0) return 0;
+    return this.countUnassignedWorkItems();
+  }
+
+  /**
+   * **Ring 0: the daemon's own readers, which span every domain by design.**
+   *
+   * The pollers, derived-event rules, automation dispatcher and `ctx.workItem` resolution are
+   * daemon-internal machinery, not a caller standing in a project. They must observe every
+   * tracked item on the box, because there is no "the daemon's domain" to observe instead:
+   * `mcpd` is auto-started by whichever `mcx` invocation happened to need it, sometimes with
+   * no cwd at all, so any startup-time binding partitions the daemon by an accident of
+   * process ancestry.
+   *
+   * Binding them at startup — which this PR briefly did — produces the worst available
+   * failure: writers scope per request from the caller's cwd, readers sit in whatever
+   * partition the daemon woke up in, and `listWorkItems()` returns `[]`. No PR state, no CI
+   * events, no automation, for every tracked item, reported as an empty list rather than an
+   * error.
+   *
+   * **This is a deliberate cross-domain read, not a forgotten `WHERE`.** That distinction is
+   * the entire reason this lives behind a named method instead of a bare query: an unscoped
+   * read that merely *looks* unscoped is exactly what the next scoping sweep will "fix" back
+   * into the bug above. Every statement here also carries a `dotw-ignore` naming the reason,
+   * so the rule that enforces partitioning cannot be silently satisfied by accident.
+   *
+   * Reads are cross-domain; **writes are not**. Every row carries its `domainId`, so a caller
+   * dispatches through {@link CrossDomainWorkItems.forRow} and writes inside the partition the
+   * row actually belongs to.
+   */
+  acrossDomains(): CrossDomainWorkItems {
+    return new CrossDomainWorkItems(this.db, this);
+  }
+}
+
+/**
+ * Ring-0 reads over every domain. See {@link WorkItemDb.acrossDomains} for why this exists
+ * and why it is named rather than implicit.
+ *
+ * Lookups by a per-domain unique key (`pr_number`, `branch`, `issue_number`) return an
+ * **array**: two domains may each legitimately hold PR #7, and collapsing that to one row
+ * would reintroduce the ambiguity #3034 removed. Callers that can only act on one must say
+ * which, in the open.
+ */
+export class CrossDomainWorkItems {
+  private db: Database;
+  private owner: WorkItemDb;
+
+  constructor(db: Database, owner: WorkItemDb) {
+    this.db = db;
+    this.owner = owner;
+  }
+
+  /** The scoped handle for a row this view returned — how a ring-0 reader writes. */
+  forRow(item: Pick<WorkItem, "domainId">): DomainWorkItems {
+    return this.owner.forDomain(item.domainId);
+  }
+
+  /** Every tracked item on the box, in every domain. */
+  listWorkItems(filter?: { phase?: string; excludeArchived?: boolean }): WorkItem[] {
+    const archiveClause = filter?.excludeArchived
+      ? " AND NOT (phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days'))"
+      : "";
+    if (filter?.phase) {
+      return (
+        this.db
+          // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+          .query<WorkItemRow, [string]>(`SELECT * FROM work_items WHERE phase = ?${archiveClause} ORDER BY created_at`)
+          .all(filter.phase)
+          .map(rowToWorkItem)
+      );
+    }
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, []>(`SELECT * FROM work_items WHERE 1 = 1${archiveClause} ORDER BY created_at`)
+        .all()
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** By global primary key. Unambiguous: `id` is unique across the whole table. */
+  getWorkItem(id: string): WorkItem | null {
+    const row = this.db
+      // dotw-ignore domain-scoped-queries: ring 0 — id is the global primary key (see WorkItemDb.acrossDomains)
+      .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE id = ?")
+      .get(id);
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  /** Every domain's item for this PR number. May legitimately hold more than one. */
+  findByPr(prNumber: number): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE pr_number = ? ORDER BY domain_id")
+        .all(prNumber)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** Every domain's item for this branch name. */
+  findByBranch(branch: string): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ? ORDER BY domain_id")
+        .all(branch)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /** Every domain's item for this issue number. */
+  findByIssue(issueNumber: number): WorkItem[] {
+    return (
+      this.db
+        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE issue_number = ? ORDER BY domain_id")
+        .all(issueNumber)
+        .map(rowToWorkItem)
+    );
+  }
+
+  /**
+   * CI run states for every domain, keyed by {@link ciRunStateKey}.
+   *
+   * The key is `domainId:prNumber`, not `prNumber`: a bare PR number collides the moment two
+   * domains each have a PR #7, which is the case this whole epic exists to support.
+   */
+  loadCiRunStates(): Map<string, CiRunState> {
+    type CiRunStateRow = {
+      domain_id: number;
+      pr_number: number;
+      suite_id: number;
+      started_at: number;
+      emitted_started: number;
+      emitted_finished: number;
+    };
+    const rows = this.db
+      .query<CiRunStateRow, []>(
+        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        "SELECT domain_id, pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states",
+      )
+      .all();
+    const map = new Map<string, CiRunState>();
+    for (const row of rows) {
+      map.set(ciRunStateKey(row.domain_id, row.pr_number), {
+        suiteId: row.suite_id,
+        startedAt: row.started_at,
+        emittedStarted: row.emitted_started !== 0,
+        emittedFinished: row.emitted_finished !== 0,
+      });
+    }
+    return map;
+  }
+}
+
+/** Composite key for a CI run state held across domains. See {@link CrossDomainWorkItems.loadCiRunStates}. */
+export function ciRunStateKey(domainId: number, prNumber: number): string {
+  return `${domainId}:${prNumber}`;
+}
+
+/** Inverse of {@link ciRunStateKey}. */
+export function parseCiRunStateKey(key: string): { domainId: number; prNumber: number } {
+  const [domainId, prNumber] = key.split(":");
+  return { domainId: Number(domainId), prNumber: Number(prNumber) };
+}
+
+/**
+ * Work-item reads and writes inside a single domain.
+ *
+ * Every statement below constrains `domain_id`, including lookups by primary key: work-item
+ * ids are derived from the thing they track (`#42`, `pr:7`) and are therefore *guessable*,
+ * so an id alone must not be able to reach across the partition.
+ */
+export class DomainWorkItems {
+  private db: Database;
+  /** The domain every statement on this handle is constrained to. */
+  readonly domainId: number;
+
+  constructor(db: Database, domainId: number) {
+    this.db = db;
+    this.domainId = domainId;
+  }
+
+  /**
+   * Create a work item in this domain.
+   *
+   * `domainId` is absent from the accepted shape rather than ignored: the handle decides
+   * the partition, and a caller cannot express a different one.
+   */
+  createWorkItem(item: Omit<Partial<WorkItem>, "domainId">): WorkItem {
+    const id = domainScopedWorkItemId(this.domainId, item.id ?? randomUUIDv7());
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, automation_overrides, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $automation_overrides, $phase)`,
+        `INSERT INTO work_items (id, domain_id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, automation_overrides, phase)
+         VALUES ($id, $domain_id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $automation_overrides, $phase)`,
       )
       .run({
         $id: id,
+        $domain_id: this.domainId,
         $issue_number: item.issueNumber ?? null,
         $branch: item.branch ?? null,
         $pr_number: item.prNumber ?? null,
@@ -330,9 +599,41 @@ export class WorkItemDb {
     return created;
   }
 
+  /**
+   * Look up by primary key **within this domain**.
+   *
+   * The `domain_id` predicate is not redundant with the `id` primary key. Ids are derived
+   * from the tracked object (`#42`, `pr:7`, `branch:fix/foo`), so any caller can guess the
+   * id another domain would have minted; without the predicate, `work_items_get {id:"#42"}`
+   * would read across the partition.
+   *
+   * Accepts either the stored id or its unscoped spelling — inside domain 3, `#42` and
+   * `d3:#42` name the same row. Both candidates are filtered by `domain_id`.
+   */
   getWorkItem(id: string): WorkItem | null {
-    const row = this.db.query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE id = ?").get(id);
-    return row ? rowToWorkItem(row) : null;
+    for (const candidate of workItemIdCandidates(this.domainId, id)) {
+      const row = this.db
+        .query<WorkItemRow, [number, string]>("SELECT * FROM work_items WHERE domain_id = ? AND id = ?")
+        .get(this.domainId, candidate);
+      if (row) return rowToWorkItem(row);
+    }
+    return null;
+  }
+
+  /**
+   * Canonical stored id for `id` within this domain, or `null` when no such row exists here.
+   *
+   * Every id-taking write funnels through this, so a caller that names another domain's row
+   * gets "not found" rather than a write that lands outside its partition.
+   */
+  private storedId(id: string): string | null {
+    for (const candidate of workItemIdCandidates(this.domainId, id)) {
+      const row = this.db
+        .query<{ id: string }, [number, string]>("SELECT id FROM work_items WHERE domain_id = ? AND id = ?")
+        .get(this.domainId, candidate);
+      if (row) return row.id;
+    }
+    return null;
   }
 
   /**
@@ -346,9 +647,9 @@ export class WorkItemDb {
   setBranchIfNull(id: string, branch: string): boolean {
     const result = this.db
       .prepare(
-        "UPDATE work_items SET branch = $branch, version = version + 1, updated_at = datetime('now') WHERE id = $id AND branch IS NULL",
+        "UPDATE work_items SET branch = $branch, version = version + 1, updated_at = datetime('now') WHERE domain_id = $domain_id AND id = $id AND branch IS NULL",
       )
-      .run({ $id: id, $branch: branch });
+      .run({ $domain_id: this.domainId, $id: this.storedId(id) ?? id, $branch: branch });
     return result.changes > 0;
   }
 
@@ -369,7 +670,11 @@ export class WorkItemDb {
         }
 
         const fields: string[] = [];
-        const values: Record<string, unknown> = { $id: id, $version: existing.version };
+        const values: Record<string, unknown> = {
+          $id: existing.id,
+          $domain_id: this.domainId,
+          $version: existing.version,
+        };
 
         const mappings: Array<[keyof WorkItemPatch, string]> = [
           ["issueNumber", "issue_number"],
@@ -401,7 +706,9 @@ export class WorkItemDb {
         fields.push("version = version + 1");
 
         const result = this.db
-          .prepare(`UPDATE work_items SET ${fields.join(", ")} WHERE id = $id AND version = $version`)
+          .prepare(
+            `UPDATE work_items SET ${fields.join(", ")} WHERE domain_id = $domain_id AND id = $id AND version = $version`,
+          )
           .run(values as Record<string, string | number | null>);
 
         if (result.changes === 0) {
@@ -409,16 +716,26 @@ export class WorkItemDb {
         }
 
         if (patch.phase !== undefined && patch.phase !== existing.phase) {
-          this.recordTransition(id, existing.phase, patch.phase, opts?.forced ?? false, opts?.forceReason);
+          this.recordTransition(existing.id, existing.phase, patch.phase, opts?.forced ?? false, opts?.forceReason);
         }
 
-        const updated = this.getWorkItem(id);
+        const updated = this.getWorkItem(existing.id);
         if (!updated) throw new Error(`failed to read back work item: ${id}`);
         return updated;
       })
       .immediate();
   }
 
+  /**
+   * Append to the transition log.
+   *
+   * `domain_id` is written here because it is written *everywhere* on this handle — the
+   * column had no writer at all when the domain partitioning landed (#3034 round 2), so
+   * every transition row said `domain_id = 0` and `StateDb.countDomainDependents` reported
+   * zero transitions for a domain that had hundreds, making `mcx domain rm` willing to
+   * orphan them. That was a forgotten argument in one INSERT; on a domain-bound handle
+   * there is no argument to forget.
+   */
   recordTransition(
     workItemId: string,
     fromPhase: string | null,
@@ -433,114 +750,126 @@ export class WorkItemDb {
     // (#3034 review Y5).
     this.db
       .query(
-        `INSERT INTO work_item_transitions (domain_id, work_item_id, from_phase, to_phase, forced, force_reason)
-         VALUES (COALESCE((SELECT domain_id FROM work_items WHERE id = ?1), 0), ?1, ?2, ?3, ?4, ?5)`,
+        `INSERT INTO work_item_transitions (work_item_id, domain_id, from_phase, to_phase, forced, force_reason)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(workItemId, fromPhase, toPhase, forced ? 1 : 0, forceReason ?? null);
+      .run(workItemId, this.domainId, fromPhase, toPhase, forced ? 1 : 0, forceReason ?? null);
   }
 
   listTransitions(workItemId: string): WorkItemTransition[] {
     return this.db
-      .query<WorkItemTransitionRow, [string]>("SELECT * FROM work_item_transitions WHERE work_item_id = ? ORDER BY id")
-      .all(workItemId)
+      .query<WorkItemTransitionRow, [number, string]>(
+        "SELECT * FROM work_item_transitions WHERE domain_id = ? AND work_item_id = ? ORDER BY id",
+      )
+      .all(this.domainId, this.storedId(workItemId) ?? workItemId)
       .map(rowToTransition);
   }
 
   deleteWorkItem(id: string): boolean {
     return this.db.transaction(() => {
+      const stored = this.storedId(id);
+      if (stored === null) return false;
       const row = this.db
-        .query<{ pr_number: number | null; domain_id: number }, [string]>(
-          "SELECT pr_number, domain_id FROM work_items WHERE id = ?",
+        .query<{ pr_number: number | null }, [number, string]>(
+          "SELECT pr_number FROM work_items WHERE domain_id = ? AND id = ?",
         )
-        .get(id);
+        .get(this.domainId, stored);
       if (row?.pr_number !== null && row?.pr_number !== undefined) {
         this.db
           .query("DELETE FROM ci_run_states WHERE domain_id = ? AND pr_number = ?")
-          .run(row.domain_id, row.pr_number);
+          .run(this.domainId, row.pr_number);
       }
-      this.db.query("DELETE FROM work_item_transitions WHERE work_item_id = ?").run(id);
-      this.db.query("DELETE FROM work_items WHERE id = ?").run(id);
+      this.db
+        .query("DELETE FROM work_item_transitions WHERE domain_id = ? AND work_item_id = ?")
+        .run(this.domainId, stored);
+      this.db.query("DELETE FROM work_items WHERE domain_id = ? AND id = ?").run(this.domainId, stored);
       return (this.db.query<{ c: number }, []>("SELECT changes() as c").get()?.c ?? 0) > 0;
     })();
   }
 
   listWorkItems(filter?: { phase?: string; excludeArchived?: boolean }): WorkItem[] {
     const archiveClause = filter?.excludeArchived
-      ? "NOT (phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days'))"
-      : null;
+      ? " AND NOT (phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days'))"
+      : "";
 
     if (filter?.phase) {
-      const where = archiveClause ? `phase = ? AND ${archiveClause}` : "phase = ?";
       return this.db
-        .query<WorkItemRow, [string]>(`SELECT * FROM work_items WHERE ${where} ORDER BY created_at`)
-        .all(filter.phase)
+        .query<WorkItemRow, [number, string]>(
+          `SELECT * FROM work_items WHERE domain_id = ? AND phase = ?${archiveClause} ORDER BY created_at`,
+        )
+        .all(this.domainId, filter.phase)
         .map(rowToWorkItem);
     }
-    if (archiveClause) {
-      return this.db
-        .query<WorkItemRow, []>(`SELECT * FROM work_items WHERE ${archiveClause} ORDER BY created_at`)
-        .all()
-        .map(rowToWorkItem);
-    }
-    return this.db.query<WorkItemRow, []>("SELECT * FROM work_items ORDER BY created_at").all().map(rowToWorkItem);
+    return this.db
+      .query<WorkItemRow, [number]>(`SELECT * FROM work_items WHERE domain_id = ?${archiveClause} ORDER BY created_at`)
+      .all(this.domainId)
+      .map(rowToWorkItem);
+  }
+
+  /** Every row in this domain, ignoring any caller filter. See WorkItemDb.strandedUnassignedCount. */
+  countWorkItems(): number {
+    return (
+      this.db
+        .query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM work_items WHERE domain_id = ?")
+        .get(this.domainId)?.n ?? 0
+    );
   }
 
   /** Count items that listWorkItems would hide when excludeArchived=true. */
   countArchivedWorkItems(): number {
     return (
       this.db
-        .query<{ n: number }, []>(
-          "SELECT COUNT(*) as n FROM work_items WHERE phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days')",
+        .query<{ n: number }, [number]>(
+          "SELECT COUNT(*) as n FROM work_items WHERE domain_id = ? AND phase = 'done' AND datetime(updated_at) < datetime('now', '-7 days')",
         )
-        .get()?.n ?? 0
+        .get(this.domainId)?.n ?? 0
     );
   }
 
-  // Lookups by a per-domain unique key take a trailing `domainId` that defaults to
-  // NO_DOMAIN_ID (#3034). Without it, `WHERE pr_number = 42` would be ambiguous the
-  // moment two domains each have a PR #42 — SQLite would return an arbitrary row.
+  // Lookups by a per-domain unique key. `WHERE pr_number = 42` alone is ambiguous the
+  // moment two domains each have a PR #42 — SQLite would return an arbitrary row (#3034).
 
-  getWorkItemByPr(prNumber: number, domainId: number = NO_DOMAIN_ID): WorkItem | null {
+  getWorkItemByPr(prNumber: number): WorkItem | null {
     const row = this.db
       .query<WorkItemRow, [number, number]>("SELECT * FROM work_items WHERE domain_id = ? AND pr_number = ?")
-      .get(domainId, prNumber);
+      .get(this.domainId, prNumber);
     return row ? rowToWorkItem(row) : null;
   }
 
-  getWorkItemByIssue(issueNumber: number, domainId: number = NO_DOMAIN_ID): WorkItem | null {
+  getWorkItemByIssue(issueNumber: number): WorkItem | null {
     const row = this.db
       .query<WorkItemRow, [number, number]>("SELECT * FROM work_items WHERE domain_id = ? AND issue_number = ?")
-      .get(domainId, issueNumber);
+      .get(this.domainId, issueNumber);
     return row ? rowToWorkItem(row) : null;
   }
 
-  getWorkItemByBranch(branch: string, domainId: number = NO_DOMAIN_ID): WorkItem | null {
+  getWorkItemByBranch(branch: string): WorkItem | null {
     const row = this.db
       .query<WorkItemRow, [number, string]>("SELECT * FROM work_items WHERE domain_id = ? AND branch = ?")
-      .get(domainId, branch);
+      .get(this.domainId, branch);
     return row ? rowToWorkItem(row) : null;
   }
 
   /** Get the last-seen HEAD commit OID for a PR, used by the push detector. Returns null if not yet seen. */
-  getLastSeenHeadOid(prNumber: number, domainId: number = NO_DOMAIN_ID): string | null {
+  getLastSeenHeadOid(prNumber: number): string | null {
     const row = this.db
       .query<{ last_seen_head_oid: string | null }, [number, number]>(
         "SELECT last_seen_head_oid FROM work_items WHERE domain_id = ? AND pr_number = ?",
       )
-      .get(domainId, prNumber);
+      .get(this.domainId, prNumber);
     return row?.last_seen_head_oid ?? null;
   }
 
   /** Persist the HEAD commit OID for a PR so the push detector survives daemon restarts. */
-  setLastSeenHeadOid(prNumber: number, oid: string, domainId: number = NO_DOMAIN_ID): void {
+  setLastSeenHeadOid(prNumber: number, oid: string): void {
     this.db
       .prepare("UPDATE work_items SET last_seen_head_oid = ? WHERE domain_id = ? AND pr_number = ?")
-      .run(oid, domainId, prNumber);
+      .run(oid, this.domainId, prNumber);
   }
 
   // -- CI run states --
 
-  loadCiRunStates(domainId: number = NO_DOMAIN_ID): Map<number, CiRunState> {
+  loadCiRunStates(): Map<number, CiRunState> {
     const rows = this.db
       .query<
         { pr_number: number; suite_id: number; started_at: number; emitted_started: number; emitted_finished: number },
@@ -548,7 +877,7 @@ export class WorkItemDb {
       >(
         "SELECT pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states WHERE domain_id = ?",
       )
-      .all(domainId);
+      .all(this.domainId);
     const map = new Map<number, CiRunState>();
     for (const row of rows) {
       map.set(row.pr_number, {
@@ -561,7 +890,7 @@ export class WorkItemDb {
     return map;
   }
 
-  upsertCiRunState(prNumber: number, state: CiRunState, domainId: number = NO_DOMAIN_ID): void {
+  upsertCiRunState(prNumber: number, state: CiRunState): void {
     this.db
       .prepare(
         `INSERT INTO ci_run_states (domain_id, pr_number, suite_id, started_at, emitted_started, emitted_finished)
@@ -573,7 +902,7 @@ export class WorkItemDb {
            emitted_finished = excluded.emitted_finished`,
       )
       .run(
-        domainId,
+        this.domainId,
         prNumber,
         state.suiteId,
         state.startedAt,
@@ -582,20 +911,27 @@ export class WorkItemDb {
       );
   }
 
-  deleteCiRunState(prNumber: number, domainId: number = NO_DOMAIN_ID): void {
-    this.db.prepare("DELETE FROM ci_run_states WHERE domain_id = ? AND pr_number = ?").run(domainId, prNumber);
+  deleteCiRunState(prNumber: number): void {
+    this.db.prepare("DELETE FROM ci_run_states WHERE domain_id = ? AND pr_number = ?").run(this.domainId, prNumber);
   }
 
   /**
-   * Atomically create or update a work item.
+   * Atomically create or update a work item in this domain.
    * Uses INSERT ... ON CONFLICT(id) DO UPDATE to avoid TOCTOU races.
+   *
+   * `id` is the table's global primary key, so the `ON CONFLICT` arm carries a `WHERE
+   * domain_id = …` guard: without it, a caller in domain B writing an id that domain A
+   * already owns would silently *update A's row* — a cross-partition write straight through
+   * a tool the caller is allowed to use. Guarded, the arm matches nothing, the read-back
+   * finds nothing in this domain, and the call throws instead of corrupting a neighbour.
    */
   upsertWorkItem(item: WorkItemPatch & { id: string }): WorkItem {
     const before = this.getWorkItem(item.id);
+    const id = before?.id ?? domainScopedWorkItemId(this.domainId, item.id);
     this.db
       .query(
-        `INSERT INTO work_items (id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
-         VALUES ($id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)
+        `INSERT INTO work_items (id, domain_id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)
+         VALUES ($id, $domain_id, $issue_number, $branch, $pr_number, $pr_state, $pr_url, $ci_status, $ci_run_id, $ci_summary, $review_status, $merge_state_status, $phase)
          ON CONFLICT(id) DO UPDATE SET
            issue_number       = COALESCE($issue_number, issue_number),
            branch             = COALESCE($branch, branch),
@@ -609,10 +945,12 @@ export class WorkItemDb {
            merge_state_status = CASE WHEN $merge_state_status = '__NULL__' THEN NULL ELSE COALESCE($merge_state_status, merge_state_status) END,
            phase              = COALESCE($phase, phase),
            version            = version + 1,
-           updated_at         = datetime('now')`,
+           updated_at         = datetime('now')
+         WHERE work_items.domain_id = $domain_id`,
       )
       .run({
-        $id: item.id,
+        $id: id,
+        $domain_id: this.domainId,
         $issue_number: item.issueNumber ?? null,
         $branch: item.branch ?? null,
         $pr_number: item.prNumber ?? null,
@@ -626,16 +964,20 @@ export class WorkItemDb {
         $phase: item.phase ?? null,
       });
 
-    const result = this.getWorkItem(item.id);
-    if (!result) throw new Error(`failed to read back work item: ${item.id}`);
+    const result = this.getWorkItem(id);
+    if (!result) {
+      throw new Error(
+        `failed to read back work item ${id} in domain ${this.domainId}: the id exists but belongs to another domain`,
+      );
+    }
     // Only log when we have a phase to log. Upsert can insert a row without a
     // phase value (SQLite DEFAULT is bypassed by explicit NULL); in that case
     // the transition log stays empty until a phase is assigned.
     if (result.phase) {
       if (!before) {
-        this.recordTransition(item.id, null, result.phase, false);
+        this.recordTransition(result.id, null, result.phase, false);
       } else if (before.phase !== result.phase) {
-        this.recordTransition(item.id, before.phase, result.phase, false);
+        this.recordTransition(result.id, before.phase, result.phase, false);
       }
     }
     return result;
