@@ -209,3 +209,46 @@ design).
   blind `mcx phase advance` would strand a reviewer on a scratch branch (the
   sprint-66 failure). `qa.ts` correctly honors `worktree_path`. Orchestrator
   must hand-build review spawns with `--cwd` until #1286 lands.
+
+### Merges
+
+| # | PR | SHA | Path taken |
+|---|----|-----|-----------|
+| 3213 | #3287 | df4de055 | triage(low) → QA → done. No review round. |
+| 3104 | #3295 | 9c10dde6 | triage(high, churn) → review(pass) → QA(pass) → done. |
+
+### Plan deviations (recorded, not silent)
+
+- **#3104 was planned lane-3 "independent" but touches `ws-server.ts`** — the
+  lane-2 spawn-path hot file, contended with #3289. Reviews ran in parallel;
+  the MERGES were serialized. #3295 merged first, and #3289's repair was told
+  to rebase **after** its gate completed (never mid-gate), to resolve
+  `ws-server.ts` on the merits, and to stop and ask if the conflict turned out
+  semantic rather than adjacent-line. Lane-3 disjointness should be file-verified
+  at plan time, not assumed from the "independents" label.
+- **#3104 triaged high (churn 154, 5 files, 3 packages) though planned medium.**
+  Took the stricter path (review + QA) rather than the plan's label.
+- **#3013 needed a repair round** — adversarial review found two 🔴 merge-blockers,
+  each confirmed by three second-opinion agents plus a driven repro:
+  (1) TLS/hostname mismatch — from the three "version unknown" branches a later
+  refresh onto a *patched* binary still handed it `ws://localhost`, the exact
+  silent connect failure the PR's own comments said must never happen; this
+  **refuted the implementer's load-bearing claim** that the wss listener was
+  already up. (2) the re-probe was synchronous `spawnSync` on a thread hosting
+  live sessions (~55s freeze), regressing the module's own "keep serving
+  in-flight sessions" invariant. Design decision made by the orchestrator
+  (fail closed on transport mismatch + non-blocking probe + negative caching)
+  rather than delegated, per "no human gates mid-sprint".
+
+### Additional issues filed
+
+- **#3290** — `review.ts` contradicts run.md twice: hardcodes `--worktree`
+  (ignoring `worktree_path`, which `qa.ts` already honors) and picks opus for
+  review where run.md mandates sonnet *including* the gated class. Both silent
+  under `mcx phase advance`; the first would put a reviewer on a scratch branch
+  reviewing `main` and report a meaningless verdict. Hand-overridden all sprint.
+- Data point added to **#2944** — `quota_status` served a **60.6-minute stale**
+  snapshot while reporting `available: true` and confident percentages, because
+  the upstream 429'd continuously from ~22:00. Quota gating (80% freeze / 95%
+  pause) ran on a frozen number for an hour. It is neither the "call failed" nor
+  the "unavailable" case run.md says to ignore — that is the gap.
