@@ -101,11 +101,18 @@ labels, CI) with a time fallback, all built-in — no bespoke bash:
 4. On wake: act on the event, or on timeout re-verify ground truth
    (worktree git state, `gh pr list`, `ps` for gates), then re-arm and
    end the turn.
-9. **Model mix.** Implementers per the plan table. Reviewers default
-   sonnet; opus/fable review only for the gated class (security,
-   isolation/containment, auth, DB schema, spawn path) or where the plan
-   marks high scrutiny. The opinion-agent panel in
-   `adversarial-review.md` runs only on round 1 of gated-class reviews.
+9. **Model mix (operator ruling, 2026-08-24).** Implementation: opus
+   (or per the plan table). Review: **sonnet, always — including the
+   gated class.** The gated class (security, isolation/containment,
+   auth, DB schema, spawn path) raises review *rigor* — the
+   opinion-agent panel in `adversarial-review.md` on round 1, mutation
+   checks, adversarial verification — not the review model tier. A
+   reviewer outclassing the implementer is inverted waste: review hunts
+   blind spots in an existing synthesis, which is easier than the
+   synthesis; spend the stronger model on implementation instead.
+   **Fable: never for implementation or review unless the operator
+   specifically authorizes it** — its edge is long-horizon planning,
+   and its spend is unsustainable for dev work.
 
 ### The gate baton (sprint 79, operator-directed)
 
