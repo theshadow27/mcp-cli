@@ -84,6 +84,15 @@ function createDefaultIdGenerator(): RequestIdGenerator {
   return () => `mcpd-${nextId++}`;
 }
 
+/**
+ * How long a rate-limit signal counts as "currently throttled" when the CLI
+ * gives no `retry_after` hint. Bounded on purpose: an unbounded flag is the
+ * #3104 bug, and an over-long guess is indistinguishable from it to a reader
+ * of `mcx claude ls`. A minute outlives a transient 429 and is short enough
+ * that a session which is actually working stops being described as blocked.
+ */
+export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60_000;
+
 // ── Ignored message types ──
 
 export const IGNORED_TYPES: ReadonlySet<string> = new Set([
@@ -104,7 +113,6 @@ export class SessionState {
   cost = 0;
   tokens = 0;
   numTurns = 0;
-  rateLimited = false;
   readonly pendingPermissions = new Map<string, CanUseToolMsg["request"]>();
   lastToolCall: { name: string; errorMessage?: string; at: number } | null = null;
   hasActiveToolCall = false;
@@ -172,11 +180,54 @@ export class SessionState {
    */
   private readonly transport: SessionTransport;
 
-  constructor(sessionId: string, genRequestId?: RequestIdGenerator, transport: SessionTransport = "ws") {
+  /** Clock, injectable so rate-limit expiry is testable without waiting (#3104). */
+  private readonly now: () => number;
+
+  /** Epoch ms of the most recent rate-limit signal. Null when none is outstanding. */
+  private rateLimitedAtMs: number | null = null;
+  /** Epoch ms the outstanding signal stops counting as "currently throttled". */
+  private rateLimitUntilMs = 0;
+  /** Signals behind the outstanding flag — reported so `×3` can replace a bare badge. */
+  private rateLimitSignals = 0;
+
+  constructor(
+    sessionId: string,
+    genRequestId?: RequestIdGenerator,
+    transport: SessionTransport = "ws",
+    now: () => number = Date.now,
+  ) {
     this.sessionId = sessionId;
     this.state = "connecting";
     this.genRequestId = genRequestId ?? createDefaultIdGenerator();
     this.transport = transport;
+    this.now = now;
+  }
+
+  /**
+   * Whether the session is throttled **right now** — i.e. a rate-limit signal
+   * arrived, its retry window has not elapsed, and nothing has demonstrated
+   * progress since.
+   *
+   * Before #3104 this was a plain field set on any rate-limit signal and
+   * cleared only by a successful `result`, so one transient signal in the first
+   * seconds of a 15-minute turn rendered `[RATE LIMITED]` for the whole turn on
+   * a session that was producing tokens the entire time. The flag is
+   * load-bearing — orchestrators read `mcx claude ls` to decide whether a worker
+   * is stalled — and it only ever erred toward "throttled", which invites
+   * exactly the wrong intervention (back off, restart, stop the sprint).
+   */
+  get rateLimited(): boolean {
+    return this.rateLimitedAtMs !== null && this.now() < this.rateLimitUntilMs;
+  }
+
+  /** Epoch ms of the signal behind `rateLimited`, or null when not rate-limited. */
+  get rateLimitedAt(): number | null {
+    return this.rateLimited ? this.rateLimitedAtMs : null;
+  }
+
+  /** Rate-limit signals behind `rateLimited` (0 when clear, ≥1 while set). */
+  get rateLimitHits(): number {
+    return this.rateLimited ? this.rateLimitSignals : 0;
   }
 
   /**
@@ -295,6 +346,7 @@ export class SessionState {
     // that first post-clear result is legitimate and must not be suppressed.
     this.lastEmittedNumTurns = -1;
     this.pendingPermissions.clear();
+    this.clearRateLimit();
     return [{ type: "session:cleared" }];
   }
 
@@ -405,9 +457,12 @@ export class SessionState {
       this.extractLastToolCall(strict.data.message.content);
       const events: SessionEvent[] = [{ type: "session:response", message: strict.data }];
       if (strict.data.error === "rate_limit") {
-        this.rateLimited = true;
-        const retryAfterMs = extractRetryAfterMs(msg);
+        const retryAfterMs = this.noteRateLimit(msg);
         events.push({ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs });
+      } else {
+        // The model just produced output: whatever throttling the last signal
+        // described is over, whether or not its retry window has lapsed (#3104).
+        this.clearRateLimit();
       }
       return events;
     }
@@ -425,9 +480,10 @@ export class SessionState {
       const assistant = buildFallbackAssistant(msg, loose.data);
       const events: SessionEvent[] = [{ type: "session:response", message: assistant }];
       if (assistant.error === "rate_limit") {
-        this.rateLimited = true;
-        const retryAfterMs = extractRetryAfterMs(msg);
+        const retryAfterMs = this.noteRateLimit(msg);
         events.push({ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs });
+      } else {
+        this.clearRateLimit();
       }
       return events;
     }
@@ -449,7 +505,7 @@ export class SessionState {
       // Don't add result usage to tokens — assistant messages already accumulate
       // per-message usage throughout the turn. Result usage would double-count.
       this.state = "idle";
-      this.rateLimited = false;
+      this.clearRateLimit();
       if (this.numTurns <= this.lastEmittedNumTurns) {
         this.suppressedResult = {
           branch: "result",
@@ -476,6 +532,9 @@ export class SessionState {
       this.cost = r.total_cost_usd;
       this.numTurns = r.num_turns;
       this.state = "idle";
+      // The turn is over either way — an errored turn left the flag latched
+      // forever before #3104, since only the success branch cleared it.
+      this.clearRateLimit();
       if (this.numTurns <= this.lastEmittedNumTurns) {
         this.suppressedResult = {
           branch: "error",
@@ -586,9 +645,31 @@ export class SessionState {
   }
 
   private handleRateLimitEvent(msg: NdjsonMessage): SessionEvent[] {
-    this.rateLimited = true;
-    const retryAfterMs = extractRetryAfterMs(msg);
+    const retryAfterMs = this.noteRateLimit(msg);
     return [{ type: "session:rate_limited", sessionId: this.sessionId, retryAfterMs }];
+  }
+
+  /**
+   * Record a rate-limit signal and start (or extend) its retry window.
+   * Returns the parsed `retryAfterMs` so callers can carry it on the event.
+   */
+  private noteRateLimit(msg: NdjsonMessage): number | undefined {
+    const retryAfterMs = extractRetryAfterMs(msg);
+    // A signal arriving after the previous window lapsed starts a fresh count —
+    // `×N` should describe the current episode, not the session's whole history.
+    if (!this.rateLimited) this.rateLimitSignals = 0;
+    const at = this.now();
+    this.rateLimitedAtMs = at;
+    this.rateLimitUntilMs = at + (retryAfterMs ?? DEFAULT_RATE_LIMIT_WINDOW_MS);
+    this.rateLimitSignals += 1;
+    return retryAfterMs;
+  }
+
+  /** Drop the outstanding rate-limit signal — evidence of progress beats a stale event. */
+  private clearRateLimit(): void {
+    this.rateLimitedAtMs = null;
+    this.rateLimitUntilMs = 0;
+    this.rateLimitSignals = 0;
   }
 }
 

@@ -9,6 +9,7 @@ import {
   formatCost,
   formatElapsed,
   formatLifecycleLine,
+  formatRateLimitBadge,
   formatSessionShort,
   walkTranscript,
 } from "./session-display";
@@ -201,22 +202,54 @@ describe("formatSessionShort with createdAt", () => {
     expect(line).not.toContain("(");
   });
 
-  test("shows [RATE LIMITED] when rateLimited is true", () => {
+  test("shows the rate-limit badge when rateLimited is true", () => {
     const line = formatSessionShort({
       sessionId: "84418297-1234-5678-9abc-def012345678",
       state: "active",
       rateLimited: true,
     });
-    expect(line).toContain("[RATE LIMITED]");
+    expect(line).toContain("[rate-limited]");
   });
 
-  test("does not show [RATE LIMITED] when rateLimited is false", () => {
+  test("does not show a rate-limit badge when rateLimited is false", () => {
     const line = formatSessionShort({
       sessionId: "84418297-1234-5678-9abc-def012345678",
       state: "active",
       rateLimited: false,
     });
-    expect(line).not.toContain("[RATE LIMITED]");
+    expect(line).not.toContain("rate-limited");
+  });
+});
+
+describe("formatRateLimitBadge", () => {
+  test("returns null when the session is not rate-limited", () => {
+    expect(formatRateLimitBadge({ rateLimited: false, rateLimitedAt: 1000 }, 2000)).toBeNull();
+    expect(formatRateLimitBadge({}, 2000)).toBeNull();
+  });
+
+  test("ages the badge instead of asserting a present-tense condition (#3104)", () => {
+    const badge = formatRateLimitBadge({ rateLimited: true, rateLimitedAt: 1_000_000 }, 1_045_000);
+    expect(badge).toBe("[rate-limited 0:45 ago]");
+    expect(badge).not.toContain("RATE LIMITED");
+  });
+
+  test("counts repeated signals", () => {
+    expect(formatRateLimitBadge({ rateLimited: true, rateLimitedAt: 1_000_000, rateLimitHits: 3 }, 1_030_000)).toBe(
+      "[rate-limited ×3 0:30 ago]",
+    );
+  });
+
+  test("omits the count for a single signal", () => {
+    expect(formatRateLimitBadge({ rateLimited: true, rateLimitedAt: 1_000_000, rateLimitHits: 1 }, 1_000_000)).toBe(
+      "[rate-limited 0:00 ago]",
+    );
+  });
+
+  test("falls back to a bare badge without a usable timestamp", () => {
+    expect(formatRateLimitBadge({ rateLimited: true }, 1_000_000)).toBe("[rate-limited]");
+    expect(formatRateLimitBadge({ rateLimited: true, rateLimitedAt: null }, 1_000_000)).toBe("[rate-limited]");
+    // Clock skew: a signal stamped in the future must not render a negative age.
+    expect(formatRateLimitBadge({ rateLimited: true, rateLimitedAt: 2_000_000 }, 1_000_000)).toBe("[rate-limited]");
   });
 });
 

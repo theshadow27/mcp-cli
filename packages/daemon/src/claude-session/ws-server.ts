@@ -3343,6 +3343,8 @@ export class ClaudeWsServer {
       domainId: s.config.domainId ?? NO_DOMAIN_ID,
       processAlive: s.spawnAlive,
       rateLimited: s.state.rateLimited,
+      rateLimitedAt: s.state.rateLimitedAt,
+      rateLimitHits: s.state.rateLimitHits,
       createdAt: s.createdAt,
       wsConnected: s.ws !== null,
       spawnAlive: s.spawnAlive,

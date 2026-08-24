@@ -50,6 +50,7 @@ import {
   extractContentSummary,
   formatAge,
   formatLifecycleLine,
+  formatRateLimitBadge,
   formatSessionShort,
 } from "./session-display";
 import { buildSessionScope } from "./session-scope";
@@ -1300,7 +1301,10 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const truncatedName = s.name && s.name.length > maxNameLen ? `${s.name.slice(0, maxNameLen - 1)}…` : s.name;
     const nameLabel = truncatedName ? ` ${truncatedName}` : "";
     const sessionCol = `${id}${nameLabel}`.padEnd(sessionColWidth);
-    const stateStr = s.rateLimited ? `${colorState(s.state)} ${c.red}[RATE LIMITED]${c.reset}` : colorState(s.state);
+    const rateLimitBadge = formatRateLimitBadge(s);
+    const stateStr = rateLimitBadge
+      ? `${colorState(s.state)} ${c.red}${rateLimitBadge}${c.reset}`
+      : colorState(s.state);
     const model = (s.model ?? "—").padEnd(16);
     const cost = s.cost > 0 ? `$${s.cost.toFixed(4)}`.padEnd(8) : "—".padEnd(8);
     const tokens = s.tokens > 0 ? String(s.tokens).padEnd(10) : "—".padEnd(10);

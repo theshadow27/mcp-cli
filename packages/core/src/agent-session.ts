@@ -70,8 +70,23 @@ export interface AgentSessionInfo {
   domainId: number;
   /** Whether the agent process is still alive. */
   processAlive: boolean;
-  /** Whether the session is currently rate-limited by the API. */
+  /**
+   * Whether the session is rate-limited by the API **right now** — not merely
+   * "was, at some point in this turn". See `SessionState.rateLimited` (#3104).
+   */
   rateLimited: boolean;
+  /**
+   * Epoch ms of the rate-limit signal behind `rateLimited`; null when the
+   * session is not rate-limited. Absent when the provider does not track it.
+   *
+   * Renderers age the badge with it. A present-tense "[RATE LIMITED]" on a
+   * session that has been producing tokens for ten minutes reads as a live
+   * throttle and has repeatedly triggered false quota alarms; a timestamped
+   * one cannot be misread that way.
+   */
+  rateLimitedAt?: number | null;
+  /** Rate-limit signals behind `rateLimited` (0 when clear). Absent when the provider does not count them. */
+  rateLimitHits?: number;
   /** Unix timestamp (ms) when this session was created. Null if unknown. */
   createdAt: number | null;
 }

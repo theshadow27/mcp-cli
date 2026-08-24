@@ -194,6 +194,31 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
+ * Badge for a rate-limited session, or null when it is not rate-limited.
+ *
+ * Deliberately past-tense and timestamped: `[rate-limited 0:45 ago]` states
+ * when the signal arrived, where the old `[RATE LIMITED]` asserted a present
+ * condition it could not vouch for. Reading that badge on a healthy session
+ * has escalated false quota alarms and stalled sprints (#3104) — an age
+ * cannot be misread as "right now", and a `×N` count distinguishes one
+ * transient 429 from sustained throttling.
+ *
+ * Elapsed time uses `formatElapsed`, the same M:SS the idle clock uses, so
+ * every duration in the session display reads the same way.
+ */
+export function formatRateLimitBadge(
+  s: { rateLimited?: boolean; rateLimitedAt?: number | null; rateLimitHits?: number },
+  now = Date.now(),
+): string | null {
+  if (!s.rateLimited) return null;
+  const count = s.rateLimitHits && s.rateLimitHits > 1 ? ` ×${s.rateLimitHits}` : "";
+  // A provider that reports the flag without a timestamp (or a clock skew that
+  // puts the signal in the future) gets the bare badge rather than a fake age.
+  const age = s.rateLimitedAt != null && now >= s.rateLimitedAt ? ` ${formatElapsed(now - s.rateLimitedAt)} ago` : "";
+  return `[rate-limited${count}${age}]`;
+}
+
+/**
  * Format a session status stanza for human display.
  * Returns lines to be printed (caller does d.log on each).
  */
@@ -299,11 +324,14 @@ export function formatSessionShort(s: {
   tokens?: number;
   numTurns?: number;
   rateLimited?: boolean;
+  rateLimitedAt?: number | null;
+  rateLimitHits?: number;
   createdAt?: number | null;
 }): string {
   const id = s.sessionId.slice(0, 8);
   const nameLabel = s.name ? `/${s.name}` : "";
-  const state = s.rateLimited ? `${s.state} [RATE LIMITED]` : s.state;
+  const badge = formatRateLimitBadge(s);
+  const state = badge ? `${s.state} ${badge}` : s.state;
   const model = s.model ?? "—";
   const cost = s.cost && s.cost > 0 ? `$${s.cost.toFixed(4)}` : "—";
   const tokens = s.tokens && s.tokens > 0 ? String(s.tokens) : "—";
