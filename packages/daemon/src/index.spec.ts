@@ -432,7 +432,7 @@ describe("daemon index.ts", () => {
         await drain;
 
         // Connection closed — now it should idle out like any other quiet daemon.
-        await pollUntil(() => handle?.isShuttingDown);
+        await pollUntil(() => handle?.isShuttingDown, REARM_COUNT_TIMEOUT_MS);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -454,7 +454,7 @@ describe("daemon index.ts", () => {
         // Flip to done — the poller's definition of "nothing left to do".
         workItemDb.upsertWorkItem({ id: "wi-3234-active", phase: "done" });
 
-        await pollUntil(() => handle?.isShuttingDown);
+        await pollUntil(() => handle?.isShuttingDown, REARM_COUNT_TIMEOUT_MS);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
@@ -478,7 +478,7 @@ describe("daemon index.ts", () => {
 
         handleWorkerEvent({ type: "db:end", sessionId: "wi-3234-session" });
 
-        await pollUntil(() => handle?.isShuttingDown);
+        await pollUntil(() => handle?.isShuttingDown, REARM_COUNT_TIMEOUT_MS);
         expect(handle?.isShuttingDown).toBe(true);
       });
     });
