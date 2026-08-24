@@ -68,6 +68,7 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
+import type { ListenerTls, ListenerTlsRequirement } from "./binary-resolver";
 import type { GhTokenConfig } from "./gh-token";
 import { ghTokensPath, isolatedGhConfigDir, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
 import type { NdjsonMessage } from "./ndjson";
@@ -730,6 +731,27 @@ export class ClaudeWsServer {
   }
 
   /**
+   * Read-only snapshot of the spawn-affecting resolution state, including the
+   * scheme this listener is actually bound for. Every field here can change
+   * after startup (`applySpawnResolution`), so nothing else may cache it.
+   */
+  get spawnResolution(): {
+    binaryPath: string;
+    spawnDisabledReason: string | null;
+    claudeVersion: string | null;
+    defaultTransport: "ws" | "stdio";
+    listenerTls: ListenerTls;
+  } {
+    return {
+      binaryPath: this.binaryPath,
+      spawnDisabledReason: this.spawnDisabledReason,
+      claudeVersion: this.claudeVersion,
+      defaultTransport: this.defaultTransport,
+      listenerTls: this.tlsConfig ? "wss" : "plain-ws",
+    };
+  }
+
+  /**
    * Swap in a freshly-probed claude resolution without restarting the listener.
    *
    * Deliberately covers only the spawn-affecting half of the resolution. The
@@ -739,23 +761,63 @@ export class ClaudeWsServer {
    * stale is already listening on the wss:// endpoint the refreshed binary
    * needs, and only the path and the refusal have to move (#3013).
    *
-   * `binaryPath: null` leaves the current path in place: a refresh that still
-   * can't resolve a binary must not blank out the one sessions already use.
+   * **Fails closed when the refreshed claude needs a scheme this listener is
+   * not bound for.** That is not hypothetical: a worker that started while the
+   * version was unknown (no claude on PATH, probe failed, unsupported version)
+   * bound plain ws, because nothing yet said otherwise. If the refresh then
+   * resolves a *patched* binary, spawning it would emit
+   * `--sdk-url ws://localhost:PORT` at a binary whose host allowlist accepts
+   * only `wss://[::1]` — a connect failure with no error anywhere (#3289
+   * review). `Bun.serve` cannot be re-tls'd in place, so the honest move is to
+   * keep spawn refused and say which command fixes it: `mcx daemon restart`.
+   * The bind hostname needs no separate check — it is derived from `tlsConfig`
+   * at construction, so a matching scheme is a matching host.
+   *
+   * Null fields mean "the probe learned nothing here, keep what you have":
+   * `binaryPath: null` so a refresh that still can't resolve a binary doesn't
+   * blank out the path live sessions use, and `claudeVersion: null` so a
+   * transient probe failure doesn't downgrade the `--permission-mode auto`
+   * gate (#3119) from a version it already knew.
    */
   applySpawnResolution(next: {
     binaryPath: string | null;
     spawnDisabledReason: string | null;
     claudeVersion: string | null;
     defaultTransport: "ws" | "stdio";
+    /** What the refreshed claude needs of the listener; `"unknown"` never conflicts. */
+    listenerTls: ListenerTlsRequirement;
   }): void {
     const wasDisabled = this.spawnDisabledReason;
+    if (next.claudeVersion !== null) this.claudeVersion = next.claudeVersion;
+    this.defaultTransport = next.defaultTransport;
+
+    const bound: ListenerTls = this.tlsConfig ? "wss" : "plain-ws";
+    if (next.spawnDisabledReason === null && next.listenerTls !== "unknown" && next.listenerTls !== bound) {
+      const version = this.claudeVersion ?? "(unknown version)";
+      const needs = next.listenerTls === "wss" ? "wss://" : "plain ws://";
+      const has = bound === "wss" ? "wss://" : "plain ws://";
+      this.spawnDisabledReason = `claude ${version} needs a ${needs} session listener, but this daemon's listener is bound for ${has} and cannot be rebound while the daemon is running. Run \`mcx daemon restart\` to pick up the new claude.`;
+      this.logger.warn(
+        `[_claude] refusing to re-enable spawn: refreshed claude wants ${next.listenerTls}, listener is ${bound} — restart required`,
+      );
+      return;
+    }
+
     if (next.binaryPath !== null) this.binaryPath = next.binaryPath;
     this.spawnDisabledReason = next.spawnDisabledReason;
-    this.claudeVersion = next.claudeVersion;
-    this.defaultTransport = next.defaultTransport;
     if (wasDisabled !== null && next.spawnDisabledReason === null) {
       this.logger.info(`[_claude] spawn re-enabled after re-probing claude — was: ${wasDisabled}`);
     }
+  }
+
+  /**
+   * Logger for callers that report on this server's behalf — the worker-side
+   * resolution refresh (#3013), which has no logger of its own and must not
+   * write to a worker thread's bare console (it bypasses the daemon's logger
+   * and counts against the production-noise budget).
+   */
+  get log(): Logger {
+    return this.logger;
   }
 
   /**

@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { options } from "../constants";
 import { sha256Hex } from "../manifest-lock";
+import { spawnCapture } from "../subprocess";
 import { type PatchStrategy, resolveStrategy } from "./strategies";
 
 /** `<bin> --version` / `codesign -d` probe — should return well under a second; allow slack for cold disk. */
@@ -159,12 +160,17 @@ function updateCurrentLink(linkPath: string, target: string): void {
 }
 
 /**
- * Default version resolver: spawn `<binPath> --version`, expect "X.Y.Z (...)" or similar.
+ * Default version resolver: run `<binPath> --version`, expect "X.Y.Z (...)" or similar.
+ *
+ * Awaited rather than `spawnSync`'d because mcpd re-runs this probe from the
+ * worker thread already serving live claude sessions: a synchronous probe
+ * freezes their WS traffic, permission round-trips and stuck-detector
+ * heartbeats for as long as it runs, up to the timeout (#3289 review).
  */
 export async function defaultVersionResolver(binPath: string): Promise<string> {
-  const result = spawnSync(binPath, ["--version"], { encoding: "utf-8", timeout: VERSION_PROBE_TIMEOUT_MS });
-  if (result.status !== 0) {
-    throw new Error(`${binPath} --version exited ${result.status}: ${result.stderr || result.stdout}`);
+  const result = await spawnCapture(binPath, ["--version"], { timeoutMs: VERSION_PROBE_TIMEOUT_MS });
+  if (!result.ok) {
+    throw new Error(`${binPath} --version exited ${result.exitCode}: ${result.stderr || result.stdout}`);
   }
   const out = (result.stdout || "").trim();
   // Match the leading version token; tolerate suffixes like "(Claude Code)".
@@ -263,6 +269,40 @@ export const DEFAULT_DEPS: PatcherDeps = {
  * the real `~/.mcp-cli/config.json` is read.
  */
 export function resolveSourceClaudePath(configPathOverride?: string): string | null {
+  const override = resolveClaudeBinaryOverride(configPathOverride);
+  if (override) return override;
+
+  const r = spawnSync("which", ["claude"], { encoding: "utf-8", timeout: WHICH_PROBE_TIMEOUT_MS });
+  if (r.status !== 0) return null;
+  const path = (r.stdout || "").trim();
+  return path || null;
+}
+
+/**
+ * `resolveSourceClaudePath` without the blocking PATH lookup — same lookup
+ * order, same throwing behavior for a stale override, but the `which` probe is
+ * awaited instead of `spawnSync`'d.
+ *
+ * For callers on a thread that is concurrently serving something else: mcpd
+ * re-resolves claude from the worker hosting live sessions, where a sync
+ * subprocess blocks every one of them (#3289 review).
+ */
+export async function resolveSourceClaudePathAsync(configPathOverride?: string): Promise<string | null> {
+  const override = resolveClaudeBinaryOverride(configPathOverride);
+  if (override) return override;
+
+  const r = await spawnCapture("which", ["claude"], { timeoutMs: WHICH_PROBE_TIMEOUT_MS });
+  if (!r.ok) return null;
+  return r.stdout.trim() || null;
+}
+
+/**
+ * Steps 1–2 of the lookup (env override, then config override), shared by the
+ * sync and async resolvers so the two cannot drift on which override wins or
+ * on the "points at a missing file" error text. Returns null when neither is
+ * set, i.e. when the caller should fall through to PATH.
+ */
+function resolveClaudeBinaryOverride(configPathOverride?: string): string | null {
   const envOverride = process.env.MCX_CLAUDE_BINARY?.trim();
   if (envOverride) {
     if (existsSync(envOverride)) return envOverride;
@@ -279,10 +319,7 @@ export function resolveSourceClaudePath(configPathOverride?: string): string | n
     );
   }
 
-  const r = spawnSync("which", ["claude"], { encoding: "utf-8", timeout: WHICH_PROBE_TIMEOUT_MS });
-  if (r.status !== 0) return null;
-  const path = (r.stdout || "").trim();
-  return path || null;
+  return null;
 }
 
 /**

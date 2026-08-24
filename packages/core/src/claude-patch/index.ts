@@ -17,6 +17,7 @@ export {
   defaultVersionResolver,
   readCurrentPatchedMeta,
   resolveSourceClaudePath,
+  resolveSourceClaudePathAsync,
   updatePatchedClaude,
   type PatchedMeta,
   type PatcherDeps,

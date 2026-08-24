@@ -157,12 +157,45 @@ async function handleToolCall(
 }
 
 /**
- * In-flight refresh, shared so a burst of spawns against a spawn-disabled
- * server costs one `claude --version` probe rather than one per spawn — the
- * exact shape of the failure, since an orchestrator fires its whole batch at
- * once and every member fails identically.
+ * Per-server refresh bookkeeping. Keyed on the server rather than held in a
+ * module-level variable so two servers (and two tests) can't share one
+ * another's in-flight probe or backoff clock.
  */
-let claudeRefreshInFlight: Promise<void> | null = null;
+interface ClaudeRefreshState {
+  /**
+   * Shared so a burst of spawns against a spawn-disabled server costs one
+   * `claude --version` probe rather than one per spawn — the exact shape of
+   * the failure, since an orchestrator fires its whole batch at once and every
+   * member fails identically.
+   */
+  inFlight: Promise<void> | null;
+  /** Consecutive refreshes that left spawning refused. Drives the backoff. */
+  failures: number;
+  /** Epoch ms before which a refresh is skipped outright. */
+  nextAttemptAt: number;
+}
+
+const claudeRefreshState = new WeakMap<ClaudeWsServer, ClaudeRefreshState>();
+
+/** First retry is nearly immediate — an operator who just ran `patch-update` is retrying now. */
+const REFRESH_BACKOFF_BASE_MS = 1_000;
+/** Ceiling for a patch store that is broken rather than mid-fix. */
+const REFRESH_BACKOFF_MAX_MS = 60_000;
+
+function refreshState(server: ClaudeWsServer): ClaudeRefreshState {
+  const existing = claudeRefreshState.get(server);
+  if (existing) return existing;
+  const fresh: ClaudeRefreshState = { inFlight: null, failures: 0, nextAttemptAt: 0 };
+  claudeRefreshState.set(server, fresh);
+  return fresh;
+}
+
+export interface RefreshDeps {
+  resolve?: () => Promise<ClaudeResolution>;
+  readTransportPref?: () => ClaudeTransport | undefined;
+  /** Clock for the backoff window. Tests drive it; production reads `Date.now`. */
+  now?: () => number;
+}
 
 /**
  * Re-probe claude and swap the result into `server` — but only while spawning
@@ -175,46 +208,109 @@ let claudeRefreshInFlight: Promise<void> | null = null;
  * `mcx daemon restart` cleared it (#3013). Re-probing here makes the printed
  * instruction sufficient.
  *
- * Costs nothing on the healthy path — no subprocess is spawned unless the
- * server is already refusing spawns. A probe that throws leaves the existing
- * reason in place: it must not enable spawning, nor replace an actionable
- * message with transport noise.
+ * Three things keep this cheap for the sessions already running on this worker
+ * (#3289 review) — it runs on their thread, so it is their latency it spends:
+ *
+ *   - **Nothing at all on the healthy path.** No subprocess is spawned unless
+ *     the server is already refusing spawns.
+ *   - **No synchronous work.** The probe is awaited, and `spawn-only` mode
+ *     skips the cert path entirely (up to four openssl subprocesses, one of
+ *     them an RSA keygen), which the refresh could not use anyway: the
+ *     listener's TLS mode is fixed at bind time.
+ *   - **Exponential backoff on repeated failure.** A patch store that is
+ *     broken rather than mid-fix stops costing a probe per spawn attempt.
+ *
+ * A probe that throws, or one that comes back without even a version, leaves
+ * the server exactly as it was: it must not enable spawning, and it must not
+ * replace an actionable message ("run patch-update") with transport noise or
+ * downgrade an already-known version.
  */
-export async function refreshClaudeResolutionIfDisabled(
-  server: ClaudeWsServer,
-  deps?: {
-    resolve?: () => Promise<ClaudeResolution>;
-    readTransportPref?: () => ClaudeTransport | undefined;
-  },
-): Promise<void> {
+export async function refreshClaudeResolutionIfDisabled(server: ClaudeWsServer, deps?: RefreshDeps): Promise<void> {
   if (!server.spawnDisabled) return;
-  if (claudeRefreshInFlight) return claudeRefreshInFlight;
+  const state = refreshState(server);
+  if (state.inFlight) return state.inFlight;
 
-  const resolve = deps?.resolve ?? resolveClaudeForSpawn;
+  const now = deps?.now ?? Date.now;
+  if (now() < state.nextAttemptAt) return;
+
+  const resolve =
+    deps?.resolve ??
+    (() =>
+      resolveClaudeForSpawn({
+        // The listener is already bound; this call decides what to spawn, not
+        // what to listen on. See ResolverDeps.mode.
+        mode: "spawn-only",
+        onCertError: (err) =>
+          server.log.warn(`[_claude] could not load TLS material while re-probing claude: ${errText(err)}`),
+      }));
   const readTransportPref = deps?.readTransportPref ?? (() => readCliConfig().transport);
 
-  claudeRefreshInFlight = (async () => {
+  state.inFlight = (async () => {
     try {
       const resolution = await resolve();
+      // A resolution that could not even establish a version (no claude on
+      // PATH, probe killed under load) carries no information: applying it
+      // would overwrite a known version and an actionable patch-update message
+      // with a generic one, and flip `defaultTransport` back to "ws".
+      if (!isResolved(resolution) && resolution.version === null) {
+        server.log.warn(`[_claude] claude re-probe learned nothing (${resolution.reason}); keeping current state`);
+        noteRefreshOutcome(server, state, now, "failed");
+        return;
+      }
       server.applySpawnResolution({
         binaryPath: isResolved(resolution) ? resolution.binaryPath : null,
         spawnDisabledReason: isResolved(resolution) ? null : resolution.error,
         claudeVersion: resolution.version,
         defaultTransport: resolveTransport(readTransportPref(), resolution.version),
+        listenerTls: resolution.listenerTls,
       });
-    } catch {
-      // Keep the reason the server already has.
+      // `spawnDisabled` — not the resolution — is the outcome that matters: a
+      // resolved binary the live listener can't serve is still a refusal.
+      noteRefreshOutcome(server, state, now, server.spawnDisabled ? "failed" : "recovered");
+    } catch (err) {
+      // Keep the reason the server already has, but say why it stayed.
+      server.log.warn(`[_claude] claude re-probe failed: ${errText(err)}; keeping the existing spawn refusal`);
+      noteRefreshOutcome(server, state, now, "failed");
     } finally {
-      claudeRefreshInFlight = null;
+      state.inFlight = null;
     }
   })();
-  return claudeRefreshInFlight;
+  return state.inFlight;
+}
+
+function noteRefreshOutcome(
+  server: ClaudeWsServer,
+  state: ClaudeRefreshState,
+  now: () => number,
+  outcome: "recovered" | "failed",
+): void {
+  if (outcome === "recovered") {
+    state.failures = 0;
+    state.nextAttemptAt = 0;
+    return;
+  }
+  state.failures++;
+  const delay = Math.min(REFRESH_BACKOFF_BASE_MS * 2 ** (state.failures - 1), REFRESH_BACKOFF_MAX_MS);
+  state.nextAttemptAt = now() + delay;
+  server.log.warn(
+    `[_claude] claude re-probe #${state.failures} still refuses spawn; next re-probe in ${delay}ms at the earliest`,
+  );
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export async function handlePrompt(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
   workerTraceparent?: string,
+  /**
+   * Injection seam for the pre-spawn claude re-probe. Production passes
+   * nothing and gets the real resolver; tests drive a specific on-disk state
+   * without running `claude --version` against the host.
+   */
+  refreshDeps?: RefreshDeps,
 ): Promise<{
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
@@ -264,7 +360,7 @@ export async function handlePrompt(
     if (stateCheck?.state === "disconnected") {
       // Revive spawns a child too, so it is stranded by a stale spawn-disabled
       // reason exactly like a fresh spawn is (#3013).
-      await refreshClaudeResolutionIfDisabled(server);
+      await refreshClaudeResolutionIfDisabled(server, refreshDeps);
       let pid: number;
       try {
         pid = server.reviveSession(stateCheck.resolvedId, prompt);
@@ -345,7 +441,7 @@ export async function handlePrompt(
     // Re-probe before prepareSession so a `mcx claude patch-update` run since
     // worker startup is picked up, and so the transport this session is pinned
     // to is derived from the version we are actually about to spawn (#3013).
-    await refreshClaudeResolutionIfDisabled(server);
+    await refreshClaudeResolutionIfDisabled(server, refreshDeps);
 
     let sessionName: string;
     let sessionTransport: "ws" | "stdio";
@@ -865,7 +961,17 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
   // the production-noise budget in scripts/check-coverage.ts). The error
   // case still surfaces clearly: spawnDisabledReason makes spawnClaude
   // throw with the actionable message at first spawn attempt.
-  const resolution = await resolveClaudeForSpawn();
+  // A cert that can't be loaded is the one resolution detail that *is* logged:
+  // it silently pins the listener to plain ws for the daemon's whole lifetime,
+  // which no later `patch-update` can undo (#3289 review). Deferred until the
+  // server exists so it goes through its logger — silenced under `--quiet`,
+  // never a bare worker-thread console write.
+  let certError: string | null = null;
+  const resolution = await resolveClaudeForSpawn({
+    onCertError: (err) => {
+      certError = err instanceof Error ? err.message : String(err);
+    },
+  });
   // Default transport for spawns that carry no per-session `--transport`
   // override. Version-gated (see transport-resolver.ts) and overridable via
   // `transport` in ~/.mcp-cli/config.json. Before #3003 this was hardcoded to
@@ -898,6 +1004,11 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
 
   // Start WebSocket server
   wsServer = new ClaudeWsServer(wsServerOpts);
+  if (certError) {
+    wsServer.log.warn(
+      `[_claude] no TLS material for the claude session listener (${certError}); it is bound for plain ws://. A patched claude will not connect to it — fix openssl / ~/.mcp-cli/tls and restart the daemon.`,
+    );
+  }
   wsServer.onSessionEvent = forwardSessionEvent;
   wsServer.onMonitorEvent = (input) => self.postMessage({ type: "monitor:event", input });
   wsServer.onStderrLine = (sessionId, line, timestamp) =>
