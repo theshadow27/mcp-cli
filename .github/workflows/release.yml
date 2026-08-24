@@ -46,7 +46,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
       - name: Inject version from tag into package.json
         env:
@@ -155,7 +155,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
       - name: Set version from tag
         env:
