@@ -68,6 +68,7 @@ import {
 import type { ServerWebSocket } from "bun";
 import { killPid, reapWorktreeProcesses } from "../process-util";
 import { safeSetInterval, safeSetTimeout } from "../safe-timers";
+import type { ListenerTls, ListenerTlsRequirement } from "./binary-resolver";
 import type { GhTokenConfig } from "./gh-token";
 import { ghTokensPath, isolatedGhConfigDir, loadGhTokens, resolveSpawnGhToken } from "./gh-token";
 import type { NdjsonMessage } from "./ndjson";
@@ -633,17 +634,22 @@ export class ClaudeWsServer {
   /**
    * Path of the binary to spawn (default: `"claude"`, looked up via PATH).
    * The daemon overrides this with the patched-binary path when claude is
-   * 2.1.120+ (see binary-resolver.ts).
+   * 2.1.120+ (see binary-resolver.ts). Mutable via `applySpawnResolution`.
    */
-  private readonly binaryPath: string;
+  private binaryPath: string;
 
   /**
    * If non-null, every spawn attempt throws with this reason instead of
    * actually spawning. Used when the daemon can't resolve a working claude
-   * binary at startup (e.g. unsupported version) — read-only operations
-   * (list/log/wait) still work, but `claude_spawn` fails fast and clearly.
+   * binary (e.g. unsupported version) — read-only operations (list/log/wait)
+   * still work, but `claude_spawn` fails fast and clearly.
+   *
+   * Mutable via `applySpawnResolution`: the conditions behind these reasons
+   * are fixed by running a command in another process (`mcx claude
+   * patch-update`), so latching the startup value made the printed remediation
+   * a no-op until the daemon restarted (#3013).
    */
-  private readonly spawnDisabledReason: string | null;
+  private spawnDisabledReason: string | null;
 
   /**
    * Transport used for sessions that carry no per-spawn `--transport` override.
@@ -651,16 +657,18 @@ export class ClaudeWsServer {
    * claude version (see `transport-resolver.ts`). Defaults to `"ws"` only when
    * the daemon could not determine a version — modern claude resolves to
    * `"stdio"`, which needs neither `--sdk-url` nor the patched binary (#3003).
+   * Re-derived by `applySpawnResolution` when the version is re-probed.
    */
-  private readonly defaultTransport: "ws" | "stdio";
+  private defaultTransport: "ws" | "stdio";
 
   /**
    * Detected claude CLI version, or null when the daemon could not determine
    * one. Read only by `resolvePermissionMode` — a `--permission-mode auto`
    * spawn against a binary that doesn't list `auto` as a choice exits at
    * argument parsing, so an unknown version keeps the daemon-side gate (#3119).
+   * Re-probed by `applySpawnResolution`.
    */
-  private readonly claudeVersion: string | null;
+  private claudeVersion: string | null;
 
   constructor(deps?: {
     spawn?: SpawnFn;
@@ -715,6 +723,101 @@ export class ClaudeWsServer {
   /** True when the server is running in TLS (wss://) mode. */
   get isTls(): boolean {
     return this.tlsConfig !== null;
+  }
+
+  /** True while `spawnClaude` would refuse every spawn that carries no binary override. */
+  get spawnDisabled(): boolean {
+    return this.spawnDisabledReason !== null;
+  }
+
+  /**
+   * Read-only snapshot of the spawn-affecting resolution state, including the
+   * scheme this listener is actually bound for. Every field here can change
+   * after startup (`applySpawnResolution`), so nothing else may cache it.
+   */
+  get spawnResolution(): {
+    binaryPath: string;
+    spawnDisabledReason: string | null;
+    claudeVersion: string | null;
+    defaultTransport: "ws" | "stdio";
+    listenerTls: ListenerTls;
+  } {
+    return {
+      binaryPath: this.binaryPath,
+      spawnDisabledReason: this.spawnDisabledReason,
+      claudeVersion: this.claudeVersion,
+      defaultTransport: this.defaultTransport,
+      listenerTls: this.tlsConfig ? "wss" : "plain-ws",
+    };
+  }
+
+  /**
+   * Swap in a freshly-probed claude resolution without restarting the listener.
+   *
+   * Deliberately covers only the spawn-affecting half of the resolution. The
+   * listener's TLS mode is fixed at `start()` and is a function of the claude
+   * *version*, which `binary-resolver` decides independently of patch freshness
+   * — so a daemon that came up refusing spawns because the patched copy was
+   * stale is already listening on the wss:// endpoint the refreshed binary
+   * needs, and only the path and the refusal have to move (#3013).
+   *
+   * **Fails closed when the refreshed claude needs a scheme this listener is
+   * not bound for.** That is not hypothetical: a worker that started while the
+   * version was unknown (no claude on PATH, probe failed, unsupported version)
+   * bound plain ws, because nothing yet said otherwise. If the refresh then
+   * resolves a *patched* binary, spawning it would emit
+   * `--sdk-url ws://localhost:PORT` at a binary whose host allowlist accepts
+   * only `wss://[::1]` — a connect failure with no error anywhere (#3289
+   * review). `Bun.serve` cannot be re-tls'd in place, so the honest move is to
+   * keep spawn refused and say which command fixes it: `mcx daemon restart`.
+   * The bind hostname needs no separate check — it is derived from `tlsConfig`
+   * at construction, so a matching scheme is a matching host.
+   *
+   * Null fields mean "the probe learned nothing here, keep what you have":
+   * `binaryPath: null` so a refresh that still can't resolve a binary doesn't
+   * blank out the path live sessions use, and `claudeVersion: null` so a
+   * transient probe failure doesn't downgrade the `--permission-mode auto`
+   * gate (#3119) from a version it already knew.
+   */
+  applySpawnResolution(next: {
+    binaryPath: string | null;
+    spawnDisabledReason: string | null;
+    claudeVersion: string | null;
+    defaultTransport: "ws" | "stdio";
+    /** What the refreshed claude needs of the listener; `"unknown"` never conflicts. */
+    listenerTls: ListenerTlsRequirement;
+  }): void {
+    const wasDisabled = this.spawnDisabledReason;
+    if (next.claudeVersion !== null) this.claudeVersion = next.claudeVersion;
+    this.defaultTransport = next.defaultTransport;
+
+    const bound: ListenerTls = this.tlsConfig ? "wss" : "plain-ws";
+    if (next.spawnDisabledReason === null && next.listenerTls !== "unknown" && next.listenerTls !== bound) {
+      const version = this.claudeVersion ?? "(unknown version)";
+      const needs = next.listenerTls === "wss" ? "wss://" : "plain ws://";
+      const has = bound === "wss" ? "wss://" : "plain ws://";
+      this.spawnDisabledReason = `claude ${version} needs a ${needs} session listener, but this daemon's listener is bound for ${has} and cannot be rebound while the daemon is running. Run \`mcx daemon restart\` to pick up the new claude.`;
+      this.logger.warn(
+        `[_claude] refusing to re-enable spawn: refreshed claude wants ${next.listenerTls}, listener is ${bound} — restart required`,
+      );
+      return;
+    }
+
+    if (next.binaryPath !== null) this.binaryPath = next.binaryPath;
+    this.spawnDisabledReason = next.spawnDisabledReason;
+    if (wasDisabled !== null && next.spawnDisabledReason === null) {
+      this.logger.info(`[_claude] spawn re-enabled after re-probing claude — was: ${wasDisabled}`);
+    }
+  }
+
+  /**
+   * Logger for callers that report on this server's behalf — the worker-side
+   * resolution refresh (#3013), which has no logger of its own and must not
+   * write to a worker thread's bare console (it bypasses the daemon's logger
+   * and counts against the production-noise budget).
+   */
+  get log(): Logger {
+    return this.logger;
   }
 
   /**

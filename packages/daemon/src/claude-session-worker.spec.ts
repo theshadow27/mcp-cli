@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionInfo } from "@mcp-cli/core";
 import { options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { handlePrompt, makeEventInScope, matchesRepoRoot } from "./claude-session-worker";
+import {
+  handlePrompt,
+  makeEventInScope,
+  matchesRepoRoot,
+  refreshClaudeResolutionIfDisabled,
+} from "./claude-session-worker";
+import type { ClaudeResolution } from "./claude-session/binary-resolver";
 import type { SpawnFn } from "./claude-session/ws-server";
 import { ClaudeWsServer } from "./claude-session/ws-server";
+import { ensureSelfSignedCert } from "./tls/self-signed";
 
 // ── makeEventInScope ──
 
@@ -532,5 +540,424 @@ describe("handlePrompt: spawn profile precedence (#935)", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("cannot be applied to an existing session");
+  });
+});
+
+// ── Stale spawn resolution refresh (#3013) ──
+
+describe("refreshClaudeResolutionIfDisabled (#3013)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  const STALE_REASON =
+    "claude 2.1.235 differs from the patched copy (2.1.234). claude was likely auto-updated. " +
+    "Run `mcx claude patch-update` to refresh the patched copy.";
+
+  const staleResolution = (): ClaudeResolution => ({
+    error: STALE_REASON,
+    reason: "patch-stale",
+    version: "2.1.235",
+    tlsConfig: { cert: "cert", key: "key" },
+    listenerTls: "wss",
+  });
+
+  const freshResolution = (): ClaudeResolution => ({
+    binaryPath: "/store/2.1.235.patched",
+    tlsConfig: { cert: "cert", key: "key" },
+    listenerTls: "wss",
+    strategyId: "host-check-ipv6-loopback-v1",
+    version: "2.1.235",
+    sourcePath: "/usr/local/bin/claude",
+  });
+
+  /** A claude old enough to need no patch at all — plain ws, no TLS. */
+  const unpatchedResolution = (): ClaudeResolution => ({
+    binaryPath: "/usr/local/bin/claude",
+    tlsConfig: null,
+    listenerTls: "plain-ws",
+    strategyId: "noop-pre-2.1.120",
+    version: "2.1.119",
+    sourcePath: "/usr/local/bin/claude",
+  });
+
+  // Real material, because a wss listener has to actually bind. Generated once
+  // for the file (openssl keygen is the expensive part) and cached by dir.
+  let tlsMaterial: { cert: string; key: string } | undefined;
+  function tls(): { cert: string; key: string } {
+    if (!tlsMaterial) {
+      const { cert, key } = ensureSelfSignedCert({ dir: mkdtempSync(join(tmpdir(), "worker-refresh-tls-")) });
+      tlsMaterial = { cert, key };
+    }
+    return tlsMaterial;
+  }
+
+  /**
+   * A daemon that came up on a stale patch: refusing spawns, but already bound
+   * for the wss:// endpoint a refreshed patched binary will need.
+   */
+  function disabledServer(spawn: SpawnFn): ClaudeWsServer {
+    return new ClaudeWsServer({
+      spawn,
+      logger: silentLogger,
+      binaryPath: "/store/2.1.234.patched",
+      spawnDisabledReason: STALE_REASON,
+      claudeVersion: "2.1.235",
+      defaultTransport: "stdio",
+      tlsConfig: tls(),
+    });
+  }
+
+  const NO_VERSION_REASON = "Could not determine claude version: exit 137";
+
+  /**
+   * A daemon that came up without ever learning the version — so it bound
+   * plain ws, because nothing said otherwise. The listener it has and the
+   * listener a patched claude needs are now free to disagree (#3289 review).
+   */
+  function unknownVersionServer(spawn: SpawnFn): ClaudeWsServer {
+    return new ClaudeWsServer({
+      spawn,
+      logger: silentLogger,
+      spawnDisabledReason: NO_VERSION_REASON,
+      claudeVersion: null,
+      defaultTransport: "ws",
+    });
+  }
+
+  test("a healthy server is never re-probed — no subprocess on the happy path", async () => {
+    server = new ClaudeWsServer({ spawn: makeRecordingSpawn().spawn, logger: silentLogger });
+    let probes = 0;
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => {
+        probes++;
+        return freshResolution();
+      },
+    });
+    expect(probes).toBe(0);
+    expect(server.spawnDisabled).toBe(false);
+  });
+
+  test("a successful patch-update unblocks spawn without a daemon restart", async () => {
+    const recording = makeRecordingSpawn();
+    server = disabledServer(recording.spawn);
+    await server.start();
+    expect(server.spawnDisabled).toBe(true);
+
+    // Stands in for `mcx claude patch-update` having refreshed the on-disk
+    // store from the CLI process since this worker started.
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => freshResolution(),
+      readTransportPref: () => undefined,
+    });
+    expect(server.spawnDisabled).toBe(false);
+
+    // The next spawn goes through, and goes to the NEW binary. handlePrompt
+    // re-enters the refresh with the real resolver, which short-circuits now
+    // that spawning is enabled — so no `claude --version` runs here.
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    expect(recording.lastCmd()[0]).toBe("/store/2.1.235.patched");
+  });
+
+  test("spawn stays refused, with the original message, when the re-probe still fails", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => staleResolution(),
+      readTransportPref: () => undefined,
+    });
+    expect(server.spawnDisabled).toBe(true);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi" });
+    expect(() => server?.spawnClaude(sessionId)).toThrow(/patch-update/);
+  });
+
+  test("a probe that throws leaves the actionable reason in place", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    await server.start();
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => {
+        throw new Error("ETXTBSY");
+      },
+    });
+    expect(server.spawnDisabled).toBe(true);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi" });
+    expect(() => server?.spawnClaude(sessionId)).toThrow(/patch-update/);
+  });
+
+  test("a burst of blocked spawns shares one probe", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    let probes = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const resolve = async () => {
+      probes++;
+      await gate;
+      return freshResolution();
+    };
+    const all = Promise.all([
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+    ]);
+    release();
+    await all;
+    expect(probes).toBe(1);
+    expect(server.spawnDisabled).toBe(false);
+  });
+
+  test("a refresh that resolves no binary keeps the path sessions already use", async () => {
+    const recording = makeRecordingSpawn();
+    server = disabledServer(recording.spawn);
+    await server.start();
+
+    server.applySpawnResolution({
+      binaryPath: null,
+      spawnDisabledReason: null,
+      claudeVersion: "2.1.235",
+      defaultTransport: "stdio",
+      listenerTls: "wss",
+    });
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    expect(recording.lastCmd()[0]).toBe("/store/2.1.234.patched");
+  });
+
+  // ── The refreshed binary and the bound listener must agree (#3289 review) ──
+  //
+  // `Bun.serve` fixes its TLS mode at bind time, so a resolution taken later
+  // can want a scheme the live listener does not speak. claude fails *silently*
+  // on the wrong one — the patched binary's host allowlist just refuses to
+  // connect — so these assert on the `--sdk-url` actually handed to the child,
+  // not merely on which binary was chosen.
+
+  test("a wss listener adopting a refreshed patched binary keeps the wss:// sdk-url", async () => {
+    const recording = makeRecordingSpawn();
+    server = disabledServer(recording.spawn);
+    const port = await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => freshResolution(),
+      readTransportPref: () => undefined,
+    });
+    expect(server.spawnDisabled).toBe(false);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "ws" });
+    server.spawnClaude(sessionId);
+    expect(recording.lastCmd()[0]).toBe("/store/2.1.235.patched");
+    expect(recording.lastCmd()).toContain(`wss://[::1]:${port}/session/${sessionId}`);
+  });
+
+  test("a plain-ws listener refuses a refreshed PATCHED binary instead of handing it a ws:// sdk-url", async () => {
+    // The regression this guards: the worker started before the version was
+    // known, so it bound plain ws. A patched claude handed `ws://localhost`
+    // never connects and never says why — an honest refusal naming `mcx daemon
+    // restart` is the only correct outcome, since the listener cannot be
+    // re-bound underneath the sessions it is serving.
+    const recording = makeRecordingSpawn();
+    server = unknownVersionServer(recording.spawn);
+    await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => freshResolution(),
+      readTransportPref: () => undefined,
+    });
+
+    expect(server.spawnDisabled).toBe(true);
+    expect(server.spawnResolution.spawnDisabledReason).toMatch(/mcx daemon restart/);
+    expect(server.spawnResolution.binaryPath).not.toBe("/store/2.1.235.patched");
+    // The version IS adopted — it is a fact about the host, and the
+    // `--permission-mode auto` gate (#3119) reads it.
+    expect(server.spawnResolution.claudeVersion).toBe("2.1.235");
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "ws" });
+    expect(() => server?.spawnClaude(sessionId)).toThrow(/mcx daemon restart/);
+    expect(recording.lastCmd()).toEqual([]);
+  });
+
+  test("a plain-ws listener DOES adopt a refreshed unpatched binary, and the sdk-url stays ws://", async () => {
+    // Same starting point, but the refresh finds a claude old enough to need no
+    // patch. Nothing disagrees, so this must self-heal like any other refresh.
+    const recording = makeRecordingSpawn();
+    server = unknownVersionServer(recording.spawn);
+    const port = await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => unpatchedResolution(),
+      readTransportPref: () => "sdk-url",
+    });
+    expect(server.spawnDisabled).toBe(false);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi", transport: "ws" });
+    server.spawnClaude(sessionId);
+    expect(recording.lastCmd()[0]).toBe("/usr/local/bin/claude");
+    expect(recording.lastCmd()).toContain(`ws://localhost:${port}/session/${sessionId}`);
+  });
+
+  test("a wss listener refuses a refreshed binary that wants plain ws", async () => {
+    // The mirror case — claude was downgraded below 2.1.120 under a daemon
+    // bound for wss. Also unserveable, also fixed by a restart.
+    server = disabledServer(makeRecordingSpawn().spawn);
+    await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => unpatchedResolution(),
+      readTransportPref: () => undefined,
+    });
+
+    expect(server.spawnDisabled).toBe(true);
+    expect(server.spawnResolution.spawnDisabledReason).toMatch(/mcx daemon restart/);
+    expect(server.spawnResolution.binaryPath).toBe("/store/2.1.234.patched");
+  });
+
+  test("the revive path is refused too when the refreshed claude needs the other scheme", async () => {
+    // reviveSession respawns a child, so it is stranded by exactly the same
+    // mismatch as a fresh spawn — and a session pinned to `ws` would otherwise
+    // be revived straight onto the unserveable binary.
+    const recording = makeRecordingSpawn();
+    server = unknownVersionServer(recording.spawn);
+    await server.start();
+    server.restoreSessions([
+      {
+        sessionId: "revive-mismatch-1",
+        pid: null,
+        state: "idle",
+        model: null,
+        cwd: "/repo",
+        worktree: null,
+        totalCost: 0,
+        totalTokens: 0,
+        claudeSessionId: "claude-resume-abc",
+      },
+    ]);
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    const result = await handlePrompt(
+      server,
+      { sessionId: "revive-mismatch-1", prompt: "continue" },
+      undefined,
+      // Same probe the spawn path takes; here it resolves a patched binary the
+      // plain-ws listener cannot serve.
+      { resolve: async () => freshResolution(), readTransportPref: () => undefined },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/mcx daemon restart/);
+    expect(recording.lastCmd()).toEqual([]);
+  });
+
+  // ── A refresh that learned nothing must change nothing (#3289 review) ──
+
+  test("a re-probe that cannot determine a version leaves every field alone", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    const before = server.spawnResolution;
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => ({
+        error: NO_VERSION_REASON,
+        reason: "version-probe-failed",
+        version: null,
+        tlsConfig: null,
+        listenerTls: "unknown",
+      }),
+      readTransportPref: () => undefined,
+    });
+
+    // Not just "still disabled": a transient probe failure under load must not
+    // downgrade the actionable patch-update message to generic transport noise,
+    // blank the known version, or flip defaultTransport back to "ws".
+    expect(server.spawnResolution).toEqual(before);
+  });
+
+  test("a re-probe that DID determine a version replaces the reason with the new one", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => ({
+        error: "claude 9.9.9 is not supported by any registered patch strategy.",
+        reason: "unsupported-version",
+        version: "9.9.9",
+        tlsConfig: null,
+        listenerTls: "unknown",
+      }),
+      readTransportPref: () => undefined,
+    });
+
+    expect(server.spawnResolution.spawnDisabledReason).toMatch(/not supported/);
+    expect(server.spawnResolution.claudeVersion).toBe("9.9.9");
+  });
+
+  // ── Backoff (#3289 review) ──
+
+  test("a repeatedly failing re-probe backs off instead of probing on every spawn", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    let probes = 0;
+    let clock = 0;
+    const attempt = () =>
+      refreshClaudeResolutionIfDisabled(server as ClaudeWsServer, {
+        resolve: async () => {
+          probes++;
+          return staleResolution();
+        },
+        readTransportPref: () => undefined,
+        now: () => clock,
+      });
+
+    await attempt();
+    expect(probes).toBe(1);
+
+    // The whole point: a broken patch store must not cost a `claude --version`
+    // per spawn attempt on the thread serving live sessions.
+    clock = 500;
+    await attempt();
+    expect(probes).toBe(1);
+
+    clock = 1_000;
+    await attempt();
+    expect(probes).toBe(2);
+
+    // Second failure doubles the window, so the same 1s gap is now too soon.
+    clock = 2_000;
+    await attempt();
+    expect(probes).toBe(2);
+
+    clock = 3_000;
+    await attempt();
+    expect(probes).toBe(3);
+  });
+
+  test("backoff never delays the fix — a successful refresh clears it", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    let clock = 0;
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => staleResolution(),
+      readTransportPref: () => undefined,
+      now: () => clock,
+    });
+    expect(server.spawnDisabled).toBe(true);
+
+    clock = 1_000;
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => freshResolution(),
+      readTransportPref: () => undefined,
+      now: () => clock,
+    });
+    expect(server.spawnDisabled).toBe(false);
+    expect(server.spawnResolution.binaryPath).toBe("/store/2.1.235.patched");
   });
 });
