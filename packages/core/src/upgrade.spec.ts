@@ -173,11 +173,35 @@ describe("checkForUpdate", () => {
     expect(result.updateAvailable).toBe(true);
     expect(result.latest).toBe("2.0.0");
     expect(result.current).toBe("1.0.0");
+    expect(result.devBuild).toBe(false);
   });
 
   test("detects already up to date", async () => {
     const result = await checkForUpdate("2.0.0", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     expect(result.updateAvailable).toBe(false);
+    expect(result.devBuild).toBe(false);
+  });
+
+  test("flags a dev build at the same core version as devBuild, not up to date silently", async () => {
+    // Regression for #3232: a compiled binary's BUILD_VERSION always carries
+    // a +epoch suffix (scripts/build.ts), so `2.0.0+1787442054` against
+    // release `2.0.0` must never be indistinguishable from a confirmed
+    // up-to-date install.
+    const result = await checkForUpdate("2.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
+    expect(result.updateAvailable).toBe(false);
+    expect(result.devBuild).toBe(true);
+  });
+
+  test("a dev build behind the latest release still reports a real update, not devBuild", async () => {
+    const result = await checkForUpdate("1.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
+    expect(result.updateAvailable).toBe(true);
+    expect(result.devBuild).toBe(false);
+  });
+
+  test("a -dev prerelease build is never mistaken for a confirmed devBuild state (already flagged via updateAvailable)", async () => {
+    const result = await checkForUpdate("2.0.0-dev", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
+    expect(result.updateAvailable).toBe(true);
+    expect(result.devBuild).toBe(false);
   });
 
   test("uses cache when fresh", async () => {
