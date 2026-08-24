@@ -1,0 +1,213 @@
+# Sprint 79
+
+> Planned 2026-08-22 (evening, post-halt). Started 2026-08-22T23:38Z. Target: 12 issues across 3 lanes.
+> **First sprint under the lane model** (`references/lanes.md`, PR #3219).
+> Supersedes the pre-halt draft at `.claude/boss/sprint-79.md` (branch `meta/boss-state`).
+
+## Goal
+
+Finish epic A on main — drain the five partial partition PRs in the disposition's
+merge order, serialized — while opening the trust (C) and spend (I) fronts on
+disjoint surfaces.
+
+## Context
+
+Sprint 78 halted at 82% weekly quota with 6/17 merged. The five open PRs are
+closer to done than their labels suggest: `sprint-78-disposition.md` re-scored
+every finding under the merge-risk bar and found zero standing blockers on four
+of them. The graph re-verification (comment pending on #3019) confirmed the
+dependency map and corrected one edge: **epic C never needed B** — trust can
+start now. Quota is the constraint this sprint, not capacity: models below are
+chosen deliberately lean; the orchestrator is Fable, implementers default sonnet,
+opus only where the work is genuinely design-heavy.
+
+## Issues
+
+| # | Title | Scrutiny | Lane | Model | Category |
+|---|-------|----------|------|-------|----------|
+| 3035 | `mcx domain` CLI (PR #3160: apply decision (c), verify, merge) | medium | 1.1 | sonnet | goal |
+| 3043 | domain worker (PR #3181: rebase, gate, merge — review:pass) | low | 1.2 | sonnet | goal |
+| 3039 | agent_sessions domain scoping (PR #3168: rebase + drive the #3199 fix once, merge) | medium | 1.3 | sonnet | goal |
+| 3037 | work_items domain scoping (PR #3175: rebase + drive finding 1 once, merge) | medium | 1.4 | sonnet | goal |
+| 3038 | mail domain partition (PR #3200: rebase + verify the 4 claimed (a)/(b) fixes, merge) | **high** | 1.5 | opus | goal |
+| 3170 | import counters lie after rollback (on-main defect, same files as chain) | low | 1.6 | sonnet | goal |
+| 3047 | trust: envelope core | **high** | 2.1 | opus | goal |
+| 3048 | trust: tag-neutering | **high** | 2.2 | opus | goal |
+| 3055 | spend/quota per domain (epic I entry) | medium | 3.1 | sonnet | goal |
+| 3119 | auto-permission-mode fix (PR #3137: drive F3 once, then merge or simplify-once) | medium | 3.2 | sonnet | filler |
+| 3212 | guard-reachability harness (mechanizes the QA mutation check) | low | 3.3 | sonnet | filler |
+| 3066 | card store entry (no deps — slack) | low | 3.4 | sonnet | filler |
+| 3223 | quota monitoring dead on Linux (keychain-only token source) | medium | 3.5 | sonnet | QoL |
+
+> **Amendment 2026-08-23T00:4xZ (#3223, QoL 1 of 2):** filed during this
+> sprint's own run — the orchestrator's quota gate is blind on this box
+> because `readClaudeOAuthToken` is darwin-only, so `QuotaPoller.poll()`
+> silently skips forever and `quota_status` reports the misleading
+> "Quota monitoring not started". Operator: "that seems like an important
+> fix." Overlap check (run.md amendment gate): surface is
+> `packages/daemon/src/auth/keychain.ts`, `quota.ts`,
+> `metrics-server.ts:196` — **overlaps in-flight PR #3222**
+> (metrics-server.ts), so #3223 is blockedBy #3222's merge. No lane-1
+> contact.
+
+> **Amendment 2026-08-23T19:0xZ (#3232/#3233/#3234 — operator directive, epic #3231):**
+> after repeated daemon outages disrupted orchestration, the operator directed:
+> "no daemon interruption policy — dev work must never disrupt the real ($PATH)
+> daemon… actual install from a release… real release/upgrade discipline.
+> that's my next priority. Execute." Evidence in #3231: symlink install let
+> `bun build` hot-swap the live daemon (mitigated — copies now); test runs
+> SIGTERM daemons on the production socket (#3233); 300s idle-exit killed the
+> daemon under a connected monitor + 7 tracked items (#3234, stopgap:
+> systemd `mcpd-stopgap.service` with `MCP_DAEMON_TIMEOUT=86400000`); release
+> cadence dead since v1.14.6 (July 13), #2993 folded into #3232. Overlap
+> check: surfaces are commands/upgrade*+release.yml (#3232), test preload+
+> constants.ts+rules (#3233), daemon index.ts+monitor machinery (#3234) —
+> no lane-1 contact, no cross-overlap. Three sonnet implementers spawned
+> 19:05Z. Also this run: #3229 (monitor flags, rescoped), #3230 (track
+> varargs), comment on #2991.
+
+**Scrutiny-mix sign-off required (plan.md Step 3b):** 3 of 12 high (25%),
+above the ~20% cap. Justification, per issue: #3038/PR#3200 carries four
+(a)/(b)-class findings whose fixes are claimed but unreviewed on a
+force-pushed branch (DB schema + mail partition = gated class); #3047 and
+#3048 are the trust module — containment machinery, gated by definition.
+Everything else in the sprint is mechanical and rides QA-only.
+**Operator sign-off:** the operator launched `/sprint 79` at 2026-08-22T23:35Z
+after this plan (including the 25% high mix) was presented, with the words
+"let's try it... carefully". Read as consent to the mix, with "carefully"
+operationalized as: lane 1 leads, quota checked before every opus spawn.
+
+## Lane Plan
+
+Per `lanes.md`: max 3 lanes, fresh subagent per phase, no lane starts before
+its foundation is merged, no session idles hot.
+
+### Lane 1 — the partition chain (STRICTLY SERIAL — one PR in flight, ever)
+
+All six links share `state.ts` / `import-legacy.ts` / `ipc.ts` /
+`docs/domains.md`. Order is the disposition's merge order:
+
+**#3160 → #3181 → #3168 → #3175 → #3200 → #3170**
+
+- 1.1 **#3160** first — critical path; decision (c) is recorded on the PR
+  (one-shot import is real: delete the three retry-promise strings, `--force`
+  is sole recovery). Close N1/N2 accordingly, run the gate, merge.
+- 1.2 **#3181** — conflict is pure base drift; rebase, gate, merge. Fold the
+  #3214/#3215 supervisor findings ONLY if the rebase already touches those
+  lines; otherwise they stay filed (they're unreachable until #3044).
+- 1.3 **#3168** — rebase; **drive** the #3199 `bye --all` fix against merged
+  main (one command, not a review round); merge.
+- 1.4 **#3175** — rebase; **drive** finding 1's ancestor-root case once;
+  merge. Risk call per disposition, recorded there.
+- 1.5 **#3200** — high scrutiny: the four (a)/(b) fixes are claimed, none
+  verified, and the reviewed SHAs are gone (force-push). Fresh adversarial
+  pass against the current head (panel allowed, round 1 only), then QA with
+  guard-mutation. Verify #3216 and #3217 die with this merge; close them
+  citing the commit, or re-scope them if they survive.
+- 1.6 **#3170** — the on-main `summarize()` defect, fixed after the chain
+  drains (same files).
+
+### Lane 2 — trust entry (disjoint: new module + docs/trust.md)
+
+**#3047 → #3048**, serial within the lane. Opus implementers, adversarial +
+QA, full gated-class treatment. Design authority is `docs/trust.md` + the
+epic C body (#3023): permit/deny/flag chain, host-side only, no crypto
+signing on one box. #3048's neutering follows the `claude` binary prior art
+(nested wrapper tags neutered, `\uXXXX` escaping) captured in trust.md.
+
+### Lane 3 — spend + hygiene (disjoint, small)
+
+- 3.1 **#3055** — epic I entry; touches quota.ts/budget-watcher, no chain contact.
+- 3.2 **#3119/PR#3137** — disposition: drive F3 (restore-path denial) once;
+  if it reproduces, simplify-once; if not, merge. Oldest open PR, DIRTY.
+- 3.3 **#3212** — guard-reachability harness; mechanizes qa.md's mutation
+  check. Every rule it ships needs bypass fixtures (`@expect 1`).
+- 3.4 **#3066** — slack only; start it if lanes 2–3 drain early. Never
+  borrow lane-1 capacity for it.
+
+## Dependency edges
+
+- #3181 blockedBy #3160 (chain order — merge order, not code dependency)
+- #3168 blockedBy #3181, #3175 blockedBy #3168, #3200 blockedBy #3175,
+  #3170 blockedBy #3200 (chain)
+- #3048 blockedBy #3047 (envelope before neutering)
+- No cross-lane edges — lanes 2 and 3 touch no lane-1 file. Re-run the
+  overlap check on any amendment (plan.md Step 4).
+
+> **Amendment 2026-08-23T22:1xZ (#3243, QoL 2 of 2):** monitor blindness —
+> a connected `mcx monitor --until 'pr.*'` missed all three tracked-item
+> merges tonight (#3137/#3160/#3181, 3/3 across consecutive windows —
+> looks deterministic), plus 90s-heartbeat warning spam under load. This
+> guts the wait primitive lanes.md now canonizes, so it is pulled into the
+> sprint as the second QoL slot (P1-class daemon/usability bug, operator
+> flagged 2026-08-23). Investigation-first per the verify-hypothesis rule;
+> impl lane only after a reproduced root cause. Overlap check: surface is
+> daemon event/poller path (github/, event-bus, monitor-executor) — no
+> overlap with #3168/#3175/#3200 session/work-item/mail surfaces; the
+> stopgap-daemon-binary-staleness hypothesis, if confirmed, may need no
+> code at all.
+
+## Explicitly excluded (and why)
+
+- **#3036, #3041, #3042, #3044, #3045** — dependents of unmerged lane-1 work.
+  Foundation-first: they are sprint 80's candidates, not backfill.
+- **#3209** (repo_root five ways) — real on-main defect, but its surface IS
+  the lane-1 chain's surface; adding it mid-chain is the amendment-collision
+  pattern. Sprint 80, first chain link.
+- **#3103** (migrate phoenix/clrg/work) — descoped from epic J by operator.
+- **#3218** — hardening checklist for #3181, unreachable until #3044; stays filed.
+- **Accreted defect reports** (#3155, #3158, #3156, #3144, #3164→#3170, etc.)
+  — verified real, kept open, sequenced into sprints 80+ with the A-tail.
+
+## Quota & model policy (sprint-specific)
+
+Weekly quota is ~82% consumed. Hard rules for this sprint: no opus outside
+#3200/#3047/#3048; reviews are sonnet except gated-class; check
+`quota_status` before starting each lane-1 link; if weekly utilization is
+critical at run start, run lane 1 only (it is mostly verification and
+merges, the cheapest path to "epic A done"). The orchestrator ends its turn
+whenever all lanes are waiting — no idle-hot polling.
+
+## Mid-sprint amendments (2026-08-24)
+
+- **Lane 2 (#3047, #3048) SPIKED to sprint-80 planning.** The plan's quota
+  gate (`quota_status` before each lane start) was unexecutable — quota
+  monitoring is dead on Linux, which is #3223 itself — and the orchestrator
+  improvised a "pending operator confirmation" hold instead of spiking.
+  Operator ruling: a sprint runs unattended end-to-end; mid-sprint human
+  gates are a planning + operational failure; surprises hold to next
+  planning. Both items stay tracked (phase impl) and carry to sprint 80,
+  where the quota call is made with the human in the loop.
+- Off-plan directive lanes this sprint (operator-directed, QoL/security
+  budget): #3232 (upgrade symlink→atomic copy), #3234 (idle-shutdown
+  inhibit), #3261 (am-i-done 5-min hard timeout). Serialized on the gate
+  baton behind lane-1 merges.
+- Retro item: write the no-mid-sprint-human-gates rule into
+  `references/plan.md` + `lanes.md` (it was implied by "unattended", not
+  stated).
+
+## Results (2026-08-24)
+
+| # | PR | Outcome |
+|---|----|---------|
+| 3035 | #3160 | merged |
+| 3043 | #3181 | merged |
+| 3039 | #3168 | merged (includes #3199 structural fix) |
+| 3037 | #3175 | merged |
+| 3038 | #3200 | merged — epic A chain complete |
+| 3170 | #3258 | merged |
+| 3047 | — | spiked to sprint-80 planning |
+| 3048 | — | spiked to sprint-80 planning |
+| 3055 | #3222 | merged |
+| 3119 | #3137 | merged |
+| 3212 | #3228 | already merged 08-23 (stale ledger row; lane no-op'd) |
+| 3066 | #3253 | merged |
+| 3223 | #3227 | already merged 08-23 (stale ledger row; live symptom = stale daemon binary, #3264) |
+| 3232* | #3263 | merged (operator directive) |
+| 3234* | #3267 | merged after 2 repair rounds (r1 widened poll margins — symptom; r2 root cause: test cancelled the stream reader instead of aborting the stream) |
+| 3261* | #3268 | merged (operator directive; am-i-done hard deadline) |
+| meta | #3270 | merged (in-repo memory doctrine) |
+
+\* off-plan operator-directive lanes under the QoL/security budget.
+
+No release (v2.0.0 hold). Retro: `.claude/diary/20260824.79.md`.

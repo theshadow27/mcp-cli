@@ -75,12 +75,96 @@ the sticky findings, and the worktree path — never a held-open implementer.
    orchestrator itself — sits idle-hot waiting. If the next action is
    "wait for X", record the resume point in the ledger and end the turn
    (or the session). The orchestrator reacts to task notifications and
-   monitor events, and never polls in a loop.
-9. **Model mix.** Implementers per the plan table. Reviewers default
-   sonnet; opus/fable review only for the gated class (security,
-   isolation/containment, auth, DB schema, spawn path) or where the plan
-   marks high scrutiny. The opinion-agent panel in
-   `adversarial-review.md` runs only on round 1 of gated-class reviews.
+   monitor events, and never polls in a loop. **Ending the turn IS the
+   correct wait** when every producer is a harness-tracked background
+   task or a `mcx monitor` command — never emit filler/no-op calls to
+   "stay awake", and never hand-roll a watchdog script. Verify a
+   suspect producer with `ps` at most once, then act or end the turn.
+
+### Waiting on the world: the monitor primitive (sprint 79, #3229/#3231)
+
+The one sanctioned way to wait on external state (PR opened/merged,
+labels, CI) with a time fallback, all built-in — no bespoke bash:
+
+1. Daemon up? `mcx version` (auto-starts; a dead daemon = dead event
+   stream, and other commands report it as a cryptic socket error —
+   #2991). During long sprints run it as a service so the 5-min idle
+   exit can't kill the watcher mid-wait (#3234; stopgap:
+   `systemd-run --user --setenv=MCP_DAEMON_TIMEOUT=86400000 --unit=mcpd-stopgap mcpd`).
+2. Items tracked? `mcx tracked` first — sprint items usually already
+   are. Track by ISSUE number only; NEVER `mcx track`/`untrack` a PR
+   number (`untrack` resolves by-PR first and deletes the real item —
+   #3240 data loss).
+3. Wait: `mcx monitor --until 'pr.*' --timeout 900` via the Bash tool's
+   `run_in_background` (never nohup/`&`). Wakes on the first matching
+   event OR at the timeout, whichever first.
+4. On wake: act on the event, or on timeout re-verify ground truth
+   (worktree git state, `gh pr list`, `ps` for gates), then re-arm and
+   end the turn.
+9. **Model mix.** Implementation: **opus.** A plan may assign sonnet
+   to a specific *mechanical* item (scripted rebase, gate run, issue
+   filing) with stated reasons; a plan table may not change the
+   implementation default (sprint 79: a quota-lean "implementers
+   default sonnet" table put sonnet on diagnostic work). **Fable:
+   never for implementation or QA** unless specifically authorized —
+   long-horizon planning only — and no session of any tier idles
+   hot. Review: **sonnet — including the gated class.** The gated class (security, isolation/containment,
+   auth, DB schema, spawn path) raises review *rigor* — the
+   opinion-agent panel in `adversarial-review.md` on round 1, mutation
+   checks, adversarial verification — not the review model tier. A
+   reviewer outclassing the implementer is inverted waste: review hunts
+   blind spots in an existing synthesis, which is easier than the
+   synthesis; spend the stronger model on implementation instead.
+   **Sonnet: never for diagnostic or difficult/tricky problems** (hang
+   diagnosis, hard debugging, subtle races); those are opus work.
+
+### The gate baton (sprint 79, operator-directed)
+
+**Only ONE `am-i-done` gate (or gated push) runs on the box at a time.**
+Concurrent gates starve each other — four in parallel ran 3-5× slower
+than serial, pegged the CPU, and caused spurious load-flake failures
+(openssl/tls specs, SIGTERMs) that cost retry rounds. The orchestrator
+holds the baton: a worker whose next step is a gate or push ends its
+turn and waits for an explicit "BATON: go" message; the orchestrator
+hands the baton to exactly one worker at a time, ordered by
+readiness/priority (finishing pipelines before starting new ones).
+Worker briefs must say so. Cross-session neighbors can't be batoned —
+check `uptime` before handing it, and expect some ambient load.
+
+**A `git commit` IS a gate action** — the pre-commit hook runs the
+sweep, so "commit your work first, gate later" briefs fire un-batoned
+gates (sprint 79: two finishers + one push ran three concurrent gates
+off exactly that wording). Briefs must have workers batch work into ONE
+commit, made FOREGROUND, under the same baton as the gate/push it
+precedes. Rebases don't run hooks; commits and pushes do.
+
+### Merging: the phase-run path (sprint 79)
+
+Merges go through the phase machinery, never raw `gh pr merge`:
+
+    mcx phase run done --work-item "#<issue>"
+
+`done-fn.ts` performs the merge itself behind the #2804 label-closure
+gate (validates `review:pass`/`qa:pass` freshness against the PR head),
+then records the transition in `work_items`. This is not just hygiene —
+the auto-mode classifier blocks author-side `gh pr merge` whenever
+`review:changes` has stood on the PR, so the raw path dead-ends exactly
+when labels matter most. (Sprint 79: two PRs sat "operator-must-merge"
+for hours; once the work items were restored the phase path merged both
+in seconds.)
+
+Prerequisites the runner needs on the work item: `prNumber` + `branch`
+bound, and `phase: qa`. If bindings are missing (e.g. after a re-track),
+restore them first:
+
+    mcx call _work_items work_items_update \
+      '{"id":"#<issue>","prNumber":<pr>,"branch":"<branch>","phase":"qa"}'
+
+Transitions outside the hardcoded graph (e.g. `impl → repair` when
+reconstructing state) additionally need `"repoRoot":"<repo>"` so the
+`.mcx.yaml` edges are consulted. After repair pushes, advance with a
+`phase=qa` write — never by re-ticking `mcx phase run repair` (that
+spawns a new repair round).
 
 ### What replaces the old machinery
 
