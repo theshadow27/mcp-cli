@@ -500,4 +500,68 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
       unlinkSync(link);
     }
   });
+
+  /**
+   * #3180. The catch used to re-count dependents on ANY throw and return the refusal
+   * shape whenever the count came back non-empty. The count is non-empty after every
+   * failed delete — the transaction rolled back — so a disk-full, a corruption, or the
+   * `SQLITE_BUSY_SNAPSHOT` the DEFERRED transaction used to produce all reached the
+   * operator as "re-run with --force", advice they had already taken, with the real
+   * error discarded.
+   */
+  describe("only a refusal becomes a result (#3180)", () => {
+    function withFailingDelete(db: StateDb, err: Error): Map<IpcMethod, RequestHandler> {
+      const failing = Object.create(db) as StateDb;
+      Object.defineProperty(failing, "deleteDomain", {
+        value: () => {
+          throw err;
+        },
+      });
+      const handlers = new Map<IpcMethod, RequestHandler>();
+      new DomainHandlers(failing).register(handlers);
+      return handlers;
+    }
+
+    test("a real failure during --force propagates instead of becoming a --force refusal", async () => {
+      const { db, handlers: setup } = setup2();
+      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
+        domain.id,
+      ]);
+
+      const failure = Object.assign(new Error("database or disk is full"), { code: "SQLITE_FULL" });
+      const handlers = withFailingDelete(db, failure);
+
+      await expect(invoke(handlers, "domainRemove")({ name: "phoenix", cascade: true }, ctx2)).rejects.toThrow(
+        "database or disk is full",
+      );
+      expect(db.getDomainByName("phoenix")).not.toBeNull();
+    });
+
+    test("...and the same is true without --force, where dependents also block", async () => {
+      // The non-cascade path is where the laundering was most convincing: dependents
+      // really do exist, so the re-count "confirmed" a refusal that never happened.
+      const { db, handlers: setup } = setup2();
+      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
+        domain.id,
+      ]);
+
+      const handlers = withFailingDelete(db, Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }));
+      await expect(invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)).rejects.toThrow("database is locked");
+    });
+
+    test("the genuine refusal still comes back as a structured result, not a throw", async () => {
+      // The other half of the branch: real `deleteDomain`, real dependents. This is what
+      // makes the rethrow above a narrowing rather than a removal of the refusal path.
+      const { db, handlers } = setup2();
+      const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
+        domain.id,
+      ]);
+
+      const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
+      expect(result).toEqual({ found: true, removed: false, dependents: [{ table: "mail", rows: 1 }] });
+    });
+  });
 });

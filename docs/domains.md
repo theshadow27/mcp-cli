@@ -18,6 +18,19 @@ design has no `domains` row — a real FK would require seeding a phantom domain
 an undeclared constraint. (SQLite also leaves `PRAGMA foreign_keys` off by default, so a
 declared FK here would enforce nothing anyway.)
 
+That last point used to have an exception: `mail.reply_to REFERENCES mail(id)` was the
+schema's only declared foreign key, and nothing in `packages/daemon/src/db/` ever turned
+enforcement on — so it read as a reply-integrity guarantee that a cross-domain
+`mcx domain rm --force` could break silently. #3180 removes the clause from the schema
+DDL, so databases created from now on declare nothing they do not enforce.
+
+Databases created *before* that still carry the clause, and no migration removes it:
+SQLite cannot drop a constraint in place, so doing so means rebuilding every user's
+`mail` table to delete a declaration that no code path reads. The two shapes behave
+identically until someone turns `PRAGMA foreign_keys` on — a separate decision with
+implications well beyond mail, and the point at which that rebuild (plus a decision about
+the already-dangling `reply_to` rows) becomes worth doing.
+
 Where the partition *is* enforced depends on whether the table has a natural key:
 
 - **Six tables key on a value that repeats across projects** — an issue number, a branch,
