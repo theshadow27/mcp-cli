@@ -515,3 +515,143 @@ describe("StepRunner gate-lease admission (#2690)", () => {
     expect(spy.released()).toBe(1);
   });
 });
+
+describe("StepRunner — wall-clock deadline (#3261)", () => {
+  // Small, explicit budgets: every test here ends on a CONDITION (the deadline
+  // firing, or the run completing), never on a fixed wait for wall time.
+  const DEADLINE_MS = 150;
+  const CREDIT_DEADLINE_MS = 250;
+  const LEASE_QUEUE_MS = 700;
+
+  /** A step that never resolves — the only way out is the deadline. */
+  function wedged(name: string, emit?: string): Step {
+    return {
+      name,
+      description: "x",
+      command: async ({ logger }) => {
+        if (emit) logger.info(emit);
+        await new Promise<never>(() => {});
+        return { success: true };
+      },
+    };
+  }
+
+  function killSpy() {
+    const calls: Array<{ graceMs?: number }> = [];
+    const killTree = async (opts: { graceMs?: number } = {}) => {
+      calls.push(opts);
+      return { killed: [], survivors: [] };
+    };
+    return { killTree, calls };
+  }
+
+  it("aborts a wedged run at the deadline and names the in-flight step", async () => {
+    const { logger, entries } = makeLog();
+    const spy = killSpy();
+    const report = await new StepRunner({ logger, timeoutMs: DEADLINE_MS, killTree: spy.killTree })
+      .add(ok("typecheck"), wedged("test-parallel"))
+      .run();
+
+    expect(report.timedOut).toBe(true);
+    expect(report.success).toBe(false);
+    expect(report.failures).toHaveLength(1);
+    expect(report.failures[0]?.step.name).toBe("test-parallel");
+    expect(report.failures[0]?.error).toContain("deadline");
+    // The operator must be able to see WHICH step and for HOW LONG.
+    const banner = entries.filter((e) => e.startsWith("E "));
+    expect(banner.some((e) => e.includes("wall-clock deadline"))).toBe(true);
+    expect(banner.some((e) => e.includes("in-flight") && e.includes("test-parallel"))).toBe(true);
+    expect(banner.some((e) => e.includes("stuck for"))).toBe(true);
+    // And be able to resume from it.
+    expect(banner.some((e) => e.includes("--from 2"))).toBe(true);
+  });
+
+  it("flushes the wedged step's captured output instead of leaving an empty log", async () => {
+    // #2973: a 31-minute wedge produced a 1171-byte artefact because the
+    // capture buffer is only replayed when a step *completes*.
+    const { logger, entries } = makeLog();
+    const spy = killSpy();
+    const report = await new StepRunner({ logger, timeoutMs: DEADLINE_MS, killTree: spy.killTree })
+      .add(wedged("test-parallel", "partial-progress-line"))
+      .run();
+
+    expect(report.timedOut).toBe(true);
+    expect(entries.some((e) => e.includes("partial-progress-line"))).toBe(true);
+    // Exactly once — the deadline dump must not double-print.
+    expect(entries.filter((e) => e.includes("partial-progress-line"))).toHaveLength(1);
+  });
+
+  it("kills the child process tree exactly once on expiry", async () => {
+    const { logger } = makeLog();
+    const spy = killSpy();
+    await new StepRunner({ logger, timeoutMs: DEADLINE_MS, killTree: spy.killTree }).add(wedged("test-parallel")).run();
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  it("says so out loud when a process group survives SIGKILL", async () => {
+    const { logger, entries } = makeLog();
+    const killTree = async () => ({ killed: [4242], survivors: [4242] });
+    await new StepRunner({ logger, timeoutMs: DEADLINE_MS, killTree }).add(wedged("test-parallel")).run();
+    expect(entries.some((e) => e.includes("survived SIGKILL") && e.includes("4242"))).toBe(true);
+  });
+
+  it("reads the budget from AM_I_DONE_TIMEOUT_MS", async () => {
+    const { logger } = makeLog();
+    const spy = killSpy();
+    const report = await new StepRunner({
+      logger,
+      env: { AM_I_DONE_TIMEOUT_MS: String(DEADLINE_MS) },
+      killTree: spy.killTree,
+    })
+      .add(wedged("test-parallel"))
+      .run();
+    expect(report.timedOut).toBe(true);
+  });
+
+  it("a non-positive budget disables the deadline entirely", async () => {
+    const { logger } = makeLog();
+    const spy = killSpy();
+    const report = await new StepRunner({ logger, env: { AM_I_DONE_TIMEOUT_MS: "0" }, killTree: spy.killTree })
+      .add(ok("typecheck"), ok("lint"))
+      .run();
+    expect(report.success).toBe(true);
+    expect(report.timedOut).toBeUndefined();
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it("leaves a healthy run untouched — nothing is signalled when steps finish", async () => {
+    const { logger } = makeLog();
+    const spy = killSpy();
+    const report = await new StepRunner({ logger, timeoutMs: DEADLINE_MS, killTree: spy.killTree })
+      .add(ok("typecheck"))
+      .run();
+    expect(report.success).toBe(true);
+    expect(report.timedOut).toBeUndefined();
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it("credits gate-lease queueing back to the budget", async () => {
+    // A run that merely waited its turn behind a peer worktree (#2690) must not
+    // be failed by the liveness ceiling: the lease wait is bounded and logs its
+    // own progress, so it is not the silent wedge this ceiling defends against.
+    const { logger } = makeLog();
+    const spy = killSpy();
+    const slowLease = async () => {
+      await Bun.sleep(LEASE_QUEUE_MS);
+      return { held: true, slot: 0, release: () => {} };
+    };
+    const leasedStep: Step = { ...ok("test-parallel"), lease: true };
+    const report = await new StepRunner({
+      logger,
+      timeoutMs: CREDIT_DEADLINE_MS,
+      acquireLease: slowLease,
+      killTree: spy.killTree,
+    })
+      .add(leasedStep, ok("coverage"))
+      .run();
+
+    expect(report.success).toBe(true);
+    expect(report.timedOut).toBeUndefined();
+    expect(spy.calls).toHaveLength(0);
+  });
+});

@@ -23,7 +23,7 @@
  * — harmless.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,7 @@ import { RAN_FILES_RE } from "../bun-summary";
 import { ORPHAN_TOLERANT_TEST_FILES } from "../orphan-tolerant-tests";
 import { buildImportGraph } from "../rules/_engine/import-graph";
 import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
+import { spawnTracked } from "./process-tree";
 import type { Logger, ScriptFunction, StepResult } from "./types";
 import { computeVerdictKey, lookupVerdict, storeVerdict } from "./verdict-cache";
 
@@ -184,7 +185,10 @@ async function runBun(
   const fullArgs =
     junitPath && args[0] === "test" ? [...args, "--reporter", "junit", `--reporter-outfile=${junitPath}`] : args;
   const buf: string[] = [];
-  const child = spawn("bun", fullArgs, { env: cleanEnv, stdio: ["ignore", "pipe", "pipe"], ...(cwd ? { cwd } : {}) });
+  // spawnTracked, not spawn: `bun test` is exactly the tree whose grandchild
+  // worker wedges at 97% CPU (#2973/#3250), so it must lead its own process
+  // group for the am-i-done deadline to be able to reap it (#3261).
+  const child = spawnTracked("bun", fullArgs, { env: cleanEnv, ...(cwd ? { cwd } : {}) });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (d: string) => {

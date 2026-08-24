@@ -45,6 +45,8 @@ export function createConsoleLogger(): Logger {
 export interface CaptureLogger extends Logger {
   show: (sink: Logger) => void;
   clear: () => void;
+  /** True when nothing has been buffered — a step that wedged before it spoke. */
+  isEmpty: () => boolean;
 }
 
 /**
@@ -70,6 +72,7 @@ export function createCaptureLogger(): CaptureLogger {
     clear: () => {
       buffer.length = 0;
     },
+    isEmpty: () => buffer.length === 0,
   };
 }
 
