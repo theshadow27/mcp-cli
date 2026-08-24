@@ -28,12 +28,15 @@ export interface AdoptResult {
   /** Rows moved from the sentinel onto a real domain. */
   stamped: number;
   /**
-   * Rows left on the sentinel because the destination already holds that key.
+   * Rows left on the sentinel because the destination already holds that exact key.
    *
    * Skipped rather than merged: two rows for one `(domain, repo_root, namespace, key)`
    * means the domain-scoped writer has already written its own value, and silently
    * overwriting it with an older un-domained one would be a worse outcome than leaving a
    * row behind. Counted and logged so it is visible rather than inferred.
+   *
+   * Per row, not per root — a sibling key under the same root that the destination has
+   * never held is adopted normally and is not counted here (#3213).
    */
   collided: number;
 }
@@ -63,6 +66,18 @@ export function adoptUnassignedRows(
   if (domains.length === 0) return result;
 
   const { table, rootExpr } = spec;
+
+  // One UPDATE per root, but `alias_state`'s primary key is per KEY
+  // — (domain_id, repo_root, namespace, key). SQLite's default ON CONFLICT ABORT therefore
+  // rolls back the *whole* statement when a single key already exists at the destination,
+  // stranding every non-colliding sibling under that root (#3213). OR IGNORE narrows the
+  // conflict to the one row that actually collides, which is the policy this function has
+  // always documented: the live value wins, and only that key stays behind.
+  //
+  // The import keeps the bare form on purpose — there a conflict must abort so the whole
+  // copy rolls back and retries (seal-or-nothing, #3040 review R4).
+  const update = `UPDATE ${onCollision === "skip" ? "OR IGNORE " : ""}${table} SET domain_id = ? WHERE domain_id = ${NO_DOMAIN_ID} AND ${rootExpr} = ?`;
+
   const roots = db
     .query<{ root: string | null }, []>(
       `SELECT DISTINCT ${rootExpr} AS root FROM ${table} WHERE domain_id = ${NO_DOMAIN_ID}`,
@@ -82,23 +97,22 @@ export function adoptUnassignedRows(
     }
     if (id === NO_DOMAIN_ID) continue;
 
-    try {
-      result.stamped += db.run(
-        `UPDATE ${table} SET domain_id = ? WHERE domain_id = ${NO_DOMAIN_ID} AND ${rootExpr} = ?`,
-        [id, root],
-      ).changes;
-    } catch (err) {
-      if (onCollision === "throw") throw err;
-      const remaining = db
+    result.stamped += db.run(update, [id, root]).changes;
+    if (onCollision === "throw") continue; // a conflict threw; nothing was left behind
+
+    // Whatever is still on the sentinel for this root is exactly what OR IGNORE skipped.
+    const remaining =
+      db
         .query<{ n: number }, [string]>(
           `SELECT count(*) AS n FROM ${table} WHERE domain_id = ${NO_DOMAIN_ID} AND ${rootExpr} = ?`,
         )
-        .get(root);
-      result.collided += remaining?.n ?? 0;
-      log(
-        `[domains] ${table}: left ${remaining?.n ?? 0} row(s) for ${root} on the unassigned partition — the target domain already holds those keys (${err instanceof Error ? err.message : String(err)})`,
-      );
-    }
+        .get(root)?.n ?? 0;
+    if (remaining === 0) continue;
+
+    result.collided += remaining;
+    log(
+      `[domains] ${table}: left ${remaining} row(s) for ${root} on the unassigned partition — domain ${id} already holds those ${remaining === 1 ? "key" : "keys"} and its live value wins; the other rows for this root were adopted`,
+    );
   }
 
   return result;

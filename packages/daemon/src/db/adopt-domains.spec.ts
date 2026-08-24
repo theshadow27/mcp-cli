@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { createDomainResolver, createStateDbDomainSource } from "../domain-resolver";
+import { EventLog } from "../event-log";
 import { adoptUnassignedDomains } from "./adopt-domains";
 import { StateDb } from "./state";
 
@@ -34,7 +35,20 @@ function setup() {
   mkdirSync(outside, { recursive: true });
   const db = new StateDb(join(home, "mcx.db"));
   open.push(db);
+  // `monitor_events` belongs to EventLog's migration, not StateDb's. Without it every
+  // adoption call here logged "no such table" and silently exercised `alias_state` alone,
+  // leaving the `json_extract(payload, '$.repoRoot')` root expression uncovered (#3213).
+  new EventLog(db.getDatabase());
   return { db, inside, outside };
+}
+
+/** Append a raw sentinel-partition event whose payload carries `repoRoot`. */
+function insertEvent(db: StateDb, repoRoot: string): void {
+  db.getDatabase().run(
+    `INSERT INTO monitor_events (ts, src, event, category, domain_id, payload)
+     VALUES (?, 'daemon', 'server.ready', 'server', ?, ?)`,
+    [new Date(0).toISOString(), NO_DOMAIN_ID, JSON.stringify({ repoRoot })],
+  );
 }
 
 const silent = () => {};
@@ -123,5 +137,62 @@ describe("state written before a domain existed", () => {
     expect(result.collided).toBe(1);
     // The live value wins; the stale row is left behind, not merged over it.
     expect(db.getAliasState(inside, "ns", "k", domain.id)).toBe("current");
+  });
+
+  test("one colliding key does not strand its non-colliding siblings", () => {
+    // The regression this closes (#3213): adoption UPDATEs per ROOT while alias_state's
+    // primary key is per KEY, so under bare `UPDATE` a single conflicting key aborted the
+    // whole statement and left every sibling under that root on the sentinel. Three keys
+    // with exactly one collision is the smallest fixture that can tell the two apart — a
+    // one-key fixture passes under both semantics.
+    const { db, inside } = setup();
+    const domain = db.createDomain("myrepo", inside);
+    db.setAliasState(inside, "workitem:#42", "round", 1, domain.id);
+
+    const raw = db.getDatabase();
+    for (const [key, valueJson] of [
+      ["round", "3"],
+      ["scrutiny", '"high"'],
+      ["phase", '"qa"'],
+    ]) {
+      raw.run("INSERT INTO alias_state (domain_id, repo_root, namespace, key, value_json) VALUES (?, ?, ?, ?, ?)", [
+        NO_DOMAIN_ID,
+        inside,
+        "workitem:#42",
+        key,
+        valueJson,
+      ]);
+    }
+
+    const result = adoptUnassignedDomains(raw, db.listDomains(), silent);
+    expect(result).toEqual({ stamped: 2, collided: 1 });
+
+    // The two keys the domain never held are reachable...
+    expect(db.getAliasState(inside, "workitem:#42", "scrutiny", domain.id)).toBe("high");
+    expect(db.getAliasState(inside, "workitem:#42", "phase", domain.id)).toBe("qa");
+    // ...and only the genuine collision stays behind, live value intact.
+    expect(db.getAliasState(inside, "workitem:#42", "round", domain.id)).toBe(1);
+    expect(db.getAliasState(inside, "workitem:#42", "round", NO_DOMAIN_ID)).toBe(3);
+  });
+
+  test("monitor_events rows are adopted by the repoRoot in their payload", () => {
+    const { db, inside, outside } = setup();
+    insertEvent(db, inside);
+    insertEvent(db, outside);
+    const domain = db.createDomain("myrepo", inside);
+
+    const result = adoptUnassignedDomains(db.getDatabase(), db.listDomains(), silent);
+    expect(result).toEqual({ stamped: 1, collided: 0 });
+
+    // seq is the primary key, so a domain move can never conflict here — but the row must
+    // land on the domain its payload root resolves to, and the outsider must not move.
+    const rows = db
+      .getDatabase()
+      .query<{ domain_id: number; payload: string }, []>("SELECT domain_id, payload FROM monitor_events ORDER BY seq")
+      .all();
+    expect(rows).toEqual([
+      { domain_id: domain.id, payload: JSON.stringify({ repoRoot: inside }) },
+      { domain_id: NO_DOMAIN_ID, payload: JSON.stringify({ repoRoot: outside }) },
+    ]);
   });
 });
