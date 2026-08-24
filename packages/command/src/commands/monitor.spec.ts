@@ -1032,6 +1032,132 @@ describe("cmdMonitor", () => {
     expect(exitCalls).toEqual([0]);
   });
 
+  // ── Watchdog warning backoff (#3243): a quiet-but-alive stream must warn once, ──
+  // ── then back off — not re-fire the identical warning every 90s forever.       ──
+
+  test("watchdog re-arm interval doubles on repeated silence, capped at 8x base", async () => {
+    let resolveStream: (() => void) | undefined;
+    async function* hangingStream(): AsyncGenerator<MonitorEvent> {
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+    const stderr: string[] = [];
+    const timerCalls: Array<{ fn: () => void; ms: number }> = [];
+    let sigintFn: (() => void) | undefined;
+    const exitCalls: number[] = [];
+    const deps: MonitorDeps = {
+      openEventStream: () => ({ events: hangingStream(), abort: () => resolveStream?.() }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true, // alive but silent, indefinitely
+      livenessTimeoutMs: 90_000,
+      writeStdout: () => {},
+      writeStderr: (l) => stderr.push(l),
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: (fn) => {
+        sigintFn = fn;
+      },
+      onStdoutError: () => {},
+      createTimeout: (fn, ms) => {
+        timerCalls.push({ fn, ms });
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor([], deps);
+    await Promise.resolve();
+
+    // Initial arm at base interval.
+    expect(timerCalls).toHaveLength(1);
+    expect(timerCalls[0]?.ms).toBe(90_000);
+
+    // Each consecutive silent fire doubles the wait before the next warning.
+    timerCalls[0]?.fn();
+    expect(timerCalls[1]?.ms).toBe(180_000);
+    timerCalls[1]?.fn();
+    expect(timerCalls[2]?.ms).toBe(360_000);
+    timerCalls[2]?.fn();
+    expect(timerCalls[3]?.ms).toBe(720_000); // 8x base — capped
+    timerCalls[3]?.fn();
+    expect(timerCalls[4]?.ms).toBe(720_000); // stays capped, does not keep growing
+
+    // One warning per fire, but the interval between them grew — not 10 identical
+    // warnings in the old fixed-90s cadence over the same wall-clock window.
+    const warnings = stderr.filter((l) => l.includes("no daemon heartbeat"));
+    expect(warnings).toHaveLength(4);
+
+    sigintFn?.();
+    await promise;
+    expect(exitCalls).toEqual([0]);
+  });
+
+  test("watchdog backoff resets to base after a real event, not left escalated", async () => {
+    let resolveStream: (() => void) | undefined;
+    async function* oneEventThenHang(): AsyncGenerator<MonitorEvent> {
+      yield makeEvent(SESSION_RESULT, {});
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve;
+      });
+    }
+    const timerCalls: Array<{ fn: () => void; ms: number }> = [];
+    let sigintFn: (() => void) | undefined;
+    const exitCalls: number[] = [];
+    const deps: MonitorDeps = {
+      openEventStream: () => ({
+        events: oneEventThenHang(),
+        abort: () => resolveStream?.(),
+      }),
+      isTTY: true,
+      getCwd: () => "/test/repo",
+      checkDaemonLiveness: () => true,
+      livenessTimeoutMs: 90_000,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      exit: (code) => {
+        exitCalls.push(code);
+        return undefined as never;
+      },
+      onSigint: (fn) => {
+        sigintFn = fn;
+      },
+      onStdoutError: () => {},
+      createTimeout: (fn, ms) => {
+        timerCalls.push({ fn, ms });
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    };
+
+    const promise = cmdMonitor([], deps);
+    // Drain microtasks until the yielded event has been received and re-armed the
+    // watchdog (async-generator delivery resolves over the microtask queue, not
+    // synchronously) — bounded so a regression fails fast instead of hanging.
+    for (let i = 0; i < 20 && timerCalls.length < 2; i++) {
+      await Promise.resolve();
+    }
+
+    // Two arms so far: the initial one, and the reset triggered by the real event —
+    // both at base, because a real event must not inherit an escalated interval.
+    expect(timerCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of timerCalls) {
+      expect(call.ms).toBe(90_000);
+    }
+
+    // Now let the (post-event) watchdog fire once — it escalates from base, not from
+    // whatever it might have reached in a previous silent stretch.
+    const lastArm = timerCalls[timerCalls.length - 1];
+    lastArm?.fn();
+    const afterWarn = timerCalls[timerCalls.length - 1];
+    expect(afterWarn?.ms).toBe(180_000);
+
+    sigintFn?.();
+    await promise;
+    expect(exitCalls).toEqual([0]);
+  });
+
   test("stream end with dead daemon and no terminator exits 3, not a blind 0", async () => {
     const events = [makeEvent(SESSION_RESULT, {})];
     const stderr: string[] = [];

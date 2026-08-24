@@ -157,6 +157,56 @@ describe("openEventStream() client integration", () => {
     expect(typeof received?.ts).toBe("string");
   });
 
+  test("real client sees the EventBus-branch heartbeat as a parseable MonitorEvent (#3243)", async () => {
+    // End-to-end regression for #3243: production's /events heartbeat used to be a
+    // bare "\n" that openEventStream()'s NDJSON parser (packages/core/src/ipc-client.ts)
+    // silently dropped as a blank line — so `mcx monitor`'s liveness watchdog never
+    // reset on transport liveness alone, only on real business events. This exercises
+    // the actual client parser (unmodified — no client-side change was needed once the
+    // daemon emits a real event) against the actual daemon heartbeat emission path.
+    startServerWithBus();
+
+    const capturedIntervalFns: Array<{ fn: () => void; ms: number }> = [];
+    const origSetInterval = globalThis.setInterval;
+    (globalThis as unknown as Record<string, unknown>).setInterval = (fn: (...args: unknown[]) => void, ms: number) => {
+      capturedIntervalFns.push({ fn: fn as () => void, ms });
+      return origSetInterval(fn, ms);
+    };
+
+    try {
+      const stream = openEventStream();
+
+      let received: Record<string, unknown> | undefined;
+      const consuming = (async () => {
+        for await (const event of stream.events) {
+          const e = event as Record<string, unknown>;
+          if (e.category === "heartbeat") {
+            received = e;
+            stream.abort();
+            return;
+          }
+        }
+      })();
+
+      // Wait for the client's fetch to actually connect (registering the daemon-side
+      // setInterval), then fire the 15s heartbeat manually — never wait real time.
+      await pollUntil(() => capturedIntervalFns.some((c) => c.ms === 15_000), 2_000);
+      const hbInterval = capturedIntervalFns.find((c) => c.ms === 15_000);
+      hbInterval?.fn();
+
+      await consuming;
+
+      expect(received).toBeDefined();
+      expect(received?.event).toBe("heartbeat");
+      expect(received?.category).toBe("heartbeat");
+      expect(received?.src).toBe("daemon");
+      expect(typeof received?.seq).toBe("number");
+      expect(typeof received?.ts).toBe("string");
+    } finally {
+      (globalThis as unknown as Record<string, unknown>).setInterval = origSetInterval;
+    }
+  });
+
   test("abort() stops iteration cleanly with no dangling async iterators", async () => {
     startServerWithBus();
 
