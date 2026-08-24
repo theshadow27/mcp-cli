@@ -228,10 +228,9 @@ Rules:
    to retro or a user-led cleanup pass.
 6. **Flaky / recurring / unclear-mechanism issues need a nerd-snipe gate
    before impl** — see [`references/investigations.md`](investigations.md).
-   The gate is mandatory. It may run as a background lane subagent (the
-   #2009 `mcx claude spawn`-only constraint is superseded — see
-   `lanes.md`, "Note on #2009"; keep `mcx claude spawn` when the operator
-   wants to attach interactively). Mark such issues `high` scrutiny in
+   The gate is mandatory and must use `mcx claude spawn` (NOT the Agent
+   tool — #2009: the orchestrator must be able to observe and steer the
+   investigation). Mark such issues `high` scrutiny in
    the plan table even if the eventual fix is small; the gate's hard-fail
    outcome is `needs-attention`, which the planner needs to be willing to
    accept (sprint 52 paid 2 slots for this on #1980 and #1987).
@@ -258,8 +257,8 @@ stacked branch then conflicted against the merged result. If the foundation
 plus its dependents don't fit one sprint after serialization, the dependents
 are next sprint's plan — that is the correct outcome, not a capacity failure.
 Corollary: issues that share a file seam (same table-partition, same dispatch
-file, same doc) form a **serial chain in one lane**, never parallel lanes —
-see `lanes.md` rule 5.
+file, same doc) get a **serial `blockedBy` chain**, never parallel sessions —
+the second PR blocks on the first's merge (run.md, hot-shared files).
 
 **Batches are a planning mental-model for launch order; they are NOT
 TaskCreate groupings.** The run phase will create one Task per issue with
@@ -348,6 +347,19 @@ Write `.claude/sprints/sprint-{N}.md`:
 ...
 
 The `Provider` column is optional — omit it or leave blank to default to `claude`.
+
+The `Model` column may assign sonnet only to a specific *mechanical* item
+(scripted rebase, gate run, docs/README fix, issue filing) with the reason
+stated in the issue row's notes; **a plan table may not change the
+implementation default (opus)**, and never assigns sonnet to diagnostic or
+tricky work. Fable never appears in the table.
+
+**No human gates mid-sprint.** A sprint must run unattended end to end.
+Every operator approval happens here, at planning; an issue that needs a
+mid-sprint human decision is a planning failure — spike it to the next
+planning instead of picking it. Surprises discovered mid-run hold to the
+next planning; a surprise that is catastrophic to the sprint spikes the
+sprint (wind down, call it out in the retro).
 Valid values: `claude`, `copilot`, `gemini`, `acp:<agent-name>`.
 See `references/run.md` for how the provider routes spawn commands.
 

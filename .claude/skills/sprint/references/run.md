@@ -1,13 +1,8 @@
 # Sprint Execution
 
-> **Default execution model: [`lanes.md`](lanes.md)** — harness-native
-> subagent lanes, adopted sprint 79. This file is the authority for the
-> **daemon-session pipeline**: the phase-scripted `mcx claude` machinery,
-> used for the cases `lanes.md` reserves for hosted sessions (non-Claude
-> providers, work outliving the orchestrator, operator-interactive
-> sessions). The cross-cutting sections below — round caps,
-> convergence-failure, quota gating, flake discipline, qa:fail override,
-> Red Flags — bind **both** models.
+This file is the authority for sprint execution: the phase-scripted
+`mcx claude` daemon-session pipeline, driven off the `mcx monitor` event
+stream.
 
 You are the orchestrator. You never write code directly — you spawn
 sessions and manage the pipeline. Spawned sessions are running team
@@ -49,8 +44,8 @@ issue, not flaky-CI) — round 1 finds A, the fix exposes B, the fix for B
 exposes C — that is a signal the implementation is too complex or fighting
 the grain, and micro-repairing it is a treadmill (each push also re-triggers
 Copilot, widening the surface). After ~2 such rounds, STOP dispatching
-repairs and launch a **simplification pass** instead: a fresh session or
-lane subagent with a "step back and simplify the whole change to the
+repairs and launch a **simplification pass** instead: a fresh session
+with a "step back and simplify the whole change to the
 minimal correct design that preserves functionality; read the open threads
 as input but rethink, don't patch" prompt. Sprint 62
 #2271 churned 4 rounds (auth regression → 7 threads → rebase → 5 more)
@@ -147,9 +142,16 @@ see `.claude/memory/feedback_sprint_bulk_and_cascade.md`.)
 Hot-shared file serializations (from the plan's "Hot-shared file watch")
 are also blockedBy edges — second PR blocked on first's merge.
 
-Launch policy: spawn an impl session for every task that is `pending` and
-has no unresolved `blockedBy`. When a PR merges, `TaskUpdate completed` —
-that unblocks dependents and a slot opens.
+Launch policy: **2–3 concurrent impl lanes maximum** — capacity comes from
+turnover, not headcount (sprint 78 ran 8+ concurrent workers and
+serialized them anyway behind one foundation PR and a shared-file conflict
+cascade). When a slot is free, spawn an impl session for the
+highest-priority `pending` task with no unresolved `blockedBy`. When a PR
+merges, `TaskUpdate completed` — that unblocks dependents and a slot
+opens. Concurrent lanes must be disjoint at the package/module level;
+issues touching the same files form a serial `blockedBy` chain, never
+parallel lanes. Never start a lane whose base PR is unmerged — dependents
+of in-flight work are next sprint's candidates, not "batch 2".
 
 ## Pre-flight
 
@@ -212,9 +214,16 @@ via `_work_items.work_items_update`.
 | `mcx track <issue-number>` | Start tracking (creates work item in `impl` phase) |
 | `mcx tracked --json` | List all tracked items with PR/CI/review state |
 | `mcx tracked --phase impl` | Filter by phase |
-| `mcx untrack <number>` | Stop tracking |
-| `Monitor` tool with `mcx monitor --subscribe session,work_item --json` (long-lived; **default**) | Push-shaped event stream — each ndjson line lands as an in-conversation notification |
-| `mcx monitor --subscribe session,work_item --json --max-events 1 --timeout 60` (Bash) | **Fallback only** — for harnesses without `Monitor` tool support (loses notifications, re-pays cache TTL each tick) |
+| `mcx untrack <issue-number>` | Stop tracking (**issue numbers only** — see below) |
+| `Monitor` tool with `mcx monitor --subscribe session,work_item,ci,cost,quota,daemon,worker --json` (long-lived; **default**) | Push-shaped event stream — each ndjson line lands as an in-conversation notification |
+| `mcx monitor --subscribe session,work_item,ci,cost,quota,daemon,worker --json --max-events 1 --timeout 60` (Bash) | **Fallback only** — for harnesses without `Monitor` tool support (loses notifications, re-pays cache TTL each tick) |
+
+**Track and untrack by ISSUE number only — never a PR number.** `mcx track`
+treats its argument as an issue (a PR number creates a junk duplicate
+item), but `mcx untrack` resolves **by-PR first** and silently deletes the
+real work item while echoing the number you typed (#3240 — destroyed six
+items' phase state in one sprint). Check `mcx tracked` before any
+track/untrack call.
 
 **`work_items_update` will best-effort auto-populate `branch` from
 `prNumber`** when `branch` is omitted (resolves via `gh`). Pass both
@@ -238,10 +247,11 @@ are pre-enriched by the producers in #1575/#1576/#1577/#1581/#1585/#1586/
 | `session.idle` / `session.result` | `cost`, `turns`, `lastTool`, `resultPreview` (#1575/#1610) | Worker idle — tick the bound work item |
 | `session.permission_request` | `tool`, `args` | Approval needed — `mcx claude log` for context, then `mcx claude send` |
 | `session.stuck` | `lastTool`, `lastToolError`, `tokenDelta` (#1585) | Heuristic stall — interrupt + send guidance |
+| `pr.opened` / `pr.merged` | `prNumber`, `mergeSha` | Bind the PR to its work item / verify merge, then cleanup |
 | `pr.merge_state_changed` | `state`, `cascadeHead` (#1576/#1581) | If `cascadeHead`, advance the merge queue |
 | `ci.started` / `ci.running` / `ci.finished` | per-check `conclusions`, `allGreen` (#1577) | CI outcome — tick the PR's work item |
 | `pr.review_comment_posted` (a.k.a. copilot inline; renamed in #1737) | `path`, `line`, `body` | Possibly substantive — file followup if so |
-| `work_item.phase_changed` | `from`, `to` | Phase script updated state — observe |
+| `phase.changed` | `from`, `to` | Phase script updated state — observe |
 | `cost.session_over_budget` / `cost.sprint_over_budget` / `quota.utilization_threshold` (#1587) | thresholds + utilization | Apply [Quota gating](#quota-gating) |
 | `daemon.restarted` / `worker.ratelimited` / `daemon.config_reloaded` (#1586) | source/reason | Diagnostic — log + continue |
 
@@ -272,6 +282,16 @@ When in doubt, `send` — don't `bye`.
 Before `bye`, write a one-sentence justification: why is this work
 genuinely complete? If you can't, the session probably shouldn't end.
 
+**Scope freeze:** never add scope to an in-flight item mid-review or
+mid-repair. New scope = new issue, next sprint. (An orchestrator-injected
+then-withdrawn handler once cost 2 of a PR's 5 review rounds — the single
+most expensive self-inflicted mistake in that sprint's retro.)
+
+**Worker escape hatch:** every brief includes
+`echo "<summary>" | mcx mail -s "blocked: <topic>" boss` — and says using
+it carries no penalty. Watch the mailbox: a blocked worker and a thinking
+worker are both quiet.
+
 ## Pipeline loop (one tick)
 
 Per-issue logic is phase-scripted. The orchestrator drives transitions
@@ -294,24 +314,44 @@ fires, with no polling and no cache-miss between ticks. The canonical
 command (filtered to load-bearing event types):
 
 ```
-mcx monitor --subscribe session,work_item --json 2>&1 \
-  | grep -E --line-buffered '"event":"(session\.idle|session\.result|session\.permission_request|session\.stuck|ci\.finished|pr\.merge_state_changed|pr\.review_comment_posted|work_item\.phase_changed|cost\.|quota\.|daemon\.restarted|worker\.ratelimited)"'
+mcx monitor --subscribe session,work_item,ci,cost,quota,daemon,worker --json 2>&1 \
+  | grep -E --line-buffered '"event":"(session\.idle|session\.result|session\.permission_request|session\.stuck|ci\.finished|pr\.opened|pr\.merged|pr\.merge_state_changed|pr\.review_comment_posted|phase\.changed|cost\.|quota\.|daemon\.restarted|worker\.ratelimited)"'
 ```
 
 Each notification carries one ndjson event; the per-event handling below
-runs once per notification.
+runs once per notification. Event names must match the exported constants
+in `packages/core/src/monitor-event.ts` — a grep term with no matching
+constant is silently dead (this file shipped `work_item.phase_changed` for
+weeks; the real name is `phase.changed`).
 
 **Fallback (harnesses without `Monitor` tool support):** call `mcx monitor
---subscribe session,work_item --json --max-events 1 --timeout 60` from a
-Bash subprocess each tick. Loses notification delivery and re-pays the
-5-min prompt-cache TTL on each fresh subprocess — strictly inferior to the
-`Monitor` tool, but functionally equivalent.
+--subscribe session,work_item,ci,cost,quota,daemon,worker --json
+--max-events 1 --timeout 60` from a Bash subprocess each tick. Loses
+notification delivery and re-pays the prompt-cache TTL on each fresh
+subprocess — strictly inferior to the `Monitor` tool, but functionally
+equivalent.
+
+**Waiting discipline.** Ending the turn IS the correct wait — but only
+with an armed waker: the persistent Monitor stream, a backgrounded
+`mcx monitor --until '<pattern>' --timeout <s>` (Bash `run_in_background`;
+never nohup/`disown`/trailing `&` — detached processes never wake the
+session), or a tracked background task. Ending a turn with a *plan* to
+watch is a stopped sprint. Never emit filler calls to stay awake and never
+hand-roll a watchdog. Notifications are at-most-once: on every wake —
+event or timeout — re-verify ground truth (worktree git state,
+`gh pr list`, labels, `ps` for a suspect gate — at most once) before
+acting, then re-arm and end the turn. The ledger (`work_items` + PR labels
++ the plan file), never the orchestrator's context, carries every fact
+that matters past the current turn. Daemon liveness probe: `mcx version`
+(auto-starts; a dead daemon surfaces in other commands as a cryptic socket
+error — #2991).
 
 ```
 while issues remain:
   event = next notification from the Monitor stream
           (or, in the fallback Bash form: mcx monitor --subscribe
-           session,work_item --json --max-events 1 --timeout 60)
+           session,work_item,ci,cost,quota,daemon,worker --json
+           --max-events 1 --timeout 60)
   # Empty event on timeout (fallback only) is normal — fall through and
   # re-enter the loop.
 
@@ -326,22 +366,24 @@ while issues remain:
     "session.idle" | "session.result":
       # Pre-enriched: payload already has cost, turns, lastTool, resultPreview.
       # No mcx claude log needed unless the resultPreview is ambiguous.
-      result = mcx phase run <item.phase> --work-item <item.id>
-      case result.action:
-        "spawn":     execute result.command (quota permitting), then
-                     mcx call _work_items phase_state_set \
-                       '{"workItemId":"<item.id>","repoRoot":"<abs>","key":"session_id","value":"<real-id>"}'
-                     (replaces "pending:*"; tracked-item ids are
-                      "#<n>" — the literal issue/PR number with a leading
-                      "#", as created by `mcx track <n>` (NOT "issue:<n>",
-                      which errors "work item not found"); state keys are
-                      snake_case:
-                      session_id / qa_session_id / review_session_id /
-                      repair_session_id, matching the spawning phase)
-        "in-flight": session running — no action this tick
-        "wait":      no action this tick
-        "goto":      mcx phase run <result.target> --work-item <item.id>
-                     then update work_item.phase = result.target
+      mcx phase advance --work-item <item.id>       # quota permitting
+      # advance (#1942 D1) runs the current phase, follows "goto" chains,
+      # executes returned spawn commands, and replaces the "pending:*"
+      # session_id sentinel with the real id — the whole manual recipe
+      # below in one command. Manual fallback (what advance does under
+      # the hood), for intervening mid-chain:
+      #   result = mcx phase run <item.phase> --work-item <item.id>
+      #   "spawn":     execute result.command (quota permitting), then
+      #                mcx call _work_items phase_state_set
+      #                  '{"workItemId":"<item.id>","repoRoot":"<abs>",
+      #                    "key":"session_id","value":"<real-id>"}'
+      #                (item ids are "#<n>" as created by mcx track — NOT
+      #                 "issue:<n>"; state keys are snake_case session_id /
+      #                 qa_session_id / review_session_id /
+      #                 repair_session_id, matching the spawning phase)
+      #   "in-flight" | "wait": no action this tick
+      #   "goto":      mcx phase run <result.target> --work-item <item.id>
+      #                then update work_item.phase = result.target
 
     "session.permission_request":
       mcx claude log <event.sessionId>                    # only branch needing log
@@ -354,15 +396,23 @@ while issues remain:
       if event.payload.allGreen and item bound:
         mcx phase run <item.phase> --work-item <item.id>   # tick — likely advances
 
+    "pr.opened":
+      bind if not already bound: work_items_update prNumber + branch
+
+    "pr.merged":
+      verify state == MERGED && mergedAt != null, then TaskUpdate
+      completed + cleanup (the `cleanup` automation byes the sessions)
+
     "pr.merge_state_changed":                              # #1581 — payload.cascadeHead
       if event.payload.cascadeHead:
-        advance the merge queue with mcx pr merge --auto
+        mcx phase run done --work-item <item.id>   # merge via the phase
+                                                   # path — see Merging
 
     "pr.review_comment_posted":                            # 4-surface poller (#1737)
       if comment is substantive:
         file followup issue + (optionally) send the implementer to address
 
-    "work_item.phase_changed":                             # phase script just updated
+    "phase.changed":                                       # phase script just updated
       observe — log to plan if Excluded was bumped
 
     "cost.session_over_budget" | "cost.sprint_over_budget" |
@@ -406,8 +456,9 @@ consumes events through `ctx.waitForEvent` rather than its own polling.)
 - Run `mcx phase run <phase> --work-item` **without** `--dry-run` in the
   loop, and never skip `mcx phase run impl` for a tracked item (even when
   you spawn manually). `--dry-run` and bypassing `impl` skip the `#1381`
-  persistence path — the `.mcx/transitions.jsonl` entry + the
-  `session_id="pending:*"` sentinel — so a later transition fails with
+  persistence path — the `.mcx/transitions.db` entry (read it with
+  `mcx phase log`) + the `session_id="pending:*"` sentinel — so a later
+  transition fails with
   `(initial) → <target> is not an approved transition`. `--dry-run` is
   preview-only; `--from impl` is a hack, not a fix (file an issue if you
   reach for it)
@@ -430,11 +481,10 @@ consumes events through `ctx.waitForEvent` rather than its own polling.)
   with **`--cwd <worktree-path>`** (the phase scripts prefer `--cwd` reuse
   anyway). One worktree carries the branch impl→review→repair→QA; only `bye`
   without `--keep-worktree` once the PR has merged.
-- **Disarm auto-merge when new substantive inline threads land post-arm:** a
-  fresh Copilot/QA pass on a repaired high-scrutiny PR can surface real bugs
-  after you've armed `--auto`. Auto-merge fires on green CI regardless of open
-  threads — so re-check surfaces before it merges, and `gh pr merge
-  --disable-auto` + flip to `qa:fail` the moment a substantive thread appears.
+- Merge via `mcx phase run done`, never raw `gh pr merge`, and never arm
+  `--auto` on tracked items — see [Merging — the phase path](#merging--the-phase-path-never-raw-gh-pr-merge).
+  If auto-merge is ever found armed, `gh pr merge --disable-auto` the
+  moment a substantive thread appears post-arm.
 
 When a session fails to close an issue, ask the user. Don't silently move
 on — every failure must be explicit in the retro.
@@ -527,19 +577,40 @@ gates.** Structural fix: `--track` / #1286 — have the spawn auto-persist
 `worktree_path` to the work item so phases emit `--cwd` without the
 orchestrator having to remember.
 
-### Auto-merge re-arm after force-push
+### Merging — the phase path, never raw `gh pr merge`
 
-The orchestrator drives merges directly. Force-push rebases silently
-invalidate GitHub auto-merge on some configurations. Before declaring a
-PR "queued for merge":
+Merges go through the phase machinery:
 
 ```bash
-gh pr view $PR --json autoMergeRequest
+mcx phase run done --work-item "#<issue>"
 ```
 
-If `null`, re-arm with `mcx pr merge $PR --squash --auto`. The
-deterministic merge-queue service in #1397 will eventually subsume this
-loop; until it lands, the orchestrator owns it.
+`done-fn.ts` performs the merge itself behind the #2804 label-closure gate
+(validates `review:pass`/`qa:pass` freshness against the PR head), resolves
+review threads first, checks CI and blocking labels, and records the
+transition. This is not just hygiene — the auto-mode classifier blocks
+author-side `gh pr merge` whenever `review:changes` has stood on the PR,
+so the raw path dead-ends exactly when labels matter most.
+
+Prerequisites on the work item: `prNumber` + `branch` bound and
+`phase: qa`. If bindings are missing (e.g. after a re-track), restore them
+first:
+
+```bash
+mcx call _work_items work_items_update \
+  '{"id":"#<issue>","prNumber":<pr>,"branch":"<branch>","phase":"qa"}'
+```
+
+Transitions outside the hardcoded graph (e.g. `impl → repair` when
+reconstructing state) additionally need `"repoRoot":"<abs-repo>"` so the
+`.mcx.yaml` edges are consulted. After a repair pushes, advance with a
+`phase=qa` write — never by re-ticking `mcx phase run repair` (that spawns
+a new repair round).
+
+Do not arm `gh pr merge --auto` on tracked items — auto-merge fires on
+green CI regardless of open threads and forfeits the done-gate (a gated PR
+landed mid-review this way). Verify merged with `state == MERGED &&
+mergedAt != null` before marking the work item done.
 
 ### Flaky / CI-instability issues — nerd-snipe gate before impl
 
@@ -733,6 +804,43 @@ it's mostly pre-paid. Respect the freeze only when >30 min from reset.
 (Overly literal gating deferred #1597 a whole sprint when it would have
 merged cleanly with 7 min to spare.)
 
+## The gate baton — one gate on the box at a time
+
+Only ONE `am-i-done` gate (or gated push) runs on the box at a time.
+Concurrent gates starve each other — four in parallel ran 3–5× slower
+than serial, pegged the CPU, and caused spurious load-flake failures
+(openssl/tls specs, SIGTERMs) that cost retry rounds. The orchestrator
+holds the baton: a worker whose next step is a gate or push ends its turn
+and waits for an explicit "BATON: go" message; the orchestrator hands the
+baton to exactly one worker at a time, ordered by readiness (finishing
+pipelines before starting new ones). Worker briefs must say so.
+
+**A `git commit` IS a gate action** — the pre-commit hook runs the sweep,
+so "commit your work first, gate later" briefs fire un-batoned gates.
+Briefs must have workers batch work into ONE commit, made FOREGROUND (a
+detached command never wakes its session), under the same baton as the
+gate/push it precedes. Rebases don't run hooks; commits and pushes do.
+Cross-repo neighbors can't be batoned — check `uptime` before handing it,
+and expect some ambient load.
+
+## Model mix
+
+- **Implementation: opus.** A plan may assign sonnet to a specific
+  *mechanical* item (scripted rebase, gate run, issue filing) with stated
+  reasons; a plan table may not change the implementation default.
+- **Review and QA: sonnet — including the gated class** (security,
+  isolation/containment, auth, DB schema, spawn path). The gated class
+  raises review *rigor* (opinion-agent panel, mutation checks, adversarial
+  verification), not the review model tier. A reviewer outclassing the
+  implementer is inverted waste — review hunts blind spots in an existing
+  synthesis, which is easier than the synthesis.
+- **Sonnet never takes diagnostic or difficult/tricky problems** (hang
+  diagnosis, hard debugging, subtle races) — those are opus work.
+- **Fable: never for implementation or QA** unless specifically
+  authorized — long-horizon planning only.
+- **No session of any tier idles hot.** If the next action is "wait for
+  X", record the resume point in the ledger and end the turn.
+
 ## Handling stuck workers
 
 Phase scripts emit `{ action: "wait", reason }` when waiting on external
@@ -782,7 +890,8 @@ When ≤2 sessions are active:
 2. Start `/sprint plan` for the next sprint while the last sessions finish
 3. After all sessions complete: report merged / failed / in-progress via
    `mcx tracked --json`
-4. `mcx untrack` any remaining items
+4. `mcx untrack` any remaining items — **by issue number only** (#3240: a
+   PR number silently deletes a different item)
 5. `mcx gc` to prune merged branches and stale worktrees
 6. Confirm no concurrent cross-repo sprints (#1250)
 7. `git checkout main && git pull && bun run build`

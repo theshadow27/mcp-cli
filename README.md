@@ -310,7 +310,7 @@ mcx monitor --max-events 1                   # exit after N events
 mcx monitor --response-tail <id>             # include session.response chunks (debug)
 ```
 
-Event types include `session.idle`, `session.result`, `session.permission_request`, `session.stuck`, `ci.started` / `ci.running` / `ci.finished` (with per-check conclusions + `allGreen`), `pr.merge_state_changed` (with `cascadeHead`), `pr.review_comment_posted`, `work_item.phase_changed`, `cost.session_over_budget` / `cost.sprint_over_budget`, `quota.utilization_threshold`, `daemon.restarted`, `worker.ratelimited`.
+Event types include `session.idle`, `session.result`, `session.permission_request`, `session.stuck`, `ci.started` / `ci.running` / `ci.finished` (with per-check conclusions + `allGreen`), `pr.merge_state_changed` (with `cascadeHead`), `pr.review_comment_posted`, `phase.changed`, `cost.session_over_budget` / `cost.sprint_over_budget`, `quota.utilization_threshold`, `daemon.restarted`, `worker.ratelimited`.
 
 Payloads come pre-enriched — `cost`, `turns`, `lastTool`, `resultPreview`, `allGreen`, etc. — so orchestrators react push-shaped without a 5-lookup hydration loop. This is the load-bearing primitive for the `/sprint` skill; see [.claude/skills/sprint/README.md](.claude/skills/sprint/README.md).
 
