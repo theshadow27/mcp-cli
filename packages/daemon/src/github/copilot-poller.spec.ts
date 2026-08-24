@@ -22,6 +22,7 @@ import {
   type IssueComment,
   type PRComment,
   parsePrNumberFromUrl,
+  repoDetectBackoffMs,
 } from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
 import { createCopilotStateDb } from "./test-helpers";
@@ -310,22 +311,55 @@ describe("CopilotPoller", () => {
       expect(events).toHaveLength(0);
     });
 
-    test("repo detection failure caches after 3 attempts", async () => {
+    test("repo detection failure backs off, but never gives up permanently (#3243)", async () => {
       let attempts = 0;
+      let now = 0;
       const { poller } = makePoller({
         detectRepo: async () => {
           attempts++;
           throw new Error("no git remote");
         },
+        now: () => now,
+      });
+
+      // First attempt tries and fails, arming a backoff window.
+      await poller.poll();
+      expect(attempts).toBe(1);
+
+      // Polls landing inside the backoff window are skipped — but pollCount still
+      // advances (this is a temporary backoff, not a permanent dead poller).
+      await poller.poll();
+      await poller.poll();
+      expect(attempts).toBe(1);
+      expect(poller.pollCount).toBe(3);
+
+      // Once the backoff window elapses, it retries again.
+      now += repoDetectBackoffMs(1);
+      await poller.poll();
+      expect(attempts).toBe(2);
+    });
+
+    test("repo detection recovers once detectRepo starts succeeding again (#3243)", async () => {
+      let now = 0;
+      let shouldFail = true;
+      const { poller } = makePoller({
+        detectRepo: async () => {
+          if (shouldFail) throw new Error("no git remote");
+          return TEST_REPO;
+        },
+        now: () => now,
       });
 
       await poller.poll();
-      await poller.poll();
-      await poller.poll();
-      await poller.poll(); // Should be skipped
+      expect(poller.lastError).toBe("no git remote");
+      expect(poller.repo).toBeNull();
 
-      expect(attempts).toBe(3);
-      expect(poller.pollCount).toBe(4);
+      shouldFail = false;
+      now += repoDetectBackoffMs(1);
+      await poller.poll();
+
+      expect(poller.repo).toEqual(TEST_REPO);
+      expect(poller.lastError).toBeNull();
     });
 
     test("repo-scoped fetch error skips inline comments but reviews still work", async () => {
@@ -1160,5 +1194,14 @@ describe("CopilotPoller", () => {
 
       expect(stateDb.getSeenIssueCommentIds(50)).toContain(9001);
     });
+  });
+});
+
+describe("repoDetectBackoffMs", () => {
+  test("doubles from the base for each consecutive failure, capped at 15 minutes", () => {
+    expect(repoDetectBackoffMs(1)).toBe(30_000);
+    expect(repoDetectBackoffMs(2)).toBe(60_000);
+    expect(repoDetectBackoffMs(3)).toBe(120_000);
+    expect(repoDetectBackoffMs(10)).toBe(15 * 60_000);
   });
 });

@@ -37,6 +37,17 @@ const RATE_LIMIT_INTERVAL_MS = 300_000;
 const RATE_LIMIT_WARN_THRESHOLD = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
 
+// Repo detection retry backoff (#3243) — same reasoning and schedule as
+// WorkItemPoller's identical pattern in work-item-poller.ts: never give up
+// permanently, back off with a cap instead.
+const REPO_DETECT_BACKOFF_BASE_MS = 30_000;
+const REPO_DETECT_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** Capped exponential backoff delay for the Nth consecutive repo-detect failure (N ≥ 1). */
+export function repoDetectBackoffMs(failureCount: number): number {
+  return Math.min(REPO_DETECT_BACKOFF_BASE_MS * 2 ** (failureCount - 1), REPO_DETECT_BACKOFF_MAX_MS);
+}
+
 // ── Types ──
 
 interface PollItemResult {
@@ -114,6 +125,8 @@ export interface CopilotPollerOptions {
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   getToken?: () => Promise<string>;
   onEvent?: (event: MonitorEventInput) => void;
+  /** Injected for testing — override Date.now(). */
+  now?: () => number;
 }
 
 // ── Poller ──
@@ -131,6 +144,8 @@ export class CopilotPoller {
   private polling = false;
   private stopped = false;
   private repoDetectFailures = 0;
+  /** Epoch ms (per `nowFn`) before which repo detection is skipped — capped backoff, never permanent. */
+  private nextRepoDetectAttemptMs = 0;
   private rateLimitBackoff = false;
   private fetchRepoCommentsFn: NonNullable<CopilotPollerOptions["fetchRepoComments"]>;
   private fetchReviewsFn: NonNullable<CopilotPollerOptions["fetchReviews"]>;
@@ -138,6 +153,7 @@ export class CopilotPoller {
   private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
   private getTokenFn: NonNullable<CopilotPollerOptions["getToken"]>;
   private onEvent: (event: MonitorEventInput) => void;
+  private nowFn: () => number;
 
   constructor(opts: CopilotPollerOptions) {
     this.workItemDb = opts.workItemDb;
@@ -156,6 +172,7 @@ export class CopilotPoller {
     // derivation of the same field EventBus already owns, so it was removed rather than
     // kept alongside the repoRoot path.
     this.onEvent = opts.onEvent ?? ((): void => {});
+    this.nowFn = opts.now ?? (() => Date.now());
   }
 
   get lastError(): string | null {
@@ -204,17 +221,25 @@ export class CopilotPoller {
     if (this.polling || this.stopped) return;
     this.polling = true;
     try {
+      // Capped exponential backoff on failure, retried forever — never gives up
+      // permanently (#3243). See WorkItemPoller.poll() for the identical reasoning.
       if (!this._repo) {
-        if (this.repoDetectFailures >= 3) {
+        const now = this.nowFn();
+        if (now < this.nextRepoDetectAttemptMs) {
           this._pollCount++;
           return;
         }
         try {
           this._repo = await this.detectRepoFn();
+          this.repoDetectFailures = 0;
         } catch (err) {
           this.repoDetectFailures++;
           const msg = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`[mcpd] CopilotPoller repo detection failed (attempt ${this.repoDetectFailures}/3): ${msg}`);
+          const delayMs = repoDetectBackoffMs(this.repoDetectFailures);
+          this.nextRepoDetectAttemptMs = now + delayMs;
+          this.logger.warn(
+            `[mcpd] CopilotPoller repo detection failed (attempt ${this.repoDetectFailures}): ${msg} — retrying in ${Math.round(delayMs / 1000)}s`,
+          );
           this._lastError = msg;
           this._pollCount++;
           return;

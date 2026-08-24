@@ -229,31 +229,50 @@ export async function cmdMonitor(args: string[], deps?: Partial<MonitorDeps>): P
     d.exit(code);
   };
 
-  const silenceSecs = () => Math.round(d.livenessTimeoutMs / 1000);
+  const silenceSecs = (ms: number) => Math.round(ms / 1000);
+
+  // Backoff for repeat "still watching" warnings (#3243): a real daemon heartbeat now
+  // resets this watchdog every EVENTBUS_HEARTBEAT_MS (15s), so firing at all means the
+  // transport itself has gone quiet, not merely "no business events yet". That's worth
+  // one loud warning — but re-arming at the same base interval forever repeats an
+  // unchanged fact (10x over a 15-minute silent window before this fix). Each
+  // consecutive silent fire doubles the wait before the next one, capped at
+  // WATCHDOG_BACKOFF_MAX_MULTIPLIER × base, so a truly dead-but-alive daemon still gets
+  // periodic reminders without spamming. A real event (armWatchdog from the receive
+  // loop) resets the backoff back to base.
+  const WATCHDOG_BACKOFF_MAX_MULTIPLIER = 8;
+  let currentWatchdogMs = d.livenessTimeoutMs;
 
   // Liveness watchdog (#2508): a passive monitor must never silently outlive the
-  // daemon it is bound to. Re-armed on every received event; if it fires, the
-  // channel has been silent past the heartbeat window. Probe the daemon: if its
-  // PID/socket are gone, the daemon is a corpse — exit loudly instead of hanging
-  // blind. If the process is somehow still alive, warn and keep watching.
-  const armWatchdog = () => {
+  // daemon it is bound to. Re-armed at base interval on every received event; if it
+  // fires, the channel has been silent past the heartbeat window. Probe the daemon: if
+  // its PID/socket are gone, the daemon is a corpse — exit loudly instead of hanging
+  // blind. If the process is somehow still alive, warn (with backoff) and keep
+  // watching.
+  const scheduleWatchdog = (waitMs: number) => {
     if (d.livenessTimeoutMs <= 0) return;
     clearWatchdog();
     watchdogId = (d.createTimeout ?? setTimeout)(() => {
       if (done) return;
       if (!d.checkDaemonLiveness()) {
         d.writeStderr(
-          `monitor: bound daemon is not responding — no events or heartbeat for ${silenceSecs()}s and its PID/socket are gone. The daemon has died; exiting so you are not left blind.\n`,
+          `monitor: bound daemon is not responding — no events or heartbeat for ${silenceSecs(waitMs)}s and its PID/socket are gone. The daemon has died; exiting so you are not left blind.\n`,
         );
         finish(3);
       } else {
         d.writeStderr(
-          `monitor: warning — no daemon heartbeat for ${silenceSecs()}s, but the daemon PID is alive. Still watching.\n`,
+          `monitor: warning — no daemon heartbeat for ${silenceSecs(waitMs)}s, but the daemon PID is alive. Still watching.\n`,
         );
-        armWatchdog();
+        currentWatchdogMs = Math.min(currentWatchdogMs * 2, d.livenessTimeoutMs * WATCHDOG_BACKOFF_MAX_MULTIPLIER);
+        scheduleWatchdog(currentWatchdogMs);
       }
-    }, d.livenessTimeoutMs) as ReturnType<typeof setTimeout>;
+    }, waitMs) as ReturnType<typeof setTimeout>;
     watchdogId.unref?.();
+  };
+
+  const armWatchdog = () => {
+    currentWatchdogMs = d.livenessTimeoutMs;
+    scheduleWatchdog(currentWatchdogMs);
   };
 
   if (parsed.timeout !== undefined) {
