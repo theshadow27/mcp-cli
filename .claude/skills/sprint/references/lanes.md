@@ -101,18 +101,22 @@ labels, CI) with a time fallback, all built-in — no bespoke bash:
 4. On wake: act on the event, or on timeout re-verify ground truth
    (worktree git state, `gh pr list`, `ps` for gates), then re-arm and
    end the turn.
-9. **Model mix (operator ruling, 2026-08-24).** Implementation: opus
-   (or per the plan table). Review: **sonnet, always — including the
-   gated class.** The gated class (security, isolation/containment,
+9. **Model mix.** Implementation: **opus.** A plan may assign sonnet
+   to a specific *mechanical* item (scripted rebase, gate run, issue
+   filing) with stated reasons; a plan table may not change the
+   implementation default (sprint 79: a quota-lean "implementers
+   default sonnet" table put sonnet on diagnostic work). **Fable:
+   never for implementation or QA** unless specifically authorized —
+   long-horizon planning only — and no session of any tier idles
+   hot. Review: **sonnet — including the gated class.** The gated class (security, isolation/containment,
    auth, DB schema, spawn path) raises review *rigor* — the
    opinion-agent panel in `adversarial-review.md` on round 1, mutation
    checks, adversarial verification — not the review model tier. A
    reviewer outclassing the implementer is inverted waste: review hunts
    blind spots in an existing synthesis, which is easier than the
    synthesis; spend the stronger model on implementation instead.
-   **Fable: never for implementation or review unless the operator
-   specifically authorizes it** — its edge is long-horizon planning,
-   and its spend is unsustainable for dev work.
+   **Sonnet: never for diagnostic or difficult/tricky problems** (hang
+   diagnosis, hard debugging, subtle races); those are opus work.
 
 ### The gate baton (sprint 79, operator-directed)
 
@@ -126,6 +130,13 @@ hands the baton to exactly one worker at a time, ordered by
 readiness/priority (finishing pipelines before starting new ones).
 Worker briefs must say so. Cross-session neighbors can't be batoned —
 check `uptime` before handing it, and expect some ambient load.
+
+**A `git commit` IS a gate action** — the pre-commit hook runs the
+sweep, so "commit your work first, gate later" briefs fire un-batoned
+gates (sprint 79: two finishers + one push ran three concurrent gates
+off exactly that wording). Briefs must have workers batch work into ONE
+commit, made FOREGROUND, under the same baton as the gate/push it
+precedes. Rebases don't run hooks; commits and pushes do.
 
 ### Merging: the phase-run path (sprint 79)
 

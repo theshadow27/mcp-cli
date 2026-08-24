@@ -167,3 +167,47 @@ Weekly quota is ~82% consumed. Hard rules for this sprint: no opus outside
 critical at run start, run lane 1 only (it is mostly verification and
 merges, the cheapest path to "epic A done"). The orchestrator ends its turn
 whenever all lanes are waiting — no idle-hot polling.
+
+## Mid-sprint amendments (2026-08-24)
+
+- **Lane 2 (#3047, #3048) SPIKED to sprint-80 planning.** The plan's quota
+  gate (`quota_status` before each lane start) was unexecutable — quota
+  monitoring is dead on Linux, which is #3223 itself — and the orchestrator
+  improvised a "pending operator confirmation" hold instead of spiking.
+  Operator ruling: a sprint runs unattended end-to-end; mid-sprint human
+  gates are a planning + operational failure; surprises hold to next
+  planning. Both items stay tracked (phase impl) and carry to sprint 80,
+  where the quota call is made with the human in the loop.
+- Off-plan directive lanes this sprint (operator-directed, QoL/security
+  budget): #3232 (upgrade symlink→atomic copy), #3234 (idle-shutdown
+  inhibit), #3261 (am-i-done 5-min hard timeout). Serialized on the gate
+  baton behind lane-1 merges.
+- Retro item: write the no-mid-sprint-human-gates rule into
+  `references/plan.md` + `lanes.md` (it was implied by "unattended", not
+  stated).
+
+## Results (2026-08-24)
+
+| # | PR | Outcome |
+|---|----|---------|
+| 3035 | #3160 | merged |
+| 3043 | #3181 | merged |
+| 3039 | #3168 | merged (includes #3199 structural fix) |
+| 3037 | #3175 | merged |
+| 3038 | #3200 | merged — epic A chain complete |
+| 3170 | #3258 | merged |
+| 3047 | — | spiked to sprint-80 planning |
+| 3048 | — | spiked to sprint-80 planning |
+| 3055 | #3222 | merged |
+| 3119 | #3137 | merged |
+| 3212 | #3228 | already merged 08-23 (stale ledger row; lane no-op'd) |
+| 3066 | #3253 | merged |
+| 3223 | #3227 | already merged 08-23 (stale ledger row; live symptom = stale daemon binary, #3264) |
+| 3232* | #3263 | merged (operator directive) |
+| 3234* | #3267 | merged after 2 repair rounds (r1 widened poll margins — symptom; r2 root cause: test cancelled the stream reader instead of aborting the stream) |
+| 3261* | #3268 | merged (operator directive; am-i-done hard deadline) |
+| meta | #3270 | merged (in-repo memory doctrine) |
+
+\* off-plan operator-directive lanes under the QoL/security budget.
+
+No release (v2.0.0 hold). Retro: `.claude/diary/20260824.79.md`.
