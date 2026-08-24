@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
@@ -303,16 +303,16 @@ describe("cmdUpgrade full flow", () => {
     return new Uint8Array(data);
   }
 
-  test("downloads, extracts, verifies, and installs into a versioned dir with stable symlinks", async () => {
+  test("downloads, extracts, verifies, and installs into a versioned dir with real file copies", async () => {
     const tarball = await createTarball();
 
-    // Simulate a pre-existing install (a prior version's symlinks) to prove
-    // the old binaries are untouched and only the symlink target moves.
+    // Simulate a pre-existing install (a prior version's copy) to prove the
+    // old versioned binary is untouched and only the bin-dir copy changes.
     const oldVersionDir = versionDir("1.0.0");
     mkdirSync(oldVersionDir, { recursive: true });
     writeFileSync(join(oldVersionDir, "mcx"), "old-mcx", { mode: 0o755 });
     mkdirSync(binDir(), { recursive: true });
-    symlinkSync(join(oldVersionDir, "mcx"), join(binDir(), "mcx"));
+    copyFileSync(join(oldVersionDir, "mcx"), join(binDir(), "mcx"));
 
     const updateResult: UpdateCheckResult = {
       current: "1.0.0",
@@ -353,11 +353,22 @@ describe("cmdUpgrade full flow", () => {
 
     // The prior version's files are untouched (installs are additive, not overwritten in place).
     expect(existsSync(join(oldVersionDir, "mcx"))).toBe(true);
+    expect(readFileSync(join(oldVersionDir, "mcx"), "utf-8")).toBe("old-mcx");
 
-    // The stable $PATH-facing symlink now points at the new version.
-    const linkPath = join(binDir(), "mcx");
-    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(linkPath)).toBe(join(versionDir("2.0.0"), "mcx"));
+    // The $PATH-facing file is a real copy, never a symlink (#3231: a
+    // symlink install is the root cause this rewrite exists to eliminate),
+    // and its content now matches the newly installed version, not the old one.
+    const target = join(binDir(), "mcx");
+    expect(lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(lstatSync(target).isFile()).toBe(true);
+    expect(readFileSync(target, "utf-8")).toBe(readFileSync(join(versionDir("2.0.0"), "mcx"), "utf-8"));
+    expect(readFileSync(target, "utf-8")).not.toBe("old-mcx");
+
+    // The executable bit survives the copy.
+    expect(statSync(target).mode & 0o111).not.toBe(0);
+
+    // No leftover backup files after a successful install.
+    expect(existsSync(`${target}.bak-${process.pid}`)).toBe(false);
 
     // Stage dir should be cleaned up
     expect(existsSync(join(options.MCP_CLI_DIR, "staged"))).toBe(false);

@@ -3,12 +3,25 @@
  *
  * Install layout (owned by mcx, never a git checkout — see #3231/#3232):
  *   ~/.mcp-cli/bin/versions/<version>/{mcx,mcpd,mcpctl}   versioned, immutable once installed
- *   ~/.mcp-cli/bin/{mcx,mcpd,mcpctl}                       stable symlinks → the active version
+ *   ~/.mcp-cli/bin/{mcx,mcpd,mcpctl}                       the active version, by real file copy
  *                                                           (this is the directory install.sh
  *                                                           already tells users to put on $PATH)
  *
+ * The $PATH-facing files are installed by COPY, never a symlink. #3231's
+ * evidence was a symlink from `~/.local/bin/{mcx,mcpd,mcpctl}` into this
+ * repo's `dist/` — a plain `bun build` in the dev tree silently rewrote the
+ * file backing the production daemon's `$PATH` entry out from under it.
+ * `versions/<version>/` here is an mcx-owned directory, not a git checkout,
+ * so that specific failure mode doesn't apply to it — but a blanket "copy,
+ * never symlink" policy for the install step is simpler to reason about and
+ * audit than "symlink, except when the target is safe," so that's the rule.
+ * Each copy is staged as a sibling temp file and `rename()`d over the old
+ * one — atomic on POSIX, so a running daemon that already has the old file
+ * open keeps executing the detached old inode until it restarts; readers
+ * never see a partially-written binary.
+ *
  * A running daemon is NOT restarted automatically — an upgrade only swaps
- * the on-disk symlinks, and a live daemon keeps running against its
+ * the on-disk files, and a live daemon keeps running against its
  * already-loaded binary until explicitly restarted. This is a deliberate
  * "restart required" policy for this iteration (#3232): automatically
  * killing a daemon mid-upgrade could drop in-flight tracked work items and
@@ -22,16 +35,7 @@
  *   --json / -j   JSON output
  */
 
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readlinkSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  unlinkSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BUILD_VERSION, options } from "@mcp-cli/core";
 import {
@@ -250,9 +254,9 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   // Install: an owned, versioned location under MCP_CLI_DIR — never derived
   // from where the currently-running binary happens to live (that could be
   // a git worktree's dist/, see #3231). `<bin>/versions/<version>/` is
-  // immutable once installed; `<bin>/{mcx,mcpd,mcpctl}` are stable symlinks
-  // into it, matching the directory scripts/install.sh already tells users
-  // to put on $PATH.
+  // immutable once installed; `<bin>/{mcx,mcpd,mcpctl}` are real file
+  // copies of it (never symlinks — see the file header), matching the
+  // directory scripts/install.sh already tells users to put on $PATH.
   const binDir = join(options.MCP_CLI_DIR, "bin");
   const versionDir = join(binDir, "versions", release.version);
   d.error(`Installing ${release.version} → ${versionDir}...`);
@@ -281,30 +285,49 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  // Phase 2: atomically repoint the stable symlinks at the new version.
-  // Best-effort rollback to the previous target if any relink fails partway.
+  // Phase 2: atomically COPY each versioned binary into the $PATH-facing
+  // bin dir (never a symlink — see file header). Each target file is
+  // backed up before being overwritten; best-effort rollback to that
+  // backup if a later copy in this batch fails partway.
   mkdirSync(binDir, { recursive: true });
-  const relinked: Array<{ link: string; previousTarget: string | null }> = [];
+  const installed: Array<{ target: string; backupPath: string | null }> = [];
   try {
-    for (const [, target] of toInstall) {
-      const name = basename(target);
-      const linkPath = join(binDir, name);
-      const previousTarget = readSymlink(linkPath);
-      relinkAtomic(linkPath, target);
-      relinked.push({ link: linkPath, previousTarget });
+    for (const [, versionedPath] of toInstall) {
+      const name = basename(versionedPath);
+      const target = join(binDir, name);
+      const backupPath = existsSync(target) ? `${target}.bak-${process.pid}` : null;
+      if (backupPath) copyFileSync(target, backupPath);
+      copyAtomic(versionedPath, target);
+      installed.push({ target, backupPath });
     }
   } catch (err) {
-    d.error(`Symlink swap failed: ${err instanceof Error ? err.message : String(err)}`);
-    for (const { link, previousTarget } of relinked) {
+    d.error(`Install to ${binDir} failed: ${err instanceof Error ? err.message : String(err)}`);
+    for (const { target, backupPath } of installed) {
       try {
-        if (previousTarget) relinkAtomic(link, previousTarget);
+        if (backupPath) copyAtomic(backupPath, target);
       } catch {
         /* best effort rollback */
+      }
+    }
+    for (const { backupPath } of installed) {
+      try {
+        if (backupPath) unlinkSync(backupPath);
+      } catch {
+        /* best effort */
       }
     }
     cleanup(stageDir);
     process.exitCode = 1;
     return;
+  }
+
+  // Success: drop the backups.
+  for (const { backupPath } of installed) {
+    try {
+      if (backupPath) unlinkSync(backupPath);
+    } catch {
+      /* best effort */
+    }
   }
 
   cleanup(stageDir);
@@ -323,7 +346,7 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   } else {
     d.log(`Updated ${result.current} → ${result.latest}`);
     d.log(`Installed to ${versionDir}`);
-    d.log(`${binDir}/{mcx,mcpd,mcpctl} now point at ${release.version}`);
+    d.log(`${binDir}/{mcx,mcpd,mcpctl} now match ${release.version}`);
     d.log(
       "Restart required: a running daemon keeps using its already-loaded binary until you run 'mcx daemon restart'.",
     );
@@ -352,29 +375,26 @@ function moveFile(src: string, dst: string): void {
   }
 }
 
-/** Read a symlink's target, or null if `linkPath` doesn't exist / isn't a symlink. */
-function readSymlink(linkPath: string): string | null {
-  try {
-    return readlinkSync(linkPath);
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Point `linkPath` at `target`, atomically on POSIX (create a sibling
- * symlink, then rename over the old one — never a window with no link or a
- * half-written one).
+ * Install `src`'s bytes at `dst` as a real file copy, atomically on POSIX:
+ * copy to a sibling temp file (preserving `src`'s permissions, notably the
+ * executable bit), then `rename()` over the old one. A process that already
+ * has `dst` open (e.g. a running daemon executing its own binary) keeps
+ * running against the detached old inode — rename never truncates or
+ * rewrites a file a live process is using, and there is never a window
+ * where `dst` is missing or half-written. This is a copy, never a symlink
+ * — see the file header for why that distinction matters here (#3231).
  */
-function relinkAtomic(linkPath: string, target: string): void {
-  const tmpLink = `${linkPath}.new-${process.pid}`;
+function copyAtomic(src: string, dst: string): void {
+  const tmp = `${dst}.new-${process.pid}`;
   try {
-    unlinkSync(tmpLink);
+    unlinkSync(tmp);
   } catch {
     /* didn't exist */
   }
-  symlinkSync(target, tmpLink);
-  renameSync(tmpLink, linkPath);
+  copyFileSync(src, tmp);
+  chmodSync(tmp, statSync(src).mode);
+  renameSync(tmp, dst);
 }
 
 function formatBytes(bytes: number): string {
