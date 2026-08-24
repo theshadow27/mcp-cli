@@ -137,6 +137,14 @@ old name (a running domain worker, log correlation, an MCP handshake identity) s
 change. What a rename does to a running worker is the worker section's to state, not this
 one's.
 
+**Mail is one of those "something currently holding the old name" cases.** A cross-domain
+message's stored `sender` is `local@domain-name`, not `local@domain-id` — the whole point is
+a human-readable return address (see "Cross-domain delivery" below). A `rename` or `rm`
+after such a message was sent leaves that stamped name unresolvable: every reply throws
+`unknown domain`. That is fail-loud, not a leak, so it is not a partition defect — but it is
+undocumented behavior worth knowing before renaming a domain with outstanding cross-domain
+mail (#3038 review finding #10; tracked for a fix in a follow-up, not this PR).
+
 `rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
 cascades. Silently orphaning a thousand work items because a name was typed twice is not a
 recoverable state, so the refusal is the default and the cascade is the flag.
@@ -513,16 +521,26 @@ command has not shipped.** Partition 0 is reachable by name for exactly that rea
 the partition, because:
 
 - The row is written into the **recipient's** partition and is readable only there. No
-  query anywhere returns rows from more than one partition, so a domain can never
-  *observe* another domain's traffic — only receive a message a named sender addressed
-  to it.
+  query anywhere returns rows from more than one partition without the caller naming
+  which one — see the `-d` caveat below.
 - The stored `sender` is rewritten to `local@sender-domain`, so the reply routes back
   across the boundary instead of hitting a same-named mailbox at home.
 - A sender may only qualify itself with its own domain. Otherwise a caller could stamp a
   message as coming from elsewhere and steer the reply into that domain — and because a
   local part cannot contain `@`, that check cannot be bypassed by burying a second
-  address in the local half.
+  address in the local half. This is a **typo guard, not an authenticity guard**: it
+  stops an accidental cross-domain reply-to, not a deliberate one — any caller can still
+  pass `-d beta --from whoever` and have `beta` accept it as a local send.
 - An unknown domain in an address errors at **send** time, not as a row nobody reads.
+
+**`-d` is an unauthenticated cross-partition operation, by design.** `resolveCallerDomain`
+accepts any registered domain name (or `_`) from any caller in any directory — there is no
+notion of "this caller is allowed to act as domain X." That is consistent with the rest of
+mcx: every other domain-scoped surface takes `-d` the same way, and partitioning exists to
+stop *accidental* cross-domain traffic (the leak this PR was written to close), not to
+authenticate callers against each other. So: no query returns rows from more than one
+partition *in a single call*, but a caller who names another domain with `-d` reads or
+writes there exactly as if they were inside it.
 
 Partition 0 participates on the same terms as any named domain: it can address others and
 be addressed, and a reply to a message it sent routes home rather than landing on a

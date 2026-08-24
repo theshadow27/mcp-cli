@@ -181,7 +181,7 @@ export class MailServer {
             const limit = a.limit !== undefined ? Number(a.limit) : undefined;
             const caller = resolveCallerDomain(this.db, toolScope(a));
             const messages = this.db.readMail(caller.id, recipient, unreadOnly, limit);
-            return { content: [{ type: "text" as const, text: JSON.stringify({ messages }) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ messages, domain: caller.name }) }] };
           }
 
           case "_mail_wait": {
@@ -195,15 +195,21 @@ export class MailServer {
 
             while (Date.now() < deadline) {
               if (this.stopped)
-                return { content: [{ type: "text" as const, text: JSON.stringify({ message: null }) }] };
+                return {
+                  content: [{ type: "text" as const, text: JSON.stringify({ message: null, domain: caller.name }) }],
+                };
               const msg = this.db.getNextUnread(caller.id, recipient);
               if (msg) {
                 this.db.markMailRead(msg.id, caller.id);
-                return { content: [{ type: "text" as const, text: JSON.stringify({ message: msg }) }] };
+                return {
+                  content: [{ type: "text" as const, text: JSON.stringify({ message: msg, domain: caller.name }) }],
+                };
               }
               await Bun.sleep(500);
             }
-            return { content: [{ type: "text" as const, text: JSON.stringify({ message: null }) }] };
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ message: null, domain: caller.name }) }],
+            };
           }
 
           case "_mail_reply": {

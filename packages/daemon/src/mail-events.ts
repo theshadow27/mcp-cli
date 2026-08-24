@@ -20,8 +20,11 @@ export function publishMailSent(
     recipient: string;
     /** The partition the message was delivered into. Required — see #3038. */
     domainId: number;
-    /** The resolved domain's name, or `null` for the unassigned partition, which has none. */
-    domain: string | null;
+    /**
+     * The resolved domain's name. Always present — partition 0 is a named partition
+     * (`UNASSIGNED_DOMAIN_NAME`, `_`), not a nameless carve-out; see #3038.
+     */
+    domain: string;
   },
 ): void {
   if (!eventBus) return;
@@ -33,7 +36,7 @@ export function publishMailSent(
     sender: opts.sender,
     recipient: opts.recipient,
     // Carried on every mail event so a monitor consumer can filter by partition without
-    // a second lookup. `domainId` is always present; `domain` is null for partition 0.
+    // a second lookup.
     domainId: opts.domainId,
     domain: opts.domain,
   };

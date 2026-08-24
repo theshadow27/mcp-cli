@@ -48,7 +48,7 @@ export class MailHandlers {
       const { recipient, unreadOnly, limit, cwd, domain } = ReadMailParamsSchema.parse(params ?? {});
       const caller = resolveCallerDomain(this.db, { cwd, domain });
       const messages = this.db.readMail(caller.id, recipient, unreadOnly, limit);
-      return { messages };
+      return { messages, domain: caller.name };
     });
 
     handlers.set("waitForMail", async (params, _ctx) => {
@@ -61,15 +61,15 @@ export class MailHandlers {
       const deadline = Date.now() + maxWait;
 
       while (Date.now() < deadline) {
-        if (this.isDraining()) return { message: null };
+        if (this.isDraining()) return { message: null, domain: caller.name };
         const msg = this.db.getNextUnread(caller.id, recipient);
         if (msg) {
           this.db.markMailRead(msg.id, caller.id);
-          return { message: msg };
+          return { message: msg, domain: caller.name };
         }
         await Bun.sleep(500);
       }
-      return { message: null };
+      return { message: null, domain: caller.name };
     });
 
     handlers.set("replyToMail", async (params, _ctx) => {

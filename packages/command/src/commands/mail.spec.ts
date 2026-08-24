@@ -277,11 +277,33 @@ describe("cmdMail", () => {
 
   test("read mode shows no mail message", async () => {
     const d = testDeps({
-      ipcCall: (async () => ({ messages: [] })) as MailDeps["ipcCall"],
+      ipcCall: (async () => ({ messages: [], domain: "phoenix" })) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-H"], d);
     expect(d.state.stderr).toContain("No mail");
+  });
+
+  /**
+   * #3038 review finding #9: an empty mailbox and a wrong-partition read must not read
+   * as the same message. The daemon names the resolved partition; the CLI must show it.
+   */
+  test("empty read names the partition it searched", async () => {
+    const d = testDeps({
+      ipcCall: (async () => ({ messages: [], domain: "phoenix" })) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-H"], d);
+    expect(d.state.stderr).toContain('No mail in domain "phoenix".');
+  });
+
+  test("empty read in the unassigned partition names it too", async () => {
+    const d = testDeps({
+      ipcCall: (async () => ({ messages: [], domain: "_" })) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-H"], d);
+    expect(d.state.stderr).toContain('No mail in domain "_".');
   });
 
   test("reply mode calls replyToMail", async () => {
@@ -416,12 +438,28 @@ describe("cmdMail", () => {
       now: () => start + callCount * 31_000, // Each call advances 31s past the 30s server timeout
       ipcCall: (async () => {
         callCount++;
-        return { message: null };
+        return { message: null, domain: "phoenix" };
       }) as MailDeps["ipcCall"],
     });
 
     await expect(cmdMail(["--wait", "--timeout=5"], d)).rejects.toThrow("exit(1)");
     expect(d.state.stderr).toContain("Timeout");
+  });
+
+  /** #3038 review finding #9, wait's half: same ambiguity, same fix. */
+  test("wait timeout names the partition it searched", async () => {
+    let callCount = 0;
+    const start = Date.now();
+    const d = testDeps({
+      now: () => start + callCount * 31_000,
+      ipcCall: (async () => {
+        callCount++;
+        return { message: null, domain: "phoenix" };
+      }) as MailDeps["ipcCall"],
+    });
+
+    await expect(cmdMail(["--wait", "--timeout=5"], d)).rejects.toThrow("exit(1)");
+    expect(d.state.stderr).toContain('Timeout: no mail received in domain "phoenix".');
   });
 
   test("--help prints usage and returns", async () => {

@@ -775,10 +775,18 @@ export interface SendMailResult {
 
 export interface ReadMailResult {
   messages: MailMessage[];
+  /**
+   * The partition this read resolved to (`_` for the unassigned partition). Callers use
+   * this to name the partition in an empty result, so "no mail" and "wrong partition"
+   * don't read as the same message (#3038 review finding #9).
+   */
+  domain: string;
 }
 
 export interface WaitForMailResult {
   message: MailMessage | null;
+  /** Same as {@link ReadMailResult.domain}. */
+  domain: string;
 }
 
 export interface ReplyToMailResult {

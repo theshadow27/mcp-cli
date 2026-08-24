@@ -299,10 +299,10 @@ async function cmdRead(parsed: MailArgs, d: MailDeps): Promise<void> {
     unreadOnly: !parsed.user,
     limit: 50,
     ...mailScope(parsed, d),
-  })) as { messages: MailMessage[] };
+  })) as { messages: MailMessage[]; domain: string };
 
   if (result.messages.length === 0) {
-    d.writeStderr("No mail.\n");
+    d.writeStderr(`No mail in domain "${result.domain}".\n`);
     return;
   }
 
@@ -329,6 +329,7 @@ async function cmdRead(parsed: MailArgs, d: MailDeps): Promise<void> {
 async function cmdWait(parsed: MailArgs, _sender: string, d: MailDeps): Promise<void> {
   const deadline = d.now() + parsed.timeout * 1000;
   const recipient = parsed.forRecipient;
+  let domain: string | undefined;
 
   while (d.now() < deadline) {
     const remaining = Math.ceil((deadline - d.now()) / 1000);
@@ -339,7 +340,8 @@ async function cmdWait(parsed: MailArgs, _sender: string, d: MailDeps): Promise<
       recipient,
       timeout: serverTimeout,
       ...mailScope(parsed, d),
-    })) as { message: MailMessage | null };
+    })) as { message: MailMessage | null; domain: string };
+    domain = result.domain;
 
     if (result.message) {
       d.writeStdout(`${JSON.stringify(result.message)}\n`);
@@ -347,6 +349,8 @@ async function cmdWait(parsed: MailArgs, _sender: string, d: MailDeps): Promise<
     }
   }
 
-  d.writeStderr("Timeout: no mail received.\n");
+  d.writeStderr(
+    domain !== undefined ? `Timeout: no mail received in domain "${domain}".\n` : "Timeout: no mail received.\n",
+  );
   d.exit(1);
 }

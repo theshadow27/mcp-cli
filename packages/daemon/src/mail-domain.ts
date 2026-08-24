@@ -87,16 +87,31 @@ function toMailDomain(domain: Domain): MailDomain {
   return { id: domain.id, name: domain.name };
 }
 
+function hostBoundError(domain: Domain): Error {
+  return invalidParams(
+    `domain ${JSON.stringify(domain.name)} is host-bound (${domain.host}) — cross-host mail routing is not implemented`,
+  );
+}
+
 /**
  * Look up a domain **by name**, including the reserved name for partition 0.
  *
  * Single lookup path so `-d _` and `user@_` cannot disagree about what `_` means.
  * Returns `null` for a name that is neither reserved nor registered; callers throw.
+ *
+ * Refuses a host-bound domain rather than silently delivering into the local `mail`
+ * table: `resolveDomainForPath` (`core/src/domain.ts`) already skips `host`-bound rows
+ * because a domain's location can be a directory on another machine, and mail is a
+ * writer into that same local database — nobody on the remote host will ever read a row
+ * landed here. Fails closed, matching every other mail failure direction (#3038 review
+ * finding #6).
  */
 function lookupDomainByName(db: MailDomainDb, name: string): MailDomain | null {
   if (isUnassignedDomainName(name)) return UNASSIGNED_MAIL_DOMAIN;
   const found = db.getDomainByName(name);
-  return found ? toMailDomain(found) : null;
+  if (!found) return null;
+  if (found.host !== null) throw hostBoundError(found);
+  return toMailDomain(found);
 }
 
 /**
@@ -130,7 +145,9 @@ export function resolveCallerDomain(db: MailDomainDb, scope: MailScope): MailDom
   }
 
   const resolved = db.resolveDomain(cwd);
-  return resolved ? toMailDomain(resolved) : UNASSIGNED_MAIL_DOMAIN;
+  if (!resolved) return UNASSIGNED_MAIL_DOMAIN;
+  if (resolved.host !== null) throw hostBoundError(resolved);
+  return toMailDomain(resolved);
 }
 
 /** Where a message is going, and how it is stamped once it gets there. */

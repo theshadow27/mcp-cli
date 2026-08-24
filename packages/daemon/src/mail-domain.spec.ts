@@ -81,6 +81,20 @@ describe("resolveCallerDomain", () => {
     expect(() => resolveCallerDomain(BOTH, { cwd: "   " })).toThrow(/requires a domain scope/);
     expect(() => resolveCallerDomain(BOTH, { domain: "  " })).toThrow(/requires a domain scope/);
   });
+
+  /**
+   * #3038 review finding #6. `resolveDomainForPath` (`core/src/domain.ts`) already skips
+   * host-bound rows when resolving a path — a host-bound domain names a directory on
+   * another machine, never one on this filesystem — so a `-d <host-bound>` is the only
+   * way to reach one here. Without this guard the row lands in the LOCAL `mail` table and
+   * nobody on the remote host ever reads it.
+   */
+  test("-d naming a host-bound domain fails closed rather than delivering locally", () => {
+    const remote = domain(3, "remote", "/home/other/phoenix", "boxen0010");
+    const db = fakeDb([ALPHA, remote]);
+    expect(() => resolveCallerDomain(db, { domain: "remote" })).toThrow(/host-bound/);
+    expect(() => resolveCallerDomain(db, { cwd: "/work/alpha", domain: "remote" })).toThrow(/host-bound/);
+  });
 });
 
 describe("resolveDelivery", () => {
@@ -113,6 +127,17 @@ describe("resolveDelivery", () => {
 
   test("an unknown domain in the recipient errors at send time", () => {
     expect(() => resolveDelivery(BOTH, alpha, "worker", "orchestrator@nosuchdomain")).toThrow(/unknown domain/);
+  });
+
+  /**
+   * #3038 review finding #6. `orch@remote` must not land in the local `mail` table when
+   * `remote` is a host-bound domain — nobody on that host would ever read the row. Fails
+   * closed instead, matching the resolver's own directive at `core/src/domain.ts`.
+   */
+  test("a recipient naming a host-bound domain errors at send time rather than landing locally", () => {
+    const remote = domain(3, "remote", "/home/other/phoenix", "boxen0010");
+    const db = fakeDb([ALPHA, remote]);
+    expect(() => resolveDelivery(db, alpha, "worker", "orch@remote")).toThrow(/host-bound/);
   });
 
   test("a reply to a qualified sender routes back across the boundary", () => {

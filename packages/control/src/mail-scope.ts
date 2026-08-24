@@ -12,6 +12,14 @@
  *
  * A domain **selector** for the TUI is a later piece of the epic (`docs/console.md`);
  * when it lands it overrides this, it does not sit alongside it.
+ *
+ * `cwd`-only scope is safe for the four "daemon unreachable, skip this tick" catch
+ * blocks in this package precisely because `resolveCallerDomain`'s cwd branch is now a total
+ * function (#3038 RED 1): a `cwd` outside every registered domain resolves to the
+ * reserved, always-addressable partition 0 rather than throwing. There is no longer a
+ * *permanent* domain-resolution failure a `cwd`-only caller can hit — every remaining
+ * throw needs an explicit `-d`, which nothing in this package passes — so those catches
+ * only ever swallow the transient case they document (#3038 review finding #7).
  */
 export function controlMailScope(): { cwd: string } {
   return { cwd: process.cwd() };

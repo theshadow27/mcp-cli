@@ -269,6 +269,20 @@ describe("MailHandlers — failure directions", () => {
     await expect(invoke(f.map, "markRead")({ id, cwd: f.alpha }, CTX)).resolves.toEqual({});
   });
 
+  /**
+   * #3038 review finding #6, against a real `StateDb`. `remote` is bound to a host, so
+   * its `path` names a directory on that machine, never one here — a message addressed
+   * to it must not land in the LOCAL `mail` table where nobody on `boxen0010` reads it.
+   */
+  test("mail to a host-bound domain fails closed instead of landing in the local partition", async () => {
+    const f = fixture();
+    f.db.createDomain("remote", "/home/other/phoenix", "boxen0010");
+    await expect(send(f, { sender: "w", recipient: "orch@remote", cwd: f.alpha })).rejects.toThrow(/host-bound/);
+    await expect(invoke(f.map, "readMail")({ recipient: "boss", cwd: f.alpha, domain: "remote" }, CTX)).rejects.toThrow(
+      /host-bound/,
+    );
+  });
+
   test("replyToMail cannot reply to another domain's message", async () => {
     const f = fixture();
     const id = await send(f, { sender: "w", recipient: "orchestrator", cwd: f.alpha });
