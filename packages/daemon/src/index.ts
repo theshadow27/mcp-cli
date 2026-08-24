@@ -640,6 +640,32 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
   const claudeServer = new ClaudeServer(db, daemonId, undefined, logger, 10_000, wsPort);
 
+  // Repo-detection cwd for GitHub repo detection (`git remote get-url origin`) — used
+  // by resolveIssuePr, resolveBranchFromPr, and both GitHub pollers (#3243). Defaults
+  // to the daemon's startup process.cwd(), same as always, but no non-interactive
+  // launcher (systemd, Docker, etc.) can guarantee that's the project root — a missing
+  // `WorkingDirectory=` silently defaults cwd to $HOME. An explicit override (env takes
+  // precedence over config, matching the rest of this file's env/config layering)
+  // gives operators a seam that doesn't depend on getting the launcher's cwd right.
+  const repoRootOverride = process.env.MCP_DAEMON_REPO_ROOT || cliConfig.repoRoot;
+  const repoDetectCwd = repoRootOverride ? resolveRealpath(resolve(repoRootOverride)) : process.cwd();
+
+  // Make repo-detection failure loud at startup (#3243) instead of only surfacing
+  // through periodic poller retry-warnings several seconds/minutes later. Runs in the
+  // background — never blocks daemon startup — and warms `cachedRepo` on success so
+  // resolveIssuePr/resolveBranchFromPr's first call doesn't re-run `git remote`.
+  detectRepo(repoDetectCwd)
+    .then((repo) => {
+      cachedRepo = repo;
+      logger.info(`[mcpd] Detected repo: ${repo.owner}/${repo.repo} (cwd=${repoDetectCwd})`);
+    })
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        `[mcpd] Repo detection failed at startup (cwd=${repoDetectCwd}): ${msg} — PR/CI events (pr.*, ci.*) and issue<->PR resolution will be unavailable until this resolves. The work-item and Copilot pollers will keep retrying with backoff; fix by correcting the daemon's launch cwd (e.g. a systemd unit's WorkingDirectory=), or set an explicit repo root via \`mcx config set repo-root /path/to/repo\` (or $MCP_DAEMON_REPO_ROOT).`,
+      );
+    });
+
   // Bun.which() is a synchronous builtin — no subprocess, no await needed.
   const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled, grokInstalled] = [
     Bun.which("codex") !== null,
@@ -1076,8 +1102,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     resolveIssuePr: async (number: number) => {
       // Cache repo detection so we don't re-run `git remote` on every track call.
       // Uses the daemon's startup cwd which is the project root at launch time (#3192).
+      // repoDetectCwd defaults to the daemon's startup cwd but can be overridden
+      // (repoRoot config / MCP_DAEMON_REPO_ROOT) — see its definition above (#3243).
       if (!cachedRepo) {
-        cachedRepo = await detectRepo(process.cwd());
+        cachedRepo = await detectRepo(repoDetectCwd);
       }
       const resolved = await resolveNumber(cachedRepo, number);
       return { prNumber: resolved.prNumber };
@@ -1385,6 +1413,9 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
+            // Explicit repoDetectCwd, not the poller's bare `detectRepo()` default —
+            // respects the repoRoot override the same way resolveIssuePr does (#3243).
+            detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
             onEvent: (event) => claudeServer.forwardWorkItemEvent(event, domainNameFor(event)),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
@@ -1444,7 +1475,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
               // detection fails; the caller treats that as "branch not known" and continues.
               if (!cachedRepo) {
                 try {
-                  cachedRepo = await detectRepo(process.cwd());
+                  cachedRepo = await detectRepo(repoDetectCwd);
                 } catch {
                   return null;
                 }
@@ -1470,6 +1501,8 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             workItemDb,
             stateDb: db,
             logger,
+            // Same repoRoot-override seam as WorkItemPoller above (#3243).
+            detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
             onEvent: (rawEvent) => {
               // Same reasoning as the work-item poller: these are repo-scoped events
               // (review, issue, PR comments) from a poller bound to the daemon's one

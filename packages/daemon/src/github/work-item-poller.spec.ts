@@ -5,7 +5,7 @@ import type { WorkItemEvent } from "@mcp-cli/core";
 import { type CrossDomainWorkItems, type DomainWorkItems, WorkItemDb } from "../db/work-items";
 import type { CiEvent } from "./ci-events";
 import type { CiCheck, PRStatus, RepoInfo } from "./graphql-client";
-import { WorkItemPoller } from "./work-item-poller";
+import { WorkItemPoller, repoDetectBackoffMs } from "./work-item-poller";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const TEST_REPO: RepoInfo = { owner: "test", repo: "repo" };
@@ -376,10 +376,11 @@ describe("WorkItemPoller", () => {
     expect(item?.prState).toBe("open");
   });
 
-  test("detectRepo failure caches after 3 attempts", async () => {
+  test("detectRepo failure backs off within the retry window, without giving up (#3243)", async () => {
     seed.createWorkItem({ id: "pr:1", prNumber: 1 });
 
     let detectCalls = 0;
+    const now = 0;
     const poller = new WorkItemPoller({
       db,
       logger: SILENT_LOGGER,
@@ -388,18 +389,91 @@ describe("WorkItemPoller", () => {
         detectCalls++;
         throw new Error("not a github repo");
       },
+      now: () => now,
     });
 
-    // First 3 attempts should try detectRepo
+    // First attempt tries detectRepo and fails, arming a backoff window.
     await poller.poll();
-    await poller.poll();
-    await poller.poll();
-    expect(detectCalls).toBe(3);
+    expect(detectCalls).toBe(1);
     expect(poller.lastError).toBe("not a github repo");
 
-    // 4th attempt should skip detectRepo entirely
+    // A poll that lands inside the backoff window is skipped entirely — but this is
+    // a temporary backoff, not the old "3 tries then dead forever": it must still
+    // count as a completed poll cycle (pollCount advances) so callers can observe
+    // liveness even while repo detection is quiescent.
+    await poller.poll();
+    await poller.poll();
+    expect(detectCalls).toBe(1);
+    expect(poller.pollCount).toBe(3);
+  });
+
+  test("detectRepo retries again once the backoff window elapses (#3243)", async () => {
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
+
+    let detectCalls = 0;
+    let now = 0;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [],
+      detectRepo: async () => {
+        detectCalls++;
+        throw new Error("not a github repo");
+      },
+      now: () => now,
+    });
+
+    await poller.poll();
+    expect(detectCalls).toBe(1);
+
+    // Still within the first backoff window (base 30s) — skipped.
+    now += 10_000;
+    await poller.poll();
+    expect(detectCalls).toBe(1);
+
+    // Past the first backoff window — retries (and fails again, arming a longer one).
+    now += 25_000; // now = 35s > 30s base
+    await poller.poll();
+    expect(detectCalls).toBe(2);
+
+    // Still within the 2nd backoff window (delay doubled to 60s from the 2nd failure).
+    now += 10_000;
+    await poller.poll();
+    expect(detectCalls).toBe(2);
+
+    // Past the doubled window — retries again. Never permanently gives up.
+    now += 55_000;
     await poller.poll();
     expect(detectCalls).toBe(3);
+  });
+
+  test("detectRepo backoff resets on recovery — a later success is not treated as a fluke", async () => {
+    seed.createWorkItem({ id: "pr:1", prNumber: 1 });
+
+    let now = 0;
+    let shouldFail = true;
+    const poller = new WorkItemPoller({
+      db,
+      logger: SILENT_LOGGER,
+      fetchPRs: async () => [],
+      detectRepo: async () => {
+        if (shouldFail) throw new Error("no git remote");
+        return TEST_REPO;
+      },
+      now: () => now,
+    });
+
+    await poller.poll();
+    expect(poller.lastError).toBe("no git remote");
+    expect(poller.repo).toBeNull();
+
+    // Repo now exists (e.g. cwd fix, or the repo appeared) — advance past backoff.
+    shouldFail = false;
+    now += 30_000;
+    await poller.poll();
+
+    expect(poller.repo).toEqual(TEST_REPO);
+    expect(poller.lastError).toBeNull();
   });
 
   test("review status ignores COMMENTED after APPROVED", async () => {
@@ -1383,5 +1457,20 @@ describe("WorkItemPoller — ring 0 sees every domain (#3037)", () => {
     expect(alpha.loadCiRunStates().get(7)).toBeDefined();
     expect(beta.loadCiRunStates().get(7)).toBeDefined();
     expect(ring0.loadCiRunStates().size).toBe(2);
+  });
+});
+
+describe("repoDetectBackoffMs", () => {
+  test("doubles from the base for each consecutive failure", () => {
+    expect(repoDetectBackoffMs(1)).toBe(30_000);
+    expect(repoDetectBackoffMs(2)).toBe(60_000);
+    expect(repoDetectBackoffMs(3)).toBe(120_000);
+    expect(repoDetectBackoffMs(4)).toBe(240_000);
+  });
+
+  test("caps at 15 minutes — never grows unbounded and never signals permanent give-up", () => {
+    expect(repoDetectBackoffMs(10)).toBe(15 * 60_000);
+    expect(repoDetectBackoffMs(50)).toBe(15 * 60_000);
+    expect(repoDetectBackoffMs(1000)).toBe(15 * 60_000);
   });
 });

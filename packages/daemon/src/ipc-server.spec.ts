@@ -3889,6 +3889,85 @@ describe("IpcServer HTTP transport", () => {
     }
   });
 
+  test("GET /events EventBus-branch heartbeat is a real parseable event, not a bare newline (#3243)", async () => {
+    // Root cause: the EventBus branch's heartbeat used to be `controller.enqueue(encoder.encode("\n"))`
+    // — a bare newline the client's NDJSON parser (packages/core/src/ipc-client.ts) silently
+    // dropped as a blank line, so `mcx monitor`'s liveness watchdog never saw it and re-warned
+    // every 90s forever during a quiet-but-alive stream. It must now be a real, parseable
+    // `category: "heartbeat"` event — the same envelope shape as the ring-buffer fallback path
+    // already produces (see "GET /events heartbeat fires after silence" above).
+    const db = new Database(":memory:");
+    const eventLog = new EventLog(db);
+    const bus = new EventBus(eventLog);
+    socketPath = tmpSocket();
+
+    const capturedIntervalFns: Array<{ fn: () => void; ms: number }> = [];
+    const origSetInterval = globalThis.setInterval;
+    (globalThis as unknown as Record<string, unknown>).setInterval = (fn: (...args: unknown[]) => void, ms: number) => {
+      capturedIntervalFns.push({ fn: fn as () => void, ms });
+      return origSetInterval(fn, ms);
+    };
+
+    try {
+      server = new IpcServer(mockPool() as never, mockConfig(), mockDb(), null, {
+        ...opts(),
+        eventBus: bus,
+      });
+      server.start(socketPath);
+
+      const controller = new AbortController();
+      const res = await fetch("http://localhost/events", {
+        method: "GET",
+        unix: socketPath,
+        signal: controller.signal,
+      } as RequestInit);
+
+      expect(res.status).toBe(200);
+      if (!res.body) throw new Error("Expected response body");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      // The EventBus branch's heartbeat fires every EVENTBUS_HEARTBEAT_MS (15s) — fire it
+      // manually instead of waiting 15 real seconds in a test.
+      const hbInterval = capturedIntervalFns.find((c) => c.ms === 15_000);
+      expect(hbInterval).toBeDefined();
+      hbInterval?.fn();
+
+      let buffer = "";
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes('"heartbeat"')) break;
+      }
+
+      controller.abort();
+      reader.releaseLock();
+
+      // Backward compatibility: every non-blank line on the wire must still be valid
+      // JSON (the connection's initial bare "\n" priming write decodes to an empty
+      // string and is filtered out below) — an old client's generic "parse each
+      // non-blank NDJSON line" loop (packages/core/src/ipc-client.ts) chokes on
+      // nothing new.
+      const lines = buffer.split("\n").filter(Boolean);
+      for (const line of lines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+
+      const hbLine = lines.find((l) => l.includes('"heartbeat"'));
+      expect(hbLine).toBeDefined();
+      const hb = JSON.parse(hbLine as string) as Record<string, unknown>;
+      expect(hb.category).toBe("heartbeat");
+      expect(hb.event).toBe("heartbeat");
+      expect(hb.src).toBe("daemon");
+      expect(typeof hb.seq).toBe("number");
+      expect(typeof hb.ts).toBe("string");
+    } finally {
+      (globalThis as unknown as Record<string, unknown>).setInterval = origSetInterval;
+    }
+  });
+
   test("GET /events respects subscribe filter server-side", async () => {
     startServer();
 
