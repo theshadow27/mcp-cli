@@ -17,6 +17,7 @@
 import {
   AGENT_PROTOCOL_VERSION,
   CLAUDE_SERVER_NAME,
+  type ClaudeTransport,
   DEFAULT_TIMEOUT_MS,
   type LiveSpan,
   NO_DOMAIN_ID,
@@ -33,7 +34,7 @@ import {
 } from "@mcp-cli/core";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resolver";
+import { type ClaudeResolution, isResolved, resolveClaudeForSpawn } from "./claude-session/binary-resolver";
 import type { PermissionRule, PermissionStrategy } from "./claude-session/permission-router";
 import type { SessionEvent } from "./claude-session/session-state";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
@@ -155,6 +156,61 @@ async function handleToolCall(
   }
 }
 
+/**
+ * In-flight refresh, shared so a burst of spawns against a spawn-disabled
+ * server costs one `claude --version` probe rather than one per spawn — the
+ * exact shape of the failure, since an orchestrator fires its whole batch at
+ * once and every member fails identically.
+ */
+let claudeRefreshInFlight: Promise<void> | null = null;
+
+/**
+ * Re-probe claude and swap the result into `server` — but only while spawning
+ * is currently refused.
+ *
+ * `mcx claude patch-update` writes `~/.mcp-cli/claude-patched/` from the CLI
+ * process; the daemon resolved its binary once at worker startup. So the error
+ * "Run `mcx claude patch-update`" named the one command that could not fix it:
+ * the command succeeded, spawn kept failing byte-identically, and only
+ * `mcx daemon restart` cleared it (#3013). Re-probing here makes the printed
+ * instruction sufficient.
+ *
+ * Costs nothing on the healthy path — no subprocess is spawned unless the
+ * server is already refusing spawns. A probe that throws leaves the existing
+ * reason in place: it must not enable spawning, nor replace an actionable
+ * message with transport noise.
+ */
+export async function refreshClaudeResolutionIfDisabled(
+  server: ClaudeWsServer,
+  deps?: {
+    resolve?: () => Promise<ClaudeResolution>;
+    readTransportPref?: () => ClaudeTransport | undefined;
+  },
+): Promise<void> {
+  if (!server.spawnDisabled) return;
+  if (claudeRefreshInFlight) return claudeRefreshInFlight;
+
+  const resolve = deps?.resolve ?? resolveClaudeForSpawn;
+  const readTransportPref = deps?.readTransportPref ?? (() => readCliConfig().transport);
+
+  claudeRefreshInFlight = (async () => {
+    try {
+      const resolution = await resolve();
+      server.applySpawnResolution({
+        binaryPath: isResolved(resolution) ? resolution.binaryPath : null,
+        spawnDisabledReason: isResolved(resolution) ? null : resolution.error,
+        claudeVersion: resolution.version,
+        defaultTransport: resolveTransport(readTransportPref(), resolution.version),
+      });
+    } catch {
+      // Keep the reason the server already has.
+    } finally {
+      claudeRefreshInFlight = null;
+    }
+  })();
+  return claudeRefreshInFlight;
+}
+
 export async function handlePrompt(
   server: ClaudeWsServer,
   args: Record<string, unknown>,
@@ -206,6 +262,9 @@ export async function handlePrompt(
     // is restored, then deliver the prompt as the first message.
     const stateCheck = server.checkSessionIdle(sessionId);
     if (stateCheck?.state === "disconnected") {
+      // Revive spawns a child too, so it is stranded by a stale spawn-disabled
+      // reason exactly like a fresh spawn is (#3013).
+      await refreshClaudeResolutionIfDisabled(server);
       let pid: number;
       try {
         pid = server.reviveSession(stateCheck.resolvedId, prompt);
@@ -282,6 +341,11 @@ export async function handlePrompt(
       manifest: findManifestProfile(args.cwd as string | undefined, warnProfile),
       config: readCliConfig(warnProfile).defaultProfile,
     });
+
+    // Re-probe before prepareSession so a `mcx claude patch-update` run since
+    // worker startup is picked up, and so the transport this session is pinned
+    // to is derived from the version we are actually about to spawn (#3013).
+    await refreshClaudeResolutionIfDisabled(server);
 
     let sessionName: string;
     let sessionTransport: "ws" | "stdio";
@@ -823,6 +887,13 @@ async function startServer(wsPort?: number, quiet?: boolean): Promise<number> {
         spawnDisabledReason: resolution.error,
         defaultTransport,
         claudeVersion: resolution.version,
+        // Non-null when claude's *version* needs the patched wss:// transport,
+        // even though the patched copy is missing/stale right now. Binding the
+        // listener for the transport the version requires — rather than for the
+        // outcome of a patch-freshness check — is what lets
+        // `refreshClaudeResolutionIfDisabled` enable spawning in place after a
+        // `mcx claude patch-update`, with no daemon restart (#3013).
+        tlsConfig: resolution.tlsConfig,
       };
 
   // Start WebSocket server

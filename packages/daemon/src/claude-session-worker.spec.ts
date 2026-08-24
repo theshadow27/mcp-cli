@@ -5,7 +5,13 @@ import { join } from "node:path";
 import type { SessionInfo } from "@mcp-cli/core";
 import { options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { handlePrompt, makeEventInScope, matchesRepoRoot } from "./claude-session-worker";
+import {
+  handlePrompt,
+  makeEventInScope,
+  matchesRepoRoot,
+  refreshClaudeResolutionIfDisabled,
+} from "./claude-session-worker";
+import type { ClaudeResolution } from "./claude-session/binary-resolver";
 import type { SpawnFn } from "./claude-session/ws-server";
 import { ClaudeWsServer } from "./claude-session/ws-server";
 
@@ -532,5 +538,153 @@ describe("handlePrompt: spawn profile precedence (#935)", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("cannot be applied to an existing session");
+  });
+});
+
+// ── Stale spawn resolution refresh (#3013) ──
+
+describe("refreshClaudeResolutionIfDisabled (#3013)", () => {
+  let server: ClaudeWsServer | undefined;
+  const origPostMessage = (globalThis as Record<string, unknown>).postMessage;
+
+  afterEach(async () => {
+    await server?.stop();
+    server = undefined;
+    (globalThis as Record<string, unknown>).postMessage = origPostMessage;
+  });
+
+  const STALE_REASON =
+    "claude 2.1.235 differs from the patched copy (2.1.234). claude was likely auto-updated. " +
+    "Run `mcx claude patch-update` to refresh the patched copy.";
+
+  const staleResolution = (): ClaudeResolution => ({
+    error: STALE_REASON,
+    reason: "patch-stale",
+    version: "2.1.235",
+    tlsConfig: { cert: "cert", key: "key" },
+  });
+
+  const freshResolution = (): ClaudeResolution => ({
+    binaryPath: "/store/2.1.235.patched",
+    tlsConfig: { cert: "cert", key: "key" },
+    strategyId: "host-check-ipv6-loopback-v1",
+    version: "2.1.235",
+    sourcePath: "/usr/local/bin/claude",
+  });
+
+  function disabledServer(spawn: SpawnFn): ClaudeWsServer {
+    return new ClaudeWsServer({
+      spawn,
+      logger: silentLogger,
+      binaryPath: "/store/2.1.234.patched",
+      spawnDisabledReason: STALE_REASON,
+      claudeVersion: "2.1.235",
+      defaultTransport: "stdio",
+    });
+  }
+
+  test("a healthy server is never re-probed — no subprocess on the happy path", async () => {
+    server = new ClaudeWsServer({ spawn: makeRecordingSpawn().spawn, logger: silentLogger });
+    let probes = 0;
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => {
+        probes++;
+        return freshResolution();
+      },
+    });
+    expect(probes).toBe(0);
+    expect(server.spawnDisabled).toBe(false);
+  });
+
+  test("a successful patch-update unblocks spawn without a daemon restart", async () => {
+    const recording = makeRecordingSpawn();
+    server = disabledServer(recording.spawn);
+    await server.start();
+    expect(server.spawnDisabled).toBe(true);
+
+    // Stands in for `mcx claude patch-update` having refreshed the on-disk
+    // store from the CLI process since this worker started.
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => freshResolution(),
+      readTransportPref: () => undefined,
+    });
+    expect(server.spawnDisabled).toBe(false);
+
+    // The next spawn goes through, and goes to the NEW binary. handlePrompt
+    // re-enters the refresh with the real resolver, which short-circuits now
+    // that spawning is enabled — so no `claude --version` runs here.
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    expect(recording.lastCmd()[0]).toBe("/store/2.1.235.patched");
+  });
+
+  test("spawn stays refused, with the original message, when the re-probe still fails", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    await server.start();
+
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => staleResolution(),
+      readTransportPref: () => undefined,
+    });
+    expect(server.spawnDisabled).toBe(true);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi" });
+    expect(() => server?.spawnClaude(sessionId)).toThrow(/patch-update/);
+  });
+
+  test("a probe that throws leaves the actionable reason in place", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    await server.start();
+    await refreshClaudeResolutionIfDisabled(server, {
+      resolve: async () => {
+        throw new Error("ETXTBSY");
+      },
+    });
+    expect(server.spawnDisabled).toBe(true);
+
+    const sessionId = crypto.randomUUID();
+    server.prepareSession(sessionId, { prompt: "hi" });
+    expect(() => server?.spawnClaude(sessionId)).toThrow(/patch-update/);
+  });
+
+  test("a burst of blocked spawns shares one probe", async () => {
+    server = disabledServer(makeRecordingSpawn().spawn);
+    let probes = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const resolve = async () => {
+      probes++;
+      await gate;
+      return freshResolution();
+    };
+    const all = Promise.all([
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+      refreshClaudeResolutionIfDisabled(server, { resolve, readTransportPref: () => undefined }),
+    ]);
+    release();
+    await all;
+    expect(probes).toBe(1);
+    expect(server.spawnDisabled).toBe(false);
+  });
+
+  test("a refresh that resolves no binary keeps the path sessions already use", async () => {
+    const recording = makeRecordingSpawn();
+    server = disabledServer(recording.spawn);
+    await server.start();
+
+    server.applySpawnResolution({
+      binaryPath: null,
+      spawnDisabledReason: null,
+      claudeVersion: "2.1.235",
+      defaultTransport: "stdio",
+    });
+
+    (globalThis as Record<string, unknown>).postMessage = () => {};
+    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    expect(recording.lastCmd()[0]).toBe("/store/2.1.234.patched");
   });
 });

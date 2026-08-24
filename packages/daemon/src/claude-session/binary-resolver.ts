@@ -20,9 +20,13 @@
  *      `mcx claude patch-update`. The daemon stays up; only `claude_spawn`
  *      tool calls fail.
  *
- * Resolution is eager (runs once at worker startup) but the worker still
- * starts even on error — the daemon needs to keep handling read-only
- * operations (list / log / wait) for any sessions already in flight.
+ * Resolution runs at worker startup, and again before any spawn taken while
+ * the previous outcome was `error` — `mcx claude patch-update` writes the
+ * patched store from a *different* process, so a resolution cached for the
+ * daemon's lifetime made the error's own remediation instruction impossible to
+ * act on without `mcx daemon restart` (#3013). The worker still starts even on
+ * error: the daemon needs to keep handling read-only operations (list / log /
+ * wait) for any sessions already in flight.
  */
 
 import { existsSync } from "node:fs";
@@ -64,6 +68,18 @@ export interface UnresolvedClaude {
     | "patched-binary-missing";
   /** Version, when known. Null when claude couldn't even be invoked. */
   version: string | null;
+  /**
+   * TLS material for the WS listener, non-null when the *version* requires the
+   * patched (wss://) transport even though the patched copy itself is missing
+   * or stale. The listener's TLS mode is a property of the claude version, not
+   * of whether a fresh patched copy happens to exist on disk — keeping those
+   * two apart is what lets a later `mcx claude patch-update` be picked up by
+   * swapping the binary path alone, with no daemon restart (#3013).
+   *
+   * Null for the pre-patch failures (no claude, probe failed, unsupported),
+   * where nothing is known about which transport the binary would need.
+   */
+  tlsConfig: { cert: string; key: string } | null;
 }
 
 export type ClaudeResolution = ResolvedClaude | UnresolvedClaude;
@@ -88,17 +104,45 @@ export function isResolved(r: ClaudeResolution): r is ResolvedClaude {
 }
 
 /**
- * Idempotent: every call re-probes claude --version so callers can detect
- * post-startup auto-updates if they want. The daemon currently calls this
- * once at worker startup; lazy / per-spawn callers can opt into the cost.
+ * TLS material for the *error* branches, where the listener still has to come
+ * up in wss:// mode so a later refresh can enable spawning in place (#3013).
+ *
+ * Best-effort by design: on the resolved path a cert failure must be loud (a
+ * plain-ws listener would hand the patched binary a URL its allowlist rejects),
+ * but here spawning is already refused with an actionable message — degrading
+ * to plain ws is strictly better than turning that message into a worker-startup
+ * crash that also kills list/log/wait.
+ */
+function bestEffortTls(ensureCert: () => SelfSignedMaterial): { cert: string; key: string } | null {
+  try {
+    return loadTls(ensureCert);
+  } catch {
+    return null;
+  }
+}
+
+/** TLS material for the resolved path, where a cert failure must stay loud. */
+function loadTls(ensureCert: () => SelfSignedMaterial): { cert: string; key: string } {
+  const material = ensureCert();
+  return { cert: material.cert, key: material.key };
+}
+
+/**
+ * Idempotent: every call re-probes claude --version, so callers detect
+ * post-startup auto-updates and patch-store changes. The worker calls this at
+ * startup and again before a spawn taken while the previous outcome was an
+ * error — see `refreshClaudeResolutionIfDisabled` for why the happy path does
+ * not pay the probe.
  */
 export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<ClaudeResolution> {
+  const ensureCert = deps.ensureCert ?? ensureSelfSignedCert;
   const sourcePath = (deps.resolveSourcePath ?? resolveSourceClaudePath)();
   if (!sourcePath) {
     return {
       error: "claude binary not found on PATH. Install Claude Code: https://claude.com/claude-code",
       reason: "no-claude",
       version: null,
+      tlsConfig: null,
     };
   }
 
@@ -111,6 +155,7 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
       error: `Could not determine claude version: ${msg}`,
       reason: "version-probe-failed",
       version: null,
+      tlsConfig: null,
     };
   }
 
@@ -120,6 +165,7 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
       error: `claude ${version} is not supported by any registered patch strategy. Upgrade mcx (which ships a strategy registry that's tested against new claude releases), or file an issue at https://github.com/theshadow27/mcp-cli/issues with the version.`,
       reason: "unsupported-version",
       version,
+      tlsConfig: null,
     };
   }
 
@@ -140,13 +186,18 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
     };
   }
 
-  // Patching needed. Look up the cached patched copy.
+  // Patching needed — so from here on the listener must run wss:// regardless
+  // of how the patched-copy lookup below turns out (see UnresolvedClaude.tlsConfig).
+  const patchedTls = bestEffortTls(ensureCert);
+
+  // Look up the cached patched copy.
   const meta = (deps.readPatchedMeta ?? readCurrentPatchedMeta)();
   if (!meta) {
     return {
       error: `claude ${version} requires a patched copy (#1808). Run \`mcx claude patch-update\` to create it.`,
       reason: "patch-missing",
       version,
+      tlsConfig: patchedTls,
     };
   }
   if (meta.version !== version) {
@@ -154,6 +205,7 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
       error: `claude ${version} differs from the patched copy (${meta.version}). claude was likely auto-updated. Run \`mcx claude patch-update\` to refresh the patched copy.`,
       reason: "patch-stale",
       version,
+      tlsConfig: patchedTls,
     };
   }
 
@@ -165,15 +217,20 @@ export async function resolveClaudeForSpawn(deps: ResolverDeps = {}): Promise<Cl
       error: `Patched binary missing at ${patchedPath} (metadata exists, file does not). Run \`mcx claude patch-update --force\`.`,
       reason: "patched-binary-missing",
       version,
+      tlsConfig: patchedTls,
     };
   }
 
-  // Patched flow: load (or generate) the loopback cert.
-  const cert = (deps.ensureCert ?? ensureSelfSignedCert)();
+  // Patched flow: reuse the material already loaded above (one ensureCert call
+  // per resolution). Unlike the error branches this one must not be
+  // best-effort — a plain-ws listener would hand the patched binary a `ws://`
+  // URL its host allowlist rejects, turning a loud cert failure into a silent
+  // connect failure at every spawn — so a null here re-invokes to rethrow.
+  const tlsConfig = patchedTls ?? loadTls(ensureCert);
 
   return {
     binaryPath: patchedPath,
-    tlsConfig: { cert: cert.cert, key: cert.key },
+    tlsConfig,
     strategyId: meta.strategyId,
     version,
     sourcePath,

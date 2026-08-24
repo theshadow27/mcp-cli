@@ -633,17 +633,22 @@ export class ClaudeWsServer {
   /**
    * Path of the binary to spawn (default: `"claude"`, looked up via PATH).
    * The daemon overrides this with the patched-binary path when claude is
-   * 2.1.120+ (see binary-resolver.ts).
+   * 2.1.120+ (see binary-resolver.ts). Mutable via `applySpawnResolution`.
    */
-  private readonly binaryPath: string;
+  private binaryPath: string;
 
   /**
    * If non-null, every spawn attempt throws with this reason instead of
    * actually spawning. Used when the daemon can't resolve a working claude
-   * binary at startup (e.g. unsupported version) — read-only operations
-   * (list/log/wait) still work, but `claude_spawn` fails fast and clearly.
+   * binary (e.g. unsupported version) — read-only operations (list/log/wait)
+   * still work, but `claude_spawn` fails fast and clearly.
+   *
+   * Mutable via `applySpawnResolution`: the conditions behind these reasons
+   * are fixed by running a command in another process (`mcx claude
+   * patch-update`), so latching the startup value made the printed remediation
+   * a no-op until the daemon restarted (#3013).
    */
-  private readonly spawnDisabledReason: string | null;
+  private spawnDisabledReason: string | null;
 
   /**
    * Transport used for sessions that carry no per-spawn `--transport` override.
@@ -651,16 +656,18 @@ export class ClaudeWsServer {
    * claude version (see `transport-resolver.ts`). Defaults to `"ws"` only when
    * the daemon could not determine a version — modern claude resolves to
    * `"stdio"`, which needs neither `--sdk-url` nor the patched binary (#3003).
+   * Re-derived by `applySpawnResolution` when the version is re-probed.
    */
-  private readonly defaultTransport: "ws" | "stdio";
+  private defaultTransport: "ws" | "stdio";
 
   /**
    * Detected claude CLI version, or null when the daemon could not determine
    * one. Read only by `resolvePermissionMode` — a `--permission-mode auto`
    * spawn against a binary that doesn't list `auto` as a choice exits at
    * argument parsing, so an unknown version keeps the daemon-side gate (#3119).
+   * Re-probed by `applySpawnResolution`.
    */
-  private readonly claudeVersion: string | null;
+  private claudeVersion: string | null;
 
   constructor(deps?: {
     spawn?: SpawnFn;
@@ -715,6 +722,40 @@ export class ClaudeWsServer {
   /** True when the server is running in TLS (wss://) mode. */
   get isTls(): boolean {
     return this.tlsConfig !== null;
+  }
+
+  /** True while `spawnClaude` would refuse every spawn that carries no binary override. */
+  get spawnDisabled(): boolean {
+    return this.spawnDisabledReason !== null;
+  }
+
+  /**
+   * Swap in a freshly-probed claude resolution without restarting the listener.
+   *
+   * Deliberately covers only the spawn-affecting half of the resolution. The
+   * listener's TLS mode is fixed at `start()` and is a function of the claude
+   * *version*, which `binary-resolver` decides independently of patch freshness
+   * — so a daemon that came up refusing spawns because the patched copy was
+   * stale is already listening on the wss:// endpoint the refreshed binary
+   * needs, and only the path and the refusal have to move (#3013).
+   *
+   * `binaryPath: null` leaves the current path in place: a refresh that still
+   * can't resolve a binary must not blank out the one sessions already use.
+   */
+  applySpawnResolution(next: {
+    binaryPath: string | null;
+    spawnDisabledReason: string | null;
+    claudeVersion: string | null;
+    defaultTransport: "ws" | "stdio";
+  }): void {
+    const wasDisabled = this.spawnDisabledReason;
+    if (next.binaryPath !== null) this.binaryPath = next.binaryPath;
+    this.spawnDisabledReason = next.spawnDisabledReason;
+    this.claudeVersion = next.claudeVersion;
+    this.defaultTransport = next.defaultTransport;
+    if (wasDisabled !== null && next.spawnDisabledReason === null) {
+      this.logger.info(`[_claude] spawn re-enabled after re-probing claude — was: ${wasDisabled}`);
+    }
   }
 
   /**
