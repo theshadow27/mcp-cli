@@ -25,6 +25,7 @@ function testDeps(overrides?: Partial<MailDeps>): MailDeps & { state: TestState 
     readStdin: async () => "",
     isTTY: true,
     defaultSender: "testuser",
+    cwd: "/test/cwd",
     exit: (code: number) => {
       state.exitCode = code;
       throw new Error(`exit(${code})`);
@@ -135,6 +136,79 @@ describe("parseMailArgs", () => {
     const args = parseMailArgs(["--from"]);
     expect(args.error).toBe("--from requires a sender name");
   });
+
+  // #3038
+  test("parses -d domain and --domain=name", () => {
+    expect(parseMailArgs(["-d", "phoenix", "-s", "hi", "boss"]).domain).toBe("phoenix");
+    expect(parseMailArgs(["--domain=phoenix", "-H"]).domain).toBe("phoenix");
+  });
+
+  test("domain is undefined when -d is absent — the daemon resolves cwd, not the CLI", () => {
+    expect(parseMailArgs(["-s", "hi", "boss"]).domain).toBeUndefined();
+  });
+
+  test("error on -d without value", () => {
+    expect(parseMailArgs(["-d"]).error).toBe("-d requires a domain name");
+  });
+
+  test("a user@domain recipient is passed through verbatim for the daemon to resolve", () => {
+    // The CLI does not parse the address: the domains table lives in the daemon, and
+    // splitting here would mean two implementations of the last-@ rule.
+    expect(parseMailArgs(["-s", "hi", "orchestrator@phoenix"]).recipient).toBe("orchestrator@phoenix");
+  });
+
+  /**
+   * `-d` and `--domain` are one flag with two spellings, and both must behave
+   * identically in every position.
+   *
+   * Asserting only `.domain` would be asserting the column instead of the constraint:
+   * if `-d` were ever mis-specced as a boolean, its value would fall through to
+   * `positionals[0]` and become the *recipient* — `mcx mail -d phoenix -s hi boss`
+   * would silently send to `phoenix` and drop `boss`, while a `.domain`-only
+   * assertion stayed green. So each case pins the recipient too.
+   *
+   * This is the `mcx claude bye --all` defect class: two spellings of one flag doing
+   * different things, with no test that exercised both.
+   */
+  test("-d and --domain are interchangeable and never swallow the recipient", () => {
+    const cases: string[][] = [
+      ["-d", "phoenix", "-s", "hi", "boss"],
+      ["--domain", "phoenix", "-s", "hi", "boss"],
+      ["--domain=phoenix", "-s", "hi", "boss"],
+      ["-s", "hi", "-d", "phoenix", "boss"],
+      ["-s", "hi", "boss", "-d", "phoenix"],
+      ["-s", "hi", "boss", "--domain=phoenix"],
+    ];
+    for (const argv of cases) {
+      const args = parseMailArgs(argv);
+      expect({ argv, domain: args.domain, recipient: args.recipient, error: args.error }).toEqual({
+        argv,
+        domain: "phoenix",
+        recipient: "boss",
+        error: undefined,
+      });
+    }
+  });
+
+  test("-d does not shadow the other flags' values in any position", () => {
+    expect(parseMailArgs(["-d", "phoenix", "-u", "boss"]).user).toBe("boss");
+    expect(parseMailArgs(["-d", "phoenix", "-r", "7"]).replyTo).toBe(7);
+    expect(parseMailArgs(["-d", "phoenix", "--wait", "--for=boss"]).forRecipient).toBe("boss");
+    expect(parseMailArgs(["-d", "phoenix", "--from=bot", "-s", "x", "boss"]).from).toBe("bot");
+  });
+
+  test("both spellings resolve last-wins when repeated or mixed", () => {
+    // Neither spelling gets priority over the other — only position decides.
+    expect(parseMailArgs(["-d", "alpha", "--domain", "beta", "-s", "x", "b"]).domain).toBe("beta");
+    expect(parseMailArgs(["--domain", "beta", "-d", "alpha", "-s", "x", "b"]).domain).toBe("alpha");
+    expect(parseMailArgs(["-d", "alpha", "-d", "beta", "-s", "x", "b"]).domain).toBe("beta");
+  });
+
+  test("a valueless -d errors in either spelling rather than consuming the next flag", () => {
+    expect(parseMailArgs(["-d"]).error).toBe("-d requires a domain name");
+    expect(parseMailArgs(["--domain"]).error).toBe("-d requires a domain name");
+    expect(parseMailArgs(["-d", "-s"]).error).toBe("-d requires a domain name");
+  });
 });
 
 describe("cmdMail", () => {
@@ -155,6 +229,8 @@ describe("cmdMail", () => {
       recipient: "manager",
       subject: "stuck",
       body: "stuck on type error",
+      cwd: "/test/cwd",
+      domain: undefined,
     });
     expect(d.state.stdout).toContain('"id":1');
   });
@@ -182,6 +258,7 @@ describe("cmdMail", () => {
       subject: "tests pass",
       body: "All green",
       replyTo: null,
+      domainId: 0,
       read: false,
       createdAt: "2025-01-01 00:00:00",
     };
@@ -200,11 +277,33 @@ describe("cmdMail", () => {
 
   test("read mode shows no mail message", async () => {
     const d = testDeps({
-      ipcCall: (async () => ({ messages: [] })) as MailDeps["ipcCall"],
+      ipcCall: (async () => ({ messages: [], domain: "phoenix" })) as MailDeps["ipcCall"],
     });
 
     await cmdMail(["-H"], d);
     expect(d.state.stderr).toContain("No mail");
+  });
+
+  /**
+   * #3038 review finding #9: an empty mailbox and a wrong-partition read must not read
+   * as the same message. The daemon names the resolved partition; the CLI must show it.
+   */
+  test("empty read names the partition it searched", async () => {
+    const d = testDeps({
+      ipcCall: (async () => ({ messages: [], domain: "phoenix" })) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-H"], d);
+    expect(d.state.stderr).toContain('No mail in domain "phoenix".');
+  });
+
+  test("empty read in the unassigned partition names it too", async () => {
+    const d = testDeps({
+      ipcCall: (async () => ({ messages: [], domain: "_" })) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-H"], d);
+    expect(d.state.stderr).toContain('No mail in domain "_".');
   });
 
   test("reply mode calls replyToMail", async () => {
@@ -227,8 +326,77 @@ describe("cmdMail", () => {
       sender: "testuser",
       body: "looks good",
       subject: "approved",
+      cwd: "/test/cwd",
+      domain: undefined,
     });
     expect(d.state.stdout).toContain('"id":2');
+  });
+
+  // #3038 — every mail call carries a scope. A missing one is refused by the daemon, so
+  // a call site that forgot it is a silent no-scope call; these pin all five.
+  test("every mail IPC call carries the domain scope", async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const msg: MailMessage = {
+      id: 1,
+      sender: "a",
+      recipient: "b",
+      subject: "s",
+      body: "b",
+      replyTo: null,
+      domainId: 0,
+      read: false,
+      createdAt: "2025-01-01 00:00:00",
+    };
+    const makeDeps = () =>
+      testDeps({
+        isTTY: false,
+        readStdin: async () => "body",
+        ipcCall: (async (method: IpcMethod, params?: unknown) => {
+          seen.push({ method, params: (params ?? {}) as Record<string, unknown> });
+          if (method === "readMail") return { messages: [msg] };
+          if (method === "waitForMail") return { message: msg };
+          return { id: 1 };
+        }) as MailDeps["ipcCall"],
+      });
+
+    await cmdMail(["-d", "phoenix", "-s", "x", "boss"], makeDeps()); // sendMail
+    await cmdMail(["-d", "phoenix", "-r", "1"], makeDeps()); // replyToMail
+    await cmdMail(["-d", "phoenix", "-H"], makeDeps()); // readMail (+ markRead)
+    await cmdMail(["-d", "phoenix", "--wait", "--timeout=1"], makeDeps()); // waitForMail
+
+    expect(seen.map((s) => s.method).sort()).toEqual(["readMail", "replyToMail", "sendMail", "waitForMail"]);
+    for (const { method, params } of seen) {
+      expect({ method, cwd: params.cwd, domain: params.domain }).toEqual({
+        method,
+        cwd: "/test/cwd",
+        domain: "phoenix",
+      });
+    }
+  });
+
+  test("markRead from read mode also carries the scope", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const msg: MailMessage = {
+      id: 9,
+      sender: "a",
+      recipient: "b",
+      subject: "s",
+      body: "unread body",
+      replyTo: null,
+      domainId: 0,
+      read: false,
+      createdAt: "2025-01-01 00:00:00",
+    };
+    const d = testDeps({
+      ipcCall: (async (method: IpcMethod, params?: unknown) => {
+        if (method === "markRead") seen.push((params ?? {}) as Record<string, unknown>);
+        if (method === "readMail") return { messages: [msg] };
+        return {};
+      }) as MailDeps["ipcCall"],
+    });
+
+    await cmdMail(["-d", "phoenix"], d);
+    expect(seen).toEqual([{ id: 9, cwd: "/test/cwd", domain: "phoenix" }]);
   });
 
   test("reply mode requires body", async () => {
@@ -249,6 +417,7 @@ describe("cmdMail", () => {
       subject: "go ahead",
       body: "create the PR",
       replyTo: null,
+      domainId: 0,
       read: true,
       createdAt: "2025-01-01 00:00:00",
     };
@@ -269,12 +438,28 @@ describe("cmdMail", () => {
       now: () => start + callCount * 31_000, // Each call advances 31s past the 30s server timeout
       ipcCall: (async () => {
         callCount++;
-        return { message: null };
+        return { message: null, domain: "phoenix" };
       }) as MailDeps["ipcCall"],
     });
 
     await expect(cmdMail(["--wait", "--timeout=5"], d)).rejects.toThrow("exit(1)");
     expect(d.state.stderr).toContain("Timeout");
+  });
+
+  /** #3038 review finding #9, wait's half: same ambiguity, same fix. */
+  test("wait timeout names the partition it searched", async () => {
+    let callCount = 0;
+    const start = Date.now();
+    const d = testDeps({
+      now: () => start + callCount * 31_000,
+      ipcCall: (async () => {
+        callCount++;
+        return { message: null, domain: "phoenix" };
+      }) as MailDeps["ipcCall"],
+    });
+
+    await expect(cmdMail(["--wait", "--timeout=5"], d)).rejects.toThrow("exit(1)");
+    expect(d.state.stderr).toContain('Timeout: no mail received in domain "phoenix".');
   });
 
   test("--help prints usage and returns", async () => {

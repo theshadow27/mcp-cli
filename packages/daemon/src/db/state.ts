@@ -334,6 +334,41 @@ export class StateDb {
       })();
       version = 7;
     }
+
+    // v8 (#3038): every mail query is now domain-scoped — insertMail / readMail /
+    // getNextUnread / getMailById / markMailRead all take a required domainId and all
+    // predicate on domain_id, so the partition has to lead the index.
+    //
+    // This is a version step and NOT an edit to applyV1Schema, which is what the warning
+    // on that method forbids: the ladder is already past 1, so an index change written
+    // there would run on fresh test databases (green forever) and never on any mcx.db
+    // that had already booted a #3143 binary (silent production drift). Schema changes
+    // that tests cannot catch are exactly the ones that need a step of their own.
+    //
+    // idx_mail_recipient is dropped rather than kept alongside: no query can use a
+    // (recipient, read, created_at) index once every predicate leads with domain_id, so
+    // leaving it is pure write amplification.
+    if (version < 8) {
+      this.db.transaction(() => {
+        // Guarded on the table existing, the same way v7 guards `agent_sessions`. A
+        // database can sit at version N with the table absent — schema_versions may be
+        // seeded by a racing process before any table is created, and applyV1Schema only
+        // runs at version < 1, so it will not backfill. `CREATE INDEX ... ON mail` would
+        // then throw "no such table" and take the whole daemon start with it.
+        const hasMail =
+          (this.db
+            .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='mail'")
+            .get()?.n ?? 0) > 0;
+        if (hasMail) {
+          this.db.exec("DROP INDEX IF EXISTS idx_mail_recipient");
+          this.db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_mail_domain_recipient ON mail(domain_id, recipient, read, created_at)",
+          );
+        }
+        this.setSchemaVersion(CONSUMER, 8);
+      })();
+      version = 8;
+    }
   }
 
   /**
@@ -482,9 +517,8 @@ export class StateDb {
       CREATE INDEX IF NOT EXISTS idx_mail_recipient
         ON mail(recipient, read, created_at);
 
-      -- No domain index on mail yet, for the same reason event-log.ts declines one on
-      -- monitor_events: insertMail has no domainId parameter until #3038, so every row
-      -- is 0 and the index is write amplification for something nothing can use.
+      -- The domain-scoped replacement for this index is a v8 step, NOT an edit here.
+      -- See the ladder below and the warning on applyV1Schema.
 
       CREATE TABLE IF NOT EXISTS notes (
         server_name TEXT NOT NULL,
@@ -1221,25 +1255,38 @@ export class StateDb {
     }
   }
 
-  // -- Mail --
+  // -- Mail (domain-partitioned, #3038) --
+  //
+  // `domainId` is the **required first parameter** of every method here, deliberately
+  // not a trailing `domainId: number = NO_DOMAIN_ID`. A defaulted partition key compiles
+  // at every call site that has not thought about the partition, which is how a column
+  // ends up present with no writer; a required leading one makes tsc enumerate them.
+  //
+  // Every read predicates on `domain_id = ?`. There is no code path that omits it, so
+  // there is no path that degrades to a cross-partition read. Resolution of *which*
+  // domain lives in `mail-domain.ts`; this layer only enforces that one was supplied.
 
-  insertMail(sender: string, recipient: string, subject?: string, body?: string, replyTo?: number): number {
-    const result = this.db.run("INSERT INTO mail (sender, recipient, subject, body, reply_to) VALUES (?, ?, ?, ?, ?)", [
-      sender,
-      recipient,
-      subject ?? null,
-      body ?? null,
-      replyTo ?? null,
-    ]);
+  insertMail(
+    domainId: number,
+    sender: string,
+    recipient: string,
+    subject?: string,
+    body?: string,
+    replyTo?: number,
+  ): number {
+    const result = this.db.run(
+      "INSERT INTO mail (domain_id, sender, recipient, subject, body, reply_to) VALUES (?, ?, ?, ?, ?, ?)",
+      [domainId, sender, recipient, subject ?? null, body ?? null, replyTo ?? null],
+    );
     this.maybeRunMailPrune();
     return Number(result.lastInsertRowid);
   }
 
-  readMail(recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
+  readMail(domainId: number, recipient?: string, unreadOnly?: boolean, limit?: number): MailMessage[] {
     this.maybeRunMailPrune();
 
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    const conditions: string[] = ["domain_id = ?"];
+    const params: (string | number)[] = [domainId];
 
     if (recipient) {
       conditions.push("(recipient = ? OR recipient = '*')");
@@ -1249,52 +1296,32 @@ export class StateDb {
       conditions.push("read = 0");
     }
 
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = `WHERE ${conditions.join(" AND ")}`;
     const limitClause = limit ? " LIMIT ?" : "";
     if (limit) params.push(limit);
 
     return this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        (string | number)[]
-      >(
-        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail ${where} ORDER BY created_at DESC${limitClause}`,
-      )
+      .query<RawMailRow, (string | number)[]>(`${MAIL_SELECT} ${where} ORDER BY created_at DESC${limitClause}`)
       .all(...params)
       .map(toMailMessage);
   }
 
-  getMailById(id: number): MailMessage | undefined {
+  /**
+   * Fetch one message **within a partition**. A message id from another domain resolves
+   * to `undefined`, exactly as a nonexistent one does — the caller cannot distinguish
+   * "not yours" from "not there", which is the point: message ids are sequential and
+   * probing them must not report on another domain's traffic.
+   */
+  getMailById(id: number, domainId: number): MailMessage | undefined {
     const row = this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        [number]
-      >("SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE id = ?")
-      .get(id);
+      .query<RawMailRow, [number, number]>(`${MAIL_SELECT} WHERE id = ? AND domain_id = ?`)
+      .get(id, domainId);
     return row ? toMailMessage(row) : undefined;
   }
 
-  getNextUnread(recipient?: string): MailMessage | undefined {
-    const conditions = ["read = 0"];
-    const params: (string | number)[] = [];
+  getNextUnread(domainId: number, recipient?: string): MailMessage | undefined {
+    const conditions = ["domain_id = ?", "read = 0"];
+    const params: (string | number)[] = [domainId];
 
     if (recipient) {
       conditions.push("(recipient = ? OR recipient = '*')");
@@ -1303,30 +1330,23 @@ export class StateDb {
 
     const where = conditions.join(" AND ");
     const row = this.db
-      .query<
-        {
-          id: number;
-          sender: string;
-          recipient: string;
-          subject: string | null;
-          body: string | null;
-          reply_to: number | null;
-          read: number;
-          created_at: string;
-        },
-        (string | number)[]
-      >(
-        `SELECT id, sender, recipient, subject, body, reply_to, read, created_at FROM mail WHERE ${where} ORDER BY created_at ASC LIMIT 1`,
-      )
+      .query<RawMailRow, (string | number)[]>(`${MAIL_SELECT} WHERE ${where} ORDER BY created_at ASC LIMIT 1`)
       .get(...params);
     return row ? toMailMessage(row) : undefined;
   }
 
-  markMailRead(id: number): void {
-    this.db.run("UPDATE mail SET read = 1 WHERE id = ?", [id]);
+  /** Returns true when a row in this partition was marked read; false for another domain's id. */
+  markMailRead(id: number, domainId: number): boolean {
+    return this.db.run("UPDATE mail SET read = 1 WHERE id = ? AND domain_id = ?", [id, domainId]).changes > 0;
   }
 
-  /** Delete read messages older than ttlMs. Called opportunistically. */
+  /**
+   * Delete read messages older than ttlMs. Called opportunistically.
+   *
+   * Deliberately **not** domain-scoped: this is the TTL janitor, not a read. It moves no
+   * bytes across a partition boundary and exposes nothing to anyone — scoping it would
+   * instead mean a partition whose last caller went away never gets swept.
+   */
   pruneExpiredMail(ttlMs = options.MAIL_TTL_MS): number {
     const cutoff = formatSqliteDatetime(Date.now() - ttlMs);
     const result = this.db.run("DELETE FROM mail WHERE read = 1 AND created_at < ?", [cutoff]);
@@ -2297,7 +2317,7 @@ function toSessionRow(row: RawSessionRow): AgentSessionRow {
   };
 }
 
-function toMailMessage(row: {
+interface RawMailRow {
   id: number;
   sender: string;
   recipient: string;
@@ -2305,8 +2325,20 @@ function toMailMessage(row: {
   body: string | null;
   reply_to: number | null;
   read: number;
+  domain_id: number;
   created_at: string;
-}): MailMessage {
+}
+
+/**
+ * The projection every mail read shares. Single-sourced so a column added to one query
+ * and forgotten in another cannot make two reads of the same row disagree — `domain_id`
+ * in particular has to come back from all of them, since it is what callers stamp onto
+ * events.
+ */
+const MAIL_SELECT =
+  "SELECT id, sender, recipient, subject, body, reply_to, read, domain_id, created_at FROM mail" as const;
+
+function toMailMessage(row: RawMailRow): MailMessage {
   return {
     id: row.id,
     sender: row.sender,
@@ -2315,6 +2347,7 @@ function toMailMessage(row: {
     body: row.body,
     replyTo: row.reply_to,
     read: row.read === 1,
+    domainId: row.domain_id,
     createdAt: row.created_at,
   };
 }

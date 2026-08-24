@@ -1,6 +1,7 @@
 import type { MailMessage } from "@mcp-cli/core";
 import { ipcCall } from "@mcp-cli/core";
 import { useEffect, useState } from "react";
+import { controlMailScope } from "../mail-scope";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_MESSAGES = 200;
@@ -28,7 +29,11 @@ export function useMail(opts: UseMailOptions = {}): UseMailResult {
     async function poll() {
       if (cancelled) return;
       try {
-        const result = await ipcCallFn("readMail", { limit: MAX_MESSAGES, recipient: "human" });
+        const result = await ipcCallFn("readMail", {
+          limit: MAX_MESSAGES,
+          recipient: "human",
+          ...controlMailScope(),
+        });
         if (!cancelled) {
           setMessages(result.messages);
         }

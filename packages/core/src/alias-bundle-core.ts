@@ -53,6 +53,7 @@ export * from "./domain";
 export * from "./domain-protocol";
 export * from "./domain-spend";
 export * from "./wire";
+export * from "./mail-address";
 export * from "./sprint-state";
 export * from "./upgrade";
 export * from "./work-item";

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
-import { IPC_ERROR, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
+import { IPC_ERROR, NO_DOMAIN_ID, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer } from "./claude-server";
 import { installDaemonLogCapture } from "./daemon-log";
@@ -61,9 +61,19 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     getCachedTools: () => [],
     listSessions: () => [],
     getDatabase: () => new Database(":memory:"),
+    // Mail is domain-partitioned (#3038). These tests exercise the IPC transport, not the
+    // partition rule — the partition itself is covered end-to-end against a real StateDb
+    // in handlers/mail.spec.ts and db/state.spec.ts. An empty domains table puts every
+    // mail request here in the unassigned partition, which is what pre-#3038 mail was.
+    listDomains: () => [],
+    getDomainByName: () => null,
+    resolveDomain: () => null,
     ...overrides,
   } as never;
 }
+
+/** cwd for mail requests below. No domains are registered, so it resolves to partition 0. */
+const MAIL_CWD = "/tmp/ipc-server-spec";
 
 function mockConfig() {
   return {
@@ -1060,7 +1070,7 @@ describe("IpcServer HTTP transport", () => {
   test("sendMail inserts message and returns id", async () => {
     socketPath = tmpSocket();
     const db = mockDb({
-      insertMail: (_s: string, _r: string, _subj?: string, _body?: string, _rt?: number) => 42,
+      insertMail: (_d: number, _s: string, _r: string, _subj?: string, _body?: string, _rt?: number) => 42,
     });
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
@@ -1068,7 +1078,7 @@ describe("IpcServer HTTP transport", () => {
     const res = await rpc("/rpc", {
       id: "m1",
       method: "sendMail",
-      params: { sender: "wt-1", recipient: "manager", subject: "done", body: "tests pass" },
+      params: { sender: "wt-1", recipient: "manager", subject: "done", body: "tests pass", cwd: MAIL_CWD },
     });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
@@ -1093,7 +1103,7 @@ describe("IpcServer HTTP transport", () => {
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
-    const res = await rpc("/rpc", { id: "m3", method: "readMail", params: { recipient: "manager" } });
+    const res = await rpc("/rpc", { id: "m3", method: "readMail", params: { recipient: "manager", cwd: MAIL_CWD } });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect((json.result as { messages: unknown[] }).messages).toHaveLength(1);
@@ -1105,7 +1115,7 @@ describe("IpcServer HTTP transport", () => {
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
-    const res = await rpc("/rpc", { id: "m4", method: "readMail" });
+    const res = await rpc("/rpc", { id: "m4", method: "readMail", params: { cwd: MAIL_CWD } });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect((json.result as { messages: unknown[] }).messages).toEqual([]);
@@ -1130,7 +1140,11 @@ describe("IpcServer HTTP transport", () => {
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
-    const res = await rpc("/rpc", { id: "m5", method: "waitForMail", params: { recipient: "mgr", timeout: 1 } });
+    const res = await rpc("/rpc", {
+      id: "m5",
+      method: "waitForMail",
+      params: { recipient: "mgr", timeout: 1, cwd: MAIL_CWD },
+    });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect((json.result as { message: { id: number } }).message.id).toBe(5);
@@ -1144,7 +1158,7 @@ describe("IpcServer HTTP transport", () => {
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
-    const res = await rpc("/rpc", { id: "m6", method: "waitForMail", params: { timeout: 1 } });
+    const res = await rpc("/rpc", { id: "m6", method: "waitForMail", params: { timeout: 1, cwd: MAIL_CWD } });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect((json.result as { message: null }).message).toBeNull();
@@ -1170,7 +1184,11 @@ describe("IpcServer HTTP transport", () => {
     server.start(socketPath);
 
     // Start a waitForMail with a long timeout (30s)
-    const waitReq = rpc("/rpc", { id: "wm-drain", method: "waitForMail", params: { recipient: "mgr", timeout: 30 } });
+    const waitReq = rpc("/rpc", {
+      id: "wm-drain",
+      method: "waitForMail",
+      params: { recipient: "mgr", timeout: 30, cwd: MAIL_CWD },
+    });
 
     // Give it a moment to enter the poll loop
     await Bun.sleep(SETTLE_MS);
@@ -1217,16 +1235,17 @@ describe("IpcServer HTTP transport", () => {
     const res = await rpc("/rpc", {
       id: "m7",
       method: "replyToMail",
-      params: { id: 10, sender: "mgr", body: "looks good" },
+      params: { id: 10, sender: "mgr", body: "looks good", cwd: MAIL_CWD },
     });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect(json.result).toEqual({ id: 11 });
     // Reply goes to the original sender
-    expect(insertedArgs[0]).toBe("mgr"); // sender
-    expect(insertedArgs[1]).toBe("wt-1"); // recipient (swapped)
-    expect(insertedArgs[2]).toBe("Re: help"); // auto-prefixed subject
-    expect(insertedArgs[4]).toBe(10); // replyTo
+    expect(insertedArgs[0]).toBe(NO_DOMAIN_ID); // partition (#3038) — leading, and required
+    expect(insertedArgs[1]).toBe("mgr"); // sender
+    expect(insertedArgs[2]).toBe("wt-1"); // recipient (swapped)
+    expect(insertedArgs[3]).toBe("Re: help"); // auto-prefixed subject
+    expect(insertedArgs[5]).toBe(10); // replyTo
   });
 
   test("replyToMail with unknown message returns error", async () => {
@@ -1240,29 +1259,44 @@ describe("IpcServer HTTP transport", () => {
     const res = await rpc("/rpc", {
       id: "m8",
       method: "replyToMail",
-      params: { id: 999, sender: "mgr", body: "reply" },
+      params: { id: 999, sender: "mgr", body: "reply", cwd: MAIL_CWD },
     });
     const json = (await res.json()) as IpcResponse;
     expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
     expect(json.error?.message).toContain("999");
   });
 
-  test("markRead calls db.markMailRead", async () => {
+  test("markRead calls db.markMailRead with the caller's partition", async () => {
     socketPath = tmpSocket();
-    let markedId: number | undefined;
+    let markedArgs: [number, number] | undefined;
     const db = mockDb({
-      markMailRead: (id: number) => {
-        markedId = id;
+      // Returns true: as of #3038 the boolean IS the partition check, and the handler
+      // treats false as "not in this partition" and throws.
+      markMailRead: (id: number, domainId: number) => {
+        markedArgs = [id, domainId];
+        return true;
       },
     });
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
     server.start(socketPath);
 
-    const res = await rpc("/rpc", { id: "m9", method: "markRead", params: { id: 7 } });
+    const res = await rpc("/rpc", { id: "m9", method: "markRead", params: { id: 7, cwd: MAIL_CWD } });
     const json = (await res.json()) as IpcResponse;
     expect(json.error).toBeUndefined();
     expect(json.result).toEqual({});
-    expect(markedId).toBe(7);
+    expect(markedArgs).toEqual([7, NO_DOMAIN_ID]);
+  });
+
+  test("markRead reports a cross-partition miss instead of silently succeeding", async () => {
+    socketPath = tmpSocket();
+    const db = mockDb({ markMailRead: () => false });
+    server = new IpcServer(mockPool() as never, mockConfig(), db, null, opts());
+    server.start(socketPath);
+
+    const res = await rpc("/rpc", { id: "m11", method: "markRead", params: { id: 7, cwd: MAIL_CWD } });
+    const json = (await res.json()) as IpcResponse;
+    expect(json.error?.code).toBe(IPC_ERROR.INVALID_PARAMS);
+    expect(json.error?.message).toContain("7");
   });
 
   // -- Error context preservation --
