@@ -5,8 +5,16 @@ metadata:
   type: project
 ---
 
-**#3019 — domain-scoped mcx, the agentic loop harness.** Started 2026-08-22. Roughly a
-six-sprint arc; mcp-cli's largest single program to date.
+**#3019 — domain-scoped mcx, the agentic loop harness.** Started 2026-08-22;
+re-planned 2026-08-24 (the recovery comment on #3019 is the plan of record).
+**Two MVPs, planned one sprint at a time — no multi-sprint sequences.** MVP-1:
+ship v2.0.0 (epic A exit + integrity set + #3155 audit + #3273 rename; the
+migration itself is DONE — mcx.db is the only runtime DB). MVP-2: the operator
+loop, **reconciler-first** — ticker #3274, exception sink #3272, `phase.changed`
+emission, `bind` registration — on the existing phase machinery; the cards/
+reducer stack (epics D+E) is the successor decision source, not a parallel
+build. Epics C/F/G/H and I's tail serve neither MVP and wait until the loop
+demands them.
 
 Design is six docs on `main` (merged in #3020): `docs/domain-scoped-mcx.md`, `domains.md`,
 `cards.md`, `sensors.md`, `trust.md`, `console.md`. Read them before touching anything in
@@ -28,8 +36,9 @@ match the design's dependency table:
 | I | Spend + quota per domain | #3029 | A |
 | J | Dogfood + bootstrap | #3030 | E, H |
 
-**A blocks everything.** Sprint 78 = epic A (#3034–#3042) + the domain worker from B
-(#3043–#3045). Then 79 = C+I, 80 = D + B tail, 81 = E+F, 82 = H+G, 83 = J.
+**A blocks everything.** Epic A is mostly landed (6/9 sub-issues merged as of
+2026-08-24). The old sprint sequence (79 = C+I … 83 = J) is void — see the
+re-plan above.
 
 **Scope (operator, 2026-08-22): shipping #3019 means getting the harness working *here* —
 mcp-cli as domain #1, dogfooded.** Migrating phoenix/clrg/work (#3103) is explicitly OUT of
