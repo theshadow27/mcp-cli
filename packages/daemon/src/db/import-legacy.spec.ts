@@ -787,6 +787,12 @@ describe("import atomicity — an unsealed run leaves the target untouched (#303
     expect(markerOf(ws.legacyPath)).toBeNull();
     // ...including the scope→domain rows, which used to sit outside the transaction.
     expect(state.listDomains()).toEqual([]);
+    // The COUNTERS must agree with the DB state above (#3170 part 1): mail/auth_tokens/etc.
+    // copied cleanly before `notes` failed, so summarize() would report those rows as
+    // imported unless the rollback path zeroes them. Nothing landed, so nothing is reported.
+    expect(result.totalCopied).toBe(0);
+    expect(result.totalNotCopied).toBe(0);
+    expect(result.tables.every((t) => t.copied === 0 && t.notCopied === 0)).toBe(true);
   });
 
   test("(a2) an unsealed pass cannot resurrect rows the user deleted afterwards", () => {
