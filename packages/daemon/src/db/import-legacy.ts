@@ -250,10 +250,10 @@ export interface ImportResult {
   /**
    * True only when the marker was written, i.e. this import will never run again.
    * `ran && !sealed` means the copy was ATTEMPTED AND ROLLED BACK — the target is
-   * unchanged and the marker is unset. It does **not** mean rows landed. (The row counts
-   * alongside it describe what was copied inside the transaction before the rollback, which
-   * is #3170 part 1 and not fixed here.) Whether the next start actually retries depends on
-   * the target still being empty — see this file's header.
+   * unchanged and the marker is unset. The row counts alongside it are zeroed on this path
+   * (#3170 part 1) so they describe what persisted, not what was attempted before the
+   * rollback. Whether the next start actually retries depends on the target still being
+   * empty — see this file's header.
    */
   sealed: boolean;
   reason?: string;
@@ -464,7 +464,7 @@ function copyEverything(
       if (aborted !== null || !target.inTransaction) {
         const undone = safeRollback(target);
         log(`[domain-import] ${aborted ?? "the transaction is no longer active"} — ${undoneNote(undone)}`);
-        return { ...result, ran: false, sealed: false, reason: aborted ?? "transaction aborted" };
+        return { ...zeroedAfterRollback(result), ran: false, sealed: false, reason: aborted ?? "transaction aborted" };
       }
 
       if (failedTables.length > 0) {
@@ -472,7 +472,7 @@ function copyEverything(
         log(
           `[domain-import] ${failedTables.length} table(s) failed to import (${failedTables.join(", ")}); ${undoneNote(undone)} This does not retry automatically — recover with: mcx domain import --force`,
         );
-        return result;
+        return zeroedAfterRollback(result);
       }
 
       // Inside the transaction, in the legacy database, on this connection.
@@ -497,7 +497,7 @@ function copyEverything(
       const failedTables = tables.filter((t) => t.failed).map((t) => t.table);
       log(`[domain-import] import failed: ${errText(err)} — ${undoneNote(undone)}`);
       return {
-        ...summarize(tables, failedTables, domains),
+        ...zeroedAfterRollback(summarize(tables, failedTables, domains)),
         ran: false,
         sealed: false,
         reason: `import failed: ${errText(err)}`,
@@ -583,6 +583,22 @@ function summarize(
     domainsSkipped: domains.skipped,
     totalCopied: tables.reduce((n, t) => n + t.copied, 0),
     totalNotCopied: tables.reduce((n, t) => n + t.notCopied, 0),
+  };
+}
+
+/**
+ * Zero the row counts on a result describing an attempt that got rolled back. `summarize()`
+ * derives its counts from each table's `res.changes`, captured by `INSERT OR IGNORE` BEFORE
+ * the rollback runs — accurate for what was attempted, not for what persisted. Every path
+ * that returns after `safeRollback()` must report zero here too, or the counters describe
+ * rows that do not exist (#3170 part 1).
+ */
+function zeroedAfterRollback(result: ImportResult): ImportResult {
+  return {
+    ...result,
+    tables: result.tables.map((t) => ({ ...t, copied: 0, notCopied: 0 })),
+    totalCopied: 0,
+    totalNotCopied: 0,
   };
 }
 
