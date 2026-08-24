@@ -43,6 +43,27 @@ Before writing new helpers, check what already exists:
   in the file (#2984)
 - `packages/daemon/src/test-helpers.ts` — `makeConfig`, `makeMockTransport`, `makeMockClient`
 
+## Real ~/.mcp-cli isolation (required — #3233)
+
+No spec may touch the real, production `~/.mcp-cli` (socket, database, daemon
+process, or config). `test/preload-mcp-cli-isolation.ts` (wired into
+`bunfig.toml`) pins `MCP_CLI_DIR` to a throwaway per-run temp dir before any
+module can read the real default, so this can't happen even by accident —
+but treat it as a backstop, not a license to skip explicit isolation:
+
+- In-process code under test (anything reading `options.MCP_CLI_DIR`
+  directly): use `test/test-options.ts`'s `testOptions()` — gives each test
+  its own temp dir via `using`/`Symbol.dispose` cleanup.
+- A spawned `mcx`/`mcpd` subprocess: pass an explicit `MCP_CLI_DIR` override
+  in its `env` (see `test/harness.ts`'s `startTestDaemon`, `test/stress.spec.ts`'s
+  `mcx()` helper) — don't rely on the preload's shared default, which is one
+  directory per test *process*, not per test.
+- Never derive an `.mcp-cli` path from `homedir()` yourself — read
+  `options.MCP_CLI_DIR` instead. The `no-real-mcp-cli-home` doing-it-wrong
+  rule (`scripts/rules/no-real-mcp-cli-home.rule.ts`) flags both a
+  `homedir() + ".mcp-cli"` string-build and a hardcoded absolute real-home
+  path used in a filesystem call.
+
 ## Core Rules
 
 1. **Never use `setTimeout` for waiting** — await the condition directly

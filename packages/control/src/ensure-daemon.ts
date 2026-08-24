@@ -27,7 +27,13 @@ const defaultDeps: EnsureDaemonDeps = {
   ping: pingDaemon,
   spawn: (cmd) => {
     const [bin, ...args] = cmd;
-    const r = spawnManaged(bin, args, { stdout: "pipe", stderr: "pipe" });
+    // Explicit env: process.env — NOT omitted. Bun.spawn's implicit-inherit
+    // fallback (when `env` is undefined) snapshots the environment at Bun
+    // process startup, not the live `process.env` object; a later in-JS
+    // mutation (e.g. a test's MCP_CLI_DIR override) is invisible to it. An
+    // explicit reference to `process.env` reads the current value at spawn
+    // time and is passed through correctly. See #3233.
+    const r = spawnManaged(bin, args, { env: process.env, stdout: "pipe", stderr: "pipe" });
     if (!r.ok) throw new Error(`Failed to spawn ${bin}`);
     const stdout = r.handle.stdout;
     if (!stdout) throw new Error("stdout pipe not available");

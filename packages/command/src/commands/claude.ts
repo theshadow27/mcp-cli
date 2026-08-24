@@ -111,6 +111,17 @@ export interface ClaudeDeps extends SharedSessionDeps {
     cwd: string | null;
     claudeSessionId: string | null;
   } | null>;
+  /**
+   * List tracked work items, for `mcx claude ls`'s session↔work-item join.
+   * Injected for testability — see #3233: this used to call the module-level
+   * `ipcCall` directly, which is real (unmocked) daemon IPC. Any test driving
+   * `claudeList()` without exercising this specific path still triggered a
+   * real `ensureDaemon()` auto-start against the real ~/.mcp-cli, silently
+   * swallowed by the `.catch()` below.
+   */
+  listWorkItems: () => Promise<WorkItem[]>;
+  /** Fetch quota status for `mcx claude ls`'s banner. Injected for testability — see #3233 (same rationale as listWorkItems). */
+  getQuotaStatus: () => Promise<QuotaStatusResult>;
 }
 
 export { defaultGetDiffStats, defaultGetPrStatus, getGitRoot, parseDiffShortstat } from "./session-deps";
@@ -172,6 +183,13 @@ export const defaultDeps: ClaudeDeps = {
       return null;
     }
   },
+  listWorkItems: async () => {
+    // `cwd` scopes the result to the caller's domain (#3037/#3039) — matches the
+    // pre-DI call site this replaced and sprint-stats.ts's equivalent default.
+    const result = await ipcCall("listWorkItems", { cwd: process.cwd() }, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS });
+    return result.items;
+  },
+  getQuotaStatus: () => ipcCall("quotaStatus", undefined, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS }),
 };
 
 // ── Entry point ──
@@ -1175,9 +1193,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Fetch sessions and work items in parallel
   const [result, workItems] = await Promise.all([
     d.callTool("claude_session_list", toolArgs),
-    ipcCall("listWorkItems", { cwd: process.cwd() }, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS })
-      .then((r) => r.items)
-      .catch((): WorkItem[] => []),
+    d.listWorkItems().catch((): WorkItem[] => []),
   ]);
   const text = formatToolResult(result);
 
@@ -1209,7 +1225,7 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Fetch quota status (non-blocking — don't fail ls if quota unavailable)
   let quotaBanner: string | null = null;
   try {
-    const quota = await ipcCall("quotaStatus", undefined, { timeoutMs: QUICK_IPC_PROBE_TIMEOUT_MS });
+    const quota = await d.getQuotaStatus();
     quotaBanner = formatQuotaBanner(quota);
   } catch {
     // Quota monitoring unavailable — continue without banner
