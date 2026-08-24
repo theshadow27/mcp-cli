@@ -19,15 +19,6 @@ documented investigation. This file is the canonical reference; both
 `plan.md` (when classifying picks) and `run.md` (when spawning) point
 here.
 
-> **Spawn-shape update (sprint 79):** wherever this file says the gate must
-> use `mcx claude spawn` and NOT the Agent tool (#2009), that constraint is
-> superseded — background subagents now notify on completion and accept
-> mid-flight messages, which was the entire #2009 objection. Investigations
-> may run as lane subagents (`lanes.md`); keep `mcx claude spawn` when the
-> operator wants to attach to the investigation interactively. Everything
-> else in this file (the gate itself, the hard-fail rule, the findings-as-
-> issue-comment contract) stands unchanged.
-
 ## When to apply
 
 Add the investigation gate when ANY of these is true for the issue:

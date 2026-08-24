@@ -42,14 +42,13 @@ The sprint number threads through all phases:
 
 ## Key references
 
-- `references/lanes.md` — **the default execution model** (harness-native subagent lanes; adopted sprint 79 after the sprint-78 cost postmortem)
-- `references/mcx-claude.md` — session management commands (daemon-hosted sessions — the special-case path, see `lanes.md`)
+- `references/run.md` — **sprint execution** (the default model: phase-scripted daemon sessions driven off the monitor stream)
+- `references/mcx-claude.md` — session management commands
 - `references/plan.md` — sprint planning phase
-- `references/run.md` — sprint execution phase (daemon-session pipeline prose; consult `lanes.md` first)
 - `references/review.md` — release + changelog phase
 - `references/retro.md` — retrospective / diary phase
 - `references/introspection.md` — periodic code-first introspection (sprints ending in 7)
-- `references/investigations.md` — nerd-snipe gate before impl (flakies, recurring bugs, perf/security findings). The historical `mcx claude spawn`-only shape (#2009) is superseded — see `lanes.md`, "Note on #2009"
+- `references/investigations.md` — nerd-snipe gate before impl (flakies, recurring bugs, perf/security findings); load-bearing spawn shape (`mcx claude spawn`, NOT the Agent tool — #2009)
 
 **Per-phase logic is defined in `.mcx.yaml` + `.claude/phases/*.ts`**, not
 in `run.md`. Inspect a phase with `mcx phase show <name>` or preview its
@@ -58,20 +57,18 @@ the manifest schema.
 
 ## Rules (apply to all phases)
 
-- **Execute via lanes by default** (`references/lanes.md`): 2–3 lanes of fresh
-  subagents per phase. Daemon-hosted `mcx claude` sessions only for the cases
-  `lanes.md` reserves for them (non-Claude providers, work outliving the
-  orchestrator, operator-interactive sessions).
-- **Never implement directly.** Always delegate — to a lane subagent or a
-  spawned session. (Meta-file fixes via `plan.md` Step 1a are the one
-  orchestrator-direct exception, by design.)
+- **Execute via `mcx claude spawn` sessions, 2–3 concurrent lanes max**
+  (`references/run.md`) — capacity comes from turnover, not headcount.
+- **Never implement directly.** Always delegate to a spawned session.
+  (Meta-file fixes via `plan.md` Step 1a are the one orchestrator-direct
+  exception, by design.)
 - **Never switch models mid-stream.** Kill and restart fresh if wrong model.
 - **Fresh context per phase.** Don't reuse one context across implement/review/QA.
-- **No session sits idle-hot.** A subagent ends when its phase output exists; a
-  hosted session with nothing to do gets `bye`d or its resume point written to
-  the ledger. Idle context re-fed across a cache expiry is the single largest
-  cost class we have measured (sprint 78).
+- **No session sits idle-hot.** A session with nothing to do gets `bye`d or
+  its resume point written to the ledger. Idle context re-fed across a
+  cache expiry is the single largest cost class we have measured (sprint 78).
 - **File every problem as an issue.** Unfiled problems are invisible problems.
 - **Never randomly kill the daemon.** File an issue if a kill seems required.
-- **Use `mcx claude wait`, not sleep.** `wait --timeout` is event-driven and interruptible.
+- **Wait on the monitor stream, never sleep** — and never `mcx claude wait`
+  polling (legacy interactive CLI; loses event enrichment — see run.md).
 - **One long-lived `sprint-{N}` branch per sprint, in a worktree at `.claude/worktrees/sprint-{N}/`.** All sprint-meta commits — plan, mid-sprint amendments, run-time edits (timestamps, Excluded section), Results section, retro diary, release commit — accumulate on this branch. A single auto-merge PR is opened at plan time (as draft) and converted to ready at retro. This gives one watchable PR per sprint, replaces the older mix of `sprintNN/plan` / `sprintNN/retro` / `release/vX.Y.Z` short-lived branches, and means the orchestrator never pushes directly to main (which the autoapprover blocks). The worktree name matches the branch (`.claude/worktrees/sprint-46/` for sprint 46) so leftover state from a previous sprint never collides. Between-sprint meta-fixes (`.claude/skills/**`, etc., applied via `plan.md` Step 1a) use a separate `meta/<descriptor>` branch since they live outside any sprint. See `references/{plan,run,review,retro}.md` for the per-phase command sequences.

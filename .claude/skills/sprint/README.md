@@ -57,7 +57,7 @@ Event types the orchestrator handles:
 | `ci.started` / `ci.running` / `ci.finished` | CI outcome — `allGreen` advances; otherwise repair/needs-attention |
 | `pr.merge_state_changed` | If `cascadeHead`, advance the merge queue |
 | `pr.review_comment_posted` | Possibly substantive — file followup if so |
-| `work_item.phase_changed` | Phase script just updated state — observe |
+| `phase.changed` | Phase script just updated state — observe |
 | `cost.*` / `quota.utilization_threshold` | Apply quota gating (see `references/run.md`) |
 | `daemon.restarted` / `worker.ratelimited` | Diagnostic — log + continue |
 
@@ -72,7 +72,7 @@ mcx tracked --phase repair        # filter by phase
 mcx untrack <n>                   # remove from tracking
 ```
 
-Phase scripts update state via `_work_items.work_items_update`; the event bus emits `work_item.phase_changed` on every transition.
+Phase scripts update state via `_work_items.work_items_update`; the event bus emits `phase.changed` on every transition.
 
 ### Concurrency model
 
