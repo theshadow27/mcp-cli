@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { type RequestIdGenerator, type SessionEvent, SessionState } from "./session-state";
+import {
+  DEFAULT_RATE_LIMIT_WINDOW_MS,
+  type RequestIdGenerator,
+  type SessionEvent,
+  SessionState,
+} from "./session-state";
 
 // ── Test fixtures ──
 
@@ -1264,14 +1269,99 @@ describe("SessionState", () => {
       expect(session.rateLimited).toBe(false);
     });
 
-    test("rateLimited flag persists across multiple assistant messages", () => {
+    test("clears rateLimited on a normal assistant message — progress beats a stale event (#3104)", () => {
       const session = initSession();
       session.handleMessage(ASSISTANT_RATE_LIMITED);
       expect(session.rateLimited).toBe(true);
 
-      // A normal assistant message does not clear the flag
       session.handleMessage(ASSISTANT_MSG);
+      expect(session.rateLimited).toBe(false);
+      expect(session.rateLimitedAt).toBeNull();
+      expect(session.rateLimitHits).toBe(0);
+    });
+
+    test("clears rateLimited on an errored result — the turn is over either way (#3104)", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_RATE_LIMITED);
       expect(session.rateLimited).toBe(true);
+
+      session.handleMessage(RESULT_ERROR);
+      expect(session.rateLimited).toBe(false);
+    });
+
+    test("clears rateLimited on /clear", () => {
+      const session = initSession();
+      session.handleMessage(ASSISTANT_RATE_LIMITED);
+      expect(session.rateLimited).toBe(true);
+
+      session.resetForClear();
+      expect(session.rateLimited).toBe(false);
+    });
+
+    describe("expiry (#3104)", () => {
+      /** Build a session over a clock the test drives directly. */
+      function clockedSession(): { session: SessionState; advance: (ms: number) => void } {
+        let now = 1_000_000;
+        const session = new SessionState("sess-clock", undefined, "ws", () => now);
+        session.handleMessage(SYSTEM_INIT);
+        return {
+          session,
+          advance: (ms: number) => {
+            now += ms;
+          },
+        };
+      }
+
+      test("expires once retry_after_ms has elapsed", () => {
+        const { session, advance } = clockedSession();
+        session.handleMessage({ ...ASSISTANT_RATE_LIMITED, retry_after_ms: 30_000 });
+        expect(session.rateLimited).toBe(true);
+
+        advance(29_999);
+        expect(session.rateLimited).toBe(true);
+
+        advance(2);
+        expect(session.rateLimited).toBe(false);
+        expect(session.rateLimitedAt).toBeNull();
+      });
+
+      test("expires after the default window when no retry hint is given", () => {
+        const { session, advance } = clockedSession();
+        session.handleMessage({ type: "rate_limit_event" });
+        expect(session.rateLimited).toBe(true);
+
+        advance(DEFAULT_RATE_LIMIT_WINDOW_MS - 1);
+        expect(session.rateLimited).toBe(true);
+
+        advance(2);
+        expect(session.rateLimited).toBe(false);
+      });
+
+      test("sustained throttling keeps the flag set and counts the signals", () => {
+        const { session, advance } = clockedSession();
+        for (let i = 0; i < 3; i++) {
+          session.handleMessage({ type: "rate_limit_event", retry_after_ms: 10_000 });
+          advance(9_000);
+          expect(session.rateLimited).toBe(true);
+        }
+        expect(session.rateLimitHits).toBe(3);
+      });
+
+      test("a signal after the window lapsed starts a fresh episode count", () => {
+        const { session, advance } = clockedSession();
+        session.handleMessage({ type: "rate_limit_event", retry_after_ms: 5_000 });
+        advance(6_000);
+        expect(session.rateLimited).toBe(false);
+
+        session.handleMessage({ type: "rate_limit_event", retry_after_ms: 5_000 });
+        expect(session.rateLimitHits).toBe(1);
+      });
+
+      test("reports the signal timestamp while set", () => {
+        const { session } = clockedSession();
+        session.handleMessage({ ...ASSISTANT_RATE_LIMITED, retry_after_ms: 30_000 });
+        expect(session.rateLimitedAt).toBe(1_000_000);
+      });
     });
 
     test("rate limit detected in fallback assistant messages", () => {
