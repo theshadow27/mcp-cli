@@ -134,7 +134,7 @@ interface UseKeyboardOptions {
   plansNav: PlansNav;
   mailNav: MailNav;
   registryNav: RegistryNav;
-  onCycleScope?: () => void;
+  onCycleDomain?: () => void;
 }
 
 export function useKeyboard({
@@ -147,7 +147,7 @@ export function useKeyboard({
   plansNav,
   mailNav,
   registryNav,
-  onCycleScope,
+  onCycleDomain,
 }: UseKeyboardOptions): void {
   const { exit } = useApp();
   const pagerBusyRef = useRef(false);
@@ -239,8 +239,8 @@ export function useKeyboard({
     }
 
     // Global: cycle scope (Shift+S)
-    if (input === "S" && onCycleScope) {
-      onCycleScope();
+    if (input === "S" && onCycleDomain) {
+      onCycleDomain();
       return;
     }
 

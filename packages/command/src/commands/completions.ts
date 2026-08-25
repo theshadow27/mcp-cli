@@ -84,7 +84,6 @@ export const SUBCOMMANDS = [
   "tty",
   "vfs",
   "domain",
-  "scope",
   "connect",
   "daemon",
 ] as const;

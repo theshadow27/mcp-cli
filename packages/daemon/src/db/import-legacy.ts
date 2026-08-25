@@ -55,10 +55,29 @@ import {
 import { DERIVED_CURSOR_ID } from "../derived-events";
 import { ADOPTABLE_TABLES, adoptUnassignedRows } from "./adopt-domains";
 
-/** Shape of a `~/.mcp-cli/scopes/<name>.json` sidecar, as written by `mcx scope init`. */
-interface ScopeFile {
+/**
+ * Shape of a `~/.mcp-cli/scopes/<name>.json` sidecar, as written by the retired
+ * `mcx scope init` (#3042).
+ *
+ * The command that wrote these is gone, and so is `options.SCOPES_DIR`. This reader is
+ * not: the sidecars on disk are the 1.14.x → 2.0.0 upgrade input, and a user upgrading
+ * from the last release has their scopes only in that directory. Deleting the reader
+ * along with the writer would silently drop their partitions on first start, so the
+ * shape and the path both live here now — at the one place that still needs them.
+ */
+interface LegacyScopeSidecar {
   root: string;
   created?: string;
+}
+
+/**
+ * Where the retired `mcx scope` wrote its sidecars.
+ *
+ * Read from `options.MCP_CLI_DIR` on every call rather than captured at module load, so a
+ * test that redirects the state directory redirects this too.
+ */
+function legacyScopesDir(): string {
+  return join(options.MCP_CLI_DIR, "scopes");
 }
 
 /** Key of the import marker row in the legacy DB's `daemon_state` table. */
@@ -279,7 +298,10 @@ export interface ImportOptions {
    * handle itself, so the instruction names the database this process actually opened.
    */
   targetPath?: string;
-  /** Directory of `mcx scope` JSON sidecars to import as domains. Defaults to `options.SCOPES_DIR`. */
+  /**
+   * Directory of legacy `mcx scope` JSON sidecars to import as domains. Defaults to
+   * `~/.mcp-cli/scopes` — see {@link legacyScopesDir}.
+   */
   scopesDir?: string;
   /** Re-run even when the marker is set (`mcx domain import --force`). */
   force?: boolean;
@@ -308,7 +330,7 @@ const declined = (reason: string): ImportResult => ({
 export function importLegacyState(opts: ImportOptions): ImportResult {
   const legacyPath = opts.legacyPath ?? options.LEGACY_DB_PATH;
   const targetPath = opts.targetPath ?? opts.db.filename ?? options.DB_PATH;
-  const scopesDir = opts.scopesDir ?? options.SCOPES_DIR;
+  const scopesDir = opts.scopesDir ?? legacyScopesDir();
   const log = opts.log ?? ((msg: string) => console.error(msg));
   const recovery = recoveryInstructions(legacyPath, targetPath);
 
@@ -857,9 +879,9 @@ function importScopesAsDomains(
       skipped++;
       continue;
     }
-    let scope: ScopeFile;
+    let scope: LegacyScopeSidecar;
     try {
-      scope = JSON.parse(readFileSync(join(scopesDir, entry), "utf-8")) as ScopeFile;
+      scope = JSON.parse(readFileSync(join(scopesDir, entry), "utf-8")) as LegacyScopeSidecar;
     } catch (err) {
       log(`[domain-import] skipped scope "${name}": ${errText(err)}`);
       skipped++;

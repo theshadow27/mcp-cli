@@ -20,8 +20,7 @@ import type {
   ServerConfigMap,
 } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
-import { consoleLogger, detectScope, expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
-import type { DetectScopeDeps } from "@mcp-cli/core";
+import { consoleLogger, expandEnvVarsDeep, options, projectConfigPath } from "@mcp-cli/core";
 
 /**
  * Load and merge all config sources for the given working directory.
@@ -29,22 +28,20 @@ import type { DetectScopeDeps } from "@mcp-cli/core";
  * Only reads mcp-cli's own config:
  *   1. ~/.mcp-cli/projects/{mangled-cwd}/servers.json (project-scoped, lower priority)
  *   2. ~/.mcp-cli/servers.json (global, highest priority)
+ *
+ * The project lookup keys on `cwd` exactly. It used to walk up to the nearest registered
+ * `mcx scope` root first, so a worktree inherited its root's servers — that came from the
+ * sidecar registry retired in #3042 and is not reimplemented over domains here: the
+ * domains table lives in `mcx.db`, which the daemon opens *after* this runs (its hash goes
+ * in the PID file), so a domain-aware lookup would resolve on reload and not at startup.
+ * Inheritance over domains is filed separately rather than shipped half-wired.
  */
-export async function loadConfig(
-  cwd = process.cwd(),
-  logger: Logger = consoleLogger,
-  scopeDeps?: DetectScopeDeps,
-): Promise<ResolvedConfig> {
+export async function loadConfig(cwd = process.cwd(), logger: Logger = consoleLogger): Promise<ResolvedConfig> {
   const servers = new Map<string, ResolvedServer>();
   const sources: ConfigSource[] = [];
 
-  // Resolve scope: worktrees and subdirectories inherit the nearest scope root's config.
-  // Falls back to exact cwd when no scope matches.
-  const scope = detectScope(cwd, scopeDeps);
-  const configCwd = scope?.root ?? cwd;
-
   // Priority 2 (lower): project-scoped config
-  const projectPath = projectConfigPath(configCwd);
+  const projectPath = projectConfigPath(cwd);
   if (existsSync(projectPath)) {
     const projectConfig = await readJsonFile<McpConfigFile>(projectPath, logger);
     if (projectConfig?.mcpServers) {

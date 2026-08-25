@@ -433,16 +433,6 @@ mcx domain import --force                        # re-arm the one-shot legacy im
                                                  #   (refuses unless mcx.db is empty; runs on next daemon start)
 ```
 
-### Scopes
-
-Superseded by `mcx domain` — kept for now; existing scopes are imported as domains.
-
-```bash
-mcx scope init [name]            # register current dir as a named scope
-mcx scope ls                     # list all registered scopes
-mcx scope rm <name>              # remove a scope
-```
-
 ### Utilities
 
 ```bash

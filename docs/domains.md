@@ -36,7 +36,10 @@ partitioned tables from the schema itself (`sqlite_master` ⋈ `pragma_table_inf
 than from a list — so a table added later cannot slip through unclassified.
 
 Domains supersede `mcx scope`, which was the same idea stored as JSON sidecars in
-`~/.mcp-cli/scopes/` with no partition role and no host component.
+`~/.mcp-cli/scopes/` with no partition role and no host component. That command was
+removed in v2.0.0 (#3042) — `mcx scope <anything>` now names its `mcx domain` replacement
+and exits non-zero. The sidecars themselves are still read once, by the legacy import
+below, and are left on disk.
 
 ## How a partitioned table is actually scoped
 
