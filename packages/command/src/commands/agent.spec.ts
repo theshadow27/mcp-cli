@@ -2282,6 +2282,21 @@ describe("agent claude bye with worktree and no cwd", () => {
     // cleanupWorktree is called (exec runs git worktree remove)
     expect(deps.callTool).toHaveBeenCalledWith("claude_bye", { sessionId: SESSION_LIST[0].sessionId });
   });
+
+  // #3110: the printed "Worktree preserved" path must be built from the session's
+  // own repoRoot, not the caller's cwd — running `bye` from inside a different
+  // worktree used to nest the caller's path onto the real one.
+  test("prints the path from the session's repoRoot, not the caller's cwd", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: "claude-mt3yi2er", cwd: null, repoRoot: "/repo" });
+      }),
+      getCwd: mock(() => "/repo/.claude/worktrees/issue-3063"),
+    });
+    await cmdAgent(["claude", "bye", "abc12345"], deps);
+    expect(deps.printInfo).toHaveBeenCalledWith("Worktree preserved: /repo/.claude/worktrees/claude-mt3yi2er");
+  });
 });
 
 // ── agentList --pr with PR data ──
