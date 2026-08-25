@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Pre-commit hook: typecheck, lint, and test — skips checks for non-code changes.
+# Pre-commit hook: the static gate — skips checks for non-code changes.
 #
 # Tiers:
-#   docs-only  (.md, .claude/ docs)          → skip all checks
-#   config-only (package.json, *.json config) → typecheck + lint only
-#   source changes                            → full suite
+#   docs-only  (.md, .claude/ docs)           → skip all checks
+#   config-only (package.json, *.json config) → static gate
+#   source changes                            → static gate
+#
+# A commit runs NO tests (#3344). The ladder is pre-commit → static only;
+# pre-push → static + diff-aware tests; CI → full suite + coverage ratchet.
 
 set -euo pipefail
 
@@ -107,8 +110,16 @@ classify_files <<< "$staged_files"
 # including args-bounds, test-timeouts, session-teardown, and phase-drift —
 # all migrated out of standalone check-*.ts scripts in Phase 2 of
 # scripts/ROADMAP.md). CI runs the identical command, so local and CI share
-# one static definition of done (#2344). Source changes additionally run the
-# test + coverage gate.
+# one static definition of done (#2344). It is the ONLY gate the hook runs,
+# for both source and config changes.
+#
+# Tests and the coverage ratchet deliberately do NOT run here (#3344). They
+# used to, via a direct `bun run test:coverage`, which made every commit a full
+# suite run AND bypassed the step table where those phases are marked
+# `lease: true` — so the host-wide admission control that serialises heavy runs
+# across worktrees (#2690) could neither queue nor even see them. The ratchet is
+# a merge gate, not a commit gate: pre-push runs the diff-aware subset and CI
+# runs the full suite plus coverage, on clean runners, which is the arbiter.
 #
 # am-i-done shells out to tsc/biome directly (no `bun install` step), so a
 # fresh checkout (or a lockfile change) would hit "command not found". Mirror
@@ -126,20 +137,7 @@ if $has_source; then
   echo "  am-i-done (static gate: typecheck, lint, rules)..."
   bun run am-i-done --pre-commit
 
-  # Unset git hook environment variables before running the test suite.
-  # The outer `git commit` sets GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE, etc.
-  # Tests that spawn git commands without clearing these vars would otherwise
-  # accidentally commit into the developer's branch (#2527).
-  unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX \
-        GIT_AUTHOR_DATE GIT_COMMITTER_DATE
-
-  echo "  test + coverage..."
-  if ! bun run test:coverage; then
-    echo "  (test failures logged to ~/.mcp-cli/test-failures.log)"
-    exit 1
-  fi
-
-  echo "All checks passed."
+  echo "Static checks passed (tests run at pre-push; coverage in CI)."
 elif $has_config; then
   echo "Running pre-commit checks (config-only changes, skipping tests)..."
 
