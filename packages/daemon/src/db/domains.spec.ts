@@ -1,7 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
+
+/**
+ * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
+ * symlink, so the raw value is not what the code under test stores: domain paths go
+ * through `canonicalizeExistingDomainPath`, so a fixture built on the unresolved spelling
+ * asserts against a path production never writes. Resolving once here keeps the only
+ * symlink in a fixture the one a test creates on purpose.
+ */
+const tmpdir = (): string => realpathSync(osTmpdir());
 import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
@@ -217,7 +226,7 @@ describe("domain schema", () => {
     const state = createStateDb();
     const raw = state.database;
     new WorkItemDb(raw);
-    const alpha = state.createDomain("alpha", "/home/u/alpha");
+    const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
 
     raw.exec("CREATE TABLE cards (domain_id INTEGER NOT NULL DEFAULT 0, slug TEXT NOT NULL)");
     raw.run("INSERT INTO cards (domain_id, slug) VALUES (?, 'c1')", [alpha.id]);
@@ -230,8 +239,8 @@ describe("domain schema", () => {
     // Phases are stored as aliases. Without (domain_id, name) in the key, the second
     // domain to run `mcx phase install` overwrites the first domain's bundled_js.
     const state = createStateDb();
-    const alpha = state.createDomain("alpha", "/home/u/alpha");
-    const beta = state.createDomain("beta", "/home/u/beta");
+    const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
+    const beta = state.createDomain("beta", "/mcx-test/u/beta");
 
     state.saveAlias(
       "impl",
@@ -279,17 +288,17 @@ describe("domain schema", () => {
 
   test("domain ids start at 1, so NO_DOMAIN_ID can never collide with a real domain", () => {
     const state = createStateDb();
-    const first = state.createDomain("phoenix", "/home/u/github/phoenix");
+    const first = state.createDomain("phoenix", "/mcx-test/u/github/phoenix");
     expect(first.id).toBeGreaterThan(NO_DOMAIN_ID);
   });
 
   describe("StateDb domain accessors", () => {
     test("create, get, list, rename, delete", () => {
       const state = createStateDb();
-      const phoenix = state.createDomain("phoenix", "/home/u/github/phoenix");
+      const phoenix = state.createDomain("phoenix", "/mcx-test/u/github/phoenix");
       expect(phoenix.name).toBe("phoenix");
       expect(phoenix.host).toBeNull();
-      expect(phoenix.path).toBe("/home/u/github/phoenix");
+      expect(phoenix.path).toBe("/mcx-test/u/github/phoenix");
       expect(phoenix.createdAt).toBeTruthy();
 
       const remote = state.createDomain("work", "~/work", "boxen0010");
@@ -318,41 +327,41 @@ describe("domain schema", () => {
 
     test("a trailing slash on the registered path is normalized away", () => {
       const state = createStateDb();
-      const d = state.createDomain("phoenix", "/home/u/github/phoenix/");
-      expect(d.path).toBe("/home/u/github/phoenix");
+      const d = state.createDomain("phoenix", "/mcx-test/u/github/phoenix/");
+      expect(d.path).toBe("/mcx-test/u/github/phoenix");
     });
 
     test("rejects an invalid domain name rather than storing an unaddressable one", () => {
       const state = createStateDb();
-      expect(() => state.createDomain("has space", "/tmp/x")).toThrow(/invalid domain name/);
-      expect(() => state.createDomain("ok", "/tmp/x")).not.toThrow();
+      expect(() => state.createDomain("has space", "/mcx-test/x")).toThrow(/invalid domain name/);
+      expect(() => state.createDomain("ok", "/mcx-test/x")).not.toThrow();
       expect(() => state.renameDomain("ok", "has/slash")).toThrow(/invalid domain name/);
     });
 
     test("duplicate names are rejected", () => {
       const state = createStateDb();
-      state.createDomain("phoenix", "/home/u/a");
-      expect(() => state.createDomain("phoenix", "/home/u/b")).toThrow();
+      state.createDomain("phoenix", "/mcx-test/u/a");
+      expect(() => state.createDomain("phoenix", "/mcx-test/u/b")).toThrow();
     });
 
     test("two local domains cannot share a location", () => {
       const state = createStateDb();
-      state.createDomain("phoenix", "/home/u/a");
+      state.createDomain("phoenix", "/mcx-test/u/a");
       // NULL host must not defeat the uniqueness index.
-      expect(() => state.createDomain("other", "/home/u/a")).toThrow();
+      expect(() => state.createDomain("other", "/mcx-test/u/a")).toThrow();
       // Same path on a different host is a different location, and is allowed.
-      expect(() => state.createDomain("remote", "/home/u/a", "boxen0010")).not.toThrow();
-      expect(() => state.createDomain("remote2", "/home/u/a", "boxen0010")).toThrow();
+      expect(() => state.createDomain("remote", "/mcx-test/u/a", "boxen0010")).not.toThrow();
+      expect(() => state.createDomain("remote2", "/mcx-test/u/a", "boxen0010")).toThrow();
     });
 
     test("resolveDomain walks up to the nearest registered domain", () => {
       const state = createStateDb();
-      const outer = state.createDomain("outer", "/home/u/github");
-      const inner = state.createDomain("inner", "/home/u/github/phoenix");
+      const outer = state.createDomain("outer", "/mcx-test/u/github");
+      const inner = state.createDomain("inner", "/mcx-test/u/github/phoenix");
 
-      expect(state.resolveDomain("/home/u/github/phoenix/src")?.id).toBe(inner.id);
-      expect(state.resolveDomain("/home/u/github/other")?.id).toBe(outer.id);
-      expect(state.resolveDomain("/home/u")).toBeNull();
+      expect(state.resolveDomain("/mcx-test/u/github/phoenix/src")?.id).toBe(inner.id);
+      expect(state.resolveDomain("/mcx-test/u/github/other")?.id).toBe(outer.id);
+      expect(state.resolveDomain("/mcx-test/u")).toBeNull();
     });
   });
 
@@ -362,12 +371,12 @@ describe("domain schema", () => {
       const raw = state.database;
       new WorkItemDb(raw);
 
-      const alpha = state.createDomain("alpha", "/home/u/alpha");
-      const beta = state.createDomain("beta", "/home/u/beta");
+      const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
       expect(beta.id).toBe(alpha.id + 1);
 
       state.deleteDomain("beta");
-      const gamma = state.createDomain("gamma", "/home/u/gamma");
+      const gamma = state.createDomain("gamma", "/mcx-test/u/gamma");
       // Without AUTOINCREMENT, gamma would take beta's rowid and inherit its rows.
       expect(gamma.id).not.toBe(beta.id);
       expect(gamma.id).toBeGreaterThan(beta.id);
@@ -377,7 +386,7 @@ describe("domain schema", () => {
       const state = createStateDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
-      const beta = state.createDomain("beta", "/home/u/beta");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
 
       const item = wi.forDomain(beta.id).createWorkItem({ issueNumber: 7 });
       raw.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
@@ -398,8 +407,8 @@ describe("domain schema", () => {
       const state = createStateDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
-      const beta = state.createDomain("beta", "/home/u/beta");
-      const keep = state.createDomain("keep", "/home/u/keep");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
+      const keep = state.createDomain("keep", "/mcx-test/u/keep");
 
       wi.forDomain(beta.id).createWorkItem({ issueNumber: 7 });
       const survivor = wi.forDomain(keep.id).createWorkItem({ issueNumber: 8 });
@@ -413,7 +422,7 @@ describe("domain schema", () => {
 
     test("created_at is a single sortable format across CLI and import paths", () => {
       const state = createStateDb();
-      const d = state.createDomain("alpha", "/home/u/alpha");
+      const d = state.createDomain("alpha", "/mcx-test/u/alpha");
       // ISO-8601 with a Z, matching what the importer writes — mixing this with
       // datetime('now') made any ORDER BY created_at sort imported domains as a block.
       expect(d.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
@@ -421,7 +430,7 @@ describe("domain schema", () => {
 
     test("the refusal is a TYPE carrying the counts it was decided on (#3180)", () => {
       const state = createStateDb();
-      const beta = state.createDomain("beta", "/home/u/beta");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
       state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
 
       try {
@@ -448,7 +457,7 @@ describe("domain schema", () => {
       paths.push(p);
       const state = new StateDb(p);
       open.push(state);
-      const beta = state.createDomain("beta", "/home/u/beta");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
       state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
 
       // A second connection on the same file. busy_timeout 0 so this single-threaded test
@@ -507,7 +516,7 @@ describe("domain schema", () => {
       const state = createStateDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
-      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
 
       const items = wi.forDomain(alpha.id);
       const item = items.createWorkItem({ issueNumber: 7 });
@@ -548,8 +557,8 @@ describe("domain schema", () => {
       // "" used to be remote for canonicalization (stored verbatim, never checked for
       // absoluteness) and local for uniqueness (COALESCE(host,'')) at the same time.
       expect(() => state.createDomain("empty", "relative/not/absolute", "")).toThrow(/invalid domain host/);
-      expect(() => state.createDomain("blank", "/tmp/x", "   ")).toThrow(/invalid domain host/);
-      expect(() => state.createDomain("slashy", "/tmp/x", "has/slash")).toThrow(/invalid domain host/);
+      expect(() => state.createDomain("blank", "/mcx-test/x", "   ")).toThrow(/invalid domain host/);
+      expect(() => state.createDomain("slashy", "/mcx-test/x", "has/slash")).toThrow(/invalid domain host/);
       // A real host still works, and is stored verbatim.
       const remote = state.createDomain("work", "~/work", "boxen0010");
       expect(remote.path).toBe("~/work");
@@ -562,8 +571,8 @@ describe("domain schema", () => {
     test("two domains can each own a work item with issue_number = 42", () => {
       const state = createStateDb();
       const raw = state.database;
-      const alpha = state.createDomain("alpha", "/home/u/alpha");
-      const beta = state.createDomain("beta", "/home/u/beta");
+      const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
+      const beta = state.createDomain("beta", "/mcx-test/u/beta");
       const wi = new WorkItemDb(raw);
 
       // Each domain writes through its own handle (#3037) — no post-hoc UPDATE to move
@@ -583,7 +592,7 @@ describe("domain schema", () => {
     test("uniqueness still bites inside a single domain", () => {
       const state = createStateDb();
       const raw = state.database;
-      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
       const wi = new WorkItemDb(raw);
 
       wi.forDomain(alpha.id).createWorkItem({ issueNumber: 42 });

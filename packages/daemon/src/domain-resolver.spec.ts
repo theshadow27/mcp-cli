@@ -2,6 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
 import { NULL_DOMAIN_RESOLVER, createDomainResolver } from "./domain-resolver";
 
+/*
+ * Fixture paths use `/mcx-test/...`, a root that exists on no platform, rather than
+ * `/tmp` or `/home`. These tests never touch the filesystem, but the code under test
+ * canonicalizes the paths it is handed — and on macOS `/tmp` and `/var` are symlinks and
+ * `/home` is a firmlink, so a query built on one of those resolves (`/private/tmp/...`)
+ * while the hand-built domain row beside it does not. That asymmetry is an artifact of
+ * the fixture, not of the rule being tested: production stores domain paths canonical.
+ * A root that resolves to itself everywhere keeps both sides in the same spelling.
+ */
+
 function domain(id: number, name: string, path: string, host: string | null = null): Domain {
   return { id, name, host, path, createdAt: "2026-08-22T00:00:00.000Z" };
 }
@@ -33,22 +43,22 @@ function noSessions(domains: Domain[]) {
 
 describe("createDomainResolver", () => {
   test("resolves a path to the domain that owns it", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
-    expect(r.idForPath("/tmp/nested/deep")).toBe(3);
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test")]));
+    expect(r.idForPath("/mcx-test/nested/deep")).toBe(3);
   });
 
   test("a path outside every domain is the sentinel, never a guess", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]));
-    expect(r.idForPath("/var/elsewhere")).toBe(NO_DOMAIN_ID);
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test/phoenix")]));
+    expect(r.idForPath("/mcx-elsewhere/elsewhere")).toBe(NO_DOMAIN_ID);
   });
 
   test("no domains registered resolves to the sentinel", () => {
     const r = createDomainResolver(noSessions([]));
-    expect(r.idForPath("/tmp")).toBe(NO_DOMAIN_ID);
+    expect(r.idForPath("/mcx-test")).toBe(NO_DOMAIN_ID);
   });
 
   test("undefined and empty paths resolve to the sentinel without touching the database", () => {
-    const src = countingSource([domain(3, "phoenix", "/tmp")]);
+    const src = countingSource([domain(3, "phoenix", "/mcx-test")]);
     const r = createDomainResolver(src);
     expect(r.idForPath(undefined)).toBe(NO_DOMAIN_ID);
     expect(r.idForPath("")).toBe(NO_DOMAIN_ID);
@@ -58,27 +68,27 @@ describe("createDomainResolver", () => {
   // A relative repoRoot is junk on the publish path; resolveDomainForPath throws on it.
   // The resolver must degrade to the sentinel rather than take down EventBus.publish.
   test("a non-absolute path is the sentinel, not a throw", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test")]));
     expect(() => r.idForPath("relative/path")).not.toThrow();
     expect(r.idForPath("relative/path")).toBe(NO_DOMAIN_ID);
   });
 
   test("nested domains resolve to the innermost", () => {
     const r = createDomainResolver({
-      listDomains: () => [domain(1, "outer", "/tmp/work"), domain(2, "inner", "/tmp/work/sub")],
+      listDomains: () => [domain(1, "outer", "/mcx-test/work"), domain(2, "inner", "/mcx-test/work/sub")],
       getSessionPaths: () => [],
     });
-    expect(r.idForPath("/tmp/work/sub/pkg")).toBe(2);
-    expect(r.idForPath("/tmp/work/other")).toBe(1);
+    expect(r.idForPath("/mcx-test/work/sub/pkg")).toBe(2);
+    expect(r.idForPath("/mcx-test/work/other")).toBe(1);
   });
 
   test("a host-bound domain never owns a local path", () => {
-    const r = createDomainResolver(noSessions([domain(5, "remote", "/tmp", "boxen0010")]));
-    expect(r.idForPath("/tmp/anything")).toBe(NO_DOMAIN_ID);
+    const r = createDomainResolver(noSessions([domain(5, "remote", "/mcx-test", "boxen0010")]));
+    expect(r.idForPath("/mcx-test/anything")).toBe(NO_DOMAIN_ID);
   });
 
   test("name and id map both ways; the sentinel has no name", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp")]));
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test")]));
     expect(r.idForName("phoenix")).toBe(3);
     expect(r.idForName("nope")).toBeNull();
     expect(r.nameForId(3)).toBe("phoenix");
@@ -87,11 +97,11 @@ describe("createDomainResolver", () => {
   });
 
   test("repeated lookups hit the memo, not the database", () => {
-    const src = countingSource([domain(3, "phoenix", "/tmp")]);
+    const src = countingSource([domain(3, "phoenix", "/mcx-test")]);
     const r = createDomainResolver(src);
-    r.idForPath("/tmp/a");
-    r.idForPath("/tmp/a");
-    r.idForPath("/tmp/a");
+    r.idForPath("/mcx-test/a");
+    r.idForPath("/mcx-test/a");
+    r.idForPath("/mcx-test/a");
     expect(src.reads).toBe(1);
   });
 
@@ -100,14 +110,14 @@ describe("createDomainResolver", () => {
     // Lazy on purpose: the source must be re-read after invalidate(), so this cannot
     // use the snapshot helper.
     const r = createDomainResolver({ listDomains: () => [...domains], getSessionPaths: () => [] });
-    expect(r.idForPath("/tmp/late")).toBe(NO_DOMAIN_ID);
+    expect(r.idForPath("/mcx-test/late")).toBe(NO_DOMAIN_ID);
 
-    domains.push(domain(7, "late", "/tmp/late"));
+    domains.push(domain(7, "late", "/mcx-test/late"));
     // Still memoized — this is exactly the staleness invalidate() exists to clear.
-    expect(r.idForPath("/tmp/late")).toBe(NO_DOMAIN_ID);
+    expect(r.idForPath("/mcx-test/late")).toBe(NO_DOMAIN_ID);
 
     r.invalidate();
-    expect(r.idForPath("/tmp/late")).toBe(7);
+    expect(r.idForPath("/mcx-test/late")).toBe(7);
     expect(r.idForName("late")).toBe(7);
   });
 
@@ -116,37 +126,37 @@ describe("createDomainResolver", () => {
   // the memo removed entirely — it asserted the conclusion, not the premise
   // (#3040 review R6). These drive the bound and observe it.
   test("the memo never exceeds the configured cap", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 4 });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test/phoenix")]), { maxMemoized: 4 });
     for (let i = 0; i < 40; i++) {
-      r.idForPath(`/tmp/phoenix/p${i}`);
+      r.idForPath(`/mcx-test/phoenix/p${i}`);
       expect(r.memoSize()).toBeLessThanOrEqual(4);
     }
   });
 
   test("the memo actually grows before it is cleared — the cap is doing something", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 4 });
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test/phoenix")]), { maxMemoized: 4 });
     expect(r.memoSize()).toBe(0);
-    r.idForPath("/tmp/phoenix/a");
-    r.idForPath("/tmp/phoenix/b");
+    r.idForPath("/mcx-test/phoenix/a");
+    r.idForPath("/mcx-test/phoenix/b");
     expect(r.memoSize()).toBe(2);
-    r.idForPath("/tmp/phoenix/c");
-    r.idForPath("/tmp/phoenix/d");
+    r.idForPath("/mcx-test/phoenix/c");
+    r.idForPath("/mcx-test/phoenix/d");
     expect(r.memoSize()).toBe(4);
     // Fifth distinct path trips the cap: cleared, then the new entry recorded.
-    r.idForPath("/tmp/phoenix/e");
+    r.idForPath("/mcx-test/phoenix/e");
     expect(r.memoSize()).toBe(1);
   });
 
   test("answers stay correct across an overflow clear", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]), { maxMemoized: 2 });
-    for (let i = 0; i < 20; i++) r.idForPath(`/tmp/phoenix/p${i}`);
-    expect(r.idForPath("/tmp/phoenix/p0")).toBe(3);
-    expect(r.idForPath("/var/outside")).toBe(NO_DOMAIN_ID);
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test/phoenix")]), { maxMemoized: 2 });
+    for (let i = 0; i < 20; i++) r.idForPath(`/mcx-test/phoenix/p${i}`);
+    expect(r.idForPath("/mcx-test/phoenix/p0")).toBe(3);
+    expect(r.idForPath("/mcx-elsewhere/outside")).toBe(NO_DOMAIN_ID);
   });
 
   test("invalidate() empties the memo observably", () => {
-    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/tmp/phoenix")]));
-    r.idForPath("/tmp/phoenix/a");
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test/phoenix")]));
+    r.idForPath("/mcx-test/phoenix/a");
     expect(r.memoSize()).toBeGreaterThan(0);
     r.invalidate();
     expect(r.memoSize()).toBe(0);
@@ -154,7 +164,7 @@ describe("createDomainResolver", () => {
 });
 
 describe("createDomainResolver — session identity (#3040 review R3)", () => {
-  const DOMAINS = [domain(3, "phoenix", "/tmp/phoenix"), domain(7, "clrg", "/tmp/clrg")];
+  const DOMAINS = [domain(3, "phoenix", "/mcx-test/phoenix"), domain(7, "clrg", "/mcx-test/clrg")];
 
   function withSessions(sessions: Record<string, string | null>) {
     let lookups = 0;
@@ -172,7 +182,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
   }
 
   test("resolves a session to the domain of the root that session recorded", () => {
-    const r = createDomainResolver(withSessions({ s1: "/tmp/phoenix/pkg", s2: "/tmp/clrg" }));
+    const r = createDomainResolver(withSessions({ s1: "/mcx-test/phoenix/pkg", s2: "/mcx-test/clrg" }));
     expect(r.idForSession("s1")).toBe(3);
     expect(r.idForSession("s2")).toBe(7);
   });
@@ -186,12 +196,12 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
   });
 
   test("a session whose root is outside every domain is the sentinel", () => {
-    const r = createDomainResolver(withSessions({ s1: "/var/elsewhere" }));
+    const r = createDomainResolver(withSessions({ s1: "/mcx-elsewhere/elsewhere" }));
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
   });
 
   test("session lookups are memoized — one DB read per session, not per event", () => {
-    const src = withSessions({ s1: "/tmp/phoenix" });
+    const src = withSessions({ s1: "/mcx-test/phoenix" });
     const r = createDomainResolver(src);
     for (let i = 0; i < 25; i++) r.idForSession("s1");
     expect(src.lookups).toBe(1);
@@ -213,7 +223,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
       },
     });
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID);
-    sessions.s1 = "/tmp/phoenix";
+    sessions.s1 = "/mcx-test/phoenix";
     expect(r.idForSession("s1")).toBe(NO_DOMAIN_ID); // memoized
     r.invalidate();
     expect(r.idForSession("s1")).toBe(3);
@@ -222,7 +232,7 @@ describe("createDomainResolver — session identity (#3040 review R3)", () => {
 
 describe("NULL_DOMAIN_RESOLVER", () => {
   test("answers the sentinel for everything, so a daemon with no domain table is well-defined", () => {
-    expect(NULL_DOMAIN_RESOLVER.idForPath("/tmp/anything")).toBe(NO_DOMAIN_ID);
+    expect(NULL_DOMAIN_RESOLVER.idForPath("/mcx-test/anything")).toBe(NO_DOMAIN_ID);
     expect(NULL_DOMAIN_RESOLVER.idForSession("s1")).toBe(NO_DOMAIN_ID);
     expect(NULL_DOMAIN_RESOLVER.memoSize()).toBe(0);
     expect(NULL_DOMAIN_RESOLVER.idForName("phoenix")).toBeNull();

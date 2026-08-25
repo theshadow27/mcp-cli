@@ -78,6 +78,19 @@ function writeLegacyDb(path: string): void {
   db.close();
 }
 
+/**
+ * Delete a SQLite database the way an operator deleting `mcx.db` would experience it.
+ *
+ * `StateDb` runs in WAL mode, so the database is three files. Removing only the main one
+ * leaves `-wal`/`-shm` sidecars that the next `new StateDb(path)` opens against a main
+ * file that no longer exists — SQLite reports that as `disk I/O error` during migrate,
+ * not as "empty database", so the test fails on the setup instead of on the assertion it
+ * was written for.
+ */
+function removeDb(path: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+}
+
 function freshTargetDb(path: string): StateDb {
   const state = new StateDb(path);
   new WorkItemDb(state.database);
@@ -178,9 +191,9 @@ describe("importLegacyState", () => {
     mkdirSync(ws.scopesDir, { recursive: true });
     writeFileSync(
       join(ws.scopesDir, "phoenix.json"),
-      JSON.stringify({ root: "/home/u/github/phoenix/", created: "2026-01-02T03:04:05.000Z" }),
+      JSON.stringify({ root: "/mcx-test/u/github/phoenix/", created: "2026-01-02T03:04:05.000Z" }),
     );
-    writeFileSync(join(ws.scopesDir, "mcp-cli.json"), JSON.stringify({ root: "/home/u/github/mcp-cli" }));
+    writeFileSync(join(ws.scopesDir, "mcp-cli.json"), JSON.stringify({ root: "/mcx-test/u/github/mcp-cli" }));
     writeFileSync(join(ws.scopesDir, "broken.json"), "{not json");
     writeFileSync(join(ws.scopesDir, "rootless.json"), JSON.stringify({ created: "x" }));
 
@@ -200,7 +213,7 @@ describe("importLegacyState", () => {
     expect(domains.map((d) => d.name)).toEqual(["mcp-cli", "phoenix"]);
     expect(domains.every((d) => d.host === null)).toBe(true);
     const phoenix = state.getDomainByName("phoenix");
-    expect(phoenix?.path).toBe("/home/u/github/phoenix");
+    expect(phoenix?.path).toBe("/mcx-test/u/github/phoenix");
     expect(phoenix?.createdAt).toBe("2026-01-02T03:04:05.000Z");
     expect(logs.some((l) => l.includes("broken"))).toBe(true);
     expect(logs.some((l) => l.includes("rootless"))).toBe(true);
@@ -215,13 +228,13 @@ describe("importLegacyState", () => {
     using opts = testOptions();
     writeLegacyDb(opts.LEGACY_DB_PATH);
     mkdirSync(join(opts.dir, "scopes"), { recursive: true });
-    writeFileSync(join(opts.dir, "scopes", "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+    writeFileSync(join(opts.dir, "scopes", "phoenix.json"), JSON.stringify({ root: "/mcx-test/u/github/phoenix" }));
 
     const state = target(opts.DB_PATH);
     const result = importLegacyState({ db: state.database, log: () => {} });
 
     expect(result.domainsImported).toBe(1);
-    expect(state.getDomainByName("phoenix")?.path).toBe("/home/u/github/phoenix");
+    expect(state.getDomainByName("phoenix")?.path).toBe("/mcx-test/u/github/phoenix");
   });
 
   test("writes the marker into the LEGACY database, not into mcx.db", () => {
@@ -273,7 +286,7 @@ describe("importLegacyState", () => {
     importLegacyState({ db: first.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
     first.close();
     open.pop();
-    rmSync(ws.targetPath, { force: true });
+    removeDb(ws.targetPath);
 
     const rebuilt = target(ws.targetPath);
     const result = importLegacyState({
@@ -321,7 +334,7 @@ describe("importLegacyState", () => {
     const ws = workspace();
     writeLegacyDb(ws.legacyPath);
     mkdirSync(ws.scopesDir, { recursive: true });
-    writeFileSync(join(ws.scopesDir, "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+    writeFileSync(join(ws.scopesDir, "phoenix.json"), JSON.stringify({ root: "/mcx-test/u/github/phoenix" }));
     const state = target(ws.targetPath);
 
     importLegacyState({ db: state.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
@@ -426,7 +439,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     );
     importLegacyState({ db: bare, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
     bare.close();
-    rmSync(ws.targetPath, { force: true });
+    removeDb(ws.targetPath);
 
     // Second start, this time with a properly migrated target: the import must still run.
     const good = target(ws.targetPath);
@@ -449,7 +462,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     importLegacyState({ db: first.database, legacyPath: ws.legacyPath, scopesDir: ws.scopesDir, log: () => {} });
     first.close();
     open.pop();
-    rmSync(ws.targetPath, { force: true });
+    removeDb(ws.targetPath);
 
     const rebuilt = target(ws.targetPath);
     const logs: string[] = [];
@@ -478,7 +491,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     open.pop();
 
     // The mechanism `mcx domain import --force` automates (see B3b).
-    rmSync(ws.targetPath, { force: true });
+    removeDb(ws.targetPath);
     const legacy = new Database(ws.legacyPath, { readwrite: true, create: false });
     legacy.run("DELETE FROM daemon_state WHERE key = ?", [IMPORT_MARKER_KEY]);
     legacy.close();
@@ -515,7 +528,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
 
     // Only mcx.db is deleted — the marker stays set, exactly the state a user lands in
     // when they "reset" by removing the database.
-    rmSync(ws.targetPath, { force: true });
+    removeDb(ws.targetPath);
     const rebuilt = target(ws.targetPath);
 
     const declined = importLegacyState({
@@ -785,7 +798,7 @@ describe("import atomicity — an unsealed run leaves the target untouched (#303
     const ws = workspace();
     writeLegacyDb(ws.legacyPath);
     mkdirSync(ws.scopesDir, { recursive: true });
-    writeFileSync(join(ws.scopesDir, "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+    writeFileSync(join(ws.scopesDir, "phoenix.json"), JSON.stringify({ root: "/mcx-test/u/github/phoenix" }));
     const state = target(ws.targetPath);
     // Remove one target table so exactly one copy fails.
     state.database.run("DROP TABLE notes");
@@ -1110,7 +1123,7 @@ describe("every write is inside the transaction boundary (#3143 enumeration)", (
     const scopesDir = join(dir, "scopes");
     writeLegacyDb(legacyPath);
     mkdirSync(scopesDir, { recursive: true });
-    writeFileSync(join(scopesDir, "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+    writeFileSync(join(scopesDir, "phoenix.json"), JSON.stringify({ root: "/mcx-test/u/github/phoenix" }));
 
     const state = freshTargetDb(targetPath);
     open.push(state);

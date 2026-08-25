@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
+
+/**
+ * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
+ * symlink, so the raw value is not what the code under test stores: domain paths go
+ * through `canonicalizeExistingDomainPath`, so a fixture built on the unresolved spelling
+ * asserts against a path production never writes. Resolving once here keeps the only
+ * symlink in a fixture the one a test creates on purpose.
+ */
+const tmpdir = (): string => realpathSync(osTmpdir());
 import { join } from "node:path";
 import {
   type Domain,

@@ -1,6 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir as osTmpdir } from "node:os";
+
+/**
+ * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
+ * symlink, so a fixture path built on the raw value already contains an unresolved
+ * ancestor — and these tests assert on exactly how much of a path canonicalization
+ * leaves alone. Resolving the root once keeps the only symlink in a fixture the one the
+ * test creates on purpose.
+ */
+const tmpdir = (): string => realpathSync(osTmpdir());
 import { isAbsolute, join } from "node:path";
 import {
   type Domain,
