@@ -327,3 +327,108 @@ attempt unless someone proves it innocent, so each detonation burns orchestrator
 time proving innocence. **Not fixed mid-sprint** — CI surgery under time pressure
 is the "accommodating a failure" red flag; all three go to sprint-81 planning with
 options written on the issues.
+
+## Run log — 2026-08-25 04:00-04:20, toolchain directive
+
+### Operator directive (mid-sprint, in-scope by explicit instruction)
+
+> "are we still pinned on bun 1.3.14 here? all the tooling needs to move to bun
+> 1.4.0 ASAP. and any segfault-assuming/testing stuff should be removed. No
+> segfaults on 1.4.0 should be happening"
+
+Answer on investigation: the **box** was never pinned — it has run 1.4.0 since
+2026-08-20 01:00. **CI** was pinned to 1.3.14 in 7 `setup-bun` sites plus
+`package.json` engines. Every sprint-80 gate therefore ran on a different
+runtime than the one grading the PR, silently falsifying the CLAUDE.md
+guarantee that "a local pass means a green PR".
+
+Filed **#3333** (pins + delete the crash-tolerance machinery, two PRs),
+**#3337** (TypeScript 5.9.3 → 7.x; `latest` is 7.0.2 and the native compiler is
+GA — typecheck is ~73% of static gate time), **#3341** (expose gate-lease as
+`mcx gate run --` so neighbour fleets can share host admission control).
+
+### Orchestrator inventory error, corrected by the worker
+
+The #3333 issue body listed 8 pin sites. It **missed the runtime floor**:
+`MIN_BUN_VERSION` in `packages/core/src/bun-version.ts`, its spec, and
+README.md:36. Cause: grepped the YAML key `bun-version`, not the constant.
+Engines is advisory; `assertBunVersion` actually refuses to start — shipping
+`>=1.4.0` in engines while the binary accepted 1.3.14 would have reproduced the
+PR #2077 bug. Worker caught it and bumped all three.
+
+The same issue body also listed #2744 and #2780 as "do NOT remove" guards. They
+are **internal properties of the tolerance**, not guards beside it: with the
+promotion branch deleted, `classifyCoverage` collapses to `code === 0` and a
+single panic fails. Deletion is strictly stricter. Approved as subsumed.
+
+### Bun 1.4.0 result (gate run 1, cold worktree, contaminated)
+
+Steps 1-11 of 12 **all green on 1.4.0**. Failure count 0 across typecheck, lint,
+the full rule sweep and all five test steps. **No segfault, no panic, no
+worker-panicked cascade.** Step 12 (coverage) killed by the #3261 wall-clock
+deadline at 300263ms with no output — a deadline abort, not a crash. Correctly
+classified by the worker and NOT escalated as the #3333 stop signal.
+
+Standing rule adopted for this task: a PASS under load is a strong pass; a
+crash under load proves nothing about 1.4.0 — discard the conclusion, keep the
+evidence, re-run quiet, escalate only on a clean reproduction.
+
+### #3332 — orchestrator argument retracted on the evidence
+
+An earlier comment argued contention could not explain the gate variance,
+citing a "load inversion" (failed at loadavg 2.20, passed at 10.47). **That
+argument is unsound.** It measured contention with loadavg, the instrument
+`gate-lease.ts:50-70` rejects at length. Direct on-box measurement from
+tonight's gate log at 04:14:
+
+```
+gate-lease: admitted on slot 0 after 257ms — cpu 42% < 60%, slots=1 (#2690)
+uptime at the same instant: loadavg 7.60 / 12 cores = 63% of core count
+```
+
+63% vs 42%, same box, same moment. Cold-`tsc` and contention were never
+competing explanations — they compound.
+
+Better diagnosis (worker's, filed on #3332): gate-lease's headroom signal *does*
+see foreign load, but its only lever is **delaying admission**. After `waitMs`
+the run proceeds anyway; foreign load then slows **execution**, and execution
+time is not credited to the deadline — only queue time is (`runner.ts`
+`leaseCreditMs`). A fleet that never calls `acquireGateLease` cannot be queued
+behind, only waited on and then run against. Fires only when a neighbour is
+busy, which is why it reads as nondeterministic.
+
+Constraint carried forward: whatever #3332 lands must be on the way **in**, not
+a reaper — `gate-lease.ts:37-49` names the sprint 69/70 collapse
+(#2597/#2632, reverted in #2637) as the cost of getting that wrong.
+
+### Cross-project contention — orchestration finding
+
+The gate baton serialises mcp-cli sessions only. `clrg-stats` and
+`phoenix-octovalve` run their own fleets on the same 12 cores and cannot be
+batoned or killed. **A free baton is not a free box.** `gate-lease` is already
+host-global (`~/.mcp-cli/gate-locks/`, flock, crash-safe) and already measures
+CPU-busy rather than loadavg — but `acquireGateLease` is not exported from core
+and has no CLI surface, so neighbours have no way to participate. #3341.
+
+### Merged
+
+| Issue | PR | Notes |
+|---|---|---|
+| #3260 | #3328 | forgeable install marker — repair verified by mutation, `qa:pass`, MERGED 04:19:58Z |
+
+QA on #3328 mutation-verified both directions (reverting the hash compare fails
+4 new tests; relaxing the sha256 shape-check fails the legacy-marker test),
+confirmed legacy hashless markers fail closed, measured the 373ms hash cost as
+off the startup path, and checked install.sh↔TS digest parity end to end.
+
+### Issues filed this window
+
+#3332 (corrected), #3333, #3334, #3335, #3336, #3337, #3338, #3339, #3340, #3341
+
+### Retro carry-forward
+
+- `.claude/memory/cpu-wedge-test-workers.md` says "we run 1.3.14" — stale once
+  #3333 lands.
+- `.claude/memory/feedback_quota_status_staleness.md` + MEMORY.md reference the
+  literal `[RATE LIMITED]`, renamed by #3104 to `[rate-limited Ns ago]`.
+- Baton handoff should carry a host-load check, not just lease state (#3341).
