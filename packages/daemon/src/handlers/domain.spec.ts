@@ -261,18 +261,43 @@ describe("DomainHandlers", () => {
     expect(db.countDomainDependents(domain.id)).toEqual([]);
   });
 
+  test("rm reports stranded return addresses as their own count, refused and then forced (#3247)", async () => {
+    const { db, handlers, dir } = setup();
+    await invoke(handlers, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx);
+    const other = (await invoke(handlers, "domainAdd")({ name: "other", path: srv(dir, "other") }, ctx)) as Domain;
+    // A cross-domain message FROM phoenix: the row lands in `other`'s partition carrying
+    // `other`'s domain_id, so it is not a phoenix dependent and never appears in `dependents`.
+    db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'boss@phoenix', 'w', 'hi')", [
+      other.id,
+    ]);
+
+    const refused = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx)) as DomainRemoveResult;
+    expect(refused).toEqual({ found: true, removed: false, dependents: [], strandedSenders: 1 });
+    expect(db.getDomainByName("phoenix")).not.toBeNull();
+
+    const forced = (await invoke(handlers, "domainRemove")(
+      { name: "phoenix", cascade: true },
+      ctx,
+    )) as DomainRemoveResult;
+    // Removed, reported — and the other domain's message is still there, because deleting
+    // it would be this command reaching into a partition the operator never named.
+    expect(forced).toEqual({ found: true, removed: true, dependents: [], strandedSenders: 1 });
+    expect(db.getDomainByName("phoenix")).toBeNull();
+    expect(db.countDomainDependents(other.id)).toEqual([{ table: "mail", rows: 1 }]);
+  });
+
   test("rm of a domain with no dependents succeeds without --force", async () => {
     const { db, handlers, dir } = setup();
     await invoke(handlers, "domainAdd")({ name: "solo", path: srv(dir, "solo") }, ctx);
     const result = (await invoke(handlers, "domainRemove")({ name: "solo" }, ctx)) as DomainRemoveResult;
-    expect(result).toEqual({ found: true, removed: true, dependents: [] });
+    expect(result).toEqual({ found: true, removed: true, dependents: [], strandedSenders: 0 });
     expect(db.getDomainByName("solo")).toBeNull();
   });
 
   test("rm of an unknown domain reports not-found rather than a bare false", async () => {
     const { handlers } = setup();
     const result = (await invoke(handlers, "domainRemove")({ name: "ghost" }, ctx)) as DomainRemoveResult;
-    expect(result).toEqual({ found: false, removed: false, dependents: [] });
+    expect(result).toEqual({ found: false, removed: false, dependents: [], strandedSenders: 0 });
   });
 
   test("round-trip: add → ls → show → which → rename → which → rm", async () => {
@@ -500,7 +525,12 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
     // The refusal reaches the caller as a *result* — never as the raw Error `deleteDomain`
     // throws, which is what the old handler surfaced whenever its own count disagreed.
-    expect(result).toEqual({ found: true, removed: false, dependents: [{ table: "mail", rows: 1 }] });
+    expect(result).toEqual({
+      found: true,
+      removed: false,
+      dependents: [{ table: "mail", rows: 1 }],
+      strandedSenders: 0,
+    });
     expect(db.getDomainByName("phoenix")).not.toBeNull();
     expect(db.countDomainDependents(domain.id)).toEqual([{ table: "mail", rows: 1 }]);
   });
@@ -540,7 +570,7 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     new DomainHandlers(racing).register(handlers);
 
     const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
-    expect(result).toEqual({ found: true, removed: false, dependents: [] });
+    expect(result).toEqual({ found: true, removed: false, dependents: [], strandedSenders: 0 });
   });
 
   test("the duplicate-location pre-check uses the SAME stored form as createDomain", async () => {
@@ -626,7 +656,12 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
       ]);
 
       const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
-      expect(result).toEqual({ found: true, removed: false, dependents: [{ table: "mail", rows: 1 }] });
+      expect(result).toEqual({
+        found: true,
+        removed: false,
+        dependents: [{ table: "mail", rows: 1 }],
+        strandedSenders: 0,
+      });
     });
   });
 });

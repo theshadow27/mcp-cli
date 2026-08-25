@@ -6,7 +6,8 @@
  *   mcx domain show <name> [--json]       resolve to host + path
  *   mcx domain which [path] [--json]      reverse lookup — which domain owns this path?
  *   mcx domain rename <old> <new>         name change only; never touches path
- *   mcx domain rm <name> [--force]        refuses while dependents exist
+ *   mcx domain rm <name> [--force]        refuses while dependents exist, or while another
+ *                                         domain's mail still names this one (#3247)
  *   mcx domain import [--force]           re-run the one-shot legacy import (#3034)
  *
  * See `docs/domains.md`. This file holds no resolution logic: `which` asks the daemon,
@@ -263,11 +264,14 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
     return deps.exit(1);
   }
   if (!result.removed) {
-    // `removed: false` with no dependents is not a refusal — it is a concurrent delete
-    // between the lookup and the delete. Reporting it as "0 dependent row(s) still
-    // reference it" would be nonsense, and would advertise `--force` as the remedy for a
-    // domain that is already gone.
-    if (result.dependents.length === 0) {
+    // `removed: false` with no dependents AND no stranded senders is not a refusal — it is
+    // a concurrent delete between the lookup and the delete. Reporting it as "0 dependent
+    // row(s) still reference it" would be nonsense, and would advertise `--force` as the
+    // remedy for a domain that is already gone. `strandedSenders` has to be part of that
+    // test now that it is a refusal reason on its own (#3247): a domain whose only
+    // reference is a stamped return address refuses with an EMPTY `dependents`, and
+    // without this it would report itself as concurrently deleted while still in the table.
+    if (result.dependents.length === 0 && result.strandedSenders === 0) {
       printError(`Domain "${name}" was removed by something else before this command could remove it`);
       return deps.exit(1);
     }
@@ -277,6 +281,14 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
     // Counts cover rows carrying this domain's `domain_id`. No production writer sets one
     // yet (#3155 tracks them), so today this refusal is reachable only once those land.
     printError("Counts cover rows bound to this domain (domain_id); see #3155 for writer coverage.");
+    if (result.strandedSenders > 0) {
+      // Listed apart from the per-table counts on purpose: these rows live in OTHER
+      // domains' partitions, so --force does not delete them and the remedy is different.
+      printError(
+        `  ${result.strandedSenders} cross-domain message(s) in other domains use "${name}" as their return address.`,
+      );
+      printError("  --force leaves those messages in place; their replies fail until this name is registered again.");
+    }
     printError("Reassign or delete them first, or re-run with --force to delete them with the domain.");
     return deps.exit(1);
   }
@@ -295,6 +307,15 @@ async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
       ? `Domain "${name}" removed, along with its dependent rows in: ${result.dependents.map((d) => d.table).join(", ")}`
       : `Domain "${name}" removed`,
   );
+  // Said out loud precisely because --force did NOT take these with it (#3247): they are
+  // other domains' messages, so removing them would be the cross-partition deletion the
+  // operator never asked for. Unlike the cascade count above, this one is honest to print
+  // — it names rows that still exist and can be re-read, not rows already destroyed.
+  if (result.strandedSenders > 0) {
+    deps.error(
+      `Warning: ${result.strandedSenders} cross-domain message(s) in other domains still name "${name}" as their return address; replies to them fail until a domain is registered under that name again.`,
+    );
+  }
 }
 
 async function domainImport(args: string[], deps: DomainDeps): Promise<void> {
@@ -347,9 +368,12 @@ Usage:
   mcx domain ls [--json]                List domains
   mcx domain show <name> [--json]       Resolve a domain to host + path
   mcx domain which [path] [--json]      Which domain owns this path? (default: cwd)
-  mcx domain rename <old> <new>         Rename; path and every domain_id are untouched
-  mcx domain rm <name> [--force]        Remove; refuses while dependent rows exist
-                                        (--cascade is an accepted alias for --force)
+  mcx domain rename <old> <new>         Rename; path and every domain_id are untouched,
+                                        and mail stamped with the old name follows it
+  mcx domain rm <name> [--force]        Remove; refuses while dependent rows exist, or
+                                        while other domains' mail still names this one as
+                                        a return address (--force keeps those, and says so;
+                                        --cascade is an accepted alias for --force)
   mcx domain import --force             Re-arm the one-shot legacy import (clears its
                                         marker; the import runs on the next daemon start,
                                         and refuses unless this database is empty)

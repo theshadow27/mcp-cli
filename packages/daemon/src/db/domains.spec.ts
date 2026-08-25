@@ -6,6 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
+import { resolveCallerDomain, resolveDelivery } from "../mail-domain";
 import { DomainConflictError, DomainHasDependentsError, StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
@@ -866,6 +867,175 @@ describe("domain schema", () => {
       expect(() => after.createDomain("dup", "/srv/a")).toThrow(DomainConflictError);
       // The pragma was read before BEGIN and restored after COMMIT — never left flipped.
       expect(after.database.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(0);
+    });
+  });
+
+  describe("a renamed or removed domain and the mail senders stamped with its name (#3247)", () => {
+    /**
+     * Send a cross-domain message the way the daemon does — through `resolveDelivery`, so
+     * the stamp under test is the one production writes rather than a literal this file
+     * agreed with itself about. Returns the new row's id.
+     */
+    function sendCrossDomain(state: StateDb, from: string, to: string, local = "boss"): number {
+      const caller = resolveCallerDomain(state, { domain: from });
+      const delivery = resolveDelivery(state, caller, local, `worker@${to}`);
+      expect(delivery.crossDomain).toBe(true);
+      return state.insertMail(delivery.domain.id, delivery.sender, delivery.recipient, "subj", "body");
+    }
+
+    /** Resolve a reply to `id` as `replyToMail` does: re-parse the stored sender. */
+    function replyTo(state: StateDb, readerDomain: string, id: number) {
+      const reader = resolveCallerDomain(state, { domain: readerDomain });
+      const original = state.getMailById(id, reader.id);
+      if (!original) throw new Error(`message ${id} is not in ${readerDomain}'s partition`);
+      return resolveDelivery(state, reader, "worker", original.sender);
+    }
+
+    test("a rename re-stamps the return address, so the reply still routes home", () => {
+      const state = createStateDb();
+      state.createDomain("alpha", "/home/u/alpha");
+      const beta = state.createDomain("beta", "/home/u/beta");
+      const id = sendCrossDomain(state, "alpha", "beta");
+      expect(state.getMailById(id, beta.id)?.sender).toBe("boss@alpha");
+
+      const renamed = state.renameDomain("alpha", "gamma");
+      if (!renamed) throw new Error("rename returned null for a domain that exists");
+
+      // The stamp moved with the row. Before this fix it still said "boss@alpha" and the
+      // reply below threw `unknown domain "alpha"` with no recovery but re-registering it.
+      expect(state.getMailById(id, beta.id)?.sender).toBe("boss@gamma");
+      expect(replyTo(state, "beta", id).domain).toEqual({ id: renamed.id, name: "gamma" });
+    });
+
+    test("only the stamp is rewritten: bare senders and other domains' stamps are untouched", () => {
+      const state = createStateDb();
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      const beta = state.createDomain("beta", "/home/u/beta");
+      state.insertMail(beta.id, "local-only", "worker", "s");
+      state.insertMail(alpha.id, "boss@beta", "worker", "s");
+      const id = sendCrossDomain(state, "alpha", "beta");
+
+      state.renameDomain("alpha", "gamma");
+
+      expect(
+        state
+          .readMail(beta.id)
+          .map((m) => m.sender)
+          .sort(),
+      ).toEqual(["boss@gamma", "local-only"]);
+      expect(state.readMail(alpha.id).map((m) => m.sender)).toEqual(["boss@beta"]);
+    });
+
+    test("the suffix match is exact — a name's underscore is not a LIKE wildcard", () => {
+      // `_` matches any single character in LIKE, and `isValidDomainName` allows it in a
+      // domain name. A `LIKE '%@' || name` rewrite would restamp alphaXb's mail while
+      // renaming alpha_b, redirecting a third party's replies to a domain that never sent
+      // them — a silent cross-domain misroute, not a cosmetic over-match.
+      const state = createStateDb();
+      state.createDomain("alpha_b", "/home/u/a");
+      state.createDomain("alphaXb", "/home/u/x");
+      const target = state.createDomain("target", "/home/u/t");
+      const underscore = sendCrossDomain(state, "alpha_b", "target");
+      const literal = sendCrossDomain(state, "alphaXb", "target");
+
+      state.renameDomain("alpha_b", "zulu");
+
+      expect(state.getMailById(underscore, target.id)?.sender).toBe("boss@zulu");
+      expect(state.getMailById(literal, target.id)?.sender).toBe("boss@alphaXb");
+    });
+
+    test("the rename and the re-stamp are ONE transaction — a failed re-stamp rolls the rename back", () => {
+      // The question the fix has to answer, not just the one it obviously answers: a
+      // rename that committed while the migration failed would leave live mail attributed
+      // to a name no domain holds — the exact state this issue is about, reached from the
+      // other direction. A BEFORE UPDATE trigger is the deterministic way to fail the
+      // second write after the first has already happened inside the transaction.
+      const state = createStateDb();
+      state.createDomain("alpha", "/home/u/alpha");
+      const beta = state.createDomain("beta", "/home/u/beta");
+      const id = sendCrossDomain(state, "alpha", "beta");
+      state.database.exec("CREATE TRIGGER no_restamp BEFORE UPDATE ON mail BEGIN SELECT RAISE(ABORT, 'boom'); END");
+
+      expect(() => state.renameDomain("alpha", "gamma")).toThrow(/boom/);
+
+      expect(state.getDomainByName("alpha")).not.toBeNull();
+      expect(state.getDomainByName("gamma")).toBeNull();
+      expect(state.getMailById(id, beta.id)?.sender).toBe("boss@alpha");
+    });
+
+    test("rm REFUSES a domain that is still a return address, even with no dependent rows of its own", () => {
+      const state = createStateDb();
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      state.createDomain("beta", "/home/u/beta");
+      sendCrossDomain(state, "alpha", "beta");
+
+      // The row lives in BETA's partition, so `countDomainDependents(alpha)` sees nothing
+      // and the delete used to succeed silently — this is the whole defect.
+      expect(state.countDomainDependents(alpha.id)).toEqual([]);
+      expect(state.countStampedSenders("alpha", alpha.id)).toBe(1);
+
+      try {
+        state.deleteDomain("alpha");
+        throw new Error("expected deleteDomain to refuse while alpha is still a return address");
+      } catch (err) {
+        expect(err).toBeInstanceOf(DomainHasDependentsError);
+        if (!(err instanceof DomainHasDependentsError)) throw err;
+        expect(err.dependents).toEqual([]);
+        expect(err.strandedSenders).toBe(1);
+        expect(err.message).toMatch(/stamped return address of 1 cross-domain message/);
+      }
+      expect(state.getDomainByName("alpha")).not.toBeNull();
+    });
+
+    test("a cascade removes the domain and LEAVES the stamps, which re-registering the name recovers", () => {
+      const state = createStateDb();
+      state.createDomain("alpha", "/home/u/alpha");
+      const beta = state.createDomain("beta", "/home/u/beta");
+      const id = sendCrossDomain(state, "alpha", "beta");
+
+      expect(state.deleteDomain("alpha", { cascade: true })).toBe(true);
+
+      // NOT deleted and NOT rewritten: the row is beta's inbox, and a bare sender would
+      // re-parse as a mailbox in beta itself, silently misrouting the reply.
+      expect(state.getMailById(id, beta.id)?.sender).toBe("boss@alpha");
+      expect(() => replyTo(state, "beta", id)).toThrow(/unknown domain "alpha"/);
+      // Fail-loud AND reversible — which is why the stamp is not tombstoned.
+      state.createDomain("alpha", "/home/u/alpha-again");
+      expect(replyTo(state, "beta", id).domain.name).toBe("alpha");
+    });
+
+    test("a stamp in the domain's OWN partition is a dependent, counted once and cascaded", () => {
+      const state = createStateDb();
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      // Not reachable through `resolveDelivery` (a same-partition send stores a bare
+      // sender), but a row like this must not be counted by both mechanisms: the refusal
+      // would name it twice and the cascade already deletes it.
+      state.insertMail(alpha.id, "boss@alpha", "worker", "s");
+
+      expect(state.countStampedSenders("alpha", alpha.id)).toBe(0);
+      expect(state.countDomainDependents(alpha.id)).toEqual([{ table: "mail", rows: 1 }]);
+      expect(() => state.deleteDomain("alpha")).toThrow(/still has 1 dependent row\(s\) \(mail=1\)/);
+      expect(state.deleteDomain("alpha", { cascade: true })).toBe(true);
+    });
+
+    test("both refusal reasons at once read as two clauses with two remedies", () => {
+      const state = createStateDb();
+      const alpha = state.createDomain("alpha", "/home/u/alpha");
+      state.createDomain("beta", "/home/u/beta");
+      sendCrossDomain(state, "alpha", "beta");
+      state.insertMail(alpha.id, "someone", "worker", "s");
+
+      try {
+        state.deleteDomain("alpha");
+        throw new Error("expected a refusal");
+      } catch (err) {
+        if (!(err instanceof DomainHasDependentsError)) throw err;
+        // `--cascade` clears the first and explicitly does not clear the second, so one
+        // sentence ending "pass cascade to remove them" would be half wrong.
+        expect(err.message).toMatch(
+          /still has 1 dependent row\(s\) \(mail=1\); .*, and is the stamped return address of 1 cross-domain message/,
+        );
+      }
     });
   });
 });

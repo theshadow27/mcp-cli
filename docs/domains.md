@@ -153,17 +153,41 @@ old name (a running domain worker, log correlation, an MCP handshake identity) s
 change. What a rename does to a running worker is the worker section's to state, not this
 one's.
 
-**Mail is one of those "something currently holding the old name" cases.** A cross-domain
-message's stored `sender` is `local@domain-name`, not `local@domain-id` — the whole point is
-a human-readable return address (see "Cross-domain delivery" below). A `rename` or `rm`
-after such a message was sent leaves that stamped name unresolvable: every reply throws
-`unknown domain`. That is fail-loud, not a leak, so it is not a partition defect — but it is
-undocumented behavior worth knowing before renaming a domain with outstanding cross-domain
-mail (#3038 review finding #10; tracked for a fix in a follow-up, not this PR).
+**Mail is the one place a domain's name is stored outside this table**, and the rename
+takes it along (#3247). A cross-domain message's stored `sender` is `local@domain-name`,
+not `local@domain-id` — the whole point is a human-readable return address (see
+"Cross-domain delivery" below) — so `rename` also rewrites every `mail.sender` stamped
+`local@old` to `local@new`, in the **same transaction** as the name change. Either both
+land or neither does; there is no window where mail is attributed to a name no domain
+holds. That is a *data* migration, not a schema one — no version bump, nothing to run.
 
-`rm` **refuses** while dependent rows exist and reports the counts per table; `--force`
-cascades. Silently orphaning a thousand work items because a name was typed twice is not a
-recoverable state, so the refusal is the default and the cascade is the flag.
+The suffix match is exact, not a `LIKE` pattern: a domain name may contain `_`, which LIKE
+would treat as a wildcard, so renaming `alpha_b` would otherwise restamp mail from a
+domain called `alphaXb` and redirect a third party's replies.
+
+`rm` cannot do the same thing — the name is going away, not moving — so it **refuses**
+instead. `rm` refuses while dependent rows exist and reports the counts per table, and it
+refuses while any cross-domain message elsewhere still names this domain as its return
+address, reporting that count separately. Silently orphaning a thousand work items because
+a name was typed twice is not a recoverable state, so the refusal is the default and the
+cascade is the flag.
+
+`--force` treats the two reasons differently, and the difference is deliberate:
+
+- **Dependent rows** (anything carrying this `domain_id`) are deleted with the domain.
+- **Stamped return addresses are left exactly as they are**, and `rm` says so. They are
+  rows in *other* domains' partitions: deleting them would be `mcx domain rm alpha
+  --force` destroying `beta`'s inbox, which is the cross-partition write the whole
+  partition rule exists to prevent. Stripping the `@alpha` qualifier instead would be
+  worse than either — a bare sender re-parses as a mailbox in the *reader's* domain, so
+  the reply would deliver somewhere nobody addressed.
+
+So after a forced `rm`, replies to those messages keep failing loudly with `unknown domain
+"alpha"` — and that error already names the domain and already says `register it with mcx
+domain add`, which is the recovery: register a domain under the old name and the stamped
+addresses resolve again. A tombstone sentinel (`local@<deleted:alpha>`) was considered and
+rejected for exactly that reason — it would make the strand permanent in exchange for an
+error message that says less.
 
 `--cascade` is accepted as an exact synonym for `--force`, because `StateDb.deleteDomain`'s
 own docstring names the option `--cascade` while this command's issue specified `--force`.
@@ -550,7 +574,9 @@ the partition, because:
   query anywhere returns rows from more than one partition without the caller naming
   which one — see the `-d` caveat below.
 - The stored `sender` is rewritten to `local@sender-domain`, so the reply routes back
-  across the boundary instead of hitting a same-named mailbox at home.
+  across the boundary instead of hitting a same-named mailbox at home. That stamp holds a
+  **name**, so it moves when the domain is renamed and blocks the domain's removal — see
+  `mcx domain` above for what `rename` and `rm --force` each do to it (#3247).
 - A sender may only qualify itself with its own domain. Otherwise a caller could stamp a
   message as coming from elsewhere and steer the reply into that domain — and because a
   local part cannot contain `@`, that check cannot be bypassed by burying a second

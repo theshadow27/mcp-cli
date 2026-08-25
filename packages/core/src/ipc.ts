@@ -996,6 +996,16 @@ export interface DomainRemoveResult {
   removed: boolean;
   /** Non-empty with `removed: false` means the removal was refused, not that nothing matched. */
   dependents: DomainDependentCount[];
+  /**
+   * Cross-domain messages in **other** partitions stamped with this domain as their return
+   * address (#3247). Deliberately not folded into `dependents`: those are rows carrying
+   * this domain's `domain_id`, which a cascade deletes, whereas these belong to another
+   * partition and a cascade leaves them in place — reporting them in one list would make
+   * the "removed, along with its dependent rows in: …" line claim a deletion that did not
+   * happen. Non-zero with `removed: false` is a refusal; non-zero with `removed: true` is
+   * the warning that those replies are now unresolvable.
+   */
+  strandedSenders: number;
 }
 
 /**
