@@ -2297,6 +2297,27 @@ describe("agent claude bye with worktree and no cwd", () => {
     await cmdAgent(["claude", "bye", "abc12345"], deps);
     expect(deps.printInfo).toHaveBeenCalledWith("Worktree preserved: /repo/.claude/worktrees/claude-mt3yi2er");
   });
+
+  // #3110: same fix applies to the --clean cleanup branch — cleanupWorktree must
+  // target the path built from the session's repoRoot, not the caller's cwd, or
+  // it silently `git status`es the wrong (nonexistent) directory and never removes
+  // the real worktree.
+  test("--clean resolves cleanup path from the session's repoRoot, not the caller's cwd", async () => {
+    const deps = makeDeps({
+      callTool: mock(async (tool: string) => {
+        if (tool === "claude_session_list") return toolResult(SESSION_LIST);
+        return toolResult({ ended: true, worktree: "claude-mt3yi2er", cwd: null, repoRoot: "/repo" });
+      }),
+      getCwd: mock(() => "/repo/.claude/worktrees/issue-3063"),
+      exec: mock(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+    });
+    await cmdAgent(["claude", "bye", "abc12345", "--clean"], deps);
+    const execCalls = (deps.exec as ReturnType<typeof mock>).mock.calls;
+    const statusCall = execCalls.find(
+      (call) => Array.isArray(call[0]) && call[0].includes("status") && call[0].includes("-C"),
+    );
+    expect(statusCall?.[0]).toEqual(["git", "-C", "/repo/.claude/worktrees/claude-mt3yi2er", "status", "--porcelain"]);
+  });
 });
 
 // ── agentList --pr with PR data ──
