@@ -5,6 +5,7 @@ import {
   compactTranscript,
   estimateCost,
   filterByRepo,
+  findSharedCwds,
   formatAge,
   formatCost,
   formatElapsed,
@@ -76,6 +77,54 @@ describe("filterByRepo", () => {
   test("returns empty when no matches", () => {
     const filtered = filterByRepo(sessions, "/nonexistent");
     expect(filtered).toHaveLength(0);
+  });
+});
+
+describe("findSharedCwds", () => {
+  const WT = "/repo/.claude/worktrees/issue-1328";
+
+  test("reports a directory two sessions are listed in", () => {
+    const shared = findSharedCwds([
+      { sessionId: "a", cwd: WT },
+      { sessionId: "b", cwd: WT },
+      { sessionId: "c", cwd: "/repo/.claude/worktrees/issue-935" },
+    ]);
+    expect([...shared]).toEqual([WT]);
+  });
+
+  test("reports nothing when every session has its own directory", () => {
+    const shared = findSharedCwds([
+      { sessionId: "a", cwd: WT },
+      { sessionId: "b", cwd: "/repo/.claude/worktrees/issue-935" },
+    ]);
+    expect(shared.size).toBe(0);
+  });
+
+  test("a repo root does not collide with worktrees beneath it", () => {
+    // Exact paths, matching the spawn guard — a prefix rule would flag every
+    // worktree under a repo as sharing with a session sitting at that root.
+    const shared = findSharedCwds([
+      { sessionId: "a", cwd: "/repo" },
+      { sessionId: "b", cwd: WT },
+    ]);
+    expect(shared.size).toBe(0);
+  });
+
+  test("ignores sessions with no recorded cwd", () => {
+    const shared = findSharedCwds([
+      { sessionId: "a", cwd: null },
+      { sessionId: "b", cwd: null },
+    ]);
+    expect(shared.size).toBe(0);
+  });
+
+  test("reports each colliding directory once, however many sessions hold it", () => {
+    const shared = findSharedCwds([
+      { sessionId: "a", cwd: WT },
+      { sessionId: "b", cwd: WT },
+      { sessionId: "c", cwd: WT },
+    ]);
+    expect([...shared]).toEqual([WT]);
   });
 });
 

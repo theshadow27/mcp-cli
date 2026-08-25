@@ -326,6 +326,8 @@ interface AgentSpawnArgs {
   timeout: number | undefined;
   model: string | undefined;
   wait: boolean;
+  /** Opt out of the shared-worktree refusal (#3140) — see `SharedSpawnArgs`. */
+  allowSharedWorktree: boolean;
   json: boolean;
   worktree: string | undefined;
   headed: boolean;
@@ -604,6 +606,8 @@ async function agentSpawn(
   // `domainIdForPath` requires; `d.getCwd()` is absolute by construction.
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = d.getCwd();
+  // Boundary-only: the daemon consumes and strips this before the worker sees it (#3140).
+  if (parsed.allowSharedWorktree) toolArgs.allowSharedWorktree = true;
   if (spawnDomain) toolArgs.domain = spawnDomain;
   if (parsed.timeout) toolArgs.timeout = parsed.timeout;
   if (parsed.model) toolArgs.model = parsed.model;
@@ -2079,6 +2083,7 @@ function printSpawnUsage(
     "  --allow <tools...>         Space-separated tool patterns to auto-approve",
     "  --model, -m <name>         Model (default: provider default)",
     "  --cwd <path>               Working directory",
+    "  --allow-shared-worktree    Spawn even though a live session already holds --cwd",
     "  --wait                     Block until result",
     `  --timeout <ms>             Max wait time (default: ${DEFAULT_TIMEOUT_MS})`,
     "  --json                     Output raw JSON",

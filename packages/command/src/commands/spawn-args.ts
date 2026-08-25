@@ -37,6 +37,12 @@ export interface SharedSpawnArgs {
   timeout: number | undefined;
   model: string | undefined;
   wait: boolean;
+  /**
+   * Opt out of the shared-worktree refusal (#3140) — spawn even though a live
+   * session already occupies the target directory. Shared by every provider
+   * because the guard is one daemon-side check, not a per-provider one.
+   */
+  allowSharedWorktree: boolean;
   error: string | undefined;
   /** Non-fatal warnings (footgun patterns detected in --allow). */
   warnings: string[];
@@ -114,6 +120,7 @@ export function parseSharedSpawnArgs(
     timeout: { type: "string" },
     model: { type: "string", alias: "m" },
     wait: { type: "boolean" },
+    "allow-shared-worktree": { type: "boolean" },
   });
 
   // Phase 3: post-processing and validation
@@ -167,6 +174,7 @@ export function parseSharedSpawnArgs(
   // Task: from --task flag, or first non-"-" positional (bare "-" is silently dropped)
   const task = (flags.task as string | undefined) ?? positionals.find((p) => p !== "-") ?? undefined;
   const wait = (flags.wait as boolean | undefined) ?? false;
+  const allowSharedWorktree = (flags["allow-shared-worktree"] as boolean | undefined) ?? false;
 
-  return { task, allow, allowOnly, cwd, timeout, model, wait, error, warnings };
+  return { task, allow, allowOnly, cwd, timeout, model, wait, allowSharedWorktree, error, warnings };
 }

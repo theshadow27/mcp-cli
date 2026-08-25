@@ -7,7 +7,7 @@ import {
   ListToolsParamsSchema,
   RestartServerParamsSchema,
 } from "@mcp-cli/core";
-import type { IpcMethod } from "@mcp-cli/core";
+import type { IpcMethod, Logger } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
 import type { StateDb } from "../db/state";
 import { DOMAIN_META_KEY, DOMAIN_SCOPED_SERVERS, resolveDomainScope } from "../domain-scope";
@@ -15,14 +15,27 @@ import type { RequestHandler } from "../handler-types";
 import { metrics } from "../metrics";
 import type { ServerPool } from "../server-pool";
 import { applyDomainScope } from "../session-domain";
+import { SharedWorktreeGuard } from "../worktree-holder";
 
 export class ToolHandlers {
+  /**
+   * Refuses a spawn into a directory a live session already holds (#3140).
+   * Held on the handler, not module-level, because it carries in-flight
+   * reservations that must not outlive the daemon instance under test.
+   */
+  private worktreeGuard: SharedWorktreeGuard;
+
   constructor(
     private pool: ServerPool,
     private db: StateDb,
     private aliasServer: AliasServer | null,
     private daemonId: string,
-  ) {}
+    private logger: Logger,
+  ) {
+    // Routed through the injected Logger (not a bare `console.warn`) so tests
+    // can silence it the same way every sibling handler already does (#3013).
+    this.worktreeGuard = new SharedWorktreeGuard(db, { warn: (m) => this.logger.warn(m) });
+  }
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("listTools", async (params, _ctx) => {
@@ -84,6 +97,13 @@ export class ToolHandlers {
       toolSpan.setAttribute("tool.name", tool);
       if (callChain) toolSpan.setAttribute("alias.callChainDepth", callChain.length);
       const toolLabels = { server, tool };
+      // Before anything is dispatched: refuse a spawn into a working directory a
+      // live session already occupies (#3140). Placed alongside domain scoping and
+      // for the same reason — the daemon is the only party that can see every
+      // session's cwd, and the only serialization point where two racing spawns
+      // are both visible. Strips the `--allow-shared-worktree` override so it
+      // never reaches a worker; a strict no-op for every non-spawn tool.
+      const guarded = this.worktreeGuard.check(server, tool, args);
       try {
         // Route every _aliases call through the alias server directly so the
         // caller's cwd (for repo-root scoping) and optional callChain reach
@@ -100,7 +120,7 @@ export class ToolHandlers {
         // this replaces `scopeRoot`. `applyDomainScope` is a strict no-op for every
         // server it does not own (agent-session servers only), so it never touches
         // the partitioned virtual servers below.
-        const scopedArgs = applyDomainScope(this.db, server, tool, args, cwd);
+        const scopedArgs = applyDomainScope(this.db, server, tool, guarded.args, cwd);
         const resolvedArgs =
           server === CLAUDE_SERVER_NAME ? { ...scopedArgs, __traceparent: toolSpan.traceparent() } : scopedArgs;
         // Domain scoping for partitioned virtual servers (#3037). Resolved here from the
@@ -112,7 +132,7 @@ export class ToolHandlers {
           : undefined;
         const result =
           server === ALIAS_SERVER_NAME && this.aliasServer
-            ? await this.aliasServer.callToolWithChain(tool, args, callChain ?? [], cwd, timeoutMs)
+            ? await this.aliasServer.callToolWithChain(tool, guarded.args, callChain ?? [], cwd, timeoutMs)
             : await this.pool.callTool(server, tool, resolvedArgs, timeoutMs, {
                 onRateLimitWait: (waitedMs) => toolSpan.setAttribute("ratelimit.waitMs", waitedMs),
                 signal: ctx.signal,
@@ -147,6 +167,10 @@ export class ToolHandlers {
         metrics.counter("mcpd_tool_errors_total", toolLabels).inc();
         metrics.histogram("mcpd_tool_call_duration_ms", toolLabels).observe(finished.durationMs);
         throw err;
+      } finally {
+        // Release the spawn's directory reservation once the call has settled —
+        // by then its session row exists, so the DB check takes over.
+        guarded.release();
       }
     });
 

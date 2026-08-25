@@ -442,6 +442,27 @@ export function filterByRepo<T extends { cwd?: string | null }>(sessions: T[], r
   return sessions.filter((s) => s.cwd?.startsWith(repoRoot));
 }
 
+/**
+ * Working directories occupied by more than one of the listed sessions (#3140).
+ *
+ * The spawn guard prevents new collisions; this surfaces the ones that already
+ * exist — from before the guard, from `--allow-shared-worktree`, or from a
+ * session started outside `mcx`. A collision is invisible from inside either
+ * session (a worker cannot see its peers' directories), so the orchestrator's
+ * listing is the only place it can show up at all.
+ *
+ * Exact paths, matching the guard: a prefix rule would flag every worktree under
+ * a repo root as colliding with a session sitting at that root.
+ */
+export function findSharedCwds<T extends { cwd?: string | null }>(sessions: T[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const s of sessions) {
+    if (!s.cwd) continue;
+    counts.set(s.cwd, (counts.get(s.cwd) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, n]) => n > 1).map(([cwd]) => cwd));
+}
+
 export function colorState(state: string): string {
   const padded = state.padEnd(12);
   switch (state) {

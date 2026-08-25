@@ -29,6 +29,10 @@ registerHelp("claude spawn", {
     ["--resume <id>", "Resume a previous session by ID"],
     ["--model, -m <name>", "Model: opus, sonnet, haiku, or full ID (default: opus)"],
     ["--cwd <path>", "Working directory for the session"],
+    [
+      "--allow-shared-worktree",
+      "Spawn even though a live session already occupies the target directory (refused by default — two agents in one tree overwrite each other's uncommitted work)",
+    ],
     ["--wait", "Block until Claude produces a result"],
     ["--timeout <ms>", `Max wait time in ms (default: ${DEFAULT_TIMEOUT_MS}, only with --wait)`],
     ["--work-item <id>", "Work item ID (#N); writes null→initial transition on spawn"],

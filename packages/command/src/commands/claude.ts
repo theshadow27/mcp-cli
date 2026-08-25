@@ -48,6 +48,7 @@ import { extractDomainFlag, extractFullFlag, extractJqFlag, extractJsonFlag } fr
 import {
   colorState,
   extractContentSummary,
+  findSharedCwds,
   formatAge,
   formatLifecycleLine,
   formatRateLimitBadge,
@@ -655,6 +656,8 @@ async function claudeSpawn(rawArgs: string[], d: ClaudeDeps): Promise<void> {
   // Without this, sessions inherit daemon cwd instead of caller's shell (#1331).
   if (parsed.cwd) toolArgs.cwd = parsed.cwd;
   else if (!parsed.worktree && !toolArgs.cwd) toolArgs.cwd = process.cwd();
+  // Boundary-only: the daemon consumes and strips this before the worker sees it (#3140).
+  if (parsed.allowSharedWorktree) toolArgs.allowSharedWorktree = true;
   // An explicit `-d` outranks every path the daemon would otherwise resolve from, and
   // an unregistered name fails the spawn rather than landing it somewhere else.
   if (spawnDomain) toolArgs.domain = spawnDomain;
@@ -1220,11 +1223,18 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
   // Join sessions → work items via worktree branch matching
   const sessionWorkItems = joinSessionsToWorkItems(sessions, workItems);
 
+  // Directories held by more than one live session (#3140). Computed over the
+  // listed set, so a scoped `ls` reports the collisions in that scope.
+  const sharedCwds = findSharedCwds(sessions);
+
   if (json) {
     // Enrich session objects with work_item field
     const enriched = sessions.map((s) => ({
       ...s,
       workItem: sessionWorkItems.get(s.sessionId) ?? null,
+      // An orchestrator reads --json; a collision it cannot see is a collision
+      // it will act on as if the tree were its own.
+      sharedCwd: s.cwd !== null && sharedCwds.has(s.cwd),
     }));
     console.log(JSON.stringify(enriched, null, 2));
     return;
@@ -1313,10 +1323,11 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     const rawPr = prStatuses[i];
     const pr = hasAnyPr ? ` ${formatPrStatus(isLookupFailure(rawPr) ? null : rawPr).padEnd(12)}` : "";
     const cwd = s.cwd ?? "—";
+    const shared = s.cwd !== null && sharedCwds.has(s.cwd) ? ` ${c.red}[SHARED]${c.reset}` : "";
     const age = formatAge(s.createdAt);
     const ageSuffix = age ? ` ${c.yellow}${age}${c.reset}` : "";
     console.log(
-      `${c.cyan}${id}${c.reset}${c.bold}${nameLabel}${c.reset}${" ".repeat(Math.max(1, sessionColWidth - id.length - nameLabel.length))}${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${ageSuffix}`,
+      `${c.cyan}${id}${c.reset}${c.bold}${nameLabel}${c.reset}${" ".repeat(Math.max(1, sessionColWidth - id.length - nameLabel.length))}${stateStr} ${model} ${cost} ${tokens}${diff}${pr} ${c.dim}${cwd}${c.reset}${shared}${ageSuffix}`,
     );
 
     // Work item lifecycle line (indented under the session)
@@ -1324,6 +1335,17 @@ async function claudeList(args: string[], d: ClaudeDeps): Promise<void> {
     if (wi) {
       console.log(`  ${formatLifecycleLine(wi)}`);
     }
+  }
+
+  // Loud, because nothing else in the system will say it: neither session can
+  // see the other, and the symptom each one experiences is its own files
+  // changing under it (#3140).
+  for (const cwd of sharedCwds) {
+    const ids = sessions
+      .filter((s) => s.cwd === cwd)
+      .map((s) => s.sessionId.slice(0, 8))
+      .join(", ");
+    console.error(`\n⚠ ${cwd} is held by ${ids} at once — two agents in one working tree overwrite each other.`);
   }
 
   const staleWarning = d.getStaleDaemonWarning();
