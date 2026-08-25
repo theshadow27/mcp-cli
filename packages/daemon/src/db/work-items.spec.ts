@@ -4,7 +4,14 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, type WorkItem } from "@mcp-cli/core";
-import { type DomainWorkItems, StaleUpdateError, WorkItemDb, ciRunStateKey, parseCiRunStateKey } from "./work-items";
+import {
+  type DomainWorkItems,
+  StaleUpdateError,
+  WorkItemConflictError,
+  WorkItemDb,
+  ciRunStateKey,
+  parseCiRunStateKey,
+} from "./work-items";
 
 function tmpDb(): string {
   return join(tmpdir(), `mcp-cli-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -372,6 +379,126 @@ describe("WorkItemDb", () => {
       const db = createDb();
       db.createWorkItem({ id: "a" });
       expect(() => db.createWorkItem({ id: "b" })).not.toThrow();
+    });
+  });
+
+  // #3254: an orchestrator binding PR #3253 to the manually-tracked #3066 hit a bare
+  // `UNIQUE constraint failed: work_items.domain_id, work_items.branch` because a
+  // branch-keyed shadow row already claimed the branch. It named a column, not the row in
+  // the way, and the operator's only route out was renaming the shadow's branch to
+  // `tombstone/dup-of-3066`.
+  describe("key collisions (#3254)", () => {
+    test("absorbs a branch-keyed shadow when an issue-keyed item claims its branch", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#3066", issueNumber: 3066 });
+      db.createWorkItem({ id: "branch:feat/issue-3066-card-store", branch: "feat/issue-3066-card-store" });
+
+      const absorbed: string[] = [];
+      const updated = db.updateWorkItem(
+        "#3066",
+        { prNumber: 3253, branch: "feat/issue-3066-card-store" },
+        { onAbsorb: (ids) => absorbed.push(...ids) },
+      );
+
+      expect(updated.branch).toBe("feat/issue-3066-card-store");
+      expect(updated.prNumber).toBe(3253);
+      expect(absorbed).toEqual(["branch:feat/issue-3066-card-store"]);
+      expect(db.getWorkItem("branch:feat/issue-3066-card-store")).toBeNull();
+    });
+
+    test("absorbs a pr-keyed shadow when an issue-keyed item claims its PR", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#100", issueNumber: 100 });
+      db.createWorkItem({ id: "pr:7", prNumber: 7 });
+
+      const absorbed: string[] = [];
+      db.updateWorkItem("#100", { prNumber: 7 }, { onAbsorb: (ids) => absorbed.push(...ids) });
+
+      expect(absorbed).toEqual(["pr:7"]);
+      expect(db.getWorkItemByPr(7)?.id).toBe("#100");
+    });
+
+    test("upsertWorkItem absorbs the shadow too — same collision, different door", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "branch:feat/x", branch: "feat/x" });
+
+      const absorbed: string[] = [];
+      const item = db.upsertWorkItem(
+        { id: "#55", issueNumber: 55, branch: "feat/x" },
+        {
+          onAbsorb: (ids) => absorbed.push(...ids),
+        },
+      );
+
+      expect(item.id).toBe("#55");
+      expect(item.branch).toBe("feat/x");
+      expect(absorbed).toEqual(["branch:feat/x"]);
+      expect(db.listWorkItems()).toHaveLength(1);
+    });
+
+    test("refuses when the conflicting row carries another identity key", () => {
+      const db = createDb();
+      // Not a shadow: `pr:9` is the record of a real PR that happens to sit on the branch.
+      db.createWorkItem({ id: "pr:9", prNumber: 9, branch: "feat/x" });
+      db.createWorkItem({ id: "#77", issueNumber: 77 });
+
+      expect(() => db.updateWorkItem("#77", { branch: "feat/x" })).toThrow(WorkItemConflictError);
+      expect(db.getWorkItem("pr:9")).not.toBeNull();
+    });
+
+    test("refuses when the conflicting row's id is not the one its key mints", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#4000", issueNumber: 4000, branch: "feat/other" });
+      db.createWorkItem({ id: "#4001", issueNumber: 4001 });
+
+      expect(() => db.updateWorkItem("#4001", { branch: "feat/other" })).toThrow(WorkItemConflictError);
+    });
+
+    test("refuses when the shadow has moved past creation — history nobody meant to drop", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "branch:feat/y", branch: "feat/y" });
+      db.updateWorkItem("branch:feat/y", { phase: "review" });
+      db.createWorkItem({ id: "#88", issueNumber: 88 });
+
+      expect(() => db.updateWorkItem("#88", { branch: "feat/y" })).toThrow(WorkItemConflictError);
+      expect(db.getWorkItem("branch:feat/y")?.phase).toBe("review");
+    });
+
+    test("the error names the blocking row and both remedies", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#4000", issueNumber: 4000, branch: "feat/other" });
+      db.createWorkItem({ id: "#4001", issueNumber: 4001 });
+
+      try {
+        db.updateWorkItem("#4001", { branch: "feat/other" });
+        throw new Error("expected a conflict");
+      } catch (err) {
+        expect(err).toBeInstanceOf(WorkItemConflictError);
+        const conflict = err as WorkItemConflictError;
+        expect(conflict.conflictingId).toBe("#4000");
+        expect(conflict.field).toBe("branch");
+        // The bare SQLite text named a column; this names the row and the way out.
+        expect(conflict.message).toContain("#4000");
+        expect(conflict.message).toContain("work_items_delete");
+      }
+    });
+
+    test("absorption rolls back with the update it was clearing the way for", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#12", issueNumber: 12 });
+      db.createWorkItem({ id: "branch:feat/z", branch: "feat/z" });
+
+      // A stale expectedVersion aborts the transaction after the shadow was deleted.
+      expect(() => db.updateWorkItem("#12", { branch: "feat/z" }, { expectedVersion: 99 })).toThrow(StaleUpdateError);
+
+      expect(db.getWorkItem("branch:feat/z")).not.toBeNull();
+      expect(db.getWorkItem("#12")?.branch).toBeNull();
+    });
+
+    test("re-setting a key the item already owns is not a conflict", () => {
+      const db = createDb();
+      db.createWorkItem({ id: "#5", issueNumber: 5, branch: "feat/same" });
+      expect(() => db.updateWorkItem("#5", { branch: "feat/same", phase: "review" })).not.toThrow();
     });
   });
 

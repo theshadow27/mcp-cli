@@ -55,11 +55,12 @@ describe("WORK_ITEMS_SERVER_NAME", () => {
 });
 
 describe("buildWorkItemsToolCache", () => {
-  test("returns all 9 tools", () => {
+  test("returns all 10 tools", () => {
     const cache = buildWorkItemsToolCache();
-    expect(cache.size).toBe(9);
+    expect(cache.size).toBe(10);
     expect(cache.has("work_items_track")).toBe(true);
     expect(cache.has("work_items_untrack")).toBe(true);
+    expect(cache.has("work_items_delete")).toBe(true);
     expect(cache.has("work_items_list")).toBe(true);
     expect(cache.has("work_items_get")).toBe(true);
     expect(cache.has("work_items_update")).toBe(true);
@@ -88,7 +89,7 @@ describe("WorkItemsServer", () => {
     rawDb = undefined;
   });
 
-  test("start() connects and listTools returns 9 tools", async () => {
+  test("start() connects and listTools returns 10 tools", async () => {
     const { db, raw } = createWorkItemDb();
     rawDb = raw;
     server = new WorkItemsServer(db);
@@ -96,10 +97,11 @@ describe("WorkItemsServer", () => {
     const { client } = await server.start();
     const { tools } = await client.listTools();
 
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
     const names = tools.map((t) => t.name);
     expect(names).toContain("work_items_track");
     expect(names).toContain("work_items_untrack");
+    expect(names).toContain("work_items_delete");
     expect(names).toContain("work_items_list");
     expect(names).toContain("work_items_get");
     expect(names).toContain("work_items_update");
@@ -507,6 +509,102 @@ describe("WorkItemsServer", () => {
     expect(result.isError).toBe(true);
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content[0].text).toContain("not found");
+  });
+
+  // #3254 ask 2: a cleanup path that cannot delete the wrong row. `mcx untrack 3253`
+  // resolves by-PR first (#3240), so a bare number can reach an item the caller never named.
+  describe("work_items_delete (#3254)", () => {
+    test("deletes by exact id", async () => {
+      const { db, items, raw } = createWorkItemDb();
+      rawDb = raw;
+      items.createWorkItem({ id: "branch:feat/x", branch: "feat/x" });
+      server = new WorkItemsServer(db);
+      const { client } = await server.start();
+
+      const result = await client.callTool({ name: "work_items_delete", arguments: { id: "branch:feat/x" } });
+
+      expect(result.isError).toBeFalsy();
+      const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(parsed.deleted).toBe("branch:feat/x");
+      expect(items.getWorkItem("branch:feat/x")).toBeNull();
+    });
+
+    test("refuses a bare number instead of guessing which item it names", async () => {
+      const { db, items, raw } = createWorkItemDb();
+      rawDb = raw;
+      // Both exist and both are plausible readings of "3253" — exactly the #3240 trap.
+      items.createWorkItem({ id: "#3253", issueNumber: 3253 });
+      items.createWorkItem({ id: "pr:3253", prNumber: 3253 });
+      server = new WorkItemsServer(db);
+      const { client } = await server.start();
+
+      const result = await client.callTool({ name: "work_items_delete", arguments: { id: "3253" } });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain("Ambiguous");
+      expect(text).toContain("#3253");
+      expect(text).toContain("pr:3253");
+      // Neither row was touched.
+      expect(items.listWorkItems()).toHaveLength(2);
+    });
+
+    test("reports not-found rather than deleting a near match", async () => {
+      const { db, items, raw } = createWorkItemDb();
+      rawDb = raw;
+      items.createWorkItem({ id: "pr:42", prNumber: 42 });
+      server = new WorkItemsServer(db);
+      const { client } = await server.start();
+
+      const result = await client.callTool({ name: "work_items_delete", arguments: { id: "#42" } });
+
+      expect(result.isError).toBe(true);
+      expect((result.content as Array<{ text: string }>)[0].text).toContain("not found");
+      expect(items.getWorkItemByPr(42)).not.toBeNull();
+    });
+  });
+
+  test("work_items_update reports the duplicate it absorbed (#3254)", async () => {
+    const { db, items, raw } = createWorkItemDb();
+    rawDb = raw;
+    items.createWorkItem({ id: "#3066", issueNumber: 3066 });
+    items.createWorkItem({ id: "branch:feat/issue-3066-card-store", branch: "feat/issue-3066-card-store" });
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "#3066", prNumber: 3253, branch: "feat/issue-3066-card-store" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(parsed.prNumber).toBe(3253);
+    expect(parsed.absorbedDuplicates).toEqual(["branch:feat/issue-3066-card-store"]);
+  });
+
+  test("work_items_update surfaces an unmergeable conflict by name, not as SQLite text", async () => {
+    const { db, items, raw } = createWorkItemDb();
+    rawDb = raw;
+    items.createWorkItem({ id: "pr:9", prNumber: 9, branch: "feat/x" });
+    items.createWorkItem({ id: "#77", issueNumber: 77 });
+    server = new WorkItemsServer(db, {
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    });
+
+    const { client } = await server.start();
+    const result = await client.callTool({
+      name: "work_items_update",
+      arguments: { id: "#77", branch: "feat/x" },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("pr:9");
+    expect(text).toContain("work_items_delete");
+    expect(text).not.toContain("UNIQUE constraint failed");
   });
 
   test("work_items_update rejects invalid phase transition", async () => {
