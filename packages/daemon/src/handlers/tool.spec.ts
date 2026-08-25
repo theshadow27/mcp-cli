@@ -32,6 +32,8 @@ function mockDb(overrides: Record<string, unknown> = {}) {
     listNotes: () => [],
     recordUsage: () => {},
     recordSpan: () => {},
+    // Read by the shared-worktree spawn guard (#3140) on every `*_prompt`.
+    listSessions: () => [],
     ...overrides,
   } as never;
 }
@@ -323,6 +325,98 @@ describe("ToolHandlers – callTool domain scoping (#3039)", () => {
     );
     expect(forwarded()?.domainId).toBe(PHOENIX.id);
     expect(forwarded()).toHaveProperty("__traceparent");
+  });
+});
+
+describe("ToolHandlers – shared-worktree spawn guard (#3140)", () => {
+  const WT = "/tmp/mcx-3140-holder-worktree";
+
+  /**
+   * A session mid-spawn: an active row with no pid yet. Used because it is a
+   * holder without depending on a real live process, so the wiring test does not
+   * need to shell out to `ps`.
+   */
+  const holder = {
+    sessionId: "22854d06",
+    name: null,
+    provider: "claude",
+    state: "connecting",
+    cwd: WT,
+    pid: null,
+    pidStartTime: null,
+    endedAt: null,
+  };
+
+  function capturing(sessions: unknown[]) {
+    let forwarded: Record<string, unknown> | undefined;
+    const map = buildHandlers(
+      mockPool({
+        callTool: async (_s: unknown, _t: unknown, args: Record<string, unknown>) => {
+          forwarded = args;
+          return { content: [] };
+        },
+      }),
+      mockDb({ listSessions: () => sessions, getDomainByName: () => null, resolveDomain: () => null }),
+    );
+    return { map, forwarded: () => forwarded };
+  }
+
+  test("refuses a spawn into a directory a live session holds, naming the holder", async () => {
+    const { map } = capturing([holder]);
+    await expect(
+      invoke(map, "callTool")(
+        { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hi", cwd: WT } },
+        mockCtx(),
+      ),
+    ).rejects.toThrow(/22854d06/);
+  });
+
+  test("allows the spawn once the holder has ended — the sequential handoff", async () => {
+    const { map, forwarded } = capturing([{ ...holder, state: "ended", endedAt: "2026-08-25T10:00:00Z" }]);
+    await invoke(map, "callTool")(
+      { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hi", cwd: WT } },
+      mockCtx(),
+    );
+    expect(forwarded()?.cwd).toBe(WT);
+  });
+
+  test("--allow-shared-worktree lets the spawn through and never reaches the worker", async () => {
+    const { map, forwarded } = capturing([holder]);
+    await invoke(map, "callTool")(
+      { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hi", cwd: WT, allowSharedWorktree: true } },
+      mockCtx(),
+    );
+    expect(forwarded()).not.toHaveProperty("allowSharedWorktree");
+    expect(forwarded()?.cwd).toBe(WT);
+  });
+
+  test("a settled spawn releases its directory, so the next one is not refused as in-flight", async () => {
+    // The reservation is held only for the duration of the dispatch. Leaking it
+    // would wedge the directory for the rest of the daemon's life.
+    const { map } = capturing([]);
+    const args = { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hi", cwd: WT } };
+    await invoke(map, "callTool")(args, mockCtx());
+    await invoke(map, "callTool")(args, mockCtx());
+  });
+
+  test("a failed spawn releases its directory too", async () => {
+    const map = buildHandlers(
+      mockPool({
+        callTool: async () => {
+          throw new Error("worker exploded");
+        },
+      }),
+      mockDb({ listSessions: () => [], getDomainByName: () => null, resolveDomain: () => null }),
+    );
+    const args = { server: "_claude", tool: "claude_prompt", arguments: { prompt: "hi", cwd: WT } };
+    await expect(invoke(map, "callTool")(args, mockCtx())).rejects.toThrow("worker exploded");
+    await expect(invoke(map, "callTool")(args, mockCtx())).rejects.toThrow("worker exploded");
+  });
+
+  test("a non-agent server is untouched, even with a colliding cwd", async () => {
+    const { map, forwarded } = capturing([holder]);
+    await invoke(map, "callTool")({ server: "atlassian", tool: "search", arguments: { cwd: WT } }, mockCtx());
+    expect(forwarded()?.cwd).toBe(WT);
   });
 });
 

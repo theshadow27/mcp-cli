@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TestDaemon } from "./harness";
@@ -63,6 +63,22 @@ function writeScript(dir: string, name: string, entries: Array<{ delay: number; 
   return path;
 }
 
+/**
+ * A fresh working directory per session (#3140).
+ *
+ * These tests used to point every session at one directory, and several of them
+ * left the session live afterwards — so whether a test passed depended on which
+ * tests had run before it. The shared-worktree guard now refuses that, which is
+ * the point: it is the same collision that overwrote real work twice in ninety
+ * minutes. Give each session its own tree; the guard then never has an opinion.
+ */
+let sessionCwdSeq = 0;
+function sessionCwd(base: string): string {
+  const path = join(base, `session-cwd-${++sessionCwdSeq}`);
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -92,7 +108,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir) },
       });
       expect(spawnRes.error).toBeUndefined();
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
@@ -136,7 +152,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -166,7 +182,16 @@ describe("CLI→daemon orchestration (mock provider)", () => {
 
   describe("CLI flag forwarding", () => {
     test("mcx agent mock spawn --wait blocks until complete", async () => {
-      const result = await mcx(daemon.dir, ["agent", "mock", "spawn", "--task", scriptPath, "--wait"]);
+      const result = await mcx(daemon.dir, [
+        "agent",
+        "mock",
+        "spawn",
+        "--cwd",
+        sessionCwd(daemon.dir),
+        "--task",
+        scriptPath,
+        "--wait",
+      ]);
       // --wait should block until done and print the result
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("session:result");
@@ -180,6 +205,8 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         "agent",
         "mock",
         "spawn",
+        "--cwd",
+        sessionCwd(daemon.dir),
         "--allow",
         "Bash",
         "Read",
@@ -217,6 +244,8 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         "agent",
         "mock",
         "spawn",
+        "--cwd",
+        sessionCwd(daemon.dir),
         "--model",
         "haiku",
         "--task",
@@ -248,7 +277,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -344,7 +373,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -389,7 +418,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -427,12 +456,12 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         rpc(daemon.socketPath, "callTool", {
           server: "_mock",
           tool: "mock_prompt",
-          arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+          arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
         }),
         rpc(daemon.socketPath, "callTool", {
           server: "_mock",
           tool: "mock_prompt",
-          arguments: { prompt: script2, cwd: daemon.dir, wait: true },
+          arguments: { prompt: script2, cwd: sessionCwd(daemon.dir), wait: true },
         }),
       ]);
       const id1: string = JSON.parse((spawn1.result as { content: Array<{ text: string }> }).content[0].text).sessionId;
@@ -470,7 +499,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: slowScript, cwd: daemon.dir },
+        arguments: { prompt: slowScript, cwd: sessionCwd(daemon.dir) },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -499,7 +528,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
     const spawnRes = await rpc(daemon.socketPath, "callTool", {
       server: "_mock",
       tool: "mock_prompt",
-      arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+      arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
     });
     const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
     const sessionId: string = spawnResult.sessionId;
@@ -537,7 +566,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: longScript, cwd: daemon.dir },
+        arguments: { prompt: longScript, cwd: sessionCwd(daemon.dir) },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -603,7 +632,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       const spawnRes = await rpc(daemon.socketPath, "callTool", {
         server: "_mock",
         tool: "mock_prompt",
-        arguments: { prompt: scriptPath, cwd: daemon.dir, wait: true },
+        arguments: { prompt: scriptPath, cwd: sessionCwd(daemon.dir), wait: true },
       });
       const spawnResult = JSON.parse((spawnRes.result as { content: Array<{ text: string }> }).content[0].text);
       const sessionId: string = spawnResult.sessionId;
@@ -626,6 +655,94 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         server: "_mock",
         tool: "mock_bye",
         arguments: { sessionId },
+      });
+    });
+  });
+
+  // ── Shared-worktree guard (#3140) ───────────────────────────────────
+
+  describe("shared-worktree guard", () => {
+    /**
+     * Two live sessions in one working tree overwrite each other's uncommitted
+     * work silently. Exercised end-to-end — real CLI, real daemon, real DB —
+     * because the value of this guard is entirely in whether the CLI a caller
+     * actually types exits non-zero, and the unit tests cannot see that.
+     */
+    let holdDir: string;
+    let holdScript: string;
+
+    beforeAll(() => {
+      holdDir = mkdtempSync(join(tmpdir(), "mcx-3140-"));
+      // A script that never reaches its last entry keeps the session live.
+      holdScript = writeScript(daemon.dir, "hold", [{ delay: 600_000, text: "holding" }]);
+    });
+
+    afterAll(() => {
+      rmSync(holdDir, { recursive: true, force: true });
+    });
+
+    async function spawnHolder(): Promise<string> {
+      const res = await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_prompt",
+        arguments: { prompt: holdScript, cwd: holdDir },
+      });
+      const parsed = JSON.parse((res.result as { content: Array<{ text: string }> }).content[0].text);
+      return parsed.sessionId as string;
+    }
+
+    test("refuses a spawn into a directory a live session holds, and names the holder", async () => {
+      const holderId = await spawnHolder();
+      try {
+        const result = await mcx(daemon.dir, ["agent", "mock", "spawn", "--cwd", holdDir, "--task", holdScript]);
+        expect(result.stderr).toContain(holderId);
+        expect(result.stderr).toContain("--allow-shared-worktree");
+        expect(result.exitCode).not.toBe(0);
+      } finally {
+        await rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_bye",
+          arguments: { sessionId: holderId },
+        });
+      }
+    });
+
+    test("--allow-shared-worktree spawns anyway", async () => {
+      const holderId = await spawnHolder();
+      const result = await mcx(daemon.dir, [
+        "agent",
+        "mock",
+        "spawn",
+        "--cwd",
+        holdDir,
+        "--task",
+        holdScript,
+        "--allow-shared-worktree",
+      ]);
+      expect(result.stdout).toContain("sessionId");
+      expect(result.exitCode).toBe(0);
+      const shared = JSON.parse(result.stdout.trim()).sessionId as string;
+      for (const sessionId of [holderId, shared]) {
+        await rpc(daemon.socketPath, "callTool", { server: "_mock", tool: "mock_bye", arguments: { sessionId } });
+      }
+    });
+
+    test("ending a session frees its directory for the next spawn", async () => {
+      // The sequential handoff the sprint pipeline is built on: one worktree
+      // carried impl → review → repair → QA by a fresh session per phase.
+      const holderId = await spawnHolder();
+      await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_bye",
+        arguments: { sessionId: holderId },
+      });
+      const result = await mcx(daemon.dir, ["agent", "mock", "spawn", "--cwd", holdDir, "--task", holdScript]);
+      expect(result.stdout).toContain("sessionId");
+      expect(result.exitCode).toBe(0);
+      await rpc(daemon.socketPath, "callTool", {
+        server: "_mock",
+        tool: "mock_bye",
+        arguments: { sessionId: JSON.parse(result.stdout.trim()).sessionId },
       });
     });
   });

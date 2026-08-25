@@ -243,6 +243,35 @@ describe("parseSharedSpawnArgs", () => {
     const result = parseSharedSpawnArgs(["--allow-only", "Bash", "--allow", "Read", "--task", "x"]);
     expect(result.error).toBe("--allow and --allow-only are mutually exclusive");
   });
+
+  // ── --allow-shared-worktree (#3140) ──
+
+  it("defaults allowSharedWorktree to false", () => {
+    const result = parseSharedSpawnArgs(["--task", "x"]);
+    expect(result.allowSharedWorktree).toBe(false);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("parses --allow-shared-worktree", () => {
+    const result = parseSharedSpawnArgs(["--task", "x", "--allow-shared-worktree"]);
+    expect(result.allowSharedWorktree).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("is not swallowed by the greedy --allow consume", () => {
+    // Phase 1 walks tokens after `--allow` while they look like tool names, and
+    // `--allow-shared-worktree` shares its prefix. A miss here silently drops
+    // the escape hatch AND adds a bogus tool pattern.
+    const result = parseSharedSpawnArgs(["--allow", "Read", "Write", "--allow-shared-worktree", "--task", "x"]);
+    expect(result.allow).toEqual(["Read", "Write"]);
+    expect(result.allowSharedWorktree).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects a value — it is a boolean flag", () => {
+    const result = parseSharedSpawnArgs(["--task", "x", "--allow-shared-worktree=yes"]);
+    expect(result.error).toBe("--allow-shared-worktree is a boolean flag and does not accept a value");
+  });
 });
 
 describe("looksLikeToolName", () => {
