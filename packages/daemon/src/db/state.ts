@@ -67,6 +67,36 @@ export interface AgentSessionRow {
 /** @deprecated Use AgentSessionRow instead. */
 export type ClaudeSessionRow = AgentSessionRow;
 
+/**
+ * {@link StateDb.deleteDomain} refusing because the domain still owns rows.
+ *
+ * A **type**, not a message, because the caller has to distinguish this from a real
+ * failure and prose is not a contract (`no-error-message-sniffing`). Before this class
+ * existed, `handlers/domain.ts` re-counted dependents on *any* throw and reported a
+ * non-empty count as this refusal — so `SQLITE_FULL`, corruption or a
+ * `SQLITE_BUSY_SNAPSHOT` from the DEFERRED transaction all reached the operator as
+ * "re-run with --force", with the real error discarded and `--force` already passed
+ * (#3180).
+ *
+ * `dependents` is the count the refusal was *decided* on, taken inside the transaction,
+ * so the caller renders that rather than re-reading a database that has since moved.
+ */
+export class DomainHasDependentsError extends Error {
+  readonly domainName: string;
+  readonly dependents: Array<{ table: string; rows: number }>;
+
+  constructor(name: string, dependents: Array<{ table: string; rows: number }>) {
+    const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
+    const total = dependents.reduce((n, d) => n + d.rows, 0);
+    super(
+      `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
+    );
+    this.name = "DomainHasDependentsError";
+    this.domainName = name;
+    this.dependents = dependents;
+  }
+}
+
 export class StateDb {
   private db: Database;
   private logInsertCount = new Map<string, number>();
@@ -508,7 +538,22 @@ export class StateDb {
         recipient TEXT NOT NULL,
         subject TEXT,
         body TEXT,
-        reply_to INTEGER REFERENCES mail(id),
+        -- No REFERENCES mail(id) here, deliberately. It was this schema's only foreign
+        -- key and PRAGMA foreign_keys is never set anywhere in this directory — SQLite
+        -- defaults it OFF, so the clause enforced nothing and PRAGMA foreign_key_check
+        -- would happily report the orphans it let through. Declaring a guarantee the
+        -- database does not make is worse than not declaring it: it reads as a
+        -- reply-integrity invariant that a cross-domain "mcx domain rm --force" breaks
+        -- without a word (#3180).
+        --
+        -- NEW databases only, on purpose. Databases created before #3180 still declare
+        -- the clause, and no migration step removes it: SQLite cannot drop a constraint
+        -- in place, so that means rebuilding every user's mail table to delete a
+        -- declaration with no runtime effect on any code path today. Whoever turns
+        -- PRAGMA foreign_keys ON owns that rebuild — they have to audit the schema and
+        -- the already-dangling reply_to rows anyway, and until then the two shapes
+        -- behave identically. Do not "tidy" this into a migration on its own.
+        reply_to INTEGER,
         read INTEGER NOT NULL DEFAULT 0,
         domain_id INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -2140,6 +2185,10 @@ export class StateDb {
    *
    * `AUTOINCREMENT` on `domains.id` is the other half: even if a row is orphaned some
    * other way, that id is never handed to a future domain, so nothing gets adopted.
+   *
+   * The refusal is a {@link DomainHasDependentsError} carrying the counts it was decided
+   * on — every other throw is a real failure. That distinction is the caller's only
+   * honest way to tell "refused" from "broke"; see the catch in `handlers/domain.ts`.
    */
   deleteDomain(name: string, opts?: { cascade?: boolean }): boolean {
     const domain = this.getDomainByName(name);
@@ -2147,35 +2196,42 @@ export class StateDb {
 
     // Counted INSIDE the transaction: counting first and deleting after let a row
     // inserted into a table that counted zero survive the cascade as an orphan.
-    return this.db.transaction(() => {
-      const dependents = this.countDomainDependents(domain.id);
-      if (dependents.length > 0 && !opts?.cascade) {
-        const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
-        const total = dependents.reduce((n, d) => n + d.rows, 0);
-        throw new Error(
-          `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
-        );
-      }
-      // A LIVE session row is not project data — it is the daemon's only handle on a
-      // running child process. `orphan-reaper` finds children by iterating
-      // `listSessions(true)`, and `bye` needs the row too, so deleting it leaves a
-      // claude/codex process unreapable, un-endable, and invisible to restart cleanup.
-      // Re-home those to the unassigned sentinel instead; the domain still goes away,
-      // and the handle survives. Ended rows ARE history and cascade normally.
-      //
-      // This PR is what arms the hazard: before `domain_id` had a writer every session
-      // row was 0 and this cascade never matched one (#3039 review 7).
-      const rehomed = this.db.run("UPDATE agent_sessions SET domain_id = ? WHERE domain_id = ? AND ended_at IS NULL", [
-        NO_DOMAIN_ID,
-        domain.id,
-      ]).changes;
+    //
+    // `.immediate()`, not the default DEFERRED: this body reads (countDomainDependents)
+    // and then writes, and DEFERRED takes the write lock only at that first write. Under
+    // WAL a writer that commits in between invalidates our read snapshot and the upgrade
+    // fails with SQLITE_BUSY_SNAPSHOT — which `busy_timeout` does NOT retry, because it
+    // only covers lock contention on acquiring a lock, not a snapshot conflict on
+    // upgrading one. IMMEDIATE takes the write lock at BEGIN, so the contending writer is
+    // the one that waits out `busy_timeout` and we never see a stale snapshot.
+    // `WorkItemDb.updateWorkItem` is immediate for exactly this reason (#3180).
+    return this.db
+      .transaction(() => {
+        const dependents = this.countDomainDependents(domain.id);
+        if (dependents.length > 0 && !opts?.cascade) {
+          throw new DomainHasDependentsError(name, dependents);
+        }
+        // A LIVE session row is not project data — it is the daemon's only handle on a
+        // running child process. `orphan-reaper` finds children by iterating
+        // `listSessions(true)`, and `bye` needs the row too, so deleting it leaves a
+        // claude/codex process unreapable, un-endable, and invisible to restart cleanup.
+        // Re-home those to the unassigned sentinel instead; the domain still goes away,
+        // and the handle survives. Ended rows ARE history and cascade normally.
+        //
+        // This PR is what arms the hazard: before `domain_id` had a writer every session
+        // row was 0 and this cascade never matched one (#3039 review 7).
+        const rehomed = this.db.run(
+          "UPDATE agent_sessions SET domain_id = ? WHERE domain_id = ? AND ended_at IS NULL",
+          [NO_DOMAIN_ID, domain.id],
+        ).changes;
 
-      for (const { table } of dependents) {
-        this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
-      }
-      void rehomed; // reported by `mcx domain rm` (#3035); StateDb has no logger by design
-      return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
-    })();
+        for (const { table } of dependents) {
+          this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
+        }
+        void rehomed; // reported by `mcx domain rm` (#3035); StateDb has no logger by design
+        return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
+      })
+      .immediate();
   }
 
   /**

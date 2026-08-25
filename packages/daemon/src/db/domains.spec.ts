@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
-import { StateDb } from "./state";
+import { DomainHasDependentsError, StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 const repoRoot = resolve(import.meta.dir, "../../../..");
@@ -417,6 +417,73 @@ describe("domain schema", () => {
       expect(d.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     });
 
+    test("the refusal is a TYPE carrying the counts it was decided on (#3180)", () => {
+      const state = createStateDb();
+      const beta = state.createDomain("beta", "/home/u/beta");
+      state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
+
+      try {
+        state.deleteDomain("beta");
+        throw new Error("expected deleteDomain to refuse while mail still references the domain");
+      } catch (err) {
+        // A plain Error would leave the caller re-counting the database to guess whether
+        // it refused or broke — which is how a disk-full became "re-run with --force".
+        expect(err).toBeInstanceOf(DomainHasDependentsError);
+        if (!(err instanceof DomainHasDependentsError)) throw err;
+        expect(err.domainName).toBe("beta");
+        expect(err.dependents).toEqual([{ table: "mail", rows: 1 }]);
+        // The prose stays the contract it always was for humans, just no longer for code.
+        expect(err.message).toMatch(/still has 1 dependent row\(s\) \(mail=1\)/);
+      }
+    });
+
+    test("the delete transaction is IMMEDIATE: no snapshot to lose on the read→write upgrade (#3180)", () => {
+      // deleteDomain reads (countDomainDependents) and then writes. Under BEGIN DEFERRED
+      // the write lock is taken at the first WRITE, so a writer that commits in between
+      // invalidates the read snapshot and the upgrade fails SQLITE_BUSY_SNAPSHOT — which
+      // busy_timeout does NOT retry. This test drives a commit into exactly that window.
+      const p = tmpDbPath();
+      paths.push(p);
+      const state = new StateDb(p);
+      open.push(state);
+      const beta = state.createDomain("beta", "/home/u/beta");
+      state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
+
+      // A second connection on the same file. busy_timeout 0 so this single-threaded test
+      // records the lockout immediately instead of sitting out the daemon's real 3s.
+      const other = new StateDb(p);
+      open.push(other);
+      other.database.exec("PRAGMA busy_timeout = 0");
+
+      const interleaved: string[] = [];
+      const racing = Object.create(state) as StateDb;
+      Object.defineProperty(racing, "countDomainDependents", {
+        value: (id: number) => {
+          // Delegate FIRST: under DEFERRED the read snapshot is taken by this call, not by
+          // BEGIN, so a commit racing in before it is no race at all. The window that
+          // matters opens once the transaction has read something.
+          const counts = StateDb.prototype.countDomainDependents.call(state, id);
+          try {
+            other.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('c','d',0)");
+            interleaved.push("committed");
+          } catch (err) {
+            // The lockout is the fix working: IMMEDIATE already holds the write lock, so
+            // the contender waits (busy_timeout 0 here) instead of moving the snapshot.
+            expect((err as { code?: string }).code).toBe("SQLITE_BUSY");
+            interleaved.push("locked-out");
+          }
+          return counts;
+        },
+      });
+
+      // With IMMEDIATE the write lock is already held at BEGIN, so the contender is the
+      // one that has to wait and this delete completes. With DEFERRED the contender
+      // commits ("committed") and the delete throws SQLITE_BUSY_SNAPSHOT instead.
+      expect(racing.deleteDomain("beta", { cascade: true })).toBe(true);
+      expect(interleaved).toEqual(["locked-out"]);
+      expect(state.getDomainByName("beta")).toBeNull();
+    });
+
     test("resolveDomain matches through a symlinked path", () => {
       const state = createStateDb();
       const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
@@ -605,6 +672,30 @@ describe("domain schema", () => {
       wi.forDomain(1).deleteCiRunState(42);
       expect(wi.forDomain(1).loadCiRunStates().size).toBe(0);
       expect(wi.forDomain(2).loadCiRunStates().size).toBe(1);
+    });
+  });
+
+  describe("the schema claims only what it enforces (#3180)", () => {
+    test("a NEW database declares no foreign key, because nothing turns enforcement on", () => {
+      const state = createStateDb();
+      const raw = state.database;
+
+      // `mail.reply_to REFERENCES mail(id)` was the only FK in this schema, and
+      // `PRAGMA foreign_keys` is set nowhere in db/ — SQLite defaults it OFF, so the
+      // clause was decorative. Both halves are asserted: a future PR that adds the
+      // clause back without enabling enforcement fails here.
+      //
+      // Scope, deliberately: pre-#3180 databases still declare it. Dropping a constraint
+      // in SQLite means rebuilding the table, and that is not a price worth paying for a
+      // declaration nothing reads — see the comment in applyV1Schema.
+      expect(raw.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(0);
+      expect(raw.query<{ from: string }, []>("PRAGMA foreign_key_list(mail)").all()).toEqual([]);
+
+      // The proof it never enforced anything: a reply pointing at an id that does not
+      // exist inserts happily. Before this change `foreign_key_check` then listed the
+      // row as a violation of a constraint the database had already let through.
+      raw.run("INSERT INTO mail (sender, recipient, domain_id, reply_to) VALUES ('a','b',0,999999)");
+      expect(raw.query<{ table: string }, []>("PRAGMA foreign_key_check").all()).toEqual([]);
     });
   });
 });

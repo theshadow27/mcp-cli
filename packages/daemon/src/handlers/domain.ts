@@ -28,7 +28,7 @@ import {
   readImportMarkerValue,
   recoveryInstructions as recoveryInstructionsImpl,
 } from "../db/import-legacy";
-import type { StateDb } from "../db/state";
+import { DomainHasDependentsError, type StateDb } from "../db/state";
 import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 
@@ -120,22 +120,31 @@ export class DomainHandlers {
       // same call. Counting here first and re-deciding would make this a *second* decider,
       // and the two would disagree under concurrency — the event log writes continuously,
       // so a count of 0 here followed by an insert leaves `deleteDomain` throwing, which
-      // bypasses the structured refusal this shape exists to produce. Ask forgiveness:
-      // re-count only on the throw, purely to render the message.
-      //
-      // Not error-message sniffing: the cause is re-derived from the database, never from
-      // the string.
+      // bypasses the structured refusal this shape exists to produce.
       const dependents = cascade ? this.db.countDomainDependents(domain.id) : [];
       try {
         const removed = this.db.deleteDomain(name, { cascade });
         this.domains.invalidate();
         return { found: true, removed, dependents } satisfies DomainRemoveResult;
       } catch (err) {
-        const blocking = this.db.countDomainDependents(domain.id);
-        if (blocking.length === 0) throw err;
-        // Refusal is a result, not an exception: the caller needs the per-table counts
-        // to decide, and orphaning a thousand work items over a typo is unrecoverable.
-        return { found: true, removed: false, dependents: blocking } satisfies DomainRemoveResult;
+        // ONLY the refusal becomes a result. This catch used to re-count dependents on
+        // any throw and return the refusal shape whenever the count was non-empty — but
+        // the count is non-empty after *every* failed delete, because the transaction
+        // rolled back. So `SQLITE_FULL`, corruption, or the `SQLITE_BUSY_SNAPSHOT` the
+        // DEFERRED transaction used to produce all reached the operator as "reassign or
+        // delete them first, or re-run with --force" — advice they had already taken —
+        // with the real error string discarded (#3180).
+        //
+        // Branching on the type rather than on a re-count also removes the last reason to
+        // touch the database here: `deleteDomain` refuses on counts taken inside its own
+        // transaction and hands them over, so what the caller renders is what the refusal
+        // was decided on, not a re-read of a database that has moved since.
+        if (err instanceof DomainHasDependentsError) {
+          // Refusal is a result, not an exception: the caller needs the per-table counts
+          // to decide, and orphaning a thousand work items over a typo is unrecoverable.
+          return { found: true, removed: false, dependents: err.dependents } satisfies DomainRemoveResult;
+        }
+        throw err;
       }
     });
 
