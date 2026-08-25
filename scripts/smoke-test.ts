@@ -98,6 +98,20 @@ await run("mcx version exits 0 and contains version string", async () => {
   assert(parsed.client.version !== "0.0.0-dev", `version not injected: ${parsed.client.version}`);
 });
 
+// Build provenance (#3264): a compiled daemon must be able to name the source
+// commit it came from, else a build of a stale checkout is indistinguishable
+// from one containing a merged fix. Goes through `mcx call` rather than a
+// client-side constant so what's asserted is what the *running daemon* reports.
+await run("_metrics build_info reports the daemon's source commit", async () => {
+  const result = await $`${MCX} call _metrics build_info '{}'`.quiet().nothrow();
+  assert(result.exitCode === 0, `exit code ${result.exitCode}: ${result.stderr.toString()}`);
+  const info = JSON.parse(result.stdout.toString());
+  assert(
+    typeof info.commit === "string" && /^[0-9a-f]{12}(-dirty|-unknown)?$/.test(info.commit),
+    `build commit not injected into the compiled daemon: ${JSON.stringify(info.commit)}`,
+  );
+});
+
 // mcpd has no one-shot "print and exit" mode — any invocation boots the full
 // daemon (it ignores --help and blocks until idle-timeout). Booting the
 // compiled dist/mcpd is already covered by scripts/build.ts (smokeDaemonWorkers,

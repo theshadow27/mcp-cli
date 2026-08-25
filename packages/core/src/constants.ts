@@ -45,6 +45,21 @@ export const BUILD_VERSION: string =
       : VERSION
     : `${VERSION}-dev`;
 
+/**
+ * Source commit this binary was built from (#3264).
+ *
+ * Compiled binaries: `<sha12>`, `<sha12>-dirty` (uncommitted tree at build
+ * time), or `<sha12>-unknown` (dirty probe failed). Null in dev mode, and in
+ * compiled binaries built where git couldn't answer.
+ *
+ * BUILD_VERSION's `+epoch` says when a binary was built, not from what — so a
+ * build of a stale checkout is indistinguishable from one containing a later
+ * merged fix. This is the value that answers "does this contain commit X"
+ * (`git merge-base --is-ancestor <commit> HEAD`).
+ */
+declare const __BUILD_COMMIT__: string;
+export const BUILD_COMMIT: string | null = typeof __BUILD_COMMIT__ !== "undefined" ? __BUILD_COMMIT__ : null;
+
 function computeDevProtocolHash(): string {
   try {
     const content = readFileSync(join(import.meta.dir, "ipc.ts"), "utf-8");

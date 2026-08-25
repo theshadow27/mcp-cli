@@ -2,10 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { METRICS_SERVER_NAME } from "@mcp-cli/core";
+import { BUILD_COMMIT, BUILD_VERSION, METRICS_SERVER_NAME, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
-import { MetricsServer } from "./metrics-server";
+import { MetricsServer, buildInfo } from "./metrics-server";
 
 const dbPaths: string[] = [];
 
@@ -38,17 +38,18 @@ describe("METRICS_SERVER_NAME", () => {
 });
 
 describe("start() returns tool cache", () => {
-  test("returns 5 tools with correct server name", async () => {
+  test("returns 6 tools with correct server name", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector);
     try {
       const { tools } = await server.start();
-      expect(tools.size).toBe(5);
+      expect(tools.size).toBe(6);
       expect(tools.has("get_metrics")).toBe(true);
       expect(tools.has("get_metric")).toBe(true);
       expect(tools.has("get_health")).toBe(true);
       expect(tools.has("quota_status")).toBe(true);
       expect(tools.has("get_domain_spend")).toBe(true);
+      expect(tools.has("build_info")).toBe(true);
       for (const [, info] of tools) {
         expect(info.server).toBe("_metrics");
       }
@@ -237,12 +238,42 @@ describe("MetricsServer", () => {
     try {
       const { client } = await server.start();
       const result = await client.listTools();
-      expect(result.tools).toHaveLength(5);
+      expect(result.tools).toHaveLength(6);
       expect(result.tools.map((t) => t.name).sort()).toEqual(
-        ["get_domain_spend", "get_health", "get_metric", "get_metrics", "quota_status"].sort(),
+        ["build_info", "get_domain_spend", "get_health", "get_metric", "get_metrics", "quota_status"].sort(),
       );
     } finally {
       await server.stop();
+    }
+  });
+
+  // Build provenance (#3264): a build epoch says when a binary was compiled,
+  // never from what — so a build of a stale checkout is indistinguishable from
+  // one containing a merged fix. This tool is the always-available answer.
+  test("build_info reports version, protocol, and source commit", async () => {
+    const collector = new MetricsCollector();
+    const server = new MetricsServer(collector);
+    try {
+      const { client } = await server.start();
+      const result = await client.callTool({ name: "build_info", arguments: {} });
+      const info = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+
+      expect(info.version).toBe(BUILD_VERSION);
+      expect(info.protocolVersion).toBe(PROTOCOL_VERSION);
+      // Under `bun test` the daemon runs from source, so there is no injected
+      // commit — null is the correct answer, and distinguishable from a daemon
+      // too old to have the tool at all (which errors instead).
+      expect(info).toHaveProperty("commit");
+      expect(info.commit).toBe(BUILD_COMMIT);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("build_info commit is either null or a well-formed stamp", async () => {
+    const info = buildInfo();
+    if (info.commit !== null) {
+      expect(info.commit).toMatch(/^[0-9a-f]{12}(-dirty|-unknown)?$/);
     }
   });
 

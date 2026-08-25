@@ -6,7 +6,7 @@
  */
 
 import type { ToolInfo } from "@mcp-cli/core";
-import { METRICS_SERVER_NAME } from "@mcp-cli/core";
+import { BUILD_COMMIT, BUILD_VERSION, METRICS_SERVER_NAME, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -52,6 +52,16 @@ const TOOLS = [
       "Return current Claude usage quota status: 5-hour and 7-day utilization percentages, " +
       "reset timestamps, and extra usage budget. Utilization is 0-100 (percentage). " +
       "Returns null fields if no OAuth token is available or the endpoint cannot be reached.",
+    inputSchema: { type: "object" as const, properties: {} },
+  },
+  {
+    name: "build_info",
+    description:
+      "Return the running daemon's build provenance: version, IPC protocol hash, and the source " +
+      "commit the binary was compiled from — `<sha12>`, `<sha12>-dirty` (uncommitted tree at " +
+      "build time), `<sha12>-unknown` (dirty check failed), or null for a daemon running from " +
+      "source. Answers 'does this running daemon actually contain commit X' " +
+      "(git merge-base --is-ancestor <commit> HEAD) without grepping the compiled binary.",
     inputSchema: { type: "object" as const, properties: {} },
   },
   {
@@ -125,6 +135,9 @@ export class MetricsServer {
 
         case "quota_status":
           return { content: [{ type: "text" as const, text: JSON.stringify(this.buildQuotaStatus(), null, 2) }] };
+
+        case "build_info":
+          return { content: [{ type: "text" as const, text: JSON.stringify(buildInfo(), null, 2) }] };
 
         case "get_domain_spend":
           return this.handleGetDomainSpend(args);
@@ -289,6 +302,23 @@ export class MetricsServer {
       ipc_errors_total: findCounter("mcpd_ipc_errors_total"),
     };
   }
+}
+
+/**
+ * Build provenance of the running daemon (#3264).
+ *
+ * Read from the daemon's own compiled-in constants rather than plumbed over
+ * IPC: this server runs in-process, so what it reports is by construction the
+ * binary that is actually serving — which is the whole question. A `+epoch`
+ * build stamp can't distinguish a fresh build of a stale checkout from one
+ * containing a merged fix; the commit can.
+ */
+export function buildInfo(): Record<string, unknown> {
+  return {
+    version: BUILD_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    commit: BUILD_COMMIT,
+  };
 }
 
 function matchLabels(actual: Record<string, string>, filter: Record<string, string>): boolean {
