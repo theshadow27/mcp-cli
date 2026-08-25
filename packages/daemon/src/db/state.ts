@@ -22,6 +22,7 @@ import {
   type ToolInfo,
   type UsageStat,
   canonicalizeDomainPath,
+  formatDomainLocation,
   hardenFile,
   isValidDomainHost,
   isValidDomainName,
@@ -94,6 +95,44 @@ export class DomainHasDependentsError extends Error {
     this.name = "DomainHasDependentsError";
     this.domainName = name;
     this.dependents = dependents;
+  }
+}
+
+/**
+ * {@link StateDb.createDomain} or {@link StateDb.renameDomain} refusing because another
+ * domain already holds the name or the location.
+ *
+ * A **type**, not a message, for the same reason as {@link DomainHasDependentsError}: the
+ * `no-error-message-sniffing` rule means a caller that has to tell "this name is taken"
+ * from "the disk is full" cannot do it by reading prose.
+ *
+ * `existing` is the conflicting domain as read *inside* the deciding transaction, so what
+ * a caller renders is what the refusal was decided on and not a re-read of a database that
+ * has moved since. The message is built here rather than at each call site because the
+ * whole point of the pre-check this replaced was to *name* the conflicting domain, and a
+ * second copy of that sentence is a second thing to drift.
+ *
+ * Nothing catches this today, deliberately: unlike a `deleteDomain` refusal — which is a
+ * *result*, because the caller has to render per-table counts and decide about `--cascade`
+ * — a name/location collision is simply an error, and `handlers/domain.ts` lets it
+ * propagate with its message intact. The type is what makes that a choice rather than an
+ * assumption.
+ */
+export class DomainConflictError extends Error {
+  /** Which uniqueness constraint the write would have violated. */
+  readonly conflict: "name" | "location";
+  /** The domain already holding it, read inside the transaction that refused. */
+  readonly existing: Domain;
+
+  constructor(conflict: "name" | "location", attempted: string, existing: Domain) {
+    super(
+      conflict === "name"
+        ? `domain "${attempted}" already exists at ${formatDomainLocation(existing)}`
+        : `${attempted} is already domain "${existing.name}"`,
+    );
+    this.name = "DomainConflictError";
+    this.conflict = conflict;
+    this.existing = existing;
   }
 }
 
@@ -399,6 +438,136 @@ export class StateDb {
       })();
       version = 8;
     }
+
+    // v9 (#3210): give `domains` the constraint its callers were only enforcing by
+    // convention — `CHECK (path LIKE '/%' OR host IS NOT NULL)`.
+    //
+    // Why the table needs it and not just the writers: `resolveDomainForPath` calls
+    // `normalizeDomainPath` on EVERY row inside its resolution loop, and that throws on a
+    // path that is not absolute. So a single malformed row breaks `mcx domain which` for
+    // every query — including the one an operator would reach for to diagnose it — while
+    // `mcx domain ls` keeps working, because it never normalizes. #3160 closed the two
+    // write paths that could produce such a row; this closes the table.
+    //
+    // It is a REBUILD because SQLite has no `ADD CONSTRAINT`, which makes this the most
+    // dangerous shape a migration can have — see #3152, where an un-transactional
+    // `ALTER TABLE` permanently bricked the daemon for anyone whose process died between
+    // the DDL and the version bump. So, in order:
+    //
+    //   - the pragma read happens BEFORE `BEGIN`. `PRAGMA foreign_keys` is a no-op inside
+    //     a transaction, so a rebuild that toggles it there silently does not toggle it —
+    //     the other half of #3152. Nothing in this directory ever turns foreign keys on
+    //     (`domains.spec.ts` asserts it), and no table references `domains`, so this is
+    //     restoring a state rather than fixing a live bug. It is written this way because
+    //     the ordering is the invariant, not the current value.
+    //   - the DDL and `setSchemaVersion` are ONE transaction, so a crash mid-rebuild
+    //     leaves the old table and the old version and the next start retries.
+    //   - `.immediate()`, because the body reads (`sqlite_sequence`, the row scan) before
+    //     it writes; see `deleteDomain` for why DEFERRED loses that race under WAL.
+    //
+    // Written as a step rather than into `applyV1Schema` for the reason spelled out on
+    // v8 — and here it also means the rebuild runs on every fresh database, including
+    // every test one, instead of being a path only real users' data ever takes.
+    if (version < 9) {
+      const foreignKeysOn =
+        (this.db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys ?? 0) === 1;
+      if (foreignKeysOn) this.db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        this.db
+          .transaction(() => {
+            this.rebuildDomainsWithPathCheck();
+            this.setSchemaVersion(CONSUMER, 9);
+          })
+          .immediate();
+      } finally {
+        if (foreignKeysOn) this.db.exec("PRAGMA foreign_keys = ON");
+      }
+      version = 9;
+    }
+  }
+
+  /**
+   * The v9 table rebuild, in the body of the transaction that owns it.
+   *
+   * Rows that would fail the new CHECK are moved to `domains_rejected` rather than
+   * dropped or left to abort the INSERT. Aborting is the #3152 failure mode wearing a
+   * different hat — a daemon that cannot start, for data it is refusing to lose — and
+   * silently deleting a row is worse than the broken state it came from. No writer can
+   * produce such a row today, so in practice this table is never created; it exists so
+   * that the one database that does have one still boots, with the row recoverable.
+   *
+   * Dependent rows keep their `domain_id` through all of this: the ids are copied
+   * verbatim, and `sqlite_sequence` is restored to the OLD high-water mark rather than
+   * left at `max(id)` of the copy. Without that, deleting the newest domain before an
+   * upgrade would let the next `AUTOINCREMENT` hand its id out again — the exact
+   * adoption bug `AUTOINCREMENT` is on this table to prevent (#3034 review B6).
+   */
+  private rebuildDomainsWithPathCheck(): void {
+    const hasDomains =
+      (this.db
+        .query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='domains'")
+        .get()?.n ?? 0) > 0;
+    // Guarded the same way v7 and v8 guard theirs: a database can sit at version N with
+    // the table absent, and `applyV1Schema` only runs below v1 so it will not backfill.
+    if (!hasDomains) return;
+
+    // `sqlite_sequence` is created by SQLite alongside the first AUTOINCREMENT table, so
+    // it exists wherever `domains` does — but querying a missing one throws "no such
+    // table", which inside this transaction means a daemon that will not start, so the
+    // read is guarded rather than assumed.
+    const hasSequence =
+      (this.db.query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE name = 'sqlite_sequence'").get()
+        ?.n ?? 0) > 0;
+    const seq = hasSequence
+      ? this.db.query<{ seq: number }, []>("SELECT seq FROM sqlite_sequence WHERE name = 'domains'").get()?.seq
+      : undefined;
+
+    this.db.exec(`
+      CREATE TABLE domains_v9 (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL UNIQUE,
+        host       TEXT,
+        path       TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        -- A local domain's path must be absolute; a host-bound one is that host's to
+        -- interpret. Deliberately NOT a check that the path exists — that is a
+        -- registration-time rule (#3210) and the filesystem is not in this transaction.
+        CHECK (path LIKE '/%' OR host IS NOT NULL)
+      )
+    `);
+
+    const rejected =
+      this.db
+        .query<{ n: number }, []>("SELECT count(*) AS n FROM domains WHERE NOT (path LIKE '/%' OR host IS NOT NULL)")
+        .get()?.n ?? 0;
+    if (rejected > 0) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS domains_rejected (
+          id INTEGER, name TEXT, host TEXT, path TEXT, created_at TEXT
+        )
+      `);
+      this.db.exec(`
+        INSERT INTO domains_rejected (id, name, host, path, created_at)
+        SELECT id, name, host, path, created_at FROM domains
+         WHERE NOT (path LIKE '/%' OR host IS NOT NULL)
+      `);
+    }
+
+    this.db.exec(`
+      INSERT INTO domains_v9 (id, name, host, path, created_at)
+      SELECT id, name, host, path, created_at FROM domains
+       WHERE path LIKE '/%' OR host IS NOT NULL
+    `);
+    this.db.exec("DROP TABLE domains");
+    this.db.exec("ALTER TABLE domains_v9 RENAME TO domains");
+    // Recreated because DROP took the old one with it.
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_domains_location ON domains(COALESCE(host, ''), path)");
+    if (seq !== undefined) {
+      // DELETE + INSERT rather than UPDATE: the copy has no `sqlite_sequence` row at all
+      // when every row was rejected, and one row is the whole table's state either way.
+      this.db.run("DELETE FROM sqlite_sequence WHERE name = 'domains'");
+      this.db.run("INSERT INTO sqlite_sequence (name, seq) VALUES ('domains', ?)", [seq]);
+    }
   }
 
   /**
@@ -420,6 +589,9 @@ export class StateDb {
       -- of a deleted domain, and any row still carrying that domain_id is silently
       -- adopted by the next domain created — a new project inheriting a dead one's work
       -- items, mail and PR watermarks (#3034 review B6).
+      -- The CHECK on path that this table carries is NOT written here: it is added by the
+      -- v9 rebuild below, which every database runs, so the two paths cannot drift apart
+      -- the way a copy written in both places would.
       CREATE TABLE IF NOT EXISTS domains (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         name       TEXT NOT NULL UNIQUE,
@@ -2019,13 +2191,41 @@ export class StateDb {
   // -- Domains (#3034) --
 
   /**
-   * Register a domain. Throws on a duplicate name or a duplicate `[host:]path` location.
+   * The domain already registered at `[host:]path`, matched the way
+   * `idx_domains_location` matches: `COALESCE(host,'')`, because SQLite treats NULLs in a
+   * UNIQUE index as distinct and the index is the actual enforcement. A hand-rolled
+   * `d.host === host` filter agrees with it for every value `isValidDomainHost` admits and
+   * disagrees for `''` — so it is spelled once, here, in the index's own terms.
+   */
+  private getDomainByLocation(host: string | null, path: string): Domain | null {
+    const row = this.db
+      .query<RawDomainRow, [string | null, string]>(
+        `SELECT id, name, host, path, created_at FROM domains
+          WHERE COALESCE(host, '') = COALESCE(?, '') AND path = ?`,
+      )
+      .get(host, path);
+    return row ? toDomain(row) : null;
+  }
+
+  /**
+   * Register a domain. Throws a {@link DomainConflictError} on a duplicate name or a
+   * duplicate `[host:]path` location.
    *
    * A **local** path is canonicalized (absolute, symlinks resolved) so the resolver
    * compares like with like — #1526 and #1684 were both this bug in other tables.
    * A **host-bound** path is stored verbatim: it names a directory on another machine,
    * so normalizing it against this filesystem is meaningless and `~/work` there is that
    * host's home, not ours.
+   *
+   * The collision check and the INSERT are ONE transaction (#3210). They used to be two
+   * steps in `handlers/domain.ts`, which is the same TOCTOU `deleteDomain` was fixed for
+   * in #3180: two writers both pass the check, and the loser gets a bare
+   * `SQLITE_CONSTRAINT_UNIQUE` from the index instead of the named-conflict message the
+   * check exists to produce — the raw error it was written to prevent. `.immediate()`,
+   * not the default DEFERRED, because this body reads and then writes: under WAL a
+   * DEFERRED transaction takes the write lock at the first write, and a writer that
+   * committed in between invalidates the read snapshot, failing with
+   * `SQLITE_BUSY_SNAPSHOT` — which `busy_timeout` does not retry.
    */
   createDomain(name: string, path: string, host: string | null = null): Domain {
     if (!isValidDomainName(name)) {
@@ -2040,15 +2240,25 @@ export class StateDb {
       throw new Error(`invalid domain host ${JSON.stringify(host)}: use null for a local domain`);
     }
     const storedPath = host === null ? canonicalizeDomainPath(path) : path;
-    const row = this.db
-      .query<RawDomainRow, [string, string | null, string]>(
-        `INSERT INTO domains (name, host, path, created_at)
-         VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-         RETURNING id, name, host, path, created_at`,
-      )
-      .get(name, host, storedPath);
-    if (!row) throw new Error(`failed to create domain "${name}"`);
-    const domain = toDomain(row);
+    const domain = this.db
+      .transaction(() => {
+        const byName = this.getDomainByName(name);
+        if (byName) throw new DomainConflictError("name", name, byName);
+        const byLocation = this.getDomainByLocation(host, storedPath);
+        if (byLocation) {
+          throw new DomainConflictError("location", formatDomainLocation({ host, path: storedPath }), byLocation);
+        }
+        const row = this.db
+          .query<RawDomainRow, [string, string | null, string]>(
+            `INSERT INTO domains (name, host, path, created_at)
+             VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             RETURNING id, name, host, path, created_at`,
+          )
+          .get(name, host, storedPath);
+        if (!row) throw new Error(`failed to create domain "${name}"`);
+        return toDomain(row);
+      })
+      .immediate();
     // Registering a domain ADOPTS the sessions already standing in it. Without this,
     // creating a domain over a directory that has running sessions instantly hides
     // them: their rows stay at `domain_id = 0`, and an exact-equality domain filter
@@ -2140,11 +2350,45 @@ export class StateDb {
     return row ? toDomain(row) : null;
   }
 
-  renameDomain(oldName: string, newName: string): boolean {
+  /**
+   * Rename a domain. Returns the renamed row, or `null` when no domain is called
+   * `oldName`; throws a {@link DomainConflictError} when `newName` is already taken.
+   *
+   * One transaction, and the renamed row comes back by `RETURNING` rather than a re-read
+   * (#3210). The caller used to check "does `newName` exist?" and then UPDATE, which under
+   * two writers surfaced a bare `SQLITE_CONSTRAINT_UNIQUE` on `domains.name` — see the
+   * note on {@link createDomain} for why the transaction is `.immediate()`. The re-read
+   * mattered too: it ran outside the write and reported "failed to rename" if anything
+   * touched the row in between, which is a lie about what happened.
+   *
+   * A name change and nothing else: `id` is untouched, so every `domain_id` reference
+   * survives, and `path` is untouched, so `which` keeps resolving. That is also why there
+   * is no canonicalization to redo here — rename takes no path.
+   */
+  renameDomain(oldName: string, newName: string): Domain | null {
     if (!isValidDomainName(newName)) {
       throw new Error(`invalid domain name "${newName}": must be alphanumeric, hyphens, or underscores`);
     }
-    return this.db.run("UPDATE domains SET name = ? WHERE name = ?", [newName, oldName]).changes > 0;
+    return this.db
+      .transaction(() => {
+        const existing = this.getDomainByName(oldName);
+        if (!existing) return null;
+        // Guarded on `oldName !== newName` so renaming a domain to its own name stays the
+        // no-op it has always been rather than colliding with itself.
+        if (oldName !== newName) {
+          const taken = this.getDomainByName(newName);
+          if (taken) throw new DomainConflictError("name", newName, taken);
+        }
+        const row = this.db
+          .query<RawDomainRow, [string, number]>(
+            `UPDATE domains SET name = ? WHERE id = ?
+             RETURNING id, name, host, path, created_at`,
+          )
+          .get(newName, existing.id);
+        if (!row) throw new Error(`failed to rename domain "${oldName}" to "${newName}"`);
+        return toDomain(row);
+      })
+      .immediate();
   }
 
   /**

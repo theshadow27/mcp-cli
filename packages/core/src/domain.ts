@@ -11,6 +11,7 @@
  * orchestrator could rationalize past is a function, not prose.
  */
 
+import { existsSync } from "node:fs";
 import { isAbsolute, join, normalize, posix, resolve } from "node:path";
 import { resolveRealpath } from "./fs";
 
@@ -150,6 +151,40 @@ export function normalizeDomainPath(path: string): string {
  */
 export function canonicalizeDomainPath(path: string): string {
   return resolveRealpath(normalizeDomainPath(path));
+}
+
+/**
+ * {@link canonicalizeDomainPath}, but **refuses a local path that does not exist yet**.
+ *
+ * This is the registration-time rule, and it exists because canonicalization is a
+ * point-in-time snapshot (#3210). `resolveRealpath` degrades a non-existent path to the
+ * nearest existing ancestor plus a *lexical* remainder — so a domain registered before
+ * its directory exists stores an un-resolved form, while `resolveDomain` canonicalizes
+ * the query against the filesystem as it is *now*. Let the missing segments appear later
+ * under a symlink — which in this repo is not hypothetical, it is what
+ * `.claude/worktrees/` is — and the two forms no longer match: `mcx domain ls` shows the
+ * domain sitting right there while `mcx domain which` reports "not inside any registered
+ * domain".
+ *
+ * Refusing at registration closes that drift class by construction rather than by
+ * re-deriving the stored path at every lookup: a path that exists resolves the same way
+ * on every subsequent call, because there is nothing lexical left in the answer.
+ *
+ * A directory is not required. A path that exists at all — file, directory, or symlink to
+ * either — has a fully resolved realpath, which is the whole invariant; requiring a
+ * directory would be a *separate* policy about what a domain may be bound to.
+ *
+ * Local only. A host-bound path names a directory on another machine, so this
+ * filesystem's opinion about whether it exists is worth nothing.
+ */
+export function canonicalizeExistingDomainPath(path: string): string {
+  const normalized = normalizeDomainPath(path);
+  if (!existsSync(normalized)) {
+    throw new Error(
+      `domain path ${JSON.stringify(normalized)} does not exist: create it first, or register the domain at a path that does (a path canonicalized before it exists stops resolving once it appears under a symlink)`,
+    );
+  }
+  return resolveRealpath(normalized);
 }
 
 /**

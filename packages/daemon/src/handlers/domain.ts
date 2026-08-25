@@ -18,8 +18,7 @@ import {
   DomainWhichParamsSchema,
   type DomainWhichResult,
   type IpcMethod,
-  canonicalizeDomainPath,
-  formatDomainLocation,
+  canonicalizeExistingDomainPath,
 } from "@mcp-cli/core";
 import {
   IMPORT_MARKER_KEY,
@@ -58,19 +57,21 @@ export class DomainHandlers {
     handlers.set("domainAdd", async (params) => {
       const { name, host, path } = DomainAddParamsSchema.parse(params);
 
-      // Pre-checked rather than caught: the UNIQUE indexes on `name` and on
-      // `(COALESCE(host,''), path)` are the enforcement, but a raw constraint error
-      // cannot say *which* domain already owns the location without sniffing its
-      // message. Checking first lets the refusal name the conflicting domain.
-      const byName = this.db.getDomainByName(name);
-      if (byName) {
-        throw new Error(`domain "${name}" already exists at ${formatDomainLocation(byName)}`);
-      }
-      const storedPath = host === null ? canonicalizeDomainPath(path) : path;
-      const byLocation = this.db.listDomains().find((d) => d.host === host && d.path === storedPath);
-      if (byLocation) {
-        throw new Error(`${formatDomainLocation({ host, path: storedPath })} is already domain "${byLocation.name}"`);
-      }
+      // The name/location collision check is NOT here any more (#3210). It used to read
+      // the table and then call `createDomain`, so two writers could both pass it and the
+      // loser got the bare `SQLITE_CONSTRAINT_UNIQUE` the check existed to replace.
+      // `createDomain` now decides inside the transaction that writes, and its
+      // `DomainConflictError` carries the same named-conflict message — one decider, the
+      // shape `deleteDomain` took in #3180.
+      //
+      // What stays here is the one precondition a transaction CANNOT hold: the local path
+      // must already exist. The filesystem is not in the database's transaction, so this
+      // is a boundary check by nature — and this is the boundary that has the operator's
+      // intent. `createDomain` stays the storage primitive (the legacy scope importer and
+      // the resolution tests both register domains whose directories are not this
+      // machine's concern); registering a domain at a path that does not exist yet is a
+      // choice `mcx domain add` refuses to let someone make.
+      if (host === null) canonicalizeExistingDomainPath(path);
 
       const created = this.db.createDomain(name, path, host);
       this.domains.invalidate();
@@ -96,17 +97,13 @@ export class DomainHandlers {
 
     handlers.set("domainRename", async (params) => {
       const { from, to } = DomainRenameParamsSchema.parse(params);
-      const existing = this.db.getDomainByName(from);
-      if (!existing) throw new Error(`no domain named "${from}"`);
-      if (from !== to && this.db.getDomainByName(to)) {
-        throw new Error(`domain "${to}" already exists`);
-      }
-      // A name change and nothing else: `id` is untouched, so every `domain_id`
-      // reference survives, and `path` is untouched, so `which` keeps resolving.
-      this.db.renameDomain(from, to);
+      // Same move as `domainAdd`: the "is `to` taken?" check and the re-read of the
+      // renamed row both lived here and both raced (#3210). `renameDomain` now checks,
+      // writes and returns the row in one transaction — `null` means no domain called
+      // `from`, and a taken name throws a `DomainConflictError` with its own message.
+      const renamed = this.db.renameDomain(from, to);
+      if (!renamed) throw new Error(`no domain named "${from}"`);
       this.domains.invalidate();
-      const renamed = this.db.getDomainByName(to);
-      if (!renamed) throw new Error(`failed to rename domain "${from}" to "${to}"`);
       return renamed satisfies Domain;
     });
 

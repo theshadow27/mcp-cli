@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +22,18 @@ function invoke(map: Map<IpcMethod, RequestHandler>, method: IpcMethod): Request
   const h = map.get(method);
   if (!h) throw new Error(`Handler "${method}" not registered`);
   return h;
+}
+
+/**
+ * A real directory inside a test's workspace, standing in for the `/srv/...` literals
+ * these tests used before `domainAdd` began refusing a local path that does not exist
+ * (#3210). The shape of that tree is what several of them are about — nesting, and the
+ * longest-prefix rule that needs it — so it is reproduced rather than flattened.
+ */
+function srv(dir: string, ...segments: string[]): string {
+  const path = join(dir, "srv", ...segments);
+  mkdirSync(path, { recursive: true });
+  return path;
 }
 
 describe("DomainHandlers", () => {
@@ -57,15 +69,16 @@ describe("DomainHandlers", () => {
   const ctx = {} as never;
 
   test("add stores host and path separately for the [host:]path form", async () => {
-    const { handlers } = setup();
-    const local = (await invoke(handlers, "domainAdd")({ name: "local", path: "/srv/local" }, ctx)) as Domain;
+    const { handlers, dir } = setup();
+    const localPath = srv(dir, "local");
+    const local = (await invoke(handlers, "domainAdd")({ name: "local", path: localPath }, ctx)) as Domain;
     const remote = (await invoke(handlers, "domainAdd")(
       { name: "remote", host: "boxen0010", path: "~/github/phoenix" },
       ctx,
     )) as Domain;
 
     expect(local.host).toBeNull();
-    expect(local.path).toBe("/srv/local");
+    expect(local.path).toBe(localPath);
     expect(remote.host).toBe("boxen0010");
     // Verbatim: `~` there is that host's home, and this filesystem has no say.
     expect(remote.path).toBe("~/github/phoenix");
@@ -77,18 +90,65 @@ describe("DomainHandlers", () => {
     await expect(invoke(handlers, "domainAdd")({ name: "tilde", path: "~/work" }, ctx)).rejects.toThrow();
   });
 
-  test("add rejects a duplicate name and names where the existing one lives", async () => {
+  test("add refuses a local path that does not exist yet (#3210)", async () => {
+    const { handlers, dir } = setup();
+    await expect(
+      invoke(handlers, "domainAdd")({ name: "ghost", path: join(dir, "not", "created", "yet") }, ctx),
+    ).rejects.toThrow(/does not exist/);
+    expect((await invoke(handlers, "domainList")(undefined, ctx)) as Domain[]).toEqual([]);
+  });
+
+  test("...which is the untested direction of the canonicalization drift (#3210)", async () => {
+    // Registering before the path exists stored the un-resolved spelling, because
+    // `resolveRealpath` degrades to a lexical join. Let the path then appear under a
+    // symlink — which is what `.claude/worktrees/` is — and `domainWhich` canonicalizes
+    // the query against a filesystem that has moved, so it reports "not inside any
+    // registered domain" for a domain `domainList` shows sitting right there.
+    const { handlers, dir } = setup();
+    const real = join(dir, "real");
+    const link = join(dir, "link");
+    const viaLink = join(link, "sub");
+
+    await expect(invoke(handlers, "domainAdd")({ name: "phoenix", path: viaLink }, ctx)).rejects.toThrow(
+      /does not exist/,
+    );
+
+    // Once the path exists, the same registration is accepted — and what it stores is the
+    // resolved form, so the two commands cannot disagree afterwards.
+    mkdirSync(join(real, "sub"), { recursive: true });
+    symlinkSync(real, link);
+    const added = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: viaLink }, ctx)) as Domain;
+    expect(added.path).toBe(join(real, "sub"));
+
+    for (const query of [viaLink, join(real, "sub"), join(viaLink, "deeper")]) {
+      const hit = (await invoke(handlers, "domainWhich")({ path: query }, ctx)) as DomainWhichResult;
+      expect(hit.domain?.name).toBe("phoenix");
+    }
+  });
+
+  test("a host-bound path is exempt from the existence rule — it is not on this filesystem", async () => {
     const { handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx);
-    await expect(invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/other" }, ctx)).rejects.toThrow(
-      /already exists at \/srv\/phoenix/,
+    const remote = (await invoke(handlers, "domainAdd")(
+      { name: "remote", host: "boxen0010", path: "/srv/definitely/not/here" },
+      ctx,
+    )) as Domain;
+    expect(remote.path).toBe("/srv/definitely/not/here");
+  });
+
+  test("add rejects a duplicate name and names where the existing one lives", async () => {
+    const { handlers, dir } = setup();
+    const phoenix = srv(dir, "phoenix");
+    await invoke(handlers, "domainAdd")({ name: "phoenix", path: phoenix }, ctx);
+    await expect(invoke(handlers, "domainAdd")({ name: "phoenix", path: srv(dir, "other") }, ctx)).rejects.toThrow(
+      `already exists at ${phoenix}`,
     );
   });
 
   test("add rejects a location already owned, naming the owner", async () => {
-    const { handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx);
-    await expect(invoke(handlers, "domainAdd")({ name: "second", path: "/srv/phoenix" }, ctx)).rejects.toThrow(
+    const { handlers, dir } = setup();
+    const phoenix = srv(dir, "phoenix");
+    await invoke(handlers, "domainAdd")({ name: "phoenix", path: phoenix }, ctx);
+    await expect(invoke(handlers, "domainAdd")({ name: "second", path: phoenix }, ctx)).rejects.toThrow(
       /already domain "phoenix"/,
     );
   });
@@ -99,32 +159,31 @@ describe("DomainHandlers", () => {
     // in `resolveDomainForPath` has nothing to decide if the inner domain cannot exist.
     // The refusal is equality on `(host, path)`, not the prefix relation that the word
     // "owns" means everywhere else in docs/domains.md.
-    const { handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "outer", path: "/srv/github" }, ctx);
-    const inner = (await invoke(handlers, "domainAdd")({ name: "inner", path: "/srv/github/mcp-cli" }, ctx)) as Domain;
+    const { handlers, dir } = setup();
+    const mcpCli = srv(dir, "github", "mcp-cli");
+    await invoke(handlers, "domainAdd")({ name: "outer", path: srv(dir, "github") }, ctx);
+    const inner = (await invoke(handlers, "domainAdd")({ name: "inner", path: mcpCli }, ctx)) as Domain;
     expect(inner.name).toBe("inner");
 
     // A parent of an existing domain is equally fine.
-    const above = (await invoke(handlers, "domainAdd")({ name: "above", path: "/srv" }, ctx)) as Domain;
+    const above = (await invoke(handlers, "domainAdd")({ name: "above", path: srv(dir) }, ctx)) as Domain;
     expect(above.name).toBe("above");
 
     // Only the exact location is refused.
-    await expect(invoke(handlers, "domainAdd")({ name: "dup", path: "/srv/github/mcp-cli" }, ctx)).rejects.toThrow(
+    await expect(invoke(handlers, "domainAdd")({ name: "dup", path: mcpCli }, ctx)).rejects.toThrow(
       /already domain "inner"/,
     );
 
     // ...and resolution still picks the innermost, which is the point of allowing nesting.
-    const hit = (await invoke(handlers, "domainWhich")({ path: "/srv/github/mcp-cli/src" }, ctx)) as DomainWhichResult;
+    const hit = (await invoke(handlers, "domainWhich")({ path: join(mcpCli, "src") }, ctx)) as DomainWhichResult;
     expect(hit.domain?.name).toBe("inner");
   });
 
   test("a host-bound path does not collide with the same local path", async () => {
-    const { handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "here", path: "/srv/app" }, ctx);
-    const there = (await invoke(handlers, "domainAdd")(
-      { name: "there", host: "boxen0010", path: "/srv/app" },
-      ctx,
-    )) as Domain;
+    const { handlers, dir } = setup();
+    const app = srv(dir, "app");
+    await invoke(handlers, "domainAdd")({ name: "here", path: app }, ctx);
+    const there = (await invoke(handlers, "domainAdd")({ name: "there", host: "boxen0010", path: app }, ctx)) as Domain;
     expect(there.host).toBe("boxen0010");
   });
 
@@ -149,8 +208,8 @@ describe("DomainHandlers", () => {
   });
 
   test("rename changes the name only — id, path and every domain_id survive", async () => {
-    const { db, handlers } = setup();
-    const before = (await invoke(handlers, "domainAdd")({ name: "old", path: "/srv/app" }, ctx)) as Domain;
+    const { db, handlers, dir } = setup();
+    const before = (await invoke(handlers, "domainAdd")({ name: "old", path: srv(dir, "app") }, ctx)) as Domain;
     db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [before.id]);
 
     const after = (await invoke(handlers, "domainRename")({ from: "old", to: "new" }, ctx)) as Domain;
@@ -164,16 +223,16 @@ describe("DomainHandlers", () => {
   });
 
   test("rename refuses an unknown source and an occupied target", async () => {
-    const { handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "a", path: "/srv/a" }, ctx);
-    await invoke(handlers, "domainAdd")({ name: "b", path: "/srv/b" }, ctx);
+    const { handlers, dir } = setup();
+    await invoke(handlers, "domainAdd")({ name: "a", path: srv(dir, "a") }, ctx);
+    await invoke(handlers, "domainAdd")({ name: "b", path: srv(dir, "b") }, ctx);
     await expect(invoke(handlers, "domainRename")({ from: "nope", to: "c" }, ctx)).rejects.toThrow(/no domain named/);
     await expect(invoke(handlers, "domainRename")({ from: "a", to: "b" }, ctx)).rejects.toThrow(/already exists/);
   });
 
   test("rm REFUSES while dependents exist — and leaves every row where it was", async () => {
-    const { db, handlers } = setup();
-    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx)) as Domain;
+    const { db, handlers, dir } = setup();
+    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx)) as Domain;
     db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [domain.id]);
     db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'c', 'd', 'yo')", [domain.id]);
 
@@ -188,8 +247,8 @@ describe("DomainHandlers", () => {
   });
 
   test("rm --force cascades: the domain AND its dependent rows are gone", async () => {
-    const { db, handlers } = setup();
-    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx)) as Domain;
+    const { db, handlers, dir } = setup();
+    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx)) as Domain;
     db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [domain.id]);
 
     const forced = (await invoke(handlers, "domainRemove")(
@@ -203,8 +262,8 @@ describe("DomainHandlers", () => {
   });
 
   test("rm of a domain with no dependents succeeds without --force", async () => {
-    const { db, handlers } = setup();
-    await invoke(handlers, "domainAdd")({ name: "solo", path: "/srv/solo" }, ctx);
+    const { db, handlers, dir } = setup();
+    await invoke(handlers, "domainAdd")({ name: "solo", path: srv(dir, "solo") }, ctx);
     const result = (await invoke(handlers, "domainRemove")({ name: "solo" }, ctx)) as DomainRemoveResult;
     expect(result).toEqual({ found: true, removed: true, dependents: [] });
     expect(db.getDomainByName("solo")).toBeNull();
@@ -408,7 +467,7 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     dirs2.length = 0;
   });
 
-  function setup2(): { db: StateDb; handlers: Map<IpcMethod, RequestHandler> } {
+  function setup2(): { db: StateDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
     const dir = mkdtempSync(join(tmpdir(), "mcx-domain-race-"));
     dirs2.push(dir);
     const db = new StateDb(join(dir, "mcx.db"));
@@ -418,7 +477,7 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     migrateDerivedCursor(db.database);
     const handlers = new Map<IpcMethod, RequestHandler>();
     new DomainHandlers(db).register(handlers);
-    return { db, handlers };
+    return { db, handlers, dir };
   }
 
   const ctx2 = {} as never;
@@ -431,8 +490,11 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
   // shape this review already caught once. What is testable is the contract that results
   // from it, below, plus the CLI's rendering of the race (`domain.spec.ts`).
   test("a dependent present at delete time yields a structured refusal and the domain survives", async () => {
-    const { db, handlers } = setup2();
-    const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+    const { db, handlers, dir } = setup2();
+    const domain = (await invoke(handlers, "domainAdd")(
+      { name: "phoenix", path: srv(dir, "phoenix") },
+      ctx2,
+    )) as Domain;
     db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [domain.id]);
 
     const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
@@ -449,8 +511,8 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     // NOT-FOUND return — the same path as "rm of an unknown domain". It asserted `removed`
     // and `dependents` but never `found`, which is the one field that distinguishes the two.
     // Asserting `found` is what makes the test name match the path it exercises.
-    const { db, handlers } = setup2();
-    await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2);
+    const { db, handlers, dir } = setup2();
+    await invoke(handlers, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx2);
     db.database.run("DELETE FROM domains WHERE name = ?", ["phoenix"]);
 
     const result = (await invoke(handlers, "domainRemove")({ name: "phoenix" }, ctx2)) as DomainRemoveResult;
@@ -464,8 +526,8 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     // existed only as a hand-built literal in the CLI harness. Driven here by deleting the
     // row between the handler's lookup and its delete, via an injected StateDb whose
     // `deleteDomain` removes the row itself and reports that it changed nothing.
-    const { db, handlers: _unused } = setup2();
-    await invoke(_unused, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2);
+    const { db, handlers: _unused, dir } = setup2();
+    await invoke(_unused, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx2);
 
     const racing = Object.create(db) as typeof db;
     Object.defineProperty(racing, "deleteDomain", {
@@ -523,8 +585,8 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     }
 
     test("a real failure during --force propagates instead of becoming a --force refusal", async () => {
-      const { db, handlers: setup } = setup2();
-      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      const { db, handlers: setup, dir } = setup2();
+      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx2)) as Domain;
       db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
         domain.id,
       ]);
@@ -541,8 +603,8 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     test("...and the same is true without --force, where dependents also block", async () => {
       // The non-cascade path is where the laundering was most convincing: dependents
       // really do exist, so the re-count "confirmed" a refusal that never happened.
-      const { db, handlers: setup } = setup2();
-      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      const { db, handlers: setup, dir } = setup2();
+      const domain = (await invoke(setup, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx2)) as Domain;
       db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
         domain.id,
       ]);
@@ -554,8 +616,11 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     test("the genuine refusal still comes back as a structured result, not a throw", async () => {
       // The other half of the branch: real `deleteDomain`, real dependents. This is what
       // makes the rethrow above a narrowing rather than a removal of the refusal path.
-      const { db, handlers } = setup2();
-      const domain = (await invoke(handlers, "domainAdd")({ name: "phoenix", path: "/srv/phoenix" }, ctx2)) as Domain;
+      const { db, handlers, dir } = setup2();
+      const domain = (await invoke(handlers, "domainAdd")(
+        { name: "phoenix", path: srv(dir, "phoenix") },
+        ctx2,
+      )) as Domain;
       db.database.run("INSERT INTO mail (domain_id, sender, recipient, subject) VALUES (?, 'a', 'b', 'hi')", [
         domain.id,
       ]);

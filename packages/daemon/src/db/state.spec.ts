@@ -1993,13 +1993,13 @@ describe("StateDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 8", () => {
+    test("fresh DB sets schema version to 9", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(8);
+      expect(version).toBe(9);
       db.close();
     });
 
@@ -2063,7 +2063,7 @@ describe("StateDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(8);
+      expect(version).toBe(9);
       db2.close();
     });
 
@@ -2085,7 +2085,7 @@ describe("StateDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(8);
+      expect(version).toBe(9);
       db.close();
     });
 

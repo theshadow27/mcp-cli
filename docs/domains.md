@@ -211,7 +211,17 @@ mcx status                       # starts the daemon; the import runs at boot
 A remote path must be absolute or `~`-rooted. `mcx domain add weird a:b` is refused rather
 than registered at relative path `b` on a host called `a` — `a` is a perfectly valid
 hostname, so nothing else would have caught it, and one relative row breaks `which` for
-*every* query because the resolver normalizes each row inside its loop.
+*every* query because the resolver normalizes each row inside its loop. Since #3210 that is
+also a `CHECK` on the table itself, so the row cannot be written by any route.
+
+A **local** path must already exist. `mcx domain add phoenix ~/github/not-cloned-yet` is
+refused, because canonicalization is a point-in-time answer: for a path that does not exist,
+the resolver resolves the nearest existing ancestor and re-joins the rest *lexically*. Let
+the missing segments appear later under a symlink — which is exactly what
+`.claude/worktrees/` is — and the stored spelling no longer matches what a lookup computes,
+so `mcx domain ls` shows the domain while `mcx domain which` reports "not inside any
+registered domain" (#3210). A host-bound path is exempt: this filesystem has no say over
+another machine's.
 
 The marker lives in the **legacy** `state.db`, deliberately, so it outlives `mcx.db` — which
 is why deleting `mcx.db` alone is not a recovery. Without `--force` the command declines and
