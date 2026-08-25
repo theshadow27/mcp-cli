@@ -432,3 +432,84 @@ off the startup path, and checked install.sh↔TS digest parity end to end.
 - `.claude/memory/feedback_quota_status_staleness.md` + MEMORY.md reference the
   literal `[RATE LIMITED]`, renamed by #3104 to `[rate-limited Ns ago]`.
 - Baton handoff should carry a host-load check, not just lease state (#3341).
+
+## Sprint called by operator — 2026-08-25 04:49
+
+Called mid-flight. Not a completion. **No release cut; v2.0.0 NOT shipped.**
+Auto-chain to review.md / retro.md deliberately not executed — the sprint was
+ended, not declared successful.
+
+### Landed on main this window
+
+| Issue | PR | Notes |
+|---|---|---|
+| #3260 | #3328 | forgeable install marker — mutation-verified, MERGED 04:19:58Z |
+
+### Committed but NEVER PUSHED — recoverable, in worktrees
+
+Nothing else reached the remote. These commits exist only in local worktrees:
+
+| branch | commit | worktree | state |
+|---|---|---|---|
+| `chore/3333-bun-140-pins` | `0dfb4c42` | claude-mt85c7gz | clean; Bun 1.4.0 fully validated |
+| `fix/issue-3247-mail-sender-domain-id` | `b2ab74fd` | claude-mt833t3h | clean; rebased on 01b7b7b9 |
+| `fix/issue-3254-work-items-delete` | `b7713511` | claude-mt83r739 | clean; push hit a 5062ms artefact |
+
+Salvaged uncommitted work from two killed sessions, in the session scratchpad:
+`salvage-3344.patch`, `salvage-3344-spec.ts` (140 lines), `salvage-3337.patch`.
+
+### Bun 1.4.0 (#3333) — evidence is complete even though the PR never opened
+
+The box had run 1.4.0 since 2026-08-20; CI was pinned to 1.3.14 in 7 `setup-bun`
+sites plus engines, plus the runtime floor `MIN_BUN_VERSION`. Validation on
+1.4.0, with the pin diff applied:
+
+- 2x full `am-i-done` (cold + warm): steps 1-11 green, failure count 0 both
+- full `test:coverage`: 7028 pass / 0 fail across 247 files, 92.39% fn / 95.07% l
+- **`Spec floor: 247 discovered / 247 expected`** — `checkDiscoveryFloor` (#2719)
+  armed and satisfied. 1.4.0 did not move spec discovery by a single file.
+- no segfault, no panic, no worker-panicked cascade in any run
+
+PR 2 (delete the 1.3.x crash-tolerance machinery) was never started.
+
+### TypeScript 7 (#3337) — measured, unverified by orchestrator
+
+Worker-reported: TS 5.9.3 `tsc -b` 72s median vs TS 7.0.2 at 5.2s, zero errors,
+zero source changes. **Not independently confirmed.** Orchestrator's own
+measurement of the TS5 baseline in a cold worktree under load 16 was 1m54.9s;
+the TS7 side was never run. Treat the ~12x as a single-source claim.
+
+### Issues filed this window
+
+#3332 (twice corrected), #3333, #3334, #3335, #3336, #3337, #3338, #3339, #3340,
+#3341, #3342 (escalated), #3344
+
+### Orchestrator errors — the durable part of this record
+
+1. **Inventory miss.** #3333's body listed 8 pin sites and missed the runtime
+   floor `MIN_BUN_VERSION`. Cause: grepped the YAML key, not the constant.
+2. **Incoherent constraint.** Listed #2744/#2780 as "do NOT remove" guards; they
+   are internal properties of the tolerance being deleted. Worker corrected it.
+3. **Wrong gate model.** Told three sessions committing was cheap and unleased.
+   `.git-hooks/pre-commit:136` calls `bun run test:coverage` directly, bypassing
+   am-i-done's lease table — three unleased full suites on a shared 12-core box.
+   Worker caught it: "half right, and the wrong half matters."
+4. **Unsound argument on #3332.** Argued contention could not explain gate
+   variance, citing a loadavg "inversion" — measured with the instrument
+   `gate-lease.ts:50-70` explicitly rejects. On-box proof: `cpu 42%` vs loadavg
+   63% of core count at the same instant.
+5. **Reinvented an existing mechanism.** Hand-ran a gate baton for the whole
+   sprint. `TEST_CHANGED` is `lease: true`, so pushes already serialise through
+   the host-wide flock lease. Every request/grant round trip was pure latency.
+6. **Micromanagement.** Workers corrected the orchestrator three times; the
+   orchestrator responded by writing longer briefs. Flagged by the operator.
+7. **Echoed unverified worker claims as fact** — including "measured twice,
+   independently" for what was one source running twice, from the session that
+   had already withdrawn a finding for measuring the wrong mode.
+8. **Poisoned two contexts**, then repeated the same irrelevant claim into the
+   replacement brief with an "unverified, check it" label — an invitation to
+   spend box time on an orchestrator tangent. Both sessions killed; #3344's
+   replacement killed again for the same reason.
+
+Lesson worth keeping: a brief should carry the task and the invariants. Findings
+from elsewhere belong in the issue, not the brief — and never unlabelled.
