@@ -252,3 +252,78 @@ design).
   the upstream 429'd continuously from ~22:00. Quota gating (80% freeze / 95%
   pause) ran on a frozen number for an hour. It is neither the "call failed" nor
   the "unavailable" case run.md says to ignore — that is the gap.
+
+### Merges (running)
+
+| # | PR | SHA | Path |
+|---|----|-----|------|
+| 3213 | #3287 | df4de055 | triage(low) → QA → done |
+| 3104 | #3295 | 9c10dde6 | triage(high) → review → QA → done |
+| 3013 | #3289 | 93a55f6a | review r1 (2×🔴) → opus repair → review r2 → QA → done |
+| 3042 | #3305 | d575d803 | triage(high) → review → QA → done |
+| 3180 | #3299 | 4d55e035 | triage(high) → review → QA → done |
+| 3110 | #3308 | a75ae11a | triage(low) → QA(authored test, verdict withheld) → independent verify → done |
+
+### Enforcement events (worth keeping — these are the process working)
+
+1. **#3013 review round 1 refuted the implementer's load-bearing claim.** The PR
+   argued the wss listener was already up so no restart was needed; review proved
+   that holds only for the three "patching needed" branches — from the three
+   "version unknown" branches a refresh onto a *patched* binary still produced
+   `ws://localhost`, the silent connect failure the module's own comments forbid.
+   Driven repro, confirmed by three second-opinion agents. Second 🔴: the re-probe
+   was synchronous `spawnSync` on a thread hosting live sessions (~55s freeze).
+   Orchestrator made the design call (fail closed on transport mismatch +
+   non-blocking probe + negative caching) rather than delegating it.
+2. **#3110 QA authored a test on the PR it was judging.** Caught before it
+   labelled. Test kept (it closed a real `--clean` mutation-check gap); verdict
+   withheld; a fresh session verified the fix AND the new test by mutation. Cost
+   one extra session, ~10 min. "Self-repair is allowed; self-approval never is —
+   for any change, however small the edit looked."
+3. **#3264 ran a second concurrent gate without the baton**, at load 27.5/12,
+   degrading #3110's QA gate simultaneously. Gates were NOT killed (already-spent
+   CPU; killing is the wrong instinct) — the session was corrected and held at the
+   gate boundary until the box was serial again.
+4. **#3264 scope: `mcx version` display removed.** The plan said expose via
+   `_metrics`, NOT `--version` (#2981 = `mcpd --version` dumps a minified stack
+   trace). The worker's instinct was good — client-vs-daemon commit is exactly how
+   you catch this sprint's own stale-daemon hazard — so it was filed as **#3311**
+   with that justification rather than refused. Waiving scope freeze because the
+   orchestrator liked an addition would hollow out the rule being enforced on
+   everyone else the same hour.
+5. **#3180 dropped its v9 table rebuild** after being asked what it buys: nothing
+   reads `foreign_key_list`, the constraint is unenforced, and a rebuild is what
+   bricked daemons in #3152. Preserved #3210 as the sprint's only migration.
+6. **#3210 corrected its own issue's premise**: defect 1's mechanism is real but
+   its stated frequency is not (one `StateDb` in prod, no await between pre-check
+   and write) — latent hardening, not a live race. Also found rename takes no path
+   at all, so the planning phrase "refuse non-existent paths at add and rename"
+   can only apply at add.
+7. **#3299 merged only after clearing a thread on the linked issue** (surface 4)
+   left by #3160's review. The PR did address the wider form — the catch now
+   branches on error type — so a reply citing the commit went up first. The
+   commenter's diagnosis was sharper than the issue's: the old
+   `blocking.length === 0 → rethrow` escape hatch could never fire under
+   `cascade: true`, because rollback left dependents non-empty every time.
+
+### CI reliability is the sprint's real bottleneck
+
+Three independent intermittent failure modes, all pre-existing, all documented
+with dated evidence this sprint:
+- **#2915** — our own deliberate Bun-segfault repro (`scripts/bun-segfault-repro/`,
+  upstream oven-sh/bun#28415) detonates and bleeds into whatever spec runs next.
+  **Reproduced on clean main at 431ccc50**, where it detonated twice and the
+  built-in panic-retry did not rescue it. The issue's "(main green)" no longer
+  holds. Bleed target is not fixed (hit `runner.spec.ts` here vs
+  `acp-cost-tracking-evidence.spec.ts` before).
+- **#3014** — `server-pool.spec.ts:1885` rate-limiting, 1 fail of 3640. Two
+  branches, two unrelated diffs, same line, same day.
+- **#3018** — ACP load-flake family; `acp-session.spec.ts` runs **24.6s against a
+  5s per-file budget** and logs **"killed 12 dangling processes"** (a teardown
+  leak — likely the *cause* of that family, not another victim).
+
+Cost model: a CI failure escalates an item to high scrutiny and costs a repair
+attempt unless someone proves it innocent, so each detonation burns orchestrator
+time proving innocence. **Not fixed mid-sprint** — CI surgery under time pressure
+is the "accommodating a failure" red flag; all three go to sprint-81 planning with
+options written on the issues.
