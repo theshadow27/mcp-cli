@@ -111,18 +111,25 @@ export class DomainHandlers {
       const { name, cascade } = DomainRemoveParamsSchema.parse(params);
       const domain = this.db.getDomainByName(name);
       if (!domain) {
-        return { found: false, removed: false, dependents: [] } satisfies DomainRemoveResult;
+        return { found: false, removed: false, dependents: [], strandedSenders: 0 } satisfies DomainRemoveResult;
       }
       // `deleteDomain` is the sole decider: it counts dependents and refuses inside the
       // same call. Counting here first and re-deciding would make this a *second* decider,
       // and the two would disagree under concurrency — the event log writes continuously,
       // so a count of 0 here followed by an insert leaves `deleteDomain` throwing, which
       // bypasses the structured refusal this shape exists to produce.
+      //
+      // Both counts are for REPORTING a cascade only, which is why they are taken solely
+      // on that branch: without `cascade` the numbers that reach the operator come off the
+      // refusal, decided inside the transaction.
       const dependents = cascade ? this.db.countDomainDependents(domain.id) : [];
+      // A cascade does not delete these (#3247) — they are another partition's rows. They
+      // are reported so `mcx domain rm --force` can say which replies it just stranded.
+      const stranded = cascade ? this.db.countStampedSenders(domain.name, domain.id) : 0;
       try {
         const removed = this.db.deleteDomain(name, { cascade });
         this.domains.invalidate();
-        return { found: true, removed, dependents } satisfies DomainRemoveResult;
+        return { found: true, removed, dependents, strandedSenders: stranded } satisfies DomainRemoveResult;
       } catch (err) {
         // ONLY the refusal becomes a result. This catch used to re-count dependents on
         // any throw and return the refusal shape whenever the count was non-empty — but
@@ -139,7 +146,12 @@ export class DomainHandlers {
         if (err instanceof DomainHasDependentsError) {
           // Refusal is a result, not an exception: the caller needs the per-table counts
           // to decide, and orphaning a thousand work items over a typo is unrecoverable.
-          return { found: true, removed: false, dependents: err.dependents } satisfies DomainRemoveResult;
+          return {
+            found: true,
+            removed: false,
+            dependents: err.dependents,
+            strandedSenders: err.strandedSenders,
+          } satisfies DomainRemoveResult;
         }
         throw err;
       }

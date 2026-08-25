@@ -85,17 +85,48 @@ export type ClaudeSessionRow = AgentSessionRow;
 export class DomainHasDependentsError extends Error {
   readonly domainName: string;
   readonly dependents: Array<{ table: string; rows: number }>;
+  /**
+   * Cross-domain messages in **other** partitions whose stamped return address names this
+   * domain (#3247). Not a `dependents` entry, because those are rows carrying this
+   * domain's `domain_id` and a cascade deletes them — these are another partition's rows
+   * that merely *mention* the name, and the cascade deliberately leaves them alone.
+   */
+  readonly strandedSenders: number;
 
-  constructor(name: string, dependents: Array<{ table: string; rows: number }>) {
-    const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
-    const total = dependents.reduce((n, d) => n + d.rows, 0);
-    super(
-      `domain "${name}" still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
-    );
+  constructor(name: string, dependents: Array<{ table: string; rows: number }>, strandedSenders = 0) {
+    super(describeDomainRefusal(name, dependents, strandedSenders));
     this.name = "DomainHasDependentsError";
     this.domainName = name;
     this.dependents = dependents;
+    this.strandedSenders = strandedSenders;
   }
+}
+
+/**
+ * The refusal prose for {@link DomainHasDependentsError}, as two independently-omittable
+ * clauses.
+ *
+ * Two, not one interpolated sentence, because the two halves have **different remedies**:
+ * dependent rows go away with `--cascade`, stamped senders do not. A single sentence that
+ * ended "pass cascade to remove them" while cascade left half of them in place is the kind
+ * of confidently-wrong advice `handlers/domain.ts` already had to unwind once (#3180).
+ * With no stranded senders the string is byte-identical to what #3180 shipped.
+ */
+function describeDomainRefusal(name: string, dependents: Array<{ table: string; rows: number }>, stranded: number) {
+  const clauses: string[] = [];
+  if (dependents.length > 0) {
+    const detail = dependents.map((d) => `${d.table}=${d.rows}`).join(", ");
+    const total = dependents.reduce((n, d) => n + d.rows, 0);
+    clauses.push(
+      `still has ${total} dependent row(s) (${detail}); reassign or delete them first, or pass cascade to remove them with the domain`,
+    );
+  }
+  if (stranded > 0) {
+    clauses.push(
+      `is the stamped return address of ${stranded} cross-domain message(s) held in other partitions; removing it leaves their replies unresolvable until a domain is registered under this name again — pass cascade to accept that`,
+    );
+  }
+  return `domain "${name}" ${clauses.join(", and ")}`;
 }
 
 /**
@@ -135,6 +166,19 @@ export class DomainConflictError extends Error {
     this.existing = existing;
   }
 }
+
+/**
+ * SQL predicate: `mail.sender` is `local@?1` with a non-empty local part.
+ *
+ * One definition shared by the rename rewrite and the delete count, because "which rows
+ * name this domain" is a single question and two spellings of it would answer differently
+ * the first time one of them was tweaked — the count would refuse over rows the rewrite
+ * skipped, or the rewrite would touch rows the count never warned about. `?1` is the
+ * domain name in both callers. See {@link StateDb.restampMailSenders} for why this is
+ * `substr` and not `LIKE`.
+ */
+const SENDER_STAMPED_WITH =
+  "length(sender) > length(?1) + 1 AND substr(sender, length(sender) - length(?1)) = '@' || ?1";
 
 export class StateDb {
   private db: Database;
@@ -2361,9 +2405,22 @@ export class StateDb {
    * mattered too: it ran outside the write and reported "failed to rename" if anything
    * touched the row in between, which is a lie about what happened.
    *
-   * A name change and nothing else: `id` is untouched, so every `domain_id` reference
-   * survives, and `path` is untouched, so `which` keeps resolving. That is also why there
-   * is no canonicalization to redo here — rename takes no path.
+   * A name change and nothing else **in the `domains` row**: `id` is untouched, so every
+   * `domain_id` reference survives, and `path` is untouched, so `which` keeps resolving.
+   * That is also why there is no canonicalization to redo here — rename takes no path.
+   *
+   * Mail is the one place a domain's **name** is stored outside this table, so it moves
+   * with the rename (#3247). A cross-domain message's `sender` is stamped `local@name` at
+   * send time — a human-readable return address is the point (`docs/domains.md`) — and a
+   * rename that rewrote only `domains.name` left every one of those stamps pointing at a
+   * name no longer in the table: the reply re-parsed `local@old`, missed, and threw
+   * `unknown domain`. {@link restampMailSenders} rewrites them in **this** transaction, so
+   * the two either both land or neither does. A rename that committed while the restamp
+   * failed would leave mail attributed to a domain that no longer exists, which is exactly
+   * the state this fixes.
+   *
+   * This is a **data** migration, not a schema one: no column, index or table changes, so
+   * it is not a `migrate()` step and carries no version bump.
    */
   renameDomain(oldName: string, newName: string): Domain | null {
     if (!isValidDomainName(newName)) {
@@ -2386,9 +2443,61 @@ export class StateDb {
           )
           .get(newName, existing.id);
         if (!row) throw new Error(`failed to rename domain "${oldName}" to "${newName}"`);
+        // Same transaction as the row above, deliberately — see the docstring. Guarded on
+        // the no-op rename only to skip pointless work; the UPDATE is a no-op there anyway.
+        if (oldName !== newName) this.restampMailSenders(oldName, newName);
         return toDomain(row);
       })
       .immediate();
+  }
+
+  /**
+   * Rewrite every mail `sender` stamped `local@oldName` to `local@newName`.
+   *
+   * Returns the number of rows rewritten. Private: a stamped sender is only ever migrated
+   * as part of a rename, and a public entry point would be a way to rewrite return
+   * addresses to a name no domain holds.
+   *
+   * **Not** scoped to a partition, and not scoped to the renamed domain's own rows: a
+   * stamp for domain `alpha` lives in the *recipient's* partition by construction
+   * (`resolveDelivery` writes the row into the recipient's domain), so scoping this to
+   * `alpha` would rewrite exactly the rows that do not exist and miss every row that does.
+   *
+   * The suffix test is `substr`, **not** `LIKE '%@' || ?`. A domain name may contain `_`
+   * (`isValidDomainName`), and `_` is a single-character wildcard in LIKE — so renaming
+   * `alpha_b` would also restamp senders from a domain called `alphaXb`, silently
+   * redirecting a third party's replies. The `length(sender) > length(?1) + 1` guard keeps
+   * a pathological `"@alpha"` (empty local part, unreachable via `parseMailAddress` but
+   * possible in a row written before #3038) from being rewritten into another `"@name"`.
+   */
+  private restampMailSenders(oldName: string, newName: string): number {
+    return this.db.run(
+      `UPDATE mail SET sender = substr(sender, 1, length(sender) - length(?1) - 1) || '@' || ?2
+        WHERE ${SENDER_STAMPED_WITH}`,
+      [oldName, newName],
+    ).changes;
+  }
+
+  /**
+   * How many mail rows **outside** `exceptDomainId` carry a return address stamped with
+   * `name` (#3247)?
+   *
+   * The other half of the rename fix, for the operation a rename cannot help: `rm`. These
+   * rows are not `countDomainDependents` dependents — they carry another domain's
+   * `domain_id` — so nothing counted them, and removing a domain that had sent
+   * cross-domain mail silently stranded every reply to it.
+   *
+   * `exceptDomainId` excludes the domain's own partition: those rows ARE dependents,
+   * they are already counted and already cascaded, and counting them twice would refuse
+   * over rows the cascade handles.
+   */
+  countStampedSenders(name: string, exceptDomainId: number): number {
+    const row = this.db
+      .query<{ n: number }, [string, number]>(
+        `SELECT count(*) AS n FROM mail WHERE domain_id <> ?2 AND ${SENDER_STAMPED_WITH}`,
+      )
+      .get(name, exceptDomainId);
+    return row?.n ?? 0;
   }
 
   /**
@@ -2433,6 +2542,35 @@ export class StateDb {
    * The refusal is a {@link DomainHasDependentsError} carrying the counts it was decided
    * on — every other throw is a real failure. That distinction is the caller's only
    * honest way to tell "refused" from "broke"; see the catch in `handlers/domain.ts`.
+   *
+   * ## Stamped return addresses are a second refusal reason, and cascade does NOT clear them
+   *
+   * A cross-domain message stamps `local@this-domain` into the **recipient's** partition
+   * (#3247), so those rows carry someone else's `domain_id` and `countDomainDependents`
+   * has never seen them. Deleting a domain that had sent cross-domain mail therefore
+   * succeeded silently and left every reply to it throwing `unknown domain`.
+   * {@link countStampedSenders} makes that a refusal too — the operator hears about it
+   * before it is unrecoverable, which is the same argument the dependents refusal is built
+   * on.
+   *
+   * Under `cascade` those rows are deliberately left **exactly as they are**:
+   *
+   * - Deleting them is not an option. They are another domain's inbox. `mcx domain rm
+   *   alpha --force` destroying `beta`'s messages is the partition violation this whole
+   *   epic exists to prevent, and the operator naming `alpha` has said nothing about
+   *   `beta`.
+   * - Stripping the `@alpha` qualifier is worse than leaving it: a bare sender re-parses
+   *   as a mailbox in the *reader's own* domain, so the reply would silently deliver
+   *   somewhere nobody addressed. `mail-domain.ts` refuses to degrade a failed resolution
+   *   into a delivery for exactly this reason.
+   * - A `local@<deleted:alpha>` tombstone buys nothing and costs the recovery. The current
+   *   throw already names the domain and already says `register it with mcx domain add`,
+   *   so provenance is not missing — and re-registering the name is what makes those
+   *   replies work again. A tombstone would make the strand permanent to buy an error
+   *   message that says less.
+   *
+   * So the loud, reversible failure is kept, and the refusal is what turns it into a
+   * choice.
    */
   deleteDomain(name: string, opts?: { cascade?: boolean }): boolean {
     const domain = this.getDomainByName(name);
@@ -2452,8 +2590,12 @@ export class StateDb {
     return this.db
       .transaction(() => {
         const dependents = this.countDomainDependents(domain.id);
-        if (dependents.length > 0 && !opts?.cascade) {
-          throw new DomainHasDependentsError(name, dependents);
+        // Counted inside the transaction for the same reason as `dependents`: a stamp
+        // written by a send that commits between a count and the delete would otherwise be
+        // stranded by a delete that reported nothing to strand.
+        const stranded = this.countStampedSenders(domain.name, domain.id);
+        if ((dependents.length > 0 || stranded > 0) && !opts?.cascade) {
+          throw new DomainHasDependentsError(name, dependents, stranded);
         }
         // A LIVE session row is not project data — it is the daemon's only handle on a
         // running child process. `orphan-reaper` finds children by iterating

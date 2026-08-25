@@ -201,7 +201,7 @@ describe("mcx domain rename", () => {
 
 describe("mcx domain rm", () => {
   test("without --force it asks the daemon NOT to cascade", async () => {
-    const h = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    const h = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
     await cmdDomain(["rm", "phoenix"], h.deps);
     expect(h.calls[0]).toEqual({ method: "domainRemove", params: { name: "phoenix", cascade: false } });
   });
@@ -236,7 +236,7 @@ describe("mcx domain rm", () => {
   });
 
   test("--cascade is accepted as the daemon-side name for --force", async () => {
-    const h = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    const h = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
     await cmdDomain(["rm", "phoenix", "--cascade"], h.deps);
     expect(h.calls[0].params).toEqual({ name: "phoenix", cascade: true });
   });
@@ -247,15 +247,15 @@ describe("mcx domain rm", () => {
     // `-d` and ended every session on the box — because nothing compared the two spellings
     // against each other. Two spellings of one destructive flag need an equality assertion,
     // not two independent ones that can drift apart a commit at a time.
-    const a = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
-    const b = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    const a = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
+    const b = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
     await cmdDomain(["rm", "phoenix", "--force"], a.deps);
     await cmdDomain(["rm", "phoenix", "--cascade"], b.deps);
     expect(a.calls).toEqual(b.calls);
     expect(a.calls[0].params).toEqual({ name: "phoenix", cascade: true });
 
     // ...and both differ from the unflagged form in exactly one field.
-    const c = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+    const c = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
     await cmdDomain(["rm", "phoenix"], c.deps);
     expect(c.calls[0].params).toEqual({ name: "phoenix", cascade: false });
   });
@@ -265,14 +265,14 @@ describe("mcx domain rm", () => {
     // leaves a destructive default in place, because parseFlags rejects what it was not
     // told about and the command exits before reaching the daemon.
     for (const flag of ["--scoped", "--all", "-a"]) {
-      const h = harness({ domainRemove: { found: true, removed: true, dependents: [] } });
+      const h = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
       await expect(cmdDomain(["rm", "phoenix", flag], h.deps)).rejects.toThrow(ExitError);
       expect(h.calls).toEqual([]);
     }
   });
 
   test("unknown domain exits non-zero", async () => {
-    const h = harness({ domainRemove: { found: false, removed: false, dependents: [] } });
+    const h = harness({ domainRemove: { found: false, removed: false, dependents: [], strandedSenders: 0 } });
     await expect(cmdDomain(["rm", "ghost"], h.deps)).rejects.toThrow(ExitError);
     expect(allErrors(h)).toContain('No domain named "ghost"');
   });
@@ -385,7 +385,9 @@ describe("--help never executes the command (#3160 review finding 8, repo-wide: 
   test("rm --force --help does NOT cascade-delete", async () => {
     // The exact shape an operator produces by appending --help to a destructive command
     // they were about to run. Before the gate this reached the daemon with cascade: true.
-    const h = harness({ domainRemove: { found: true, removed: true, dependents: [{ table: "mail", rows: 9 }] } });
+    const h = harness({
+      domainRemove: { found: true, removed: true, dependents: [{ table: "mail", rows: 9 }], strandedSenders: 0 },
+    });
     await cmdDomain(["rm", "phoenix", "--force", "--help"], h.deps);
     expect(h.calls).toEqual([]);
   });
@@ -399,7 +401,7 @@ describe("--help never executes the command (#3160 review finding 8, repo-wide: 
 
 describe("mcx domain rm — concurrent-delete race (#3160 review finding 6)", () => {
   test("removed:false with no dependents is reported as a race, not a 0-row refusal", async () => {
-    const h = harness({ domainRemove: { found: true, removed: false, dependents: [] } });
+    const h = harness({ domainRemove: { found: true, removed: false, dependents: [], strandedSenders: 0 } });
     await expect(cmdDomain(["rm", "phoenix"], h.deps)).rejects.toThrow(ExitError);
     const errors = allErrors(h);
     expect(errors).toContain("removed by something else");
@@ -410,12 +412,41 @@ describe("mcx domain rm — concurrent-delete race (#3160 review finding 6)", ()
 
   test("a real refusal still names the counts and the domain_id caveat", async () => {
     const h = harness({
-      domainRemove: { found: true, removed: false, dependents: [{ table: "work_items", rows: 7 }] },
+      domainRemove: { found: true, removed: false, dependents: [{ table: "work_items", rows: 7 }], strandedSenders: 0 },
     });
     await expect(cmdDomain(["rm", "phoenix"], h.deps)).rejects.toThrow(ExitError);
     const errors = allErrors(h);
     expect(errors).toContain("7 dependent row(s)");
     expect(errors).toContain("#3155");
+  });
+});
+
+describe("mcx domain rm — stamped return addresses in other domains (#3247)", () => {
+  test("a refusal with ONLY stranded senders is not mistaken for a concurrent delete", async () => {
+    // `dependents` is empty here because those rows carry ANOTHER domain's domain_id. The
+    // race branch keys on that emptiness, so before this it announced the domain had been
+    // "removed by something else" while it was still sitting in the table.
+    const h = harness({ domainRemove: { found: true, removed: false, dependents: [], strandedSenders: 2 } });
+    await expect(cmdDomain(["rm", "phoenix"], h.deps)).rejects.toThrow(ExitError);
+    const errors = allErrors(h);
+    expect(errors).not.toContain("removed by something else");
+    expect(errors).toContain('2 cross-domain message(s) in other domains use "phoenix" as their return address');
+    // The remedy differs from the per-table one: --force does NOT clear these.
+    expect(errors).toContain("--force leaves those messages in place");
+  });
+
+  test("--force says out loud which replies it stranded", async () => {
+    const h = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 4 } });
+    await cmdDomain(["rm", "phoenix", "--force"], h.deps);
+    const errors = allErrors(h);
+    expect(errors).toContain('Domain "phoenix" removed');
+    expect(errors).toContain('4 cross-domain message(s) in other domains still name "phoenix"');
+  });
+
+  test("a clean removal says nothing about stranded senders", async () => {
+    const h = harness({ domainRemove: { found: true, removed: true, dependents: [], strandedSenders: 0 } });
+    await cmdDomain(["rm", "phoenix", "--force"], h.deps);
+    expect(allErrors(h)).not.toContain("return address");
   });
 });
 
