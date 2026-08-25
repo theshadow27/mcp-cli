@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
-import { _restoreOptions, options } from "@mcp-cli/core";
+import type { CheckForUpdateDeps, FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
+import { _restoreOptions, options, readInstallMarker } from "@mcp-cli/core";
 import { cmdUpgrade, parseUpgradeArgs } from "./upgrade";
 
 describe("parseUpgradeArgs", () => {
@@ -39,13 +39,15 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   const defaults = {
     version: "1.0.0",
     fetch: (() => Promise.resolve(new Response("", { status: 200 }))) as unknown as typeof fetch,
-    checkForUpdate: (_v: string, _d?: Partial<FetchReleaseDeps & { skipCache: boolean }>): Promise<UpdateCheckResult> =>
+    checkForUpdate: (_v: string, _d?: CheckForUpdateDeps): Promise<UpdateCheckResult> =>
       Promise.resolve({
         current: "1.0.0",
         latest: "1.0.0",
         updateAvailable: false,
         asset: "mcx-darwin-arm64.tar.gz",
-        devBuild: false,
+        // A release install proven by an install marker — the only state that
+        // may be reported as a flat "up to date" (#3260).
+        provenance: "release",
       }),
     fetchLatestRelease: (_d?: Partial<FetchReleaseDeps>): Promise<ReleaseInfo> =>
       Promise.resolve({
@@ -79,7 +81,7 @@ describe("cmdUpgrade --check", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
     });
     await cmdUpgrade(["--check"], deps);
@@ -95,7 +97,7 @@ describe("cmdUpgrade --check", () => {
     expect(parsed.updateAvailable).toBe(false);
   });
 
-  test("reports a dev build honestly instead of claiming up to date (#3232)", async () => {
+  test("reports a local build honestly instead of claiming up to date (#3232)", async () => {
     const { deps, logs } = makeDeps({
       version: "1.14.6+1787442054",
       checkForUpdate: () =>
@@ -104,12 +106,52 @@ describe("cmdUpgrade --check", () => {
           latest: "1.14.6",
           updateAvailable: false,
           asset: "mcx-linux-x64.tar.gz",
-          devBuild: true,
+          provenance: "dev",
         }),
     });
     await cmdUpgrade(["--check"], deps);
-    expect(logs.some((l) => l.includes("dev build"))).toBe(true);
+    expect(logs.some((l) => l.includes("local build"))).toBe(true);
     expect(logs.some((l) => l.includes("Up to date"))).toBe(false);
+  });
+
+  test("an unverifiable build is reported as unconfirmed, not as a dev build (#3260)", async () => {
+    // The #3260 regression: a genuine release install carries +epoch like
+    // every compiled binary, so an unprovable state must not be asserted as
+    // "dev build" — nor silently as "Up to date".
+    const { deps, logs } = makeDeps({
+      version: "2.0.0+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "2.0.0+1787442054",
+          latest: "2.0.0",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          provenance: "unknown",
+        }),
+    });
+    await cmdUpgrade(["--check"], deps);
+    expect(logs.some((l) => l.includes("cannot confirm"))).toBe(true);
+    // It may name "a local build" as one of the possibilities, but must never
+    // assert the binary *is* one — that assertion is the #3260 defect.
+    expect(logs.some((l) => l.includes("You are running a local build"))).toBe(false);
+    expect(logs.some((l) => l.includes("Up to date"))).toBe(false);
+  });
+
+  test("reports a marker-proven release install as up to date (#3260)", async () => {
+    const { deps, logs } = makeDeps({
+      version: "2.0.0+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "2.0.0+1787442054",
+          latest: "2.0.0",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          provenance: "release",
+        }),
+    });
+    await cmdUpgrade(["--check"], deps);
+    expect(logs.some((l) => l.includes("Up to date"))).toBe(true);
+    expect(logs.some((l) => l.includes("dev build"))).toBe(false);
   });
 });
 
@@ -124,7 +166,7 @@ describe("cmdUpgrade (install)", () => {
     expect(logs.some((l) => l.includes("Already up to date"))).toBe(true);
   });
 
-  test("reports a dev build honestly instead of 'Already up to date' (#3232)", async () => {
+  test("reports a local build honestly instead of 'Already up to date' (#3232)", async () => {
     const { deps, logs } = makeDeps({
       version: "1.14.6+1787442054",
       checkForUpdate: () =>
@@ -133,15 +175,15 @@ describe("cmdUpgrade (install)", () => {
           latest: "1.14.6",
           updateAvailable: false,
           asset: "mcx-linux-x64.tar.gz",
-          devBuild: true,
+          provenance: "dev",
         }),
     });
     await cmdUpgrade(["--yes"], deps);
-    expect(logs.some((l) => l.includes("dev build"))).toBe(true);
+    expect(logs.some((l) => l.includes("local build"))).toBe(true);
     expect(logs.some((l) => l.includes("Already up to date"))).toBe(false);
   });
 
-  test("outputs JSON status dev_build for a dev build (#3232)", async () => {
+  test("outputs JSON status dev_build for a local build (#3232)", async () => {
     const { deps, logs } = makeDeps({
       version: "1.14.6+1787442054",
       checkForUpdate: () =>
@@ -150,13 +192,30 @@ describe("cmdUpgrade (install)", () => {
           latest: "1.14.6",
           updateAvailable: false,
           asset: "mcx-linux-x64.tar.gz",
-          devBuild: true,
+          provenance: "dev",
         }),
     });
     await cmdUpgrade(["--yes", "--json"], deps);
     const parsed = JSON.parse(logs[0]);
     expect(parsed.status).toBe("dev_build");
     expect(parsed.version).toBe("1.14.6+1787442054");
+  });
+
+  test("outputs JSON status unverified_build when provenance is unknown (#3260)", async () => {
+    const { deps, logs } = makeDeps({
+      version: "2.0.0+1787442054",
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "2.0.0+1787442054",
+          latest: "2.0.0",
+          updateAvailable: false,
+          asset: "mcx-linux-x64.tar.gz",
+          provenance: "unknown",
+        }),
+    });
+    await cmdUpgrade(["--yes", "--json"], deps);
+    const parsed = JSON.parse(logs[0]);
+    expect(parsed.status).toBe("unverified_build");
   });
 
   test("returns early when user declines confirmation", async () => {
@@ -167,7 +226,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       confirm: () => Promise.resolve(false),
     });
@@ -184,7 +243,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: null,
-          devBuild: false,
+          provenance: "unknown",
         }),
     });
     await cmdUpgrade(["--yes"], deps);
@@ -207,7 +266,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetchLatestRelease: () =>
         Promise.resolve({
@@ -228,7 +287,7 @@ describe("cmdUpgrade (install)", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetch: (() => Promise.resolve(new Response("error", { status: 500 }))) as unknown as typeof fetch,
     });
@@ -319,7 +378,7 @@ describe("cmdUpgrade full flow", () => {
       latest: "2.0.0",
       updateAvailable: true,
       asset: "mcx-darwin-arm64.tar.gz",
-      devBuild: false,
+      provenance: "unknown",
     };
 
     const logs: string[] = [];
@@ -372,6 +431,20 @@ describe("cmdUpgrade full flow", () => {
 
     // Stage dir should be cleaned up
     expect(existsSync(join(options.MCP_CLI_DIR, "staged"))).toBe(false);
+
+    // Install provenance is recorded (#3260) — this is what lets the *next*
+    // `mcx upgrade --check` say "up to date" instead of guessing from the
+    // `+epoch` suffix that every compiled binary carries. Both the versioned
+    // copy and the $PATH-facing copy are covered, since either may be run.
+    const marker = readInstallMarker();
+    expect(marker?.version).toBe("2.0.0");
+    expect(marker?.source).toBe("mcx-upgrade");
+    const markedPaths = marker?.binaries.map((b) => b.path) ?? [];
+    expect(markedPaths).toContain(target);
+    expect(markedPaths).toContain(join(versionDir("2.0.0"), "mcx"));
+    // Sizes describe the installed bytes, so a later overwrite stops matching.
+    const markedTarget = marker?.binaries.find((b) => b.path === target);
+    expect(markedTarget?.size).toBe(statSync(target).size);
   });
 
   test("outputs JSON on successful upgrade, including install locations", async () => {
@@ -388,7 +461,7 @@ describe("cmdUpgrade full flow", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetchLatestRelease: () =>
         Promise.resolve({
@@ -433,7 +506,7 @@ describe("cmdUpgrade full flow", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetchLatestRelease: () =>
         Promise.resolve({
@@ -472,7 +545,7 @@ describe("cmdUpgrade full flow", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetchLatestRelease: () =>
         Promise.resolve({
@@ -505,7 +578,7 @@ describe("cmdUpgrade full flow", () => {
           latest: "2.0.0",
           updateAvailable: true,
           asset: "mcx-darwin-arm64.tar.gz",
-          devBuild: false,
+          provenance: "unknown",
         }),
       fetchLatestRelease: () =>
         Promise.resolve({

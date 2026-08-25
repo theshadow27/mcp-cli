@@ -4,12 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "./constants";
 import {
+  type InstallMarker,
+  type ProvenanceInput,
   checkForUpdate,
   compareVersions,
+  currentExecutable,
   fetchLatestRelease,
+  installMarkerPath,
   readCheckCache,
+  readInstallMarker,
+  resolveProvenance,
   selectAsset,
   writeCheckCache,
+  writeInstallMarker,
 } from "./upgrade";
 
 describe("compareVersions", () => {
@@ -173,35 +180,48 @@ describe("checkForUpdate", () => {
     expect(result.updateAvailable).toBe(true);
     expect(result.latest).toBe("2.0.0");
     expect(result.current).toBe("1.0.0");
-    expect(result.devBuild).toBe(false);
   });
 
   test("detects already up to date", async () => {
     const result = await checkForUpdate("2.0.0", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     expect(result.updateAvailable).toBe(false);
-    expect(result.devBuild).toBe(false);
   });
 
-  test("flags a dev build at the same core version as devBuild, not up to date silently", async () => {
-    // Regression for #3232: a compiled binary's BUILD_VERSION always carries
-    // a +epoch suffix (scripts/build.ts), so `2.0.0+1787442054` against
-    // release `2.0.0` must never be indistinguishable from a confirmed
-    // up-to-date install.
+  test("an unmarked +epoch build at the release version reports unknown, never a dev build (#3260)", async () => {
+    // Regression for #3260: `2.0.0+1787442054` is what an official release
+    // artifact's BUILD_VERSION looks like — scripts/build.ts stamps +epoch on
+    // every compiled binary, release CI included. With no install marker we
+    // cannot tell it from a local build of the same version, and "unknown" is
+    // the only true answer; the old code asserted "dev build" here.
     const result = await checkForUpdate("2.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     expect(result.updateAvailable).toBe(false);
-    expect(result.devBuild).toBe(true);
+    expect(result.provenance).toBe("unknown");
   });
 
-  test("a dev build behind the latest release still reports a real update, not devBuild", async () => {
+  test("reads provenance from an install marker covering the running executable (#3260)", async () => {
+    // End-to-end over real disk: marker + statSync + realpath, no injection.
+    writeInstallMarker("2.0.0", "install.sh", [process.execPath]);
+    const result = await checkForUpdate("2.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
+    expect(result.updateAvailable).toBe(false);
+    expect(result.provenance).toBe("release");
+  });
+
+  test("a build behind the latest release still reports a real update", async () => {
     const result = await checkForUpdate("1.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     expect(result.updateAvailable).toBe(true);
-    expect(result.devBuild).toBe(false);
   });
 
-  test("a -dev prerelease build is never mistaken for a confirmed devBuild state (already flagged via updateAvailable)", async () => {
+  test("a -dev prerelease build reports both an available update and dev provenance", async () => {
     const result = await checkForUpdate("2.0.0-dev", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     expect(result.updateAvailable).toBe(true);
-    expect(result.devBuild).toBe(false);
+    expect(result.provenance).toBe("dev");
+  });
+
+  test("provenance is resolved against the cached latest version too", async () => {
+    writeCheckCache("3.0.0");
+    const result = await checkForUpdate("2.0.0+1787442054", { fetch: mockFetch(RELEASE_BODY) });
+    expect(result.latest).toBe("3.0.0");
+    expect(result.provenance).toBe("unknown");
   });
 
   test("uses cache when fresh", async () => {
@@ -228,5 +248,138 @@ describe("checkForUpdate", () => {
     await checkForUpdate("1.0.0", { fetch: mockFetch(RELEASE_BODY), skipCache: true });
     const cached = readCheckCache();
     expect(cached?.latest).toBe("2.0.0");
+  });
+});
+
+describe("resolveProvenance", () => {
+  const exe = { paths: ["/home/u/.mcp-cli/bin/mcx"], size: 1000 };
+  const marker: InstallMarker = {
+    version: "2.0.0",
+    installedAt: 1787442054,
+    source: "install.sh",
+    binaries: [{ path: "/home/u/.mcp-cli/bin/mcx", size: 1000 }],
+  };
+  const input = (over: Partial<ProvenanceInput> = {}): ProvenanceInput => ({
+    current: "2.0.0+1787442054",
+    latest: "2.0.0",
+    commit: "abc123def456",
+    marker: null,
+    exe: null,
+    ...over,
+  });
+
+  test("a marker covering the running executable proves a release install", () => {
+    expect(resolveProvenance(input({ marker, exe }))).toBe("release");
+  });
+
+  test("an unmarked +epoch binary at the release version is unknown, not dev (#3260)", () => {
+    // The whole point of the issue: every release artifact carries +epoch, so
+    // this state must not be reported as a dev build.
+    expect(resolveProvenance(input())).toBe("unknown");
+  });
+
+  test("a marker for a different version does not vouch for this binary", () => {
+    expect(resolveProvenance(input({ current: "2.1.0+1787442054", marker, exe, latest: "2.1.0" }))).toBe("unknown");
+  });
+
+  test("a marker for a different path does not vouch for this binary", () => {
+    expect(resolveProvenance(input({ marker, exe: { paths: ["/usr/local/bin/mcx"], size: 1000 } }))).toBe("unknown");
+  });
+
+  test("a size mismatch means the installed file was overwritten since", () => {
+    // e.g. a `bun build` output copied over ~/.mcp-cli/bin/mcx — the marker
+    // attests to installed bytes, not merely to a path once written.
+    expect(resolveProvenance(input({ marker, exe: { paths: exe.paths, size: 2000 } }))).toBe("unknown");
+  });
+
+  test("matches an executable reached through a symlinked path", () => {
+    const viaSymlink = { paths: ["/home/link/bin/mcx", "/home/u/.mcp-cli/bin/mcx"], size: 1000 };
+    expect(resolveProvenance(input({ marker, exe: viaSymlink }))).toBe("release");
+  });
+
+  test("a dirty-tree build commit is provably not a release artifact", () => {
+    expect(resolveProvenance(input({ commit: "abc123def456-dirty" }))).toBe("dev");
+  });
+
+  test("an unverifiable dirty probe is treated as dev, not assumed clean", () => {
+    expect(resolveProvenance(input({ commit: "abc123def456-unknown" }))).toBe("dev");
+  });
+
+  test("a -dev prerelease build is a dev build", () => {
+    expect(resolveProvenance(input({ current: "2.0.0-dev", commit: null }))).toBe("dev");
+  });
+
+  test("a version ahead of every release cannot be an installed release", () => {
+    expect(resolveProvenance(input({ current: "2.1.0+1787442054", latest: "2.0.0" }))).toBe("dev");
+  });
+
+  test("a marker outranks a dirty commit stamp for the exact installed bytes", () => {
+    expect(resolveProvenance(input({ marker, exe, commit: "abc123def456-dirty" }))).toBe("release");
+  });
+
+  test("an unstamped binary (no BUILD_COMMIT) is unknown, not dev", () => {
+    expect(resolveProvenance(input({ commit: null }))).toBe("unknown");
+  });
+});
+
+describe("install marker", () => {
+  let origDir: string;
+
+  beforeEach(() => {
+    origDir = options.MCP_CLI_DIR;
+    const tmp = join(tmpdir(), `mcp-cli-marker-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmp, { recursive: true });
+    options.MCP_CLI_DIR = tmp;
+  });
+
+  afterEach(() => {
+    options.MCP_CLI_DIR = origDir;
+  });
+
+  test("round-trips version, source and stat'd sizes", () => {
+    const binPath = join(options.MCP_CLI_DIR, "mcx-fake");
+    writeFileSync(binPath, "0123456789", "utf-8");
+
+    writeInstallMarker("v2.0.0", "mcx-upgrade", [binPath]);
+
+    const marker = readInstallMarker();
+    expect(marker?.version).toBe("2.0.0"); // leading v stripped
+    expect(marker?.source).toBe("mcx-upgrade");
+    expect(marker?.binaries).toEqual([{ path: binPath, size: 10 }]);
+  });
+
+  test("skips paths that don't exist rather than failing the install", () => {
+    writeInstallMarker("2.0.0", "mcx-upgrade", [join(options.MCP_CLI_DIR, "absent")]);
+    expect(readInstallMarker()?.binaries).toEqual([]);
+  });
+
+  test("returns null when no marker is present", () => {
+    expect(readInstallMarker()).toBeNull();
+  });
+
+  test("returns null on a corrupt marker instead of throwing", () => {
+    const path = installMarkerPath();
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "{not json", "utf-8");
+    expect(readInstallMarker()).toBeNull();
+  });
+
+  test("returns null on a well-formed but wrong-shaped marker", () => {
+    const path = installMarkerPath();
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, JSON.stringify({ version: 2 }), "utf-8");
+    expect(readInstallMarker()).toBeNull();
+  });
+});
+
+describe("currentExecutable", () => {
+  test("reports the running executable's size", () => {
+    const exe = currentExecutable();
+    expect(exe?.paths).toContain(process.execPath);
+    expect(exe?.size).toBeGreaterThan(0);
+  });
+
+  test("returns null for a path that doesn't exist", () => {
+    expect(currentExecutable(join(tmpdir(), "definitely-not-a-binary-3260"))).toBeNull();
   });
 });

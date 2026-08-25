@@ -73,6 +73,44 @@ if [ "$OS" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
   done
 fi
 
+# Record install provenance (#3260), read back by `mcx upgrade --check`.
+# Every compiled binary carries a `+epoch` BUILD_VERSION stamp, release
+# artifacts included, so a binary cannot tell from its own version whether it
+# arrived from an official release — only the installer knows, so it writes it
+# down. Sizes use `wc -c`, matching the reader's statSync().size, and are taken
+# AFTER codesign, which rewrites the binaries on macOS.
+# Schema mirrors InstallMarker in packages/core/src/upgrade.ts; the reader
+# looks under $HOME/.mcp-cli/bin, so a custom MCP_CLI_INSTALL_DIR simply
+# leaves provenance unverifiable ("unknown") rather than wrong.
+#
+# Advisory, exactly as on the `mcx upgrade` side: a marker we fail to write
+# costs a "release" verdict on the next --check, never the install itself. The
+# script runs under `set -e`, so this is guarded — the binaries are already in
+# place by now, and aborting here would turn a good install into a failed one.
+# Staged through a temp file so a partial write never becomes the marker; a
+# marker that is missing, truncated or unparseable reads back as "unknown",
+# which is the honest answer, and never as "release".
+record_provenance() {
+  mkdir -p "$INSTALL_DIR/versions" || return 1
+  tmp="$INSTALL_DIR/versions/.installed.tmp.$$"
+  {
+    printf '{"version":"%s","installedAt":%s,"source":"install.sh","binaries":[' "${VERSION#v}" "$(date +%s)"
+    sep=""
+    for bin in mcx mcpd mcpctl; do
+      [ -f "$INSTALL_DIR/$bin" ] || continue
+      size=$(wc -c < "$INSTALL_DIR/$bin" | tr -d ' ')
+      printf '%s{"path":"%s","size":%s}' "$sep" "$INSTALL_DIR/$bin" "$size"
+      sep=","
+    done
+    printf ']}\n'
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$INSTALL_DIR/versions/.installed" || { rm -f "$tmp"; return 1; }
+}
+
+if ! record_provenance; then
+  echo "Warning: could not record install provenance; 'mcx upgrade --check' will report this build as unverified." >&2
+fi
+
 echo "Installed mcx, mcpd, mcpctl to $INSTALL_DIR"
 
 # Add install dir to PATH in shell rc files if not already present

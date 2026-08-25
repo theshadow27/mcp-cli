@@ -39,6 +39,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, rmSync, sta
 import { basename, join } from "node:path";
 import { BUILD_VERSION, options } from "@mcp-cli/core";
 import {
+  type BuildProvenance,
+  type CheckForUpdateDeps,
   type FetchReleaseDeps,
   type ReleaseInfo,
   type UpdateCheckResult,
@@ -46,16 +48,14 @@ import {
   fetchLatestRelease,
   selectAsset,
   writeCheckCache,
+  writeInstallMarker,
 } from "@mcp-cli/core";
 
 export interface UpgradeDeps {
   /** Current binary's version — must carry build metadata (BUILD_VERSION), not the bare package version. */
   version: string;
   fetch: typeof globalThis.fetch;
-  checkForUpdate: (
-    version: string,
-    deps?: Partial<FetchReleaseDeps & { skipCache: boolean }>,
-  ) => Promise<UpdateCheckResult>;
+  checkForUpdate: (version: string, deps?: CheckForUpdateDeps) => Promise<UpdateCheckResult>;
   fetchLatestRelease: (deps?: Partial<FetchReleaseDeps>) => Promise<ReleaseInfo>;
   selectAsset: (platform?: string, arch?: string) => string | null;
   confirm: (message: string) => Promise<boolean>;
@@ -122,16 +122,36 @@ async function runCheck(d: UpgradeDeps, json: boolean): Promise<void> {
   if (result.updateAvailable) {
     d.log(`Update available: ${result.current} → ${result.latest}`);
     d.log(`Run 'mcx upgrade' to install.`);
-  } else if (result.devBuild) {
-    d.log(devBuildMessage(result));
   } else {
-    d.log(`Up to date (${result.current})`);
+    d.log(noUpdateMessage(result));
   }
 }
 
-/** Honest status line for a dev/local build at (or ahead of) the latest release's version number. */
-function devBuildMessage(result: UpdateCheckResult): string {
-  return `You are running a dev build (${result.current}) — newer than the latest release (${result.latest}). No release upgrade is available; this is expected for a locally built binary and is not the same as an installed release.`;
+/** `--json` status for each "no newer release" provenance state. */
+const NO_UPDATE_STATUS: Record<BuildProvenance, string> = {
+  release: "up_to_date",
+  dev: "dev_build",
+  unknown: "unverified_build",
+};
+
+/**
+ * Status line for "no newer release to install", worded by what we can
+ * actually prove about this binary (#3260).
+ *
+ * The `dev` and `unknown` states are deliberately distinct. Saying "you are
+ * running a dev build" when we merely can't prove otherwise is the exact
+ * false claim #3260 filed — every release binary carries `+epoch`, so the old
+ * `+`-detection told genuine release installs they were dev builds.
+ */
+function noUpdateMessage(result: UpdateCheckResult, alreadyUpToDate = false): string {
+  switch (result.provenance) {
+    case "release":
+      return alreadyUpToDate ? `Already up to date (${result.current})` : `Up to date (${result.current})`;
+    case "dev":
+      return `You are running a local build (${result.current}), not an installed release. The latest release is ${result.latest}; no release upgrade is available.`;
+    case "unknown":
+      return `No newer release available (running ${result.current}, latest release is ${result.latest}). This binary carries no install record, so mcx cannot confirm whether it is the official ${result.latest} release or a local build of the same version. Re-running the release installer records one.`;
+  }
 }
 
 async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
@@ -149,15 +169,15 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
     if (parsed.json) {
       d.log(
         JSON.stringify(
-          { status: result.devBuild ? "dev_build" : "up_to_date", version: result.current, latest: result.latest },
+          { status: NO_UPDATE_STATUS[result.provenance], version: result.current, latest: result.latest },
           null,
           2,
         ),
       );
-    } else if (result.devBuild) {
-      d.log(devBuildMessage(result));
     } else {
-      d.log(`Already up to date (${result.current})`);
+      // `mcx upgrade` was asked to install, so a proven-current install reads
+      // as "Already up to date"; `--check` just reports the state.
+      d.log(noUpdateMessage(result, true));
     }
     return;
   }
@@ -331,6 +351,24 @@ async function runUpgrade(d: UpgradeDeps, parsed: ParsedArgs): Promise<void> {
   }
 
   cleanup(stageDir);
+
+  // Record install provenance (#3260). The installer is the only party that
+  // knows these bytes came from an official release — BUILD_VERSION's `+epoch`
+  // is stamped on every compiled binary, dev builds included, so a binary
+  // cannot work this out about itself. Both the versioned copies and the
+  // $PATH-facing ones are recorded, since either may be the one that runs.
+  // Advisory: a failure here costs a "release" verdict on the next --check,
+  // never the install itself, so it must not fail an otherwise-good upgrade.
+  try {
+    writeInstallMarker(release.version, "mcx-upgrade", [
+      ...toInstall.map(([, versionedPath]) => versionedPath),
+      ...installed.map(({ target }) => target),
+    ]);
+  } catch (err) {
+    d.error(
+      `Warning: could not record install provenance: ${err instanceof Error ? err.message : String(err)} — 'mcx upgrade --check' will report this build as unverified.`,
+    );
+  }
 
   // Invalidate update-check cache so --check reflects new version
   writeCheckCache(result.latest);
