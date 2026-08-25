@@ -1,11 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
   type Domain,
   NO_DOMAIN_ID,
   canonicalizeDomainPath,
+  canonicalizeExistingDomainPath,
   expandLocalDomainPath,
   formatDomainLocation,
   isDomainScoped,
@@ -266,6 +267,79 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
 
   test("still refuses a relative path", () => {
     expect(() => canonicalizeDomainPath("relative/path")).toThrow(/must be absolute/);
+  });
+});
+
+describe("canonicalizeExistingDomainPath — the registration-time rule (#3210)", () => {
+  const made: string[] = [];
+  afterAll(() => {
+    for (const p of made) {
+      try {
+        rmSync(p, { recursive: true, force: true });
+        // dotw-ignore test-empty-catch: best-effort cleanup
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  test("refuses a path that does not exist, where the lexical degradation would happen", () => {
+    // The exact input `canonicalizeDomainPath` answers with a *lexical* join — an answer
+    // that is only true until the missing segments appear.
+    expect(() => canonicalizeExistingDomainPath("/definitely/not/here/xyz")).toThrow(/does not exist/);
+  });
+
+  test("accepts an existing path and resolves it, so the answer cannot change later", () => {
+    const real = mkdtempSync(join(tmpdir(), "mcx-domain-exists-"));
+    made.push(real);
+    mkdirSync(join(real, "sub"));
+    const link = join(tmpdir(), `mcx-domain-exists-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    symlinkSync(real, link);
+    try {
+      // Both spellings collapse to the same fully-resolved path — nothing lexical is left
+      // in the answer, which is the whole reason existence is required.
+      expect(canonicalizeExistingDomainPath(join(link, "sub"))).toBe(join(realpathSync(real), "sub"));
+      expect(canonicalizeExistingDomainPath(join(real, "sub"))).toBe(join(realpathSync(real), "sub"));
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  test("this is the drift #3210 describes: the two spellings agree only once the path exists", () => {
+    const real = mkdtempSync(join(tmpdir(), "mcx-domain-drift-"));
+    made.push(real);
+    const link = join(tmpdir(), `mcx-domain-drift-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const viaLink = join(link, "sub");
+
+    // Before the path exists, the tolerant form answers with the un-resolved spelling...
+    expect(canonicalizeDomainPath(viaLink)).toBe(viaLink);
+    expect(() => canonicalizeExistingDomainPath(viaLink)).toThrow(/does not exist/);
+
+    mkdirSync(join(real, "sub"));
+    symlinkSync(real, link);
+    made.push(link);
+    try {
+      // ...and afterwards with a different one. A row stored before this moment no longer
+      // matches what a lookup computes now — `ls` shows it, `which` cannot find it.
+      expect(canonicalizeDomainPath(viaLink)).toBe(join(realpathSync(real), "sub"));
+      expect(canonicalizeDomainPath(viaLink)).not.toBe(viaLink);
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  test("a relative path is still refused first — absoluteness is not existence", () => {
+    expect(() => canonicalizeExistingDomainPath("relative/path")).toThrow(/must be absolute/);
+  });
+
+  test("an existing FILE is accepted: a fully resolved realpath is the whole invariant", () => {
+    // Deliberately not a directory check. Requiring one would be a separate policy about
+    // what a domain may be bound to, and it is not what closes the drift class.
+    const real = mkdtempSync(join(tmpdir(), "mcx-domain-file-"));
+    made.push(real);
+    const file = join(real, "a-file");
+    writeFileSync(file, "");
+    expect(canonicalizeExistingDomainPath(file)).toBe(join(realpathSync(real), "a-file"));
   });
 });
 

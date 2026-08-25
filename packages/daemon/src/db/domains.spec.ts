@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
-import { DomainHasDependentsError, StateDb } from "./state";
+import { DomainConflictError, DomainHasDependentsError, StateDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 const repoRoot = resolve(import.meta.dir, "../../../..");
@@ -304,10 +304,12 @@ describe("domain schema", () => {
       expect(state.getDomainByName("nope")).toBeNull();
       expect(state.listDomains().map((d) => d.name)).toEqual(["phoenix", "work"]);
 
-      expect(state.renameDomain("phoenix", "octovalve")).toBe(true);
+      // The renamed row comes back from the transaction that wrote it (#3210), so the
+      // caller never re-reads a database that has moved since.
+      expect(state.renameDomain("phoenix", "octovalve")?.id).toBe(phoenix.id);
       expect(state.getDomainByName("phoenix")).toBeNull();
       expect(state.getDomainByName("octovalve")?.id).toBe(phoenix.id);
-      expect(state.renameDomain("ghost", "x")).toBe(false);
+      expect(state.renameDomain("ghost", "x")).toBeNull();
 
       expect(state.deleteDomain("octovalve")).toBe(true);
       expect(state.deleteDomain("octovalve")).toBe(false);
@@ -696,6 +698,174 @@ describe("domain schema", () => {
       // row as a violation of a constraint the database had already let through.
       raw.run("INSERT INTO mail (sender, recipient, domain_id, reply_to) VALUES ('a','b',0,999999)");
       expect(raw.query<{ table: string }, []>("PRAGMA foreign_key_check").all()).toEqual([]);
+    });
+  });
+
+  /**
+   * #3210. The collision check and the write used to be two steps in `handlers/domain.ts`,
+   * so two writers could both pass the check and the loser got a bare
+   * `SQLITE_CONSTRAINT_UNIQUE` — the raw error the check exists to replace.
+   */
+  describe("a registration collision is decided inside the write (#3210)", () => {
+    test("a duplicate name is a typed refusal that names where the existing domain lives", () => {
+      const state = createStateDb();
+      state.createDomain("phoenix", "/srv/phoenix");
+
+      try {
+        state.createDomain("phoenix", "/srv/other");
+        expect.unreachable("should have thrown DomainConflictError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(DomainConflictError);
+        const conflict = err as DomainConflictError;
+        expect(conflict.conflict).toBe("name");
+        // The conflicting row itself, as read inside the transaction that refused — not a
+        // message the caller has to parse back apart (`no-error-message-sniffing`).
+        expect(conflict.existing.path).toBe("/srv/phoenix");
+        expect(conflict.message).toContain('domain "phoenix" already exists at /srv/phoenix');
+      }
+    });
+
+    test("a duplicate location is a typed refusal that names the owner", () => {
+      const state = createStateDb();
+      state.createDomain("phoenix", "/srv/phoenix");
+
+      try {
+        state.createDomain("second", "/srv/phoenix");
+        expect.unreachable("should have thrown DomainConflictError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(DomainConflictError);
+        expect((err as DomainConflictError).conflict).toBe("location");
+        expect((err as DomainConflictError).existing.name).toBe("phoenix");
+        expect((err as Error).message).toContain('/srv/phoenix is already domain "phoenix"');
+      }
+    });
+
+    test("a location taken by ANOTHER connection still refuses by name, not by raw constraint", () => {
+      // The actual concurrency shape, and the one test here that fails on the old code:
+      // with the check outside the write, this connection had already passed it, so the
+      // insert reached the UNIQUE index and surfaced `SQLITE_CONSTRAINT_UNIQUE`. The check
+      // now happens under the same write lock as the insert, so the row the other writer
+      // committed is visible to the decision that refuses.
+      const p = tmpDbPath();
+      paths.push(p);
+      const mine = new StateDb(p);
+      open.push(mine);
+      const theirs = new StateDb(p);
+      open.push(theirs);
+
+      theirs.createDomain("beta", "/srv/shared");
+
+      try {
+        mine.createDomain("alpha", "/srv/shared");
+        expect.unreachable("should have thrown DomainConflictError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(DomainConflictError);
+        expect((err as Error).message).toContain('already domain "beta"');
+        // Not the raw index error: `SQLITE_CONSTRAINT_UNIQUE` is what this used to be.
+        expect((err as { code?: string }).code).toBeUndefined();
+      }
+    });
+
+    test("rename to an occupied name is the same typed refusal, and nothing moves", () => {
+      const state = createStateDb();
+      const a = state.createDomain("a", "/srv/a");
+      state.createDomain("b", "/srv/b");
+
+      try {
+        state.renameDomain("a", "b");
+        expect.unreachable("should have thrown DomainConflictError");
+      } catch (err) {
+        expect(err).toBeInstanceOf(DomainConflictError);
+        expect((err as DomainConflictError).existing.name).toBe("b");
+      }
+      expect(state.getDomainByName("a")?.id).toBe(a.id);
+    });
+
+    test("renaming a domain to its own name stays a no-op rather than colliding with itself", () => {
+      const state = createStateDb();
+      const a = state.createDomain("a", "/srv/a");
+      expect(state.renameDomain("a", "a")).toEqual(a);
+    });
+  });
+
+  /**
+   * #3210. `resolveDomainForPath` normalizes EVERY row inside its loop and throws on a
+   * path that is not absolute — so one malformed row broke `which` for every query, while
+   * `ls` kept working because it never normalizes. The writers were fixed by #3160; this
+   * is the table refusing to hold the row at all.
+   */
+  describe("v9: the domains table enforces its own path shape (#3210)", () => {
+    test("a local domain path that is not absolute cannot be written, even by raw SQL", () => {
+      const state = createStateDb();
+      expect(() => state.database.run("INSERT INTO domains (name, host, path) VALUES ('bad', NULL, 'rel/x')")).toThrow(
+        /CHECK constraint failed/,
+      );
+      // ...and `which` still answers, which is the property the constraint is protecting.
+      state.createDomain("phoenix", "/srv/phoenix");
+      expect(state.resolveDomain("/srv/phoenix/packages/core")?.name).toBe("phoenix");
+    });
+
+    test("a host-bound path is exempt — it is that host's to interpret, not this one's", () => {
+      const state = createStateDb();
+      const remote = state.createDomain("remote", "~/work", "boxen0010");
+      expect(remote.path).toBe("~/work");
+    });
+
+    test("upgrading a pre-v9 database keeps every row, the id high-water mark, and the index", () => {
+      const p = tmpDbPath();
+      paths.push(p);
+
+      // Build the pre-v9 shape by hand: the same table WITHOUT the CHECK, carrying a row
+      // that the constraint will reject. No writer can produce that row today — the point
+      // is that the one database which has one still boots.
+      const before = new StateDb(p);
+      before.createDomain("a", "/srv/a");
+      before.createDomain("b", "/srv/b");
+      const raw = before.database;
+      raw.exec(`
+        CREATE TABLE domains_pre9 (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          name       TEXT NOT NULL UNIQUE,
+          host       TEXT,
+          path       TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO domains_pre9 (id, name, host, path, created_at)
+          SELECT id, name, host, path, created_at FROM domains;
+        DROP TABLE domains;
+        ALTER TABLE domains_pre9 RENAME TO domains;
+        CREATE UNIQUE INDEX idx_domains_location ON domains(COALESCE(host, ''), path);
+      `);
+      raw.run("INSERT INTO domains (name, host, path) VALUES ('legacy', NULL, 'relative/x')");
+      const legacyId = raw.query<{ id: number }, []>("SELECT id FROM domains WHERE name = 'legacy'").get()?.id;
+      raw.run("UPDATE schema_versions SET version = 8 WHERE name = 'state'");
+      before.close();
+
+      const after = new StateDb(p);
+      open.push(after);
+
+      // Conforming rows survive with their ids, which is what every `domain_id` reference
+      // in every partitioned table depends on.
+      expect(after.listDomains().map((d) => [d.name, d.id])).toEqual([
+        ["a", 1],
+        ["b", 2],
+      ]);
+      // The rejected row is quarantined, not deleted: a daemon that refuses to start is
+      // the #3152 failure mode, and silently dropping the row is worse than the state it
+      // came from.
+      expect(
+        after.database.query<{ name: string; path: string }, []>("SELECT name, path FROM domains_rejected").all(),
+      ).toEqual([{ name: "legacy", path: "relative/x" }]);
+      // The high-water mark, NOT max(id) of the copy: the quarantined row's id must never
+      // be handed to a future domain, or that domain adopts whatever still references it.
+      expect(after.createDomain("c", "/srv/c").id).toBe((legacyId ?? 0) + 1);
+      // Both constraints came through the rebuild.
+      expect(() => after.database.run("INSERT INTO domains (name, host, path) VALUES ('x', NULL, 'rel')")).toThrow(
+        /CHECK constraint failed/,
+      );
+      expect(() => after.createDomain("dup", "/srv/a")).toThrow(DomainConflictError);
+      // The pragma was read before BEGIN and restored after COMMIT — never left flipped.
+      expect(after.database.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys).toBe(0);
     });
   });
 });
