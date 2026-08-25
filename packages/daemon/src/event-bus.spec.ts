@@ -6,6 +6,16 @@ import { createDomainResolver } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 
+/*
+ * Fixture paths use `/mcx-test/...`, a root that exists on no platform, rather than
+ * `/tmp` or `/home`. These tests never touch the filesystem, but the code under test
+ * canonicalizes the paths it is handed — and on macOS `/tmp` and `/var` are symlinks and
+ * `/home` is a firmlink, so a query built on one of those resolves (`/private/tmp/...`)
+ * while the hand-built domain row beside it does not. That asymmetry is an artifact of
+ * the fixture, not of the rule being tested: production stores domain paths canonical.
+ * A root that resolves to itself everywhere keeps both sides in the same spelling.
+ */
+
 const TICK_MS = 1;
 
 function sessionEvent(event = "session.result", sessionId = "s1"): MonitorEventInput {
@@ -598,14 +608,14 @@ describe("EventBus with EventLog", () => {
 /** A resolver that can answer by session id, mirroring the daemon's real wiring. */
 function sessionAwareResolver() {
   const roots: Record<string, string | null> = {
-    "s-phoenix": "/tmp/phoenix/pkg",
-    "s-clrg": "/tmp/clrg",
+    "s-phoenix": "/mcx-test/phoenix/pkg",
+    "s-clrg": "/mcx-test/clrg",
     "s-rootless": null,
   };
   return createDomainResolver({
     listDomains: () => [
-      { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
-      { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 3, name: "phoenix", host: null, path: "/mcx-test/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 7, name: "clrg", host: null, path: "/mcx-test/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
     ],
     getSessionPaths: (id: string) => {
       const root = roots[id];
@@ -620,14 +630,14 @@ describe("EventBus domain stamping", () => {
   const resolver = createDomainResolver({
     getSessionPaths: () => [],
     listDomains: () => [
-      { id: 3, name: "phoenix", host: null, path: "/tmp/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
-      { id: 7, name: "clrg", host: null, path: "/tmp/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 3, name: "phoenix", host: null, path: "/mcx-test/phoenix", createdAt: "2026-08-22T00:00:00.000Z" },
+      { id: 7, name: "clrg", host: null, path: "/mcx-test/clrg", createdAt: "2026-08-22T00:00:00.000Z" },
     ],
   });
 
   test("publish derives the domain from the producer's repoRoot", () => {
     const bus = new EventBus(undefined, Date.now, resolver);
-    const event = bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix/pkg" });
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix/pkg" });
     expect(event.domainId).toBe(3);
     expect(event.domain).toBe("phoenix");
   });
@@ -641,19 +651,19 @@ describe("EventBus domain stamping", () => {
 
   test("a repoRoot outside every domain is un-domained", () => {
     const bus = new EventBus(undefined, Date.now, resolver);
-    expect(bus.publish({ ...sessionEvent(), repoRoot: "/var/elsewhere" }).domainId).toBe(NO_DOMAIN_ID);
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/mcx-elsewhere/elsewhere" }).domainId).toBe(NO_DOMAIN_ID);
   });
 
   test("a producer that already knows its domain is believed over its repoRoot", () => {
     const bus = new EventBus(undefined, Date.now, resolver);
-    const event = bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", domainId: 7 });
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix", domainId: 7 });
     expect(event.domainId).toBe(7);
     expect(event.domain).toBe("clrg");
   });
 
   test("a bus with no resolver stamps the sentinel — never undefined", () => {
     const bus = new EventBus();
-    expect(bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix" }).domainId).toBe(NO_DOMAIN_ID);
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix" }).domainId).toBe(NO_DOMAIN_ID);
   });
 
   test("the stamped domain reaches the durable log's column and survives replay", () => {
@@ -662,8 +672,8 @@ describe("EventBus domain stamping", () => {
     const log = new EventLog(db);
     const bus = new EventBus(log, Date.now, resolver);
 
-    bus.publish({ ...sessionEvent("session.result"), repoRoot: "/tmp/phoenix/a" });
-    bus.publish({ ...sessionEvent("session.idle"), repoRoot: "/tmp/clrg/b" });
+    bus.publish({ ...sessionEvent("session.result"), repoRoot: "/mcx-test/phoenix/a" });
+    bus.publish({ ...sessionEvent("session.idle"), repoRoot: "/mcx-test/clrg/b" });
     bus.publish({ src: "daemon", event: MAIL_SENT, category: "mail" });
 
     expect(db.query<{ domain_id: number }, []>("SELECT domain_id FROM monitor_events ORDER BY seq").all()).toEqual([
@@ -683,7 +693,7 @@ describe("EventBus domain stamping", () => {
     const bus = new EventBus(undefined, Date.now, resolver);
     const seen: Array<{ domainId: number; domain?: string }> = [];
     bus.subscribe((e) => seen.push({ domainId: e.domainId, domain: e.domain }));
-    bus.publish({ ...sessionEvent(), repoRoot: "/tmp/clrg" });
+    bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/clrg" });
     expect(seen).toEqual([{ domainId: 7, domain: "clrg" }]);
   });
 
@@ -706,17 +716,17 @@ describe("EventBus domain stamping", () => {
     const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
     // explicit id beats both
     expect(
-      bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", sessionId: "s-clrg", domainId: 7 }).domainId,
+      bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix", sessionId: "s-clrg", domainId: 7 }).domainId,
     ).toBe(7);
     // repoRoot beats sessionId
-    expect(bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix", sessionId: "s-clrg" }).domainId).toBe(3);
+    expect(bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix", sessionId: "s-clrg" }).domainId).toBe(3);
     // sessionId is the fallback
     expect(bus.publish({ ...sessionEvent(), sessionId: "s-clrg" }).domainId).toBe(7);
   });
 
   test("an unresolvable repoRoot falls through to the session rather than stopping at the sentinel", () => {
     const bus = new EventBus(undefined, Date.now, sessionAwareResolver());
-    const event = bus.publish({ ...sessionEvent(), repoRoot: "/var/elsewhere", sessionId: "s-phoenix" });
+    const event = bus.publish({ ...sessionEvent(), repoRoot: "/mcx-elsewhere/elsewhere", sessionId: "s-phoenix" });
     expect(event.domainId).toBe(3);
   });
 
@@ -731,7 +741,7 @@ describe("EventBus domain stamping", () => {
     bus.subscribe((_e, s) => {
       serialized = s;
     });
-    bus.publish({ ...sessionEvent(), repoRoot: "/tmp/phoenix" });
+    bus.publish({ ...sessionEvent(), repoRoot: "/mcx-test/phoenix" });
     expect(JSON.parse(serialized)).toMatchObject({ domainId: 3, domain: "phoenix" });
   });
 });

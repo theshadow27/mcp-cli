@@ -22,7 +22,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { type Domain, NO_DOMAIN_ID, resolveDomainForPath } from "@mcp-cli/core";
+import { type Domain, NO_DOMAIN_ID, canonicalizeDomainPath, resolveDomainForPath } from "@mcp-cli/core";
 
 export interface AdoptResult {
   /** Rows moved from the sentinel onto a real domain. */
@@ -89,9 +89,19 @@ export function adoptUnassignedRows(
 
     let id = NO_DOMAIN_ID;
     try {
-      // Roots are stored canonical by their writers, so this stays a pure lookup — no
-      // realpath, and no throw on a root whose directory has since been deleted.
-      id = resolveDomainForPath(root, domains)?.id ?? NO_DOMAIN_ID;
+      // Canonicalize the root before resolving, because domain paths are stored canonical
+      // (`createDomain` -> `canonicalizeExistingDomainPath`) and not every writer on this
+      // side matches. `alias_state.repo_root` is canonical — both its writers realpath
+      // first — but `monitor_events.payload.repoRoot` is whatever the producer supplied,
+      // and `EventBus.publish` canonicalizes only the domain LOOKUP, never the payload it
+      // stores. Comparing a raw root against a canonical domain path silently adopts
+      // nothing wherever the two spellings differ: macOS, where `/tmp` and `/var` are
+      // symlinks, and any checkout under `.claude/worktrees/`, which this repo symlinks by
+      // design. This is a boot-time pass over DISTINCT roots, so the realpath is bounded
+      // by the number of roots, not rows — and a root already canonical resolves to
+      // itself. Only the RESOLUTION uses the canonical form; the UPDATE below still keys
+      // on the stored spelling, so no row's identity changes.
+      id = resolveDomainForPath(canonicalizeDomainPath(root), domains)?.id ?? NO_DOMAIN_ID;
     } catch {
       continue; // not an absolute path — nothing to resolve, leave it alone
     }

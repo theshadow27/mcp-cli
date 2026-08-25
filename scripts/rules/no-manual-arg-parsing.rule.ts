@@ -15,7 +15,7 @@
  * unknown-flag detection.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const ARG_ARRAY_NAMES = new Set(["args", "allArgs", "argv"]);

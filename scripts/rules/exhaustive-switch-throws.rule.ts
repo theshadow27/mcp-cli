@@ -15,7 +15,7 @@
  * nested-function isolation — is handled correctly without regex windows.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 
 import type { CheckRule } from "./_engine/rule";
 

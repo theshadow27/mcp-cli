@@ -47,7 +47,7 @@
  * See #3233.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const rule: CheckRule = {

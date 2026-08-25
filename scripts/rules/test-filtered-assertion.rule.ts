@@ -17,7 +17,7 @@
  * Sources: #2085, #2099.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 function containsFilterCall(node: ts.Node): boolean {

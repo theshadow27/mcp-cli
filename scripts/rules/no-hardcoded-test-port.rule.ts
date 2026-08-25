@@ -26,7 +26,7 @@
  * #1915, #1099.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 // Call/constructor names whose first object-literal argument is a server config.

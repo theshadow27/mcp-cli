@@ -11,6 +11,16 @@ import { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
 import type { ServerPool } from "./server-pool";
 
+/*
+ * Fixture paths use `/mcx-test/...`, a root that exists on no platform, rather than
+ * `/tmp` or `/home`. These tests never touch the filesystem, but the code under test
+ * canonicalizes the paths it is handed — and on macOS `/tmp` and `/var` are symlinks and
+ * `/home` is a firmlink, so a query built on one of those resolves (`/private/tmp/...`)
+ * while the hand-built domain row beside it does not. That asymmetry is an artifact of
+ * the fixture, not of the rule being tested: production stores domain paths canonical.
+ * A root that resolves to itself everywhere keeps both sides in the same spelling.
+ */
+
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
 function domain(id: number, name: string, path: string): Domain {
@@ -18,7 +28,7 @@ function domain(id: number, name: string, path: string): Domain {
 }
 
 const RESOLVER = createDomainResolver({
-  listDomains: () => [domain(3, "phoenix", "/tmp/phoenix"), domain(7, "clrg", "/tmp/clrg")],
+  listDomains: () => [domain(3, "phoenix", "/mcx-test/phoenix"), domain(7, "clrg", "/mcx-test/clrg")],
   getSessionPaths: () => [],
 });
 
@@ -89,9 +99,9 @@ describe("GET /events domain scoping", () => {
 
   test("replay with ?domain= returns only that domain's events", async () => {
     const { server, bus } = setup();
-    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
-    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
-    bus.publish({ src: "daemon", event: "pr.closed", category: "work_item", repoRoot: "/tmp/phoenix/pkg" });
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/mcx-test/phoenix" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/mcx-test/clrg" });
+    bus.publish({ src: "daemon", event: "pr.closed", category: "work_item", repoRoot: "/mcx-test/phoenix/pkg" });
     bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
 
     const res = server.handleEventsNDJSON(new URL("http://localhost/events?since=0&domain=phoenix"));
@@ -103,8 +113,8 @@ describe("GET /events domain scoping", () => {
 
   test("replay with no ?domain= returns every domain — the daemon-wide stream", async () => {
     const { server, bus } = setup();
-    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
-    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/mcx-test/phoenix" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/mcx-test/clrg" });
     bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
 
     const res = server.handleEventsNDJSON(new URL("http://localhost/events?since=0"));
@@ -143,9 +153,9 @@ describe("GET /events domain scoping", () => {
     expect(res.status).toBe(200);
 
     const drained = drain(res, 1);
-    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/tmp/phoenix" });
+    bus.publish({ src: "daemon", event: "pr.opened", category: "work_item", repoRoot: "/mcx-test/phoenix" });
     bus.publish({ src: "daemon", event: "mail.sent", category: "mail" });
-    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/tmp/clrg" });
+    bus.publish({ src: "daemon", event: "pr.merged", category: "work_item", repoRoot: "/mcx-test/clrg" });
 
     const got = await drained;
     expect(got.map((e) => e.event)).toEqual(["pr.merged"]);

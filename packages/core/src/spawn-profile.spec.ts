@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitRootResult } from "./git";
@@ -24,7 +24,12 @@ const SECRET = "AKIAIOSFODNN7EXAMPLE-tail-do-not-print";
 let dir: string;
 
 beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), "mcx-profile-"));
+  // realpath, because `findManifestProfile` realpaths `startDir` before handing it to
+  // `resolveRoot` — matching git's `--show-toplevel`, which resolves symlinks. On macOS
+  // `tmpdir()` is `/var/folders/...` and `/var` is a symlink, so an un-resolved fixture
+  // root makes the `rootedAt` stub answer "not-a-repo" for its own repo and the ascent
+  // stops at the start directory.
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "mcx-profile-")));
 });
 
 afterAll(() => {

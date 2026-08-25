@@ -21,7 +21,7 @@
  * are also out of scope (tracked separately).
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 /** Build a child→parent map for every descendant of `root`. */

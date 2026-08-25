@@ -27,7 +27,7 @@
  * file that creates domains before any resolver exists (the one-shot import).
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 /** StateDb methods that write the `domains` table. */

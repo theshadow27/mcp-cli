@@ -13,7 +13,7 @@
  * different error propagation models.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const TIMER_NAMES = new Set(["setTimeout", "setInterval"]);

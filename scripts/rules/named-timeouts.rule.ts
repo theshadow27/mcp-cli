@@ -20,7 +20,7 @@
  * IPC_REQUEST_TIMEOUT_MS, CONNECT_TIMEOUT_MS, …) where one fits.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const TIMER_FN_NAMES = new Set(["setTimeout", "setInterval"]);

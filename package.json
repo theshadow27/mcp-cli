@@ -44,7 +44,8 @@
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "latest",
     "@types/react": "^18.3.28",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2",
+    "typescript-5": "npm:typescript@5.9.3"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",

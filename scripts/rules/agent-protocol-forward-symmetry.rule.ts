@@ -23,7 +23,7 @@
  * Source: #2553 item 7, from the #2540 / PR #2546 adversarial review.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule, RuleContext } from "./_engine/rule";
 
 const ANCHOR = "packages/daemon/src/abstract-worker-server.ts";

@@ -11,7 +11,7 @@
  * Sources: #2194, #1879.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 function containsExpectCall(node: ts.Node): boolean {

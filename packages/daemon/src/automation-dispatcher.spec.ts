@@ -6,6 +6,16 @@ import { AutomationDispatcher } from "./automation-dispatcher";
 import { createDomainResolver } from "./domain-resolver";
 import { EventBus } from "./event-bus";
 
+/*
+ * Fixture paths use `/mcx-test/...`, a root that exists on no platform, rather than
+ * `/tmp` or `/home`. These tests never touch the filesystem, but the code under test
+ * canonicalizes the paths it is handed — and on macOS `/tmp` and `/var` are symlinks and
+ * `/home` is a firmlink, so a query built on one of those resolves (`/private/tmp/...`)
+ * while the hand-built domain row beside it does not. That asymmetry is an artifact of
+ * the fixture, not of the rule being tested: production stores domain paths canonical.
+ * A root that resolves to itself everywhere keeps both sides in the same spelling.
+ */
+
 const SETTLE_MS = 20;
 
 function makeEvent(overrides: Partial<MonitorEvent> = {}): MonitorEvent {
@@ -805,7 +815,7 @@ describe("AutomationDispatcher", () => {
 // ── Automation state and events are per-domain (#3040) ──
 
 describe("AutomationDispatcher domain attribution", () => {
-  const REPO = "/tmp/phoenix";
+  const REPO = "/mcx-test/phoenix";
   const resolver = createDomainResolver({
     listDomains: () => [{ id: 3, name: "phoenix", host: null, path: REPO, createdAt: "2026-08-22T00:00:00.000Z" }],
     getSessionPaths: () => [],
@@ -870,7 +880,7 @@ describe("AutomationDispatcher domain attribution", () => {
       repoRoot: REPO,
       executeModule: async () => ({
         action: "emit-event",
-        event: { event: "custom.thing", category: "automation", repoRoot: "/var/elsewhere" },
+        event: { event: "custom.thing", category: "automation", repoRoot: "/mcx-elsewhere/elsewhere" },
       }),
     });
     const emitted: number[] = [];

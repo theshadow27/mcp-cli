@@ -22,7 +22,7 @@ import { openDb } from "./db";
 import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { resolve, dirname } from "path";
-import ts from "typescript";
+import ts from "typescript-5";
 
 const SCORE_SCRIPT = resolve(dirname(import.meta.path), "score.ts");
 

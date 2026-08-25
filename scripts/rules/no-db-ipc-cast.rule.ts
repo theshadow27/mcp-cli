@@ -21,7 +21,7 @@
  * by a narrowing guard is fine; `as const` is fine.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const SCOPED_PATH_RE = /(^|\/)(db|ipc[^/]*)\.ts$|\/db\//;

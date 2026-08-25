@@ -18,7 +18,7 @@
  *   5. Report the first unguarded `.content` access as a violation.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 function getEnclosingBlock(node: ts.Node): ts.Node {
