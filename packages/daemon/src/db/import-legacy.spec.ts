@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { testOptions } from "../../../../test/test-options";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import {
@@ -203,6 +204,24 @@ describe("importLegacyState", () => {
     expect(phoenix?.createdAt).toBe("2026-01-02T03:04:05.000Z");
     expect(logs.some((l) => l.includes("broken"))).toBe(true);
     expect(logs.some((l) => l.includes("rootless"))).toBe(true);
+  });
+
+  // Every other sidecar test passes `scopesDir` explicitly, so none of them would notice
+  // if the default went missing — and the default IS the upgrade path: a user coming from
+  // 1.14.x has their scopes in `~/.mcp-cli/scopes` and passes nothing. `mcx scope` and
+  // `options.SCOPES_DIR` were both deleted in #3042 while this reader stayed, so the
+  // directory it falls back to now needs an assertion of its own.
+  test("falls back to ~/.mcp-cli/scopes when no scopesDir is given", () => {
+    using opts = testOptions();
+    writeLegacyDb(opts.LEGACY_DB_PATH);
+    mkdirSync(join(opts.dir, "scopes"), { recursive: true });
+    writeFileSync(join(opts.dir, "scopes", "phoenix.json"), JSON.stringify({ root: "/home/u/github/phoenix" }));
+
+    const state = target(opts.DB_PATH);
+    const result = importLegacyState({ db: state.database, log: () => {} });
+
+    expect(result.domainsImported).toBe(1);
+    expect(state.getDomainByName("phoenix")?.path).toBe("/home/u/github/phoenix");
   });
 
   test("writes the marker into the LEGACY database, not into mcx.db", () => {

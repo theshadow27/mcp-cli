@@ -48,7 +48,6 @@ export * from "./agent-tools";
 export * from "./config-file";
 export * from "./flock";
 export * from "./gate-lease";
-export * from "./scope";
 export * from "./domain";
 export * from "./domain-protocol";
 export * from "./domain-spend";

@@ -1,9 +1,10 @@
 import type { GetConfigResult, Plan } from "@mcp-cli/core";
-import { ipcCall, projectConfigPath, resolveConfigPath } from "@mcp-cli/core";
+import { ipcCall, isPathWithin, projectConfigPath, resolveConfigPath } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSessionList } from "./components/agent-session-list";
 import { AuthBanner, type AuthStatus, isAuthError } from "./components/auth-banner";
+import { DomainSelector } from "./components/domain-selector";
 import { Footer } from "./components/footer";
 import { Header } from "./components/header";
 import { Loading } from "./components/loading";
@@ -11,7 +12,6 @@ import { LogViewer } from "./components/log-viewer";
 import { MailViewer } from "./components/mail-viewer";
 import { PlansTab } from "./components/plans-tab";
 import { RegistryBrowser } from "./components/registry-browser";
-import { ScopeSelector } from "./components/scope-selector";
 import { type AddServerState, ServerAddForm, initialAddServerState } from "./components/server-add-form";
 import { ServerList } from "./components/server-list";
 import { StatsView, buildStatsLines } from "./components/stats-view";
@@ -20,6 +20,7 @@ import type { RegistryEntry, TransportSelection } from "./hooks/registry-client"
 import { useAgentSessions } from "./hooks/use-agent-sessions";
 import { useDaemon } from "./hooks/use-daemon";
 import { useDaemonProcessCount } from "./hooks/use-daemon-process-count";
+import { useDomains } from "./hooks/use-domains";
 import type { View } from "./hooks/use-keyboard";
 import { useKeyboard } from "./hooks/use-keyboard";
 import { type ExpandedPlanKey, type StatusType, getTargetPlan, hasCapability } from "./hooks/use-keyboard-plans";
@@ -29,7 +30,6 @@ import { useMail } from "./hooks/use-mail";
 import { useMetrics } from "./hooks/use-metrics";
 import { usePlanMetrics, usePlans } from "./hooks/use-plans";
 import { useRegistryData } from "./hooks/use-registry-data";
-import { useScopes } from "./hooks/use-scopes";
 import { useTranscript } from "./hooks/use-transcript";
 import { useUnreadMail } from "./hooks/use-unread-mail";
 
@@ -42,7 +42,7 @@ const AUTH_STATUS_CLEAR_DELAY_MS = 5_000;
 export function App() {
   const { status, error, loading, refresh } = useDaemon({ intervalMs: 2500 });
   const daemonProcessCount = useDaemonProcessCount();
-  const { scopes, selectedScope, cycleScope } = useScopes();
+  const { domains, selectedDomain, cycleDomain } = useDomains();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -112,30 +112,31 @@ export function App() {
     error: claudeError,
   } = useAgentSessions({ intervalMs: view === "agents" ? 2500 : 10_000 });
 
-  // Scope filtering: filter servers and sessions when a scope is selected
+  // Domain filtering: filter servers and sessions when a domain is selected
   const servers = useMemo(() => {
-    if (!selectedScope) return allServers;
-    const scopeConfigPrefix = projectConfigPath(selectedScope.root);
-    // Show servers whose config source matches the scope's project dir, plus global servers
+    if (!selectedDomain) return allServers;
+    const domainConfigPrefix = projectConfigPath(selectedDomain.path);
+    // Show servers whose config source matches the domain's project dir, plus global servers
     return allServers.filter((s) => {
       const info = configInfo[s.name];
       if (!info) return true; // No config info yet — show it
-      // Project-scoped servers: match if source starts with scope's project config dir
+      // Project-scoped servers: match if source starts with the domain's project config dir
       if (info.scope === "project") {
-        return info.source.startsWith(scopeConfigPrefix.replace(/\/servers\.json$/, ""));
+        return info.source.startsWith(domainConfigPrefix.replace(/\/servers\.json$/, ""));
       }
       // User/global servers always visible
       return true;
     });
-  }, [allServers, selectedScope, configInfo]);
+  }, [allServers, selectedDomain, configInfo]);
 
   const sessions = useMemo(() => {
-    if (!selectedScope) return allSessions;
+    if (!selectedDomain) return allSessions;
     return allSessions.filter((s) => {
       if (!s.cwd) return false;
-      return s.cwd === selectedScope.root || s.cwd.startsWith(`${selectedScope.root}/`);
+      // Segment-aware, so a sibling `/repo-old` is not swallowed by the `/repo` domain.
+      return isPathWithin(s.cwd, selectedDomain.path);
     });
-  }, [allSessions, selectedScope]);
+  }, [allSessions, selectedDomain]);
 
   // Determine provider for expanded session's transcript
   const expandedProvider = sessions.find((s) => s.sessionId === expandedSession)?.provider ?? "claude";
@@ -463,7 +464,7 @@ export function App() {
       statusMessage: registryStatusMessage,
       setStatusMessage: setRegistryStatusMessage,
     },
-    onCycleScope: scopes.length > 0 ? cycleScope : undefined,
+    onCycleDomain: domains.length > 0 ? cycleDomain : undefined,
   });
 
   if (loading && !status) return <Loading />;
@@ -481,7 +482,7 @@ export function App() {
   return (
     <Box flexDirection="column" padding={1}>
       <Header status={status} error={error} daemonProcessCount={daemonProcessCount} />
-      {scopes.length > 0 && <ScopeSelector scopes={scopes} selectedScope={selectedScope} />}
+      {domains.length > 0 && <DomainSelector domains={domains} selectedDomain={selectedDomain} />}
       <TabBar activeTab={view} badges={badges} />
       {view === "servers" ? (
         <>

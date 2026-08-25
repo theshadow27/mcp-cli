@@ -92,7 +92,8 @@ Docs: [`domains.md`](domains.md) · [`cards.md`](cards.md) · [`sensors.md`](sen
 - `domains` table: `id`, `name`, `host`, `path`, `created_at`. No state column.
 - `domain_id` FK on `work_items`, `mail`, `agent_sessions`, `alias_state`, events, automation.
 - `mcx domain add | ls | show | which | rename | rm`
-- **Supersedes `mcx scope`** (`packages/command/src/commands/scope.ts`) — already a
+- **Supersedes `mcx scope`** (was `packages/command/src/commands/scope.ts`, deleted in
+  #3042) — already a
   name→root registry in JSON sidecars, already threaded into the daemon as `scopeRoot`
   for session filtering. Same idea, promoted to the table and given a host component.
 - Mail addressing becomes `user` (local to domain) and `user@domain` (resolved through

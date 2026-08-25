@@ -54,8 +54,8 @@ import { cmdPhase } from "./commands/phase";
 import { cmdPr } from "./commands/pr";
 import { cmdRegistryDispatch } from "./commands/registry-cmd";
 import { cmdRemove } from "./commands/remove";
+import { cmdRetired } from "./commands/retired";
 import { cmdRun } from "./commands/run";
-import { cmdScope } from "./commands/scope";
 import { cmdServe } from "./commands/serve";
 import { cmdServeKill } from "./commands/serve-kill";
 import { cmdSite } from "./commands/site";
@@ -447,8 +447,12 @@ async function main(): Promise<void> {
         await cmdDomain(cleanArgs.slice(1));
         break;
 
+      // Retired in v2.0.0 — domains supersede scopes (#3042). A tombstone dispatches but
+      // is deliberately absent from SUBCOMMANDS: completing a command whose only job is to
+      // fail would advertise it to the shell as if it still worked.
+      // dotw-ignore cli-surface-registered: tombstone — must dispatch, must not complete
       case "scope":
-        await cmdScope(cleanArgs.slice(1));
+        process.exit(cmdRetired("scope"));
         break;
 
       case "serve":
@@ -1044,7 +1048,6 @@ Utility:
   mcx note <subcommand>               Tool annotations
   mcx serve                           Run as stdio MCP server
   mcx domain <subcommand>             Domains: names bound to [host:]path
-  mcx scope <subcommand>              Directory scope management (superseded by domain)
   mcx dump/metrics/spans              Diagnostics and observability
   mcx spend [-d <domain>] [--json]    Per-domain spend rollup from agent_sessions
   mcx telemetry [on|off|status]       Control anonymous usage telemetry

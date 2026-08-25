@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { McpConfigFile, ResolvedConfig, ServerConfig } from "@mcp-cli/core";
-import { options, projectConfigPath, silentLogger } from "@mcp-cli/core";
+import { projectConfigPath, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../../test/test-options";
 import { loadConfig } from "./loader";
 
@@ -232,52 +232,30 @@ describe("loadConfig", () => {
     expect(projectSource?.file).toBe(configPath);
   });
 
-  test("worktree under a scope root loads the root's project config", async () => {
+  // The two tests this replaces asserted the opposite: a worktree and a subdirectory each
+  // inherited the project config of the nearest registered `mcx scope` root. That registry
+  // is retired (#3042) and the lookup keys on cwd exactly, so the inheritance is asserted
+  // gone rather than left untested — an untested removal is indistinguishable from a
+  // regression the next time someone reads the loader.
+  test("subdirectory does NOT inherit a parent directory's project config", async () => {
     using opts = testOptions();
 
-    // Register a scope root
     const root = join(opts.dir, "myproject");
     mkdirSync(root, { recursive: true });
-    const scopesDir = options.SCOPES_DIR;
-    mkdirSync(scopesDir, { recursive: true });
-    writeJson(join(scopesDir, "myproject.json"), { root, created: new Date().toISOString() });
-
-    // Write config for the scope root
     writeJson(projectConfigPath(root), fixtureConfig("filesystem"));
 
-    // Load config from a worktree path under the root
     const worktree = join(root, ".claude", "worktrees", "claude-abc123");
     mkdirSync(worktree, { recursive: true });
 
     const config = await loadConfig(worktree, silentLogger);
-    expect(config.servers.has("filesystem")).toBe(true);
-    const source = config.servers.get("filesystem")?.source;
-    expect(source?.file).toBe(projectConfigPath(root));
+    expect(config.servers.has("filesystem")).toBe(false);
+    expect(config.sources.find((s) => s.scope === "project")).toBeUndefined();
   });
 
-  test("subdirectory under a scope root loads the root's project config", async () => {
+  test("directory uses exact cwd for config lookup", async () => {
     using opts = testOptions();
 
-    const root = join(opts.dir, "myproject");
-    mkdirSync(root, { recursive: true });
-    const scopesDir = options.SCOPES_DIR;
-    mkdirSync(scopesDir, { recursive: true });
-    writeJson(join(scopesDir, "myproject.json"), { root, created: new Date().toISOString() });
-
-    writeJson(projectConfigPath(root), fixtureConfig("notion"));
-
-    const subdir = join(root, "src", "lib");
-    mkdirSync(subdir, { recursive: true });
-
-    const config = await loadConfig(subdir, silentLogger);
-    expect(config.servers.has("notion")).toBe(true);
-  });
-
-  test("unscoped directory uses exact cwd for config lookup", async () => {
-    using opts = testOptions();
-
-    // No scope registered — should use exact cwd
-    const cwd = join(opts.dir, "unscoped-project");
+    const cwd = join(opts.dir, "plain-project");
     mkdirSync(cwd, { recursive: true });
 
     writeJson(projectConfigPath(cwd), fixtureConfig("sentry"));
