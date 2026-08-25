@@ -7,7 +7,7 @@ import {
   ListToolsParamsSchema,
   RestartServerParamsSchema,
 } from "@mcp-cli/core";
-import type { IpcMethod } from "@mcp-cli/core";
+import type { IpcMethod, Logger } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
 import type { StateDb } from "../db/state";
 import { DOMAIN_META_KEY, DOMAIN_SCOPED_SERVERS, resolveDomainScope } from "../domain-scope";
@@ -30,8 +30,11 @@ export class ToolHandlers {
     private db: StateDb,
     private aliasServer: AliasServer | null,
     private daemonId: string,
+    private logger: Logger,
   ) {
-    this.worktreeGuard = new SharedWorktreeGuard(db);
+    // Routed through the injected Logger (not a bare `console.warn`) so tests
+    // can silence it the same way every sibling handler already does (#3013).
+    this.worktreeGuard = new SharedWorktreeGuard(db, { warn: (m) => this.logger.warn(m) });
   }
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {

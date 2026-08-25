@@ -71,7 +71,7 @@ function buildHandlers(
   aliasServer = mockAliasServer(),
 ): Map<IpcMethod, RequestHandler> {
   const map = new Map<IpcMethod, RequestHandler>();
-  new ToolHandlers(pool, db, aliasServer, "daemon-1").register(map);
+  new ToolHandlers(pool, db, aliasServer, "daemon-1", mockLogger).register(map);
   return map;
 }
 

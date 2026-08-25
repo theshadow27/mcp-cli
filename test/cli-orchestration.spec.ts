@@ -745,5 +745,57 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         arguments: { sessionId: JSON.parse(result.stdout.trim()).sessionId },
       });
     });
+
+    test("two genuinely concurrent spawns into the same directory: exactly one wins", async () => {
+      // The unit tests in worktree-holder.spec.ts call `check()` synchronously
+      // and directly — they prove the in-flight `pending` Map is correct in
+      // isolation, since check() never awaits so no interleaving is possible
+      // within one event-loop turn. This drives the same race through the
+      // actual daemon/worker pipeline: two unawaited callTool dispatches at
+      // the exact same cwd, neither of which has a session row yet — the race
+      // the reservation exists to close, not just the Map logic behind it.
+      const raceDir = mkdtempSync(join(tmpdir(), "mcx-3140-race-"));
+      try {
+        const [a, b] = await Promise.all([
+          rpc(daemon.socketPath, "callTool", {
+            server: "_mock",
+            tool: "mock_prompt",
+            arguments: { prompt: scriptPath, cwd: raceDir },
+          }),
+          rpc(daemon.socketPath, "callTool", {
+            server: "_mock",
+            tool: "mock_prompt",
+            arguments: { prompt: scriptPath, cwd: raceDir },
+          }),
+        ]);
+
+        const succeeded = [a, b].filter((r) => r.error === undefined);
+        const failed = [a, b].filter((r) => r.error !== undefined);
+        expect(succeeded).toHaveLength(1);
+        expect(failed).toHaveLength(1);
+        expect(failed[0].error?.message).toMatch(/already in flight/);
+
+        const winnerId = JSON.parse((succeeded[0].result as { content: Array<{ text: string }> }).content[0].text)
+          .sessionId as string;
+
+        // Both dispatches have now settled, so the winner's session row exists —
+        // a third spawn is refused by the DB-backed check, naming the winner,
+        // not by the (now-released) in-flight reservation.
+        const third = await rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_prompt",
+          arguments: { prompt: scriptPath, cwd: raceDir },
+        });
+        expect(third.error?.message).toContain(winnerId);
+
+        await rpc(daemon.socketPath, "callTool", {
+          server: "_mock",
+          tool: "mock_bye",
+          arguments: { sessionId: winnerId },
+        });
+      } finally {
+        rmSync(raceDir, { recursive: true, force: true });
+      }
+    });
   });
 });

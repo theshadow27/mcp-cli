@@ -246,6 +246,34 @@ describe("SharedWorktreeGuard.check — concurrent spawns", () => {
     expect(() => g.check("_claude", "claude_prompt", { prompt: "c", cwd: "/other" })).not.toThrow();
   });
 
+  test("release is idempotent — a double release on ONE directory cannot free a concurrent claim on that same directory", () => {
+    // The previous test double-releases `first` (WT) and asserts on `other`
+    // (/other) — a different cwd, so it can't detect a broken idempotency
+    // guard: decrementing WT twice never touches /other's counter regardless
+    // of whether `reserve()`'s `released` flag actually works. Only two
+    // reservations sharing ONE cwd can pin this, and only the
+    // --allow-shared-worktree path can construct that (a plain second spawn to
+    // an already-pending cwd throws "already in flight" before it can reserve).
+    const g = guard([]);
+    const first = g.check("_claude", "claude_prompt", {
+      prompt: "a",
+      cwd: WT,
+      [ALLOW_SHARED_WORKTREE_ARG]: true,
+    });
+    const second = g.check("_claude", "claude_prompt", {
+      prompt: "b",
+      cwd: WT,
+      [ALLOW_SHARED_WORKTREE_ARG]: true,
+    });
+    first.release();
+    first.release();
+    // second's reservation must still be held: a plain (non-override) spawn
+    // into WT is still refused as in-flight.
+    expect(() => g.check("_claude", "claude_prompt", { prompt: "c", cwd: WT })).toThrow(/already in flight/);
+    second.release();
+    expect(() => g.check("_claude", "claude_prompt", { prompt: "d", cwd: WT })).not.toThrow();
+  });
+
   test("an in-flight spawn does not block a different directory", () => {
     const g = guard([]);
     g.check("_claude", "claude_prompt", { prompt: "a", cwd: WT });

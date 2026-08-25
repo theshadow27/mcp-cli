@@ -43,7 +43,7 @@
  * spelled as "same directory", compared after realpath resolution.
  */
 
-import { resolveRealpath } from "@mcp-cli/core";
+import { consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { isOurProcess } from "./process-identity";
 import { classifyAgentTool } from "./session-domain";
 
@@ -165,7 +165,7 @@ export class SharedWorktreeGuard {
   ) {
     this.isAlive = deps.isAlive ?? defaultIsAlive;
     this.realpath = deps.realpath ?? resolveRealpath;
-    this.warn = deps.warn ?? ((m) => console.warn(m));
+    this.warn = deps.warn ?? ((m) => consoleLogger.warn(m));
   }
 
   /** Live sessions whose working directory is exactly `cwd`. */
