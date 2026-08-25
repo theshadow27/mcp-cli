@@ -1,6 +1,12 @@
+// `typescript-5` is an npm alias for typescript@5.9.3, not a typo for `typescript`.
+// The repo typechecks with typescript@7 (the native Go compiler), which ships only
+// `tsc` plus the `unstable/*` API — it has no standalone `createSourceFile` /
+// `forEachChild`, so a text buffer cannot be parsed without a Project. The rule
+// engine is deliberately program-free (no tsconfig, no checker, ~2s for 49 rules),
+// so it stays on the 5.x parser. Do not "fix" this import back to "typescript".
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import ts from "typescript";
+import ts from "typescript-5";
 
 export interface ImportEdge {
   /** Resolved absolute path of the imported module. */

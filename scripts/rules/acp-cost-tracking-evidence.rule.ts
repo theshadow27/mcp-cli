@@ -29,7 +29,7 @@
  * Sources: #2419, flagged in #2391 adversarial review.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import { createAstHelper } from "./_engine/ast";
 import type { FileMeta } from "./_engine/file-loader";
 import type { CheckRule, RuleContext } from "./_engine/rule";

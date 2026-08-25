@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import ts from "typescript";
+import ts from "typescript-5";
 import { createAstHelper } from "./ast";
 import type { FileMeta } from "./file-loader";
 

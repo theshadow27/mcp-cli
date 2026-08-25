@@ -37,7 +37,7 @@
  * Sources: #2420, flagged in #2391 adversarial review.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 function isRegistryIdentifier(node: ts.Node): boolean {

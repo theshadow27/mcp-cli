@@ -1,4 +1,4 @@
-import ts from "typescript";
+import ts from "typescript-5";
 
 import type { AstHelper } from "./_engine/ast";
 import { createAstHelper } from "./_engine/ast";

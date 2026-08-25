@@ -26,7 +26,7 @@
  * Output: JSON to stdout
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import { readFileSync } from "fs";
 import { resolve, relative } from "path";
 

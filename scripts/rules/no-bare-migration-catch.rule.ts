@@ -11,7 +11,7 @@
  * narrow to the duplicate-column error and re-throw everything else.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const ALTER_ADD_COL = /alter\s+table\s+\S+\s+add\s+column\s+/i;

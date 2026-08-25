@@ -24,7 +24,7 @@
  *   adds it the sprint its behaviour is scoped, and cannot regress afterwards.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { FileMeta } from "./_engine/file-loader";
 import type { CheckRule, RuleContext } from "./_engine/rule";
 

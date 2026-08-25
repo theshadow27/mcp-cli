@@ -11,7 +11,7 @@
  * Sources: #1990 (×3), #2049.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 function isLiteralNode(node: ts.Node): boolean {

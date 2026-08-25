@@ -31,7 +31,7 @@
  * fine.
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 /** Syscall wrappers that throw ENOENT when their target has already vanished. */

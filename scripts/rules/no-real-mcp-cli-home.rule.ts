@@ -38,7 +38,7 @@
  * parent epic #3231 ("no daemon interruption").
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 /** The one file allowed to derive MCP_CLI_DIR from homedir() — everyone else must read options.MCP_CLI_DIR. */

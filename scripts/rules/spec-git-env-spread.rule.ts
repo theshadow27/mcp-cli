@@ -35,7 +35,7 @@
  * Regression in PR #2689 (session-deps.spec.ts, commit 2bf501b5).
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
 const GIT_HOOK_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]);

@@ -16,7 +16,7 @@
  *   - clean:   `log(getErrorMessage(err))` / `console.error(err.message)`
  */
 
-import ts from "typescript";
+import ts from "typescript-5";
 import type { CheckRule, Violated } from "./_engine/rule";
 
 const SNIFF_METHODS = new Set(["startsWith", "includes", "match", "matchAll"]);
