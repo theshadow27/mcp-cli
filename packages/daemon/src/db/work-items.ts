@@ -122,6 +122,59 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
   };
 }
 
+/** A per-domain unique key a work item can claim. */
+export type WorkItemKeyField = "branch" | "prNumber" | "issueNumber";
+
+/**
+ * Thrown when a write would claim a unique key another row in the same domain already owns.
+ *
+ * Replaces the bare SQLite text (`UNIQUE constraint failed: work_items.domain_id,
+ * work_items.branch`) that #3254 surfaced to an orchestrator mid-sprint: it named a column,
+ * not the row in the way, and offered no route out — the operator invented a
+ * `tombstone/dup-of-3066` branch rename to free the slot. Naming the blocking id and the
+ * remedy is the whole point of this class.
+ */
+export class WorkItemConflictError extends Error {
+  /** The row the caller was trying to write. */
+  readonly workItemId: string;
+  /** The row that already claims `value`. */
+  readonly conflictingId: string;
+  readonly field: WorkItemKeyField;
+  readonly value: string | number;
+
+  constructor(workItemId: string, conflictingId: string, field: WorkItemKeyField, value: string | number) {
+    super(
+      `cannot set ${field}=${JSON.stringify(value)} on ${workItemId}: work item ${conflictingId} in this domain already claims it. ` +
+        `Clear it there first (work_items_update {"id":${JSON.stringify(conflictingId)},"${field}":null}) or remove that item ` +
+        `(work_items_delete {"id":${JSON.stringify(conflictingId)}}).`,
+    );
+    this.name = "WorkItemConflictError";
+    this.workItemId = workItemId;
+    this.conflictingId = conflictingId;
+    this.field = field;
+    this.value = value;
+  }
+}
+
+/**
+ * The ids `mcx track` / `work_items_track` mint for a row whose only identity is `value`.
+ *
+ * Kept next to {@link DomainWorkItems.isAbsorbableShadow} rather than inlined at the two
+ * mint sites, because the predicate has to recognise exactly what those sites produce —
+ * a fourth spelling added there and not here silently turns a mergeable shadow into a
+ * hard conflict.
+ */
+function shadowIdSpellings(field: WorkItemKeyField, value: string | number): string[] {
+  switch (field) {
+    case "branch":
+      return [`branch:${value}`];
+    case "prNumber":
+      return [`pr:${value}`];
+    case "issueNumber":
+      return [`issue:${value}`, `#${value}`];
+  }
+}
+
 /** Thrown when updateWorkItem detects a concurrent modification (version mismatch). */
 export class StaleUpdateError extends Error {
   readonly expectedVersion: number;
@@ -669,9 +722,112 @@ export class DomainWorkItems {
     return result.changes > 0;
   }
 
+  /** How many transitions this row has logged. One means "created, never moved". */
+  private transitionCount(workItemId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [number, string]>(
+          "SELECT COUNT(*) AS n FROM work_item_transitions WHERE domain_id = ? AND work_item_id = ?",
+        )
+        .get(this.domainId, workItemId)?.n ?? 0
+    );
+  }
+
+  /**
+   * Is `row` a *shadow* of `value` — a placeholder holding nothing the caller would lose?
+   *
+   * Three conditions, all necessary (#3254):
+   *
+   *  1. **Its id is the one `value` itself mints.** A row called `branch:feat/x` was created
+   *     because that branch appeared with nothing else known about it. A row called `#3066`
+   *     that merely happens to carry the same branch is a tracked issue, not a shadow.
+   *  2. **It claims no other identity key.** A row with a PR *and* the branch is the record
+   *     of a real PR; folding it away would drop the PR binding.
+   *  3. **Its transition log holds only its creation.** This is the manifest-agnostic spelling
+   *     of "nothing has happened to it yet" — the db layer cannot know a project's initial
+   *     phase, but it can see that the row has never moved. A shadow that reached `qa` has
+   *     accumulated history somebody meant, and merging silently discards it.
+   *
+   * Deliberately *not* checked: phase state in `alias_state`. It lives in another module and
+   * another table, so a shadow that somehow carries scratchpad keys loses them here. Condition
+   * 3 is what keeps that theoretical: a row nobody advanced is a row no phase script wrote for.
+   */
+  private isAbsorbableShadow(row: WorkItem, field: WorkItemKeyField, value: string | number): boolean {
+    const mintedHere = shadowIdSpellings(field, value).some((base) =>
+      workItemIdCandidates(this.domainId, base).includes(row.id),
+    );
+    if (!mintedHere) return false;
+    if (field !== "branch" && row.branch !== null) return false;
+    if (field !== "prNumber" && row.prNumber !== null) return false;
+    if (field !== "issueNumber" && row.issueNumber !== null) return false;
+    return this.transitionCount(row.id) <= 1;
+  }
+
+  /**
+   * Clear the way for a patch that claims unique keys, or refuse in the open.
+   *
+   * **Must be called inside the caller's transaction** — it deletes rows, and a later failure
+   * in the same write has to take those deletions with it.
+   *
+   * Returns the ids it absorbed so the caller can report them. An absorbed row is a deletion
+   * the caller never asked for, and #3254's whole complaint was state changing under an
+   * orchestrator with no explanation; silence here would repeat that from the other side.
+   */
+  private resolveKeyConflicts(
+    targetId: string,
+    target: Pick<WorkItem, "branch" | "prNumber" | "issueNumber">,
+    patch: WorkItemPatch,
+  ): string[] {
+    const absorbed: string[] = [];
+
+    const claim = (
+      field: WorkItemKeyField,
+      value: string | number | null | undefined,
+      current: string | number | null,
+      findOwner: () => WorkItem | null,
+    ): void => {
+      // null/undefined is "clear" or "leave alone" — neither can collide.
+      if (value === null || value === undefined || value === current) return;
+      const owner = findOwner();
+      if (!owner || owner.id === targetId) return;
+      if (this.isAbsorbableShadow(owner, field, value)) {
+        this.deleteWorkItem(owner.id);
+        absorbed.push(owner.id);
+        return;
+      }
+      throw new WorkItemConflictError(targetId, owner.id, field, value);
+    };
+
+    claim("branch", patch.branch, target.branch, () => this.getWorkItemByBranch(String(patch.branch)));
+    claim("prNumber", patch.prNumber, target.prNumber, () => this.getWorkItemByPr(Number(patch.prNumber)));
+    claim("issueNumber", patch.issueNumber, target.issueNumber, () =>
+      this.getWorkItemByIssue(Number(patch.issueNumber)),
+    );
+
+    return absorbed;
+  }
+
   updateWorkItem(
     id: string,
     patch: WorkItemPatch,
+    opts?: {
+      forced?: boolean;
+      forceReason?: string;
+      expectedVersion?: number;
+      /** Called after commit with the shadow ids folded into this item. See resolveKeyConflicts. */
+      onAbsorb?: (absorbedIds: string[]) => void;
+    },
+  ): WorkItem {
+    const absorbedIds: string[] = [];
+    const updated = this.updateWorkItemTx(id, patch, absorbedIds, opts);
+    if (absorbedIds.length > 0) opts?.onAbsorb?.(absorbedIds);
+    return updated;
+  }
+
+  private updateWorkItemTx(
+    id: string,
+    patch: WorkItemPatch,
+    absorbedIds: string[],
     opts?: { forced?: boolean; forceReason?: string; expectedVersion?: number },
   ): WorkItem {
     return this.db
@@ -717,6 +873,10 @@ export class DomainWorkItems {
         if (fields.length === 0) {
           return existing;
         }
+
+        // Inside the transaction on purpose: an absorbed shadow must roll back with the
+        // update it was clearing the way for.
+        absorbedIds.push(...this.resolveKeyConflicts(existing.id, existing, patch));
 
         fields.push("updated_at = datetime('now')");
         fields.push("version = version + 1");
@@ -941,9 +1101,35 @@ export class DomainWorkItems {
    * a tool the caller is allowed to use. Guarded, the arm matches nothing, the read-back
    * finds nothing in this domain, and the call throws instead of corrupting a neighbour.
    */
-  upsertWorkItem(item: WorkItemPatch & { id: string }): WorkItem {
-    const before = this.getWorkItem(item.id);
-    const id = before?.id ?? domainScopedWorkItemId(this.domainId, item.id);
+  upsertWorkItem(
+    item: WorkItemPatch & { id: string },
+    opts?: { onAbsorb?: (absorbedIds: string[]) => void },
+  ): WorkItem {
+    const absorbedIds: string[] = [];
+    const result = this.upsertWorkItemTx(item, absorbedIds);
+    if (absorbedIds.length > 0) opts?.onAbsorb?.(absorbedIds);
+    return result;
+  }
+
+  /**
+   * Wrapped in a transaction so the shadow absorption in {@link resolveKeyConflicts} and the
+   * upsert it unblocks either both land or neither does — previously this was a bare
+   * read-then-write pair.
+   */
+  private upsertWorkItemTx(item: WorkItemPatch & { id: string }, absorbedIds: string[]): WorkItem {
+    return this.db
+      .transaction(() => {
+        const before = this.getWorkItem(item.id);
+        const id = before?.id ?? domainScopedWorkItemId(this.domainId, item.id);
+        absorbedIds.push(
+          ...this.resolveKeyConflicts(id, before ?? { branch: null, prNumber: null, issueNumber: null }, item),
+        );
+        return this.upsertRow(id, before, item);
+      })
+      .immediate();
+  }
+
+  private upsertRow(id: string, before: WorkItem | null, item: WorkItemPatch & { id: string }): WorkItem {
     this.db
       .query(
         `INSERT INTO work_items (id, domain_id, issue_number, branch, pr_number, pr_state, pr_url, ci_status, ci_run_id, ci_summary, review_status, merge_state_status, phase)

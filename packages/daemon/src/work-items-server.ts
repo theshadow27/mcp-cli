@@ -180,6 +180,21 @@ const TOOLS = [
     },
   },
   {
+    name: "work_items_delete",
+    description:
+      'Delete one work item by its EXACT id — the cleanup path for a duplicate or shadow row. Unlike work_items_untrack / `mcx untrack`, there is no number resolution of any kind: the id must match a stored id in this domain verbatim (e.g. "#3066", "pr:3253", "branch:feat/x"), and a bare number is rejected outright rather than resolved by-PR-first (#3240). Use work_items_list to find the exact id.',
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: {
+          type: "string",
+          description: 'Exact work item id, e.g. "#3066", "pr:3253", "branch:feat/x". A bare number is an error.',
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "work_items_list",
     description:
       "List all tracked work items. Optionally filter by phase. Stale done items (phase=done, not updated in more than 7 days) are hidden by default; pass include_archived=false to suppress them explicitly, or omit/true to see everything.",
@@ -419,14 +434,25 @@ export class WorkItemsServer {
               existing?.id ?? (prNumber ? `pr:${prNumber}` : issueNumber ? `issue:${issueNumber}` : `branch:${branch}`);
 
             // Atomic upsert — avoids TOCTOU race between concurrent track calls
-            let item = scoped.upsertWorkItem({
-              id,
-              issueNumber: issueNumber ?? undefined,
-              prNumber: prNumber ?? undefined,
-              branch: branch ?? undefined,
-              prUrl: a.prUrl !== undefined ? String(a.prUrl) : undefined,
-              phase: (a.phase as WorkItemPhase | undefined) ?? (existing ? undefined : "impl"),
-            });
+            const trackAbsorbed: string[] = [];
+            let item = scoped.upsertWorkItem(
+              {
+                id,
+                issueNumber: issueNumber ?? undefined,
+                prNumber: prNumber ?? undefined,
+                branch: branch ?? undefined,
+                prUrl: a.prUrl !== undefined ? String(a.prUrl) : undefined,
+                phase: (a.phase as WorkItemPhase | undefined) ?? (existing ? undefined : "impl"),
+              },
+              {
+                onAbsorb: (ids) => {
+                  trackAbsorbed.push(...ids);
+                  this.logger.info(
+                    `[mcpd] work_items_track ${id}: absorbed duplicate work item(s) ${ids.join(", ")} that claimed the same key(s)`,
+                  );
+                },
+              },
+            );
 
             // Auto-populate branch when prNumber is known but branch isn't —
             // fires on the initial track call too, not just update (#1449).
@@ -439,7 +465,16 @@ export class WorkItemsServer {
             }
 
             this.onTrack?.();
-            return { content: [{ type: "text" as const, text: JSON.stringify(item) }] };
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    trackAbsorbed.length > 0 ? { ...item, absorbedDuplicates: trackAbsorbed } : item,
+                  ),
+                },
+              ],
+            };
           }
 
           case "work_items_untrack": {
@@ -452,6 +487,37 @@ export class WorkItemsServer {
               return { content: [{ type: "text" as const, text: `Work item not found: ${id}` }], isError: true };
             }
             return { content: [{ type: "text" as const, text: JSON.stringify({ deleted: id }) }] };
+          }
+
+          case "work_items_delete": {
+            const id = String(a.id ?? "").trim();
+            if (!id) {
+              return { content: [{ type: "text" as const, text: "id is required" }], isError: true };
+            }
+            // The #3240 trap, refused rather than reimplemented: `untrack 3253` resolves
+            // by-PR first and can delete a different row than the caller named. Here a bare
+            // number is not a spelling of anything — `#3253` and `pr:3253` are different
+            // items and only the caller knows which they meant.
+            if (/^\d+$/.test(id)) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Ambiguous id "${id}": work_items_delete takes an exact work item id, never a bare number. "#${id}" (issue-keyed) and "pr:${id}" (PR-keyed) are different items — name the one you mean, or call work_items_list to see the exact ids.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+            const item = scoped.getWorkItem(id);
+            if (!item) {
+              return {
+                content: [{ type: "text" as const, text: `Work item not found: ${id}` }],
+                isError: true,
+              };
+            }
+            scoped.deleteWorkItem(item.id);
+            return { content: [{ type: "text" as const, text: JSON.stringify({ deleted: item.id, item }) }] };
           }
 
           case "work_items_list": {
@@ -612,7 +678,20 @@ export class WorkItemsServer {
             if (a.issueNumber !== undefined)
               patch.issueNumber = a.issueNumber === null ? null : requireInt(a.issueNumber, "issueNumber");
 
-            let updated = scoped.updateWorkItem(id, patch, { forced: force, forceReason });
+            // A shadow row folded into this item is a deletion the caller did not ask for.
+            // Report it in the response as well as the log: #3254 was an orchestrator staring
+            // at unexplained ledger state, and an invisible fix is the same failure inverted.
+            const absorbed: string[] = [];
+            let updated = scoped.updateWorkItem(id, patch, {
+              forced: force,
+              forceReason,
+              onAbsorb: (ids) => {
+                absorbed.push(...ids);
+                this.logger.info(
+                  `[mcpd] work_items_update ${id}: absorbed duplicate work item(s) ${ids.join(", ")} that claimed the same key(s)`,
+                );
+              },
+            });
 
             // Auto-populate branch when prNumber is being set and the patch didn't
             // supply a branch. Runs AFTER the main update so the helper's atomic
@@ -628,7 +707,14 @@ export class WorkItemsServer {
               }
             }
 
-            return { content: [{ type: "text" as const, text: JSON.stringify(updated) }] };
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(absorbed.length > 0 ? { ...updated, absorbedDuplicates: absorbed } : updated),
+                },
+              ],
+            };
           }
 
           case "phase_state_get": {
