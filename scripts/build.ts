@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
+import { resolveBuildCommit } from "./build-commit";
 import { daemonWorkers } from "./daemon-workers";
 import { WORKER_SMOKE_FAILURE_PATTERN } from "./smoke-failure-pattern";
 
@@ -31,8 +32,14 @@ const defineFlag = `--define=__PROTOCOL_HASH__="${protocolHash}"`;
 const compiledFlag = "--define=__COMPILED__=true";
 const buildEpoch = Math.floor(Date.now() / 1000).toString();
 const epochFlag = `--define=__BUILD_EPOCH__="${buildEpoch}"`;
+// Source provenance (#3264): the epoch alone can't distinguish a fresh build of
+// a stale checkout from one that contains a just-merged fix. When git can't
+// answer, the define is omitted and the binary reports no commit.
+const buildCommit = resolveBuildCommit();
+const commitFlags = buildCommit ? [`--define=__BUILD_COMMIT__="${buildCommit}"`] : [];
 console.log(`Protocol hash: ${protocolHash}`);
 console.log(`Build epoch: ${buildEpoch}`);
+console.log(`Build commit: ${buildCommit ?? "(unavailable)"}`);
 
 // ── jq-web build plugin ──
 // Patches jq-web's Emscripten loader at build time:
@@ -284,6 +291,7 @@ async function buildBinary(config: BinaryBuildConfig, outfile: string, target?: 
       __VERSION__: JSON.stringify(version),
       __COMPILED__: "true",
       __BUILD_EPOCH__: JSON.stringify(buildEpoch),
+      ...(buildCommit ? { __BUILD_COMMIT__: JSON.stringify(buildCommit) } : {}),
     },
   });
   if (!result.success) {
@@ -324,7 +332,7 @@ if (releaseMode) {
     const suffix = target.replace("bun-", "");
     console.log(`Building for ${suffix}...`);
     await Promise.all([
-      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --root=${workerRoot} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
+      $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${commitFlags} ${externalFlags} --root=${workerRoot} --target=${target} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd-${suffix}`,
       buildBinary(mcxConfig, `dist/mcx-${suffix}`, target),
       buildBinary(mcpctlConfig, `dist/mcpctl-${suffix}`, target),
     ]);
@@ -350,7 +358,7 @@ if (releaseMode) {
 } else {
   // Dev build: current platform, simple names
   await Promise.all([
-    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${externalFlags} --root=${workerRoot} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
+    $`bun build --compile --minify ${defineFlag} ${compiledFlag} ${versionFlag} ${epochFlag} ${commitFlags} ${externalFlags} --root=${workerRoot} packages/daemon/src/main.ts ${daemonWorkers} --outfile dist/mcpd`,
     buildBinary(mcxConfig, "dist/mcx"),
     buildBinary(mcpctlConfig, "dist/mcpctl"),
   ]);
