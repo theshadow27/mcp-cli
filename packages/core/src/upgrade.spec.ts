@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "./constants";
 import {
+  type ExecutableIdentity,
   type InstallMarker,
   type ProvenanceInput,
   checkForUpdate,
@@ -252,12 +254,18 @@ describe("checkForUpdate", () => {
 });
 
 describe("resolveProvenance", () => {
-  const exe = { paths: ["/home/u/.mcp-cli/bin/mcx"], size: 1000 };
+  const INSTALLED = "a".repeat(64);
+  const OTHER_BYTES = "b".repeat(64);
+  const exe: ExecutableIdentity = {
+    paths: ["/home/u/.mcp-cli/bin/mcx"],
+    size: 1000,
+    sha256: () => INSTALLED,
+  };
   const marker: InstallMarker = {
     version: "2.0.0",
     installedAt: 1787442054,
     source: "install.sh",
-    binaries: [{ path: "/home/u/.mcp-cli/bin/mcx", size: 1000 }],
+    binaries: [{ path: "/home/u/.mcp-cli/bin/mcx", size: 1000, sha256: INSTALLED }],
   };
   const input = (over: Partial<ProvenanceInput> = {}): ProvenanceInput => ({
     current: "2.0.0+1787442054",
@@ -283,17 +291,62 @@ describe("resolveProvenance", () => {
   });
 
   test("a marker for a different path does not vouch for this binary", () => {
-    expect(resolveProvenance(input({ marker, exe: { paths: ["/usr/local/bin/mcx"], size: 1000 } }))).toBe("unknown");
+    const elsewhere = { ...exe, paths: ["/usr/local/bin/mcx"] };
+    expect(resolveProvenance(input({ marker, exe: elsewhere }))).toBe("unknown");
   });
 
   test("a size mismatch means the installed file was overwritten since", () => {
     // e.g. a `bun build` output copied over ~/.mcp-cli/bin/mcx — the marker
     // attests to installed bytes, not merely to a path once written.
-    expect(resolveProvenance(input({ marker, exe: { paths: exe.paths, size: 2000 } }))).toBe("unknown");
+    expect(resolveProvenance(input({ marker, exe: { ...exe, size: 2000 } }))).toBe("unknown");
+  });
+
+  test("a same-size overwrite of the marked path is not a release install (#3260)", () => {
+    // The repair for this PR's qa:fail. `markerCoversExecutable` used to prove
+    // identity by path + byte size alone, so overwriting ~/.mcp-cli/bin/mcx
+    // with a *different* binary of the same length — entirely plausible, since
+    // __BUILD_EPOCH__/__BUILD_COMMIT__ are fixed-width embedded strings, so two
+    // builds of one version routinely match in length — was reported as a
+    // proven "release". A confident falsehood is the exact failure #3260 was
+    // filed about; the marker now records a content hash and this reads back
+    // as "unknown".
+    expect(resolveProvenance(input({ marker, exe: { ...exe, sha256: () => OTHER_BYTES } }))).toBe("unknown");
+  });
+
+  test("a dirty-tree rebuild copied over the marked path reports dev, not release (#3260)", () => {
+    // The same substitution with BUILD_COMMIT also saying `-dirty`. Under the
+    // size-only check the marker outranked the dirty stamp and returned
+    // "release" — a disagreement between two provenance sources resolved in
+    // favour of the weaker proof. The hash no longer matches, so the dirty
+    // stamp is reached and wins.
+    const overwritten = { ...exe, sha256: () => OTHER_BYTES };
+    expect(resolveProvenance(input({ marker, exe: overwritten, commit: "deadbeefcafe-dirty" }))).toBe("dev");
+  });
+
+  test("an executable whose bytes cannot be hashed is unknown, never release", () => {
+    // No size-only fallback: unreadable contents means unproven, and unproven
+    // means "unknown".
+    expect(resolveProvenance(input({ marker, exe: { ...exe, sha256: () => null } }))).toBe("unknown");
+  });
+
+  test("does not hash the executable when path and size already rule the marker out", () => {
+    // The hash is ~80MB of IO on a real binary; the cheap fields exist so that
+    // `mcx upgrade --check` on an unmarked build never pays for it.
+    let hashed = 0;
+    const counted = {
+      ...exe,
+      size: 2000,
+      sha256: () => {
+        hashed++;
+        return INSTALLED;
+      },
+    };
+    expect(resolveProvenance(input({ marker, exe: counted }))).toBe("unknown");
+    expect(hashed).toBe(0);
   });
 
   test("matches an executable reached through a symlinked path", () => {
-    const viaSymlink = { paths: ["/home/link/bin/mcx", "/home/u/.mcp-cli/bin/mcx"], size: 1000 };
+    const viaSymlink = { ...exe, paths: ["/home/link/bin/mcx", "/home/u/.mcp-cli/bin/mcx"] };
     expect(resolveProvenance(input({ marker, exe: viaSymlink }))).toBe("release");
   });
 
@@ -314,6 +367,10 @@ describe("resolveProvenance", () => {
   });
 
   test("a marker outranks a dirty commit stamp for the exact installed bytes", () => {
+    // Sound only because the marker is a content hash: these bytes came out of
+    // a release, whatever the local tree looks like now. A rebuild of the same
+    // version from that dirty tree produces different bytes and loses the
+    // match — see the same-size-overwrite test above.
     expect(resolveProvenance(input({ marker, exe, commit: "abc123def456-dirty" }))).toBe("release");
   });
 
@@ -336,7 +393,11 @@ describe("install marker", () => {
     options.MCP_CLI_DIR = origDir;
   });
 
-  test("round-trips version, source and stat'd sizes", () => {
+  const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
+  /** Valid marker envelope, so element-shape tests vary only `binaries`. */
+  const MARKER_STUB = { version: "2.0.0", installedAt: 1787442054, source: "install.sh" };
+
+  test("round-trips version, source, stat'd sizes and content hashes", () => {
     const binPath = join(options.MCP_CLI_DIR, "mcx-fake");
     writeFileSync(binPath, "0123456789", "utf-8");
 
@@ -345,12 +406,62 @@ describe("install marker", () => {
     const marker = readInstallMarker();
     expect(marker?.version).toBe("2.0.0"); // leading v stripped
     expect(marker?.source).toBe("mcx-upgrade");
-    expect(marker?.binaries).toEqual([{ path: binPath, size: 10 }]);
+    expect(marker?.binaries).toEqual([{ path: binPath, size: 10, sha256: sha256("0123456789") }]);
+  });
+
+  test("a same-size overwrite of an installed binary reads back as unknown (#3260)", () => {
+    // The qa:fail repro for this PR, end-to-end over real files: mark a
+    // binary, replace it with different bytes of identical length, and ask
+    // where the running binary came from. Size and path still match — only
+    // the hash catches it.
+    const binPath = join(options.MCP_CLI_DIR, "mcx-fake");
+    writeFileSync(binPath, "0123456789", "utf-8");
+    writeInstallMarker("2.0.0", "install.sh", [binPath]);
+
+    writeFileSync(binPath, "9876543210", "utf-8"); // same 10 bytes' worth, different content
+    const marker = readInstallMarker();
+    const exe = currentExecutable(binPath);
+    expect(exe?.size).toBe(marker?.binaries[0]?.size); // the old check's whole basis
+    expect(
+      resolveProvenance({
+        current: "2.0.0+1787442054",
+        latest: "2.0.0",
+        commit: "deadbeefcafe-dirty",
+        marker,
+        exe,
+      }),
+    ).toBe("dev");
+  });
+
+  test("an untouched installed binary still proves a release install end to end", () => {
+    const binPath = join(options.MCP_CLI_DIR, "mcx-fake");
+    writeFileSync(binPath, "0123456789", "utf-8");
+    writeInstallMarker("2.0.0", "install.sh", [binPath]);
+
+    expect(
+      resolveProvenance({
+        current: "2.0.0+1787442054",
+        latest: "2.0.0",
+        commit: "deadbeefcafe",
+        marker: readInstallMarker(),
+        exe: currentExecutable(binPath),
+      }),
+    ).toBe("release");
   });
 
   test("skips paths that don't exist rather than failing the install", () => {
     writeInstallMarker("2.0.0", "mcx-upgrade", [join(options.MCP_CLI_DIR, "absent")]);
     expect(readInstallMarker()?.binaries).toEqual([]);
+  });
+
+  test("replaces an existing marker atomically, leaving no temp file behind", () => {
+    const binPath = join(options.MCP_CLI_DIR, "mcx-fake");
+    writeFileSync(binPath, "0123456789", "utf-8");
+    writeInstallMarker("1.0.0", "install.sh", [binPath]);
+    writeInstallMarker("2.0.0", "mcx-upgrade", [binPath]);
+
+    expect(readInstallMarker()?.version).toBe("2.0.0");
+    expect(readdirSync(join(installMarkerPath(), ".."))).toEqual([".installed"]);
   });
 
   test("returns null when no marker is present", () => {
@@ -370,6 +481,33 @@ describe("install marker", () => {
     writeFileSync(path, JSON.stringify({ version: 2 }), "utf-8");
     expect(readInstallMarker()).toBeNull();
   });
+
+  test("drops malformed binary entries instead of throwing on them", () => {
+    // A hand-edited or truncated `binaries` element used to reach the matcher
+    // and crash `mcx upgrade` outright ("null is not an object"). Every
+    // undecidable marker has to land in `unknown`, including this one.
+    const path = installMarkerPath();
+    mkdirSync(join(path, ".."), { recursive: true });
+    const good = { path: "/home/u/.mcp-cli/bin/mcx", size: 10, sha256: sha256("0123456789") };
+    writeFileSync(path, JSON.stringify({ ...MARKER_STUB, binaries: [null, "nope", { path: 1 }, good] }), "utf-8");
+    expect(readInstallMarker()?.binaries).toEqual([good]);
+  });
+
+  test("drops entries from a marker written before hashes were recorded", () => {
+    // An entry with no `sha256` proves nothing about the bytes on disk today.
+    // Upgrading from a pre-hash marker degrades to `unknown`, not `release`.
+    const path = installMarkerPath();
+    mkdirSync(join(path, ".."), { recursive: true });
+    const legacy = { ...MARKER_STUB, binaries: [{ path: "/home/u/.mcp-cli/bin/mcx", size: 1000 }] };
+    writeFileSync(path, JSON.stringify(legacy), "utf-8");
+
+    const marker = readInstallMarker();
+    expect(marker?.binaries).toEqual([]);
+    const exe: ExecutableIdentity = { paths: ["/home/u/.mcp-cli/bin/mcx"], size: 1000, sha256: () => "deadbeef" };
+    expect(resolveProvenance({ current: "2.0.0+1787442054", latest: "2.0.0", commit: "abc123", marker, exe })).toBe(
+      "unknown",
+    );
+  });
 });
 
 describe("currentExecutable", () => {
@@ -377,6 +515,24 @@ describe("currentExecutable", () => {
     const exe = currentExecutable();
     expect(exe?.paths).toContain(process.execPath);
     expect(exe?.size).toBeGreaterThan(0);
+  });
+
+  test("hashes the file's contents on demand", () => {
+    const path = join(tmpdir(), `mcp-cli-exe-hash-${process.pid}`);
+    writeFileSync(path, "0123456789", "utf-8");
+    try {
+      expect(currentExecutable(path)?.sha256()).toBe(createHash("sha256").update("0123456789").digest("hex"));
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  test("hashing returns null when the file goes away underneath it", () => {
+    const path = join(tmpdir(), `mcp-cli-exe-vanish-${process.pid}`);
+    writeFileSync(path, "0123456789", "utf-8");
+    const exe = currentExecutable(path);
+    rmSync(path, { force: true });
+    expect(exe?.sha256()).toBeNull();
   });
 
   test("returns null for a path that doesn't exist", () => {

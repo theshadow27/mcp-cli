@@ -73,12 +73,36 @@ if [ "$OS" = "darwin" ] && command -v codesign >/dev/null 2>&1; then
   done
 fi
 
+# SHA-256 of a file, via whichever of the three usual tools this box has:
+# sha256sum (coreutils/Linux), shasum -a 256 (macOS/perl), openssl dgst.
+# Every field but the digest is discarded, so all three agree on the output.
+# Returns non-zero when none is installed, which drops the whole marker.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    return 1
+  fi
+}
+
 # Record install provenance (#3260), read back by `mcx upgrade --check`.
 # Every compiled binary carries a `+epoch` BUILD_VERSION stamp, release
 # artifacts included, so a binary cannot tell from its own version whether it
 # arrived from an official release — only the installer knows, so it writes it
-# down. Sizes use `wc -c`, matching the reader's statSync().size, and are taken
-# AFTER codesign, which rewrites the binaries on macOS.
+# down. Sizes use `wc -c`, matching the reader's statSync().size, and hashes
+# are SHA-256, matching the reader's createHash("sha256") — both taken AFTER
+# codesign, which rewrites the binaries on macOS.
+#
+# The hash, not the size, is what proves identity: two builds of the same
+# version very often share a byte count (the embedded build stamps are
+# fixed-width), so a size-only marker would vouch for a binary that had been
+# overwritten in place. No hashing tool available means no marker, and the
+# reader says "unknown" — the one thing it must never do is claim "release"
+# on evidence this weak.
 # Schema mirrors InstallMarker in packages/core/src/upgrade.ts; the reader
 # looks under $HOME/.mcp-cli/bin, so a custom MCP_CLI_INSTALL_DIR simply
 # leaves provenance unverifiable ("unknown") rather than wrong.
@@ -92,18 +116,23 @@ fi
 # which is the honest answer, and never as "release".
 record_provenance() {
   mkdir -p "$INSTALL_DIR/versions" || return 1
+  # Collected before the temp file is opened, so a missing hashing tool aborts
+  # without leaving a stray partial file behind.
+  entries=""
+  sep=""
+  for bin in mcx mcpd mcpctl; do
+    [ -f "$INSTALL_DIR/$bin" ] || continue
+    size=$(wc -c < "$INSTALL_DIR/$bin" | tr -d ' ')
+    # A binary we can't hash is not recorded on size alone — an unprovable
+    # entry is worse than a missing one.
+    hash=$(sha256_of "$INSTALL_DIR/$bin") || return 1
+    [ -n "$hash" ] || return 1
+    entries="$entries$sep{\"path\":\"$INSTALL_DIR/$bin\",\"size\":$size,\"sha256\":\"$hash\"}"
+    sep=","
+  done
   tmp="$INSTALL_DIR/versions/.installed.tmp.$$"
-  {
-    printf '{"version":"%s","installedAt":%s,"source":"install.sh","binaries":[' "${VERSION#v}" "$(date +%s)"
-    sep=""
-    for bin in mcx mcpd mcpctl; do
-      [ -f "$INSTALL_DIR/$bin" ] || continue
-      size=$(wc -c < "$INSTALL_DIR/$bin" | tr -d ' ')
-      printf '%s{"path":"%s","size":%s}' "$sep" "$INSTALL_DIR/$bin" "$size"
-      sep=","
-    done
-    printf ']}\n'
-  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  printf '{"version":"%s","installedAt":%s,"source":"install.sh","binaries":[%s]}\n' \
+    "${VERSION#v}" "$(date +%s)" "$entries" > "$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$INSTALL_DIR/versions/.installed" || { rm -f "$tmp"; return 1; }
 }
 

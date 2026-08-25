@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -442,9 +443,11 @@ describe("cmdUpgrade full flow", () => {
     const markedPaths = marker?.binaries.map((b) => b.path) ?? [];
     expect(markedPaths).toContain(target);
     expect(markedPaths).toContain(join(versionDir("2.0.0"), "mcx"));
-    // Sizes describe the installed bytes, so a later overwrite stops matching.
+    // The marker describes the installed *bytes*, so any later overwrite stops
+    // matching — including one that happens to be the same length (#3260).
     const markedTarget = marker?.binaries.find((b) => b.path === target);
     expect(markedTarget?.size).toBe(statSync(target).size);
+    expect(markedTarget?.sha256).toBe(createHash("sha256").update(readFileSync(target)).digest("hex"));
   });
 
   test("outputs JSON on successful upgrade, including install locations", async () => {

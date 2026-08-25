@@ -5,7 +5,19 @@
  * and a daily update-check cache to avoid hammering GitHub.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { BUILD_COMMIT, options } from "./constants";
 import { spawnCapture } from "./subprocess";
@@ -62,11 +74,21 @@ export interface UpdateCheckResult {
  * Provenance record written by the installer (`mcx upgrade`, `install.sh`)
  * and read back by `checkForUpdate`.
  *
- * Sizes are recorded so that overwriting an installed binary in place (say,
- * a `bun build` output copied over `~/.mcp-cli/bin/mcx`) stops matching:
- * the marker attests to specific installed *files*, not merely to a path
- * having been written once. `wc -c` and `statSync().size` agree, which keeps
- * the shell installer and this reader on the same definition.
+ * A SHA-256 of each installed file is recorded so that overwriting an
+ * installed binary in place (say, a `bun build` output copied over
+ * `~/.mcp-cli/bin/mcx`) stops matching: the marker attests to the specific
+ * installed *bytes*, not merely to a path having been written once, nor to a
+ * byte count. Size alone is not identity — two builds of the same version
+ * very often share a length, since `__BUILD_EPOCH__`/`__BUILD_COMMIT__` are
+ * fixed-width embedded strings, so a same-size substitution would satisfy a
+ * size-only check and produce a confident falsehood in the exact direction
+ * #3260 exists to eliminate. Size and path survive as cheap pre-filters that
+ * let the common (no marker, or a marker for some other install) case answer
+ * without hashing tens of megabytes; the hash is the proof.
+ *
+ * `sha256sum`/`shasum -a 256` and `createHash("sha256")` agree, which keeps
+ * the shell installer and this reader on the same definition — as do `wc -c`
+ * and `statSync().size` for the pre-filter.
  */
 export interface InstallMarker {
   /** Release version installed, without a leading `v` (e.g. `2.0.0`). */
@@ -75,7 +97,7 @@ export interface InstallMarker {
   installedAt: number;
   /** Which installer wrote this — `mcx-upgrade` or `install.sh`. */
   source: string;
-  binaries: Array<{ path: string; size: number }>;
+  binaries: Array<{ path: string; size: number; sha256: string }>;
 }
 
 /** Identity of the running executable, as seen by the provenance check. */
@@ -83,6 +105,16 @@ export interface ExecutableIdentity {
   /** Candidate paths for this executable (raw and resolved — `$HOME` may be a symlink). */
   paths: string[];
   size: number;
+  /**
+   * Hash of this executable's bytes, computed on demand — null if unreadable.
+   *
+   * A thunk rather than a value so that hashing is paid for only when a marker
+   * already matches on path and size, i.e. only when there is a `release`
+   * verdict left to prove. An `mcx upgrade --check` on an unmarked binary
+   * (the common case for a locally-built mcx) never touches the file's
+   * contents at all.
+   */
+  sha256: () => string | null;
 }
 
 export interface ProvenanceInput {
@@ -188,29 +220,82 @@ export function installMarkerPath(): string {
   return join(options.MCP_CLI_DIR, "bin", "versions", ".installed");
 }
 
-/** Read the install provenance marker, or null if absent/corrupt. */
+/**
+ * SHA-256 of a file's bytes, or null if it can't be read.
+ *
+ * Streamed in fixed chunks rather than `readFileSync`-then-hash: these are
+ * ~80MB compiled binaries, and there is no reason to hold one in memory to
+ * produce 32 bytes of digest.
+ */
+function sha256File(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const hash = createHash("sha256");
+    const buf = Buffer.allocUnsafe(1 << 20);
+    let read = readSync(fd, buf, 0, buf.length, null);
+    while (read > 0) {
+      hash.update(buf.subarray(0, read));
+      read = readSync(fd, buf, 0, buf.length, null);
+    }
+    return hash.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
+/**
+ * Read the install provenance marker, or null if absent/corrupt.
+ *
+ * Each `binaries` entry is shape-checked individually, not just the array
+ * around it: an entry that isn't `{path, size, sha256}` is dropped rather
+ * than handed to the matcher, so hand-edited or truncated marker content can
+ * only ever cost a `release` verdict, never crash `mcx upgrade`. Dropping
+ * also covers markers written before hashes were recorded — an entry with no
+ * `sha256` proves nothing about the bytes on disk today, which is precisely
+ * the "cannot prove it" case that must read back as `unknown`.
+ */
 export function readInstallMarker(): InstallMarker | null {
   try {
     const raw = JSON.parse(readFileSync(installMarkerPath(), "utf-8")) as InstallMarker;
     if (typeof raw.version !== "string" || !Array.isArray(raw.binaries)) return null;
-    return raw;
+    return { ...raw, binaries: raw.binaries.filter(isMarkedBinary) };
   } catch {
     return null;
   }
 }
 
+/** True for a marker entry carrying all three fields the matcher needs. */
+function isMarkedBinary(b: unknown): b is InstallMarker["binaries"][number] {
+  if (typeof b !== "object" || b === null) return false;
+  const entry = b as Record<string, unknown>;
+  return typeof entry.path === "string" && typeof entry.size === "number" && typeof entry.sha256 === "string";
+}
+
 /**
  * Record that `version` was installed from an official release at `paths`.
  *
- * Sizes are stat'd here rather than taken on trust, so the marker always
- * describes the bytes actually on disk at install time. Paths that don't
- * exist are skipped — a partial install records what it managed to install.
+ * Sizes and hashes are read off disk here rather than taken on trust, so the
+ * marker always describes the bytes actually installed. Paths that don't
+ * exist — or that can't be hashed — are skipped: a partial install records
+ * what it managed to install, and an entry we can't prove is worse than no
+ * entry at all.
  */
 export function writeInstallMarker(version: string, source: string, paths: string[]): void {
   const binaries: InstallMarker["binaries"] = [];
   for (const path of paths) {
     try {
-      binaries.push({ path, size: statSync(path).size });
+      const size = statSync(path).size;
+      const sha256 = sha256File(path);
+      if (sha256) binaries.push({ path, size, sha256 });
     } catch {
       /* not installed (e.g. an optional binary missing from the tarball) */
     }
@@ -223,7 +308,13 @@ export function writeInstallMarker(version: string, source: string, paths: strin
   };
   const markerPath = installMarkerPath();
   mkdirSync(join(markerPath, ".."), { recursive: true });
-  writeFileSync(markerPath, `${JSON.stringify(marker)}\n`, "utf-8");
+  // Staged through a temp file, matching `install.sh`'s temp+`mv`: a crash or
+  // ENOSPC mid-write would otherwise truncate a previously-good marker in
+  // place. That fails safe (unparseable reads back as `unknown`) but needlessly
+  // discards a real `release` record.
+  const tmpPath = `${markerPath}.tmp.${process.pid}`;
+  writeFileSync(tmpPath, `${JSON.stringify(marker)}\n`, "utf-8");
+  renameSync(tmpPath, markerPath);
 }
 
 /** Identify the running executable for a provenance check. Null if unreadable. */
@@ -237,15 +328,30 @@ export function currentExecutable(execPath: string = process.execPath): Executab
     } catch {
       /* unresolvable symlink — the raw path is still a valid candidate */
     }
-    return { paths, size };
+    return { paths, size, sha256: () => sha256File(execPath) };
   } catch {
     return null;
   }
 }
 
-/** True when the marker attests to the exact executable that is running. */
+/**
+ * True when the marker attests to the exact bytes that are running.
+ *
+ * Path and size are checked first purely to avoid hashing: they narrow the
+ * marker to the one entry that could plausibly describe this executable, and
+ * the hash then decides. A size match on its own means nothing — that was
+ * #3260's repair round, where a same-length overwrite of a marked path was
+ * reported as a proven `release` install.
+ *
+ * An executable we cannot hash is not a match. There is no size-only
+ * fallback, by design: the fallback verdict is `unknown`, and `unknown` is
+ * the correct answer whenever the proof is unavailable.
+ */
 function markerCoversExecutable(marker: InstallMarker, exe: ExecutableIdentity): boolean {
-  return marker.binaries.some((b) => b.size === exe.size && exe.paths.includes(b.path));
+  const candidates = marker.binaries.filter((b) => b.size === exe.size && exe.paths.includes(b.path));
+  if (candidates.length === 0) return false;
+  const digest = exe.sha256();
+  return digest !== null && candidates.some((b) => b.sha256 === digest);
 }
 
 /**
@@ -254,9 +360,12 @@ function markerCoversExecutable(marker: InstallMarker, exe: ExecutableIdentity):
  *
  * Ordered most-conclusive first:
  *
- * 1. The install marker attests to this exact executable, at this version →
- *    `release`. This is the only positive proof available; nothing derivable
- *    from `BUILD_VERSION` can establish it.
+ * 1. The install marker attests to this exact executable's *contents*, at this
+ *    version → `release`. This is the only positive proof available; nothing
+ *    derivable from `BUILD_VERSION` can establish it. It outranks the dirty
+ *    check below only because it is a content hash: it says these exact bytes
+ *    came out of an official release, which a locally rebuilt binary — dirty
+ *    tree or not — cannot reproduce without already being that release.
  * 2. `BUILD_COMMIT` reports `-dirty`/`-unknown` → `dev`. Release CI builds
  *    from a clean checkout, so an unclean (or unverifiable) source tree can
  *    never be an official artifact.
