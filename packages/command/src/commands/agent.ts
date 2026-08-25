@@ -1036,15 +1036,19 @@ async function agentBye(args: string[], provider: AgentProvider, d: AgentDeps): 
 
   if (byeResult.worktree) {
     if (!clean) {
-      const wtPath =
-        byeResult.cwd ?? resolveWorktreePath(d.getCwd(), byeResult.worktree, readWorktreeConfig(d.getCwd()));
+      // Resolve from the session's own recorded repoRoot, not the caller's cwd —
+      // the caller may be running `bye` from inside a different worktree, which
+      // would otherwise get nested onto the real repo root (#3110).
+      const repoRoot = byeResult.repoRoot ?? d.getCwd();
+      const wtPath = byeResult.cwd ?? resolveWorktreePath(repoRoot, byeResult.worktree, readWorktreeConfig(repoRoot));
       d.printInfo(`Worktree preserved: ${wtPath}`);
       d.printInfo(`Reclaim with 'mcx agent ${provider.name} bye --clean' next time, or sweep later with 'mcx gc'.`);
     } else if (byeResult.cwd) {
       cleanupWorktree(byeResult.worktree, byeResult.cwd, d, byeResult.repoRoot);
     } else if (hasFeature(provider, "resume")) {
-      // Claude: daemon-created worktrees have cwd=null — resolve from local repo root
-      const repoRoot = d.getCwd();
+      // Claude: daemon-created worktrees have cwd=null — resolve from the session's
+      // recorded repoRoot, not the caller's cwd (#3110).
+      const repoRoot = byeResult.repoRoot ?? d.getCwd();
       const wtConfig = readWorktreeConfig(repoRoot);
       const worktreeCwd = resolveWorktreePath(repoRoot, byeResult.worktree, wtConfig);
       cleanupWorktree(byeResult.worktree, worktreeCwd, d, repoRoot);
