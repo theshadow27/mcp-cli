@@ -76,6 +76,38 @@ they wait until the loop demands them.
 - Earlier (2026-08-24): claude patched copy at 2.1.241; #3234 idle-exit and #3227 quota
   fixes live — the systemd stopgap is obsolete (it caused #3243; never reinstall it).
 
+### Worktree sweep at pre-flight (2026-08-26)
+
+**27 worktrees → 1.** Only `sprint-81` remains (active, PR #3360). `mcx gc` reclaimed 15
+and deleted 8 merged branches; 4 more needed `git worktree unlock` first (stale locks,
+see #3363); the rest were removed by hand after verification. `mcx gc --dry-run` now
+reports nothing to do.
+
+Method, for the next sweep — **the authoritative supersession signal is PR merge state,
+not a file diff.** Comparing a branch's files against main flags branches that main has
+moved *past* as if they held unique work: `fix/issue-3213-adopt-or-ignore` showed 1
+"differing" file, but its commit had merged as PR #3287 and main had since changed that
+file again. Query `gh pr list --head <branch> --state all` instead. `mcx gc`'s own
+judgement agreed exactly with the PR-state analysis on all 19 candidates.
+
+Removing a worktree does **not** delete its branch, so committed work is never at risk —
+only uncommitted work is. Three trees held uncommitted drafts, all verified superseded
+(one stale TS7 attempt using the `typescript-native` naming CLAUDE.md now forbids; two
+byte-identical drafts of the #3344 change that shipped differently as #3347). Snapshotted
+to scratch before removal.
+
+**Branches deliberately preserved** (unique commits, no PR, kept as refs after their
+worktrees were reclaimed):
+- `qa-3328` — content is on main via #3328's squash; kept only because commit identity differs.
+- `fix/issue-3254-work-items-delete` — abandoned alternative to #3348. Main already has
+  exact-id `work_items_delete` with the #3240 bare-number refusal; this branch's extra idea
+  is aliasing `work_items_untrack` onto it and reporting the id actually deleted.
+- `chore/3333-bun-140-pins` — abandoned alternative to #3346, touches `bun-version.ts`.
+  **#3333 is still open**, so check this branch before re-implementing its tail.
+
+Never `git worktree remove --force`: the safety check is load-bearing and in this sweep it
+correctly refused two trees holding an untracked `pre-commit.spec.ts`.
+
 ### Sprint-80 debris cleared at pre-flight
 
 Three work items were merged+closed but stranded at `phase: impl` with `prNumber: null`
