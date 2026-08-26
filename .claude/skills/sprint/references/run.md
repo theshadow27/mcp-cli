@@ -259,6 +259,28 @@ are pre-enriched by the producers in #1575/#1576/#1577/#1581/#1585/#1586/
 not the orchestrator). It surfaces the same EventBus but loses enrichment
 and forces the 5-lookup hydration loop the monitor stream eliminates.
 
+## Spawn with the phase prompt — briefs are banned
+
+`buildImplPrompt` (`.claude/phases/impl-fn.ts`) produces exactly
+`/implement <N>`. **Spawn that.** Do not write a bespoke brief that restates
+the ticket, adds orchestrator hypotheses, or pre-writes a PR body.
+
+Every brief you are tempted to write is evidence that the *ticket* is
+underspecified. Fix the ticket — it is durable, reviewable, and read by the
+worker anyway. A brief is a private guess that expires at the end of the
+session, and an orchestrator hypothesis written into one is an instruction to
+spend box time on it.
+
+Sprint 80 gave each session a 40–90 line hand-written brief. Workers
+corrected the orchestrator three times on the contents; the response to being
+out-reasoned was longer briefs. When the last items were finally launched the
+mechanical way — issue number, nothing else — they produced merged PRs,
+including a regression spec the orchestrator had talked itself out of.
+
+The narrow exception is a task with no ticket at all (an audit, an
+investigation gate). Give it a scope and a cut line, and file the ticket if
+the work recurs.
+
 ## Interacting with workers
 
 End (`bye`) only when work is **conclusively** finished — for an impl
@@ -563,19 +585,18 @@ verify). Post-merge label cleanup is an audit-trail repair, not a substitute.
 
 **Precondition — the reviewer must be ON the PR branch, or self-repair
 silently breaks.** It can only push if it was spawned `--cwd` the worktree
-that holds the branch. The phase scripts emit `--worktree` (they don't know
-the impl worktree's path), so the orchestrator **must override review /
-repair / QA spawns with `--cwd <kept-impl-worktree>`** — never let a
-post-impl phase spawn a fresh `--worktree`. A reviewer in a fresh
-`--worktree` lands on a scratch branch and **cannot** check out the PR
-branch (it's locked in the kept impl worktree); it will then either edit
-the wrong tree via `git -C` while validating in the scratch tree (= main,
-meaningless) or hang. Sprint 66 lost two cycles (#2153, #2437) to exactly
-this. **Rule: one worktree per issue, `--cwd` through
+that holds the branch. `qa.ts` and `review.ts` both read `worktree_path` from
+phase state and emit `--cwd` themselves (#3290), falling back to
+`--worktree` only when the key is absent — so **no manual override is
+needed on the happy path.** What the orchestrator still owns is making sure
+the key is set: `bye --keep-worktree`, and the successor pointed at that
+path. A reviewer that does land in a fresh `--worktree` sits on a scratch
+branch and **cannot** check out the PR branch (it is locked in the kept impl
+worktree); it then validates main and reports a meaningless verdict rather
+than failing loudly. **Rule: one worktree per issue, carried through
 impl→review→repair→QA; fresh `--worktree` only for off-branch nerd-snipe
-gates.** Structural fix: `--track` / #1286 — have the spawn auto-persist
-`worktree_path` to the work item so phases emit `--cwd` without the
-orchestrator having to remember.
+gates.** If a phase still emits `--worktree` for a tracked item, the missing
+`worktree_path` is the bug — fix that, don't hand-patch the spawn.
 
 ### Merging — the phase path, never raw `gh pr merge`
 
@@ -804,24 +825,25 @@ it's mostly pre-paid. Respect the freeze only when >30 min from reset.
 (Overly literal gating deferred #1597 a whole sprint when it would have
 merged cleanly with 7 min to spare.)
 
-## The gate baton — one gate on the box at a time
+## Gate admission — the lease is the baton
 
-Only ONE `am-i-done` gate (or gated push) runs on the box at a time.
-Concurrent gates starve each other — four in parallel ran 3–5× slower
-than serial, pegged the CPU, and caused spurious load-flake failures
-(openssl/tls specs, SIGTERMs) that cost retry rounds. The orchestrator
-holds the baton: a worker whose next step is a gate or push ends its turn
-and waits for an explicit "BATON: go" message; the orchestrator hands the
-baton to exactly one worker at a time, ordered by readiness (finishing
-pipelines before starting new ones). Worker briefs must say so.
+Only one `am-i-done` gate runs on the box at a time, and **the code already
+enforces this**. `scripts/am-i-done.ts` marks its `TEST_CHANGED` step
+`lease: true`; admission goes through the flock-based, crash-safe lease in
+`packages/core/src/gate-lease.ts` (#2690). Every hook path reaches it:
+pre-commit runs `am-i-done --pre-commit` (static gate only — typecheck, lint,
+rules; ~20s) and pre-push runs `am-i-done --pre-push`.
 
-**A `git commit` IS a gate action** — the pre-commit hook runs the sweep,
-so "commit your work first, gate later" briefs fire un-batoned gates.
-Briefs must have workers batch work into ONE commit, made FOREGROUND (a
-detached command never wakes its session), under the same baton as the
-gate/push it precedes. Rebases don't run hooks; commits and pushes do.
-Cross-repo neighbors can't be batoned — check `uptime` before handing it,
-and expect some ambient load.
+**The orchestrator does not hand out a baton.** Do not ask workers to request
+one, do not serialise pushes by messaging, do not end a turn to wait for a
+"go". Sprint 80 hand-ran exactly that protocol for a whole sprint; every
+round trip was latency the orchestrator inserted, and it stranded a finished
+item behind contention it had itself created. Workers commit and push when
+they are ready; the lease orders them.
+
+The lease is per-repo, not per-host, so a neighbour fleet still contends.
+`uptime` is the honest load signal. Never fix load with a killer, reaper, or
+watchdog — that is what caused the sprint 69/70 collapse.
 
 ## Model mix
 

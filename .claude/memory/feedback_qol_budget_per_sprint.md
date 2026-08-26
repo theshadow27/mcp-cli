@@ -23,7 +23,7 @@ Planned spend across the arc, in priority order (all filed 2026-08-22, mostly by
 sprint orchestrators themselves):
 
 - **79**: #3107 (`/goal` interception + `spawn --goal` — binds an orchestrator's exit
-  criterion in the harness instead of a brief) and #3104 (`[RATE LIMITED]` sticky-for-the-turn
+  criterion in the harness instead of a brief) and #3104 (rate-limit badge sticky-for-the-turn
   false signal).
 - **80**: #3033 (orchestrator halt on quota freeze has no durable resume trigger) and #3031
   (detect stranded PRs — `review:changes` stale vs head commit). Together these two are

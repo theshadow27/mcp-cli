@@ -23,7 +23,7 @@
 - [No rebase of sprint branch](feedback_no_rebase_sprint_branch.md) — sprint-{N} branch is meta-only and main is strict=false; commit on top, never rebase to "catch up" (sprint 59 startup fumble)
 - [Agent briefs run full gate](feedback_agent_briefs_full_gate.md) — tell code-editing agents to run `bun run am-i-done`, not a subset; enumerate ALL packages when partitioning (#2344 missed codex)
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
-- [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); `[RATE LIMITED]` is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
+- [Quota status staleness](feedback_quota_status_staleness.md) — `quota_status` can be frozen (check `fetchedAt` + `lastError`); the rate-limit badge is soft backpressure, not a hard block; frozen utilization:100 ≠ true exhaustion
 - [Foreground am-i-done to unstick rate-limited worker](feedback_foreground_am_i_done_unstick.md) — worker stuck re-launching am-i-done as a background task loops under throttle; interrupt and run a blocking foreground Bash call with ~120s timeout instead
 - [Meta-issue planning guard](feedback_meta_issue_planning_guard.md) — exclude issues whose surface is .claude/phases/**, .mcx.yaml, or .claude/skills/** at plan time (meta; sprint-74 note: #2804 merged with a reload-after-merge protocol but cost 3 lock rounds via #2737)
 - [Halt needs a durable artifact](feedback_halt_needs_durable_artifact.md) — a resume plan in sprint markdown is read by nobody; sprint 77 stalled 19 days undetected
@@ -76,7 +76,8 @@
 ## Project Conventions
 - `mcx claude` commands: spawn, resume, ls, send, bye, log, wait, interrupt, worktrees
 - Worktrees go in `.claude/worktrees/`
-- Pre-commit hook: typecheck + lint + test + coverage (timing budget warn-only, see #812)
+- Pre-commit hook: **static gate only** — `am-i-done --pre-commit` (typecheck, lint, rules). Tests run at pre-push; coverage in CI (#3344/PR #3347; regression spec `.git-hooks/pre-commit.spec.ts`). The old direct `bun run test:coverage` bypassed the gate lease and was the real gate-herd contention driver.
 - `bun dev:mcx --` for running CLI in dev mode
 - Release process: no auto-versioning. Intentional at sprint boundaries via `/release`. Tag push triggers Release workflow. Diary = retro (internal). Release notes = changelog (user-facing).
 - Branch protection on `main`: `check`/`coverage`/`build` required, auto-merge enabled. As of sprint 38, `strict_required_status_checks_policy: false` (ruleset 13509324) — branches do NOT need to be up-to-date. Merge order is orchestrator's responsibility; main-CI is the gate.
+- [**No GitHub merge queue**](no_github_merge_queue.md) — not on an enterprise plan; never propose it (or `strict: true`). Explained repeatedly. Explore `gh-stacks` instead.

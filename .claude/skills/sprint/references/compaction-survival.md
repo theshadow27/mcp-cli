@@ -32,6 +32,11 @@ These are durable across compaction because they live outside the chat:
   '{"workItemId":"#N","key":"session_id"}'`. Phase scripts wrote
   `session_id`, `qa_session_id`, `review_session_id`, `repair_session_id`,
   `worktree_path` etc. there.
+  **`work_items_get` returns an envelope, not a bare item (#2891).** Present:
+  `{ "found": true, "item": { ... } }`. Absent: `{ "found": false, ...lookupKeys }`
+  — exit 0, *not* an error. So jq `.item.phase` / `.item.id`, never `.phase` /
+  `.id`, and check `.found` before reading `.item`. The pre-#2891 paths return
+  `null` silently, which reads as "no phase" rather than "wrong query".
 - **Monitor task** — the persistent `bkqklwlpx`-style task started at
   sprint open. `TaskList` shows it; new events keep arriving as
   notifications. Don't start a second one — duplicate streams burn cache

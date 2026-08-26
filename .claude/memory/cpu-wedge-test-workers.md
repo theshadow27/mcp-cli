@@ -22,7 +22,7 @@ The "bun test-workers wedge the box at 100% CPU and accumulate" symptom was **ca
 
 ## The upstream bun spin is real but was NOT the sprint-70 cause
 
-There IS a genuine bun bmalloc `madvise` EAGAIN spin upstream ([bun#27490](https://github.com/oven-sh/bun/issues/27490) → dup of open #17723, + #27766; we run 1.3.14, last Zig release before the Rust rewrite). But in **normal single-run operation it does not trip** — 45s clean proves it. Whether Bun's Rust rewrite retires it is tracked in **#2633**. Do not build mitigations on the assumption it fires in normal use; it doesn't.
+There IS a genuine bun bmalloc `madvise` EAGAIN spin upstream ([bun#27490](https://github.com/oven-sh/bun/issues/27490) → dup of open #17723, + #27766; written when we ran 1.3.14, the last Zig release before the Rust rewrite; the repo moved to **Bun 1.4.0** on 2026-08-25 (#3333/PR #3346 — CI pins, engines floor, MIN_BUN_VERSION)). But in **normal single-run operation it does not trip** — 45s clean proves it. Whether Bun's Rust rewrite retires it is tracked in **#2633**. Do not build mitigations on the assumption it fires in normal use; it doesn't.
 
 ## The rule (load-bearing)
 
