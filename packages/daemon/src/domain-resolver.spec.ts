@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { type Domain, NO_DOMAIN_ID, NO_REPO_ROOT } from "@mcp-cli/core";
 import { NULL_DOMAIN_RESOLVER, createDomainResolver } from "./domain-resolver";
 
 /*
@@ -71,6 +71,17 @@ describe("createDomainResolver", () => {
     const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test")]));
     expect(() => r.idForPath("relative/path")).not.toThrow();
     expect(r.idForPath("relative/path")).toBe(NO_DOMAIN_ID);
+  });
+
+  // #3209 review — `NO_REPO_ROOT` now reaches this resolver on the real path: every
+  // alias_state writer and reader (the four IPC handlers, `phase_state_*`, the automation
+  // dispatcher) partitions by `idForPath(repoRoot)`, and the sentinel is a legal repoRoot.
+  // It is not absolute, so it lands in the same catch as a relative path — assert that
+  // explicitly, because "both doors agree on the sentinel row" depends on it.
+  test("the NO_REPO_ROOT sentinel is the domain sentinel, and never owned by a domain", () => {
+    const r = createDomainResolver(noSessions([domain(3, "phoenix", "/mcx-test")]));
+    expect(() => r.idForPath(NO_REPO_ROOT)).not.toThrow();
+    expect(r.idForPath(NO_REPO_ROOT)).toBe(NO_DOMAIN_ID);
   });
 
   test("nested domains resolve to the innermost", () => {

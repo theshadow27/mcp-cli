@@ -11,7 +11,9 @@ import {
   computeWorktreeRootResult,
   ensureCoreBareUnset,
   findGitRoot,
+  findGitRootResult,
   findWorktreeRoot,
+  findWorktreeRootResult,
   fixCoreBare,
 } from "./git";
 import type { SpawnResult } from "./subprocess";
@@ -526,5 +528,45 @@ describe("gitDiscoverEnv strip reaches --show-toplevel (#2862 secondary gap)", (
       else process.env.GIT_WORK_TREE = priorWorkTree;
       rmSync(repo, { recursive: true });
     }
+  });
+});
+
+describe("git-unavailable is never memoized (#3378)", () => {
+  // A `git-unavailable` result is a fact about the machine at one instant, not about the
+  // path. Memoizing it froze a five-second CPU-starvation spike into a wrong answer for
+  // the life of the process — which in the daemon means "until restart": the automation
+  // dispatcher read phase state from the NO_REPO_ROOT bucket forever after one bad probe.
+  const timeoutSpawn: GitSpawnFn = () => spawnResult({ timedOut: true, signal: "SIGTERM" });
+  const okSpawn: GitSpawnFn = () => spawnResult({ ok: true, exitCode: 0, stdout: "/repo/top\n" });
+
+  test("findGitRootResult re-probes after a timeout, so a recovered host is seen", () => {
+    clearFindGitRootCache();
+    const cwd = "/unavailable-then-ok";
+    expect(findGitRootResult(cwd, timeoutSpawn).kind).toBe("git-unavailable");
+    // No cache clear between the two calls — the point is that the failure was not stored.
+    expect(findGitRootResult(cwd, okSpawn)).toEqual({ kind: "root", path: "/repo/top" });
+  });
+
+  test("findWorktreeRootResult re-probes after a timeout too", () => {
+    clearFindWorktreeRootCache();
+    const cwd = "/wt-unavailable-then-ok";
+    expect(findWorktreeRootResult(cwd, timeoutSpawn).kind).toBe("git-unavailable");
+    expect(findWorktreeRootResult(cwd, okSpawn)).toEqual({ kind: "root", path: "/repo/top" });
+  });
+
+  test("a resolved root IS still memoized — the stub is not consulted a second time", () => {
+    clearFindGitRootCache();
+    const cwd = "/ok-then-would-fail";
+    expect(findGitRootResult(cwd, okSpawn)).toEqual({ kind: "root", path: "/repo/top" });
+    // If `root` were not cached, this would return git-unavailable.
+    expect(findGitRootResult(cwd, timeoutSpawn)).toEqual({ kind: "root", path: "/repo/top" });
+  });
+
+  test("not-a-repo IS still memoized — it is a fact about the path, not the host", () => {
+    clearFindGitRootCache();
+    const notARepo: GitSpawnFn = () => spawnResult({ exitCode: 128, stderr: "fatal: not a git repository" });
+    const cwd = "/definitely-not-a-repo";
+    expect(findGitRootResult(cwd, notARepo).kind).toBe("not-a-repo");
+    expect(findGitRootResult(cwd, timeoutSpawn).kind).toBe("not-a-repo");
   });
 });

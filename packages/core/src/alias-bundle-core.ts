@@ -7,6 +7,7 @@ export * from "./alias";
 export * from "./alias-bundle-types";
 export * from "./alias-dry-run";
 export * from "./alias-state";
+export * from "./state-root";
 export * from "./allow-patterns";
 export * from "./cache";
 export * from "./ipc";

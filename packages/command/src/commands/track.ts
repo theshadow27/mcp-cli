@@ -21,6 +21,7 @@ import {
   pruneStaleHistory,
   validateTrackValue,
   workItemStateNamespace,
+  workItemStateRoot,
 } from "@mcp-cli/core";
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
@@ -186,6 +187,12 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
         branch,
         ...(initialPhase ? { initialPhase } : {}),
         ...(automationOverrides ? { automationOverrides } : {}),
+        // Deliberately the raw cwd, NOT `workItemStateRoot(cwd)`. The daemon uses this
+        // one field to load a manifest and validate `initialPhase` — and `.mcx.yaml` is
+        // per-checkout (#2737), while the state root maps a linked worktree back to the
+        // main checkout. Unifying it here would validate a worktree's phases against the
+        // wrong manifest. Different root, different job; only `alias_state` keys go
+        // through `workItemStateRoot` (#3209).
         repoRoot: cwd,
       });
       pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
@@ -211,6 +218,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
       number: num,
       ...(initialPhase ? { initialPhase } : {}),
       ...(automationOverrides ? { automationOverrides } : {}),
+      // Manifest root, not a state key — see the `--branch` branch above.
       repoRoot: cwd,
     });
     pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
@@ -222,14 +230,25 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   }
 }
 
+/**
+ * Write `--meta` fields into the work item's phase-state namespace.
+ *
+ * `cwd` is the caller's directory, **not** the state root: this used to pass the raw cwd
+ * straight through as `repoRoot`, so `mcx track <n> --scrutiny high` run from a
+ * subdirectory or a linked worktree wrote under that path while every phase runner read
+ * under `findGitRoot()`. The write landed in a store nothing read, and neither side
+ * errored — the reader just saw `{}` (#3209). Eleven such rows were found on the box this
+ * was fixed on, all written from `.claude/worktrees/*`.
+ */
 async function persistMetadata(
   deps: TrackDeps,
-  repoRoot: string,
+  cwd: string,
   workItemId: string,
   metadata: Map<string, string | number | boolean>,
   trackableFields: TrackableField[],
 ): Promise<void> {
   if (metadata.size === 0 && !trackableFields.some((f) => f.defaultValue !== undefined)) return;
+  const repoRoot = workItemStateRoot(cwd);
   const ns = workItemStateNamespace(workItemId);
   let existingState: Record<string, unknown> = {};
   try {
@@ -258,11 +277,12 @@ async function persistMetadata(
  * always used `item.id` and written to the real one.
  */
 async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string): Promise<void> {
+  const repoRoot = workItemStateRoot(cwd);
   const ns = workItemStateNamespace(workItemId);
   try {
-    const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot: cwd, namespace: ns });
+    const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot, namespace: ns });
     for (const key of Object.keys(entries)) {
-      await deps.ipcCall("aliasStateDelete", { repoRoot: cwd, namespace: ns, key });
+      await deps.ipcCall("aliasStateDelete", { repoRoot, namespace: ns, key });
     }
   } catch {
     // Best-effort — don't fail untrack if cleanup fails.
@@ -415,7 +435,10 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
           if (trackableKeys.size === 0) return base;
           try {
             const { entries } = await deps.ipcCall("aliasStateAll", {
-              repoRoot: cwd,
+              // Same derivation the phase runner and `persistMetadata` use, so
+              // `mcx tracked --json` from a subdirectory shows the state a phase
+              // script actually sees rather than an empty subdirectory bucket (#3209).
+              repoRoot: workItemStateRoot(cwd),
               namespace: workItemStateNamespace(it.id),
             });
             const state: Record<string, unknown> = {};

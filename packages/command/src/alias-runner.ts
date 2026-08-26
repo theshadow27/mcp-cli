@@ -13,7 +13,6 @@ import { basename, resolve } from "node:path";
 import {
   type AliasContext,
   GLOBAL_STATE_NAMESPACE,
-  NO_REPO_ROOT,
   aliasUserNamespace,
   bundleAlias,
   createAliasCache,
@@ -22,9 +21,9 @@ import {
   createMcpProxy,
   createWaitForEvent,
   executeAliasBundled,
-  findGitRoot,
   isDefineAlias,
   options,
+  workItemStateRoot,
 } from "@mcp-cli/core";
 import type { z } from "zod/v4";
 
@@ -60,7 +59,7 @@ export async function runAlias(aliasPath: string, cliArgs: Record<string, string
     // Derive alias name from filename (e.g. "my-alias.ts" → "my-alias")
     const aliasName = basename(aliasPath, ".ts");
 
-    const repoRoot = findGitRoot() ?? NO_REPO_ROOT;
+    const repoRoot = workItemStateRoot(process.cwd());
     const ctx: AliasContext = {
       mcp: mcpProxy,
       args: cliArgs,

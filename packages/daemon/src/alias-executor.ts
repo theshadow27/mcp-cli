@@ -21,7 +21,6 @@ import {
   type AliasWorkItemInfo,
   GLOBAL_STATE_NAMESPACE,
   type McpProxy,
-  NO_REPO_ROOT,
   aliasUserNamespace,
   createAliasCache,
   createAliasState,
@@ -30,9 +29,9 @@ import {
   executeAliasBundled,
   extractContent,
   extractMonitorMetadata,
-  findGitRoot,
   ipcCall,
   validateAliasBundled,
+  workItemStateRoot,
 } from "@mcp-cli/core";
 
 /**
@@ -161,9 +160,10 @@ async function main(): Promise<void> {
   process.once("SIGTERM", onTerm);
 
   // Scope state to the caller's repo — NOT the daemon's cwd. Without an
-  // explicit cwd from the caller, every alias invocation via the MCP server
-  // would collapse into the NO_REPO_ROOT bucket (see PR #1307 review).
-  const repoRoot = cwd ? (findGitRoot(cwd) ?? NO_REPO_ROOT) : NO_REPO_ROOT;
+  // explicit cwd from the caller this yields NO_REPO_ROOT rather than falling
+  // back to `process.cwd()` (see PR #1307 review); `workItemStateRoot` encodes
+  // exactly that rule for every caller (#3209).
+  const repoRoot = workItemStateRoot(cwd);
   const ctx: AliasContext = {
     mcp: createExecutorProxy(updatedChain, cwd),
     args:

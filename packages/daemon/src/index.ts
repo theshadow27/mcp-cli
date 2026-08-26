@@ -72,6 +72,7 @@ import {
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
 import { AutomationDispatcher } from "./automation-dispatcher";
+import { createAutomationStateRoot } from "./automation-state-root";
 import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
@@ -985,20 +986,35 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3192.
+      // TWO ROOTS, deliberately. They were one variable and that conflated two jobs.
       //
-      // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
-      // cwd. That is already the wrong key when the daemon starts outside the project, and it
-      // was wrong before this PR too. #3037 does NOT own it: nothing about scoping work_items
-      // by domain requires deriving a phase-state root.
+      // `automationRepoRoot` is the *manifest* root: the directory `loadManifest` and the
+      // lockfile were just read from. `LockedAutomation.resolvedPath` is stored relative to
+      // it (`relative(cwd, abs)` in `mcx phase install`), the dispatcher resolves module
+      // paths against it, and every automation event is stamped with it. It must stay the
+      // cwd — a git-root remap would resolve module paths against a directory the lockfile
+      // was never written relative to. This is the same distinction `mcx track` draws for
+      // its own `repoRoot` (see `commands/track.ts`): a manifest root is not a state key.
       //
-      // An earlier round of this PR tried to fix it here by substituting the domain's
-      // registered path. That was worse — `mcx scope add` stores a cwd with no git-root check
-      // and a domain may legally be registered at an ANCESTOR of the repo, so the registered
-      // path and the git root every writer uses coincide only by luck. It replaced a known
-      // stale key with a differently-wrong one and made this file the fifth independent
-      // derivation of a key that already had four. Reverted rather than patched.
-      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
+      // `automationStateRoot()` is the `alias_state` key half, and it is a **function on
+      // purpose** — resolved on the first automation event rather than here, so no git
+      // probe runs before `ipcServer.start()`. See `createAutomationStateRoot`, which owns
+      // both that laziness and the retry policy behind it (#3209 review / #3378).
+      //
+      // **Which cwd** either root should be is still open and belongs to #3192: binding to
+      // `process.cwd()` at startup is the wrong input no matter how correctly it is then
+      // resolved, because one daemon serves many domains. An earlier attempt (in #3037)
+      // substituted the domain's *registered* path. That was worse: a domain may legally be
+      // registered at an ANCESTOR of the repo, with no git-root check at registration, so
+      // the registered path and the git root every writer uses coincide only by luck. It
+      // replaced a known-stale key with a differently-wrong one. Reverted rather than
+      // patched. Routing through the shared helper first means #3192 changes an argument.
+      //
+      // It is `daemonRepoRoot` rather than a fresh `resolveRealpath(resolve(process.cwd()))`
+      // for the reason stated where that is declared: producers that need to name the
+      // daemon's root cite the one value instead of each recomputing it under a new name.
+      const automationRepoRoot = daemonRepoRoot;
+      const automationStateRoot = createAutomationStateRoot({ cwd: () => process.cwd(), logger });
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,
@@ -1042,10 +1058,11 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // always the canonical id straight off a DB row (see `resolveWorkItemId` /
             // `resolveWorkItemIdFromEvent` above) — never a caller-typed spelling — so
             // `workItemStateNamespace` is safe to use directly (#3037).
+            const stateRoot = automationStateRoot();
             return db.listAliasState(
-              automationRepoRoot,
+              stateRoot,
               workItemStateNamespace(workItemId),
-              domainResolver.idForPath(automationRepoRoot),
+              domainResolver.idForPath(stateRoot),
             );
           },
           actionExecutor: {

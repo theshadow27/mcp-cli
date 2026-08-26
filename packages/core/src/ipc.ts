@@ -11,6 +11,7 @@ import type { AliasType, MonitorAliasMetadata } from "./alias-bundle-types";
 import type { Domain } from "./domain";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
+import { NO_REPO_ROOT, isValidStateRoot } from "./state-root";
 import type { SpanEvent } from "./trace";
 import type { WorkItem } from "./work-item";
 
@@ -607,10 +608,16 @@ export const GetWorkItemParamsSchema = z
 // -- Alias state schemas --
 
 const AliasStateScope = z.object({
+  // Absolute path OR the NO_REPO_ROOT sentinel. #1917 added an `isAbsolute` refine here to
+  // stop a relative root being silently resolved against the daemon's cwd, and in doing so
+  // rejected the one root `ctx.state` uses when the caller is not in a git repo — so every
+  // `ctx.state.get/set` from outside a repo has thrown a ZodError since. The sentinel is
+  // not a relative path: it is a distinct, deliberately non-path-shaped partition that
+  // `alias-executor.ts` and `alias-runner.ts` have always derived (#3209 review).
   repoRoot: z
     .string()
     .min(1)
-    .refine((v) => isAbsolute(v), { message: "repoRoot must be an absolute path" }),
+    .refine(isValidStateRoot, { message: `repoRoot must be an absolute path or the "${NO_REPO_ROOT}" sentinel` }),
   namespace: z.string().min(1),
 });
 

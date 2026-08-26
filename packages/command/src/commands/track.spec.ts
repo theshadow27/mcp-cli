@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem } from "@mcp-cli/core";
-import { appendTransitionLog, loadManifest, readAllTransitions } from "@mcp-cli/core";
+import {
+  appendTransitionLog,
+  clearFindGitRootCache,
+  createAliasState,
+  loadManifest,
+  normalizeStateRoot,
+  readAllTransitions,
+  resolveRealpath,
+  workItemStateNamespace,
+  workItemStateRoot,
+} from "@mcp-cli/core";
 import type { TrackDeps } from "./track";
 import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow, parseMetadataFlags } from "./track";
 
@@ -1179,5 +1189,154 @@ describe("cmdUntrack — phase-state cleanup uses the canonical id (#3037 R2)", 
     });
     await cmdUntrack(["1135"], deps);
     expect(calls).toEqual([]);
+  });
+});
+
+/**
+ * The (repo_root, namespace, key) round trip across two independent commands (#3209).
+ *
+ * These use a **real git repo with a real linked worktree** and a fake that keys rows
+ * exactly the way `daemon/src/handlers/work-item.ts` does — through the shared
+ * `normalizeStateRoot`. Nothing here asserts that a function returns what
+ * a stub was built to return: the write goes through `cmdTrack` and the read through
+ * `cmdTracked` / the phase runner's own derivation, and the test fails if those two
+ * disagree about the root. That is the failure mode the pre-fix code had and the coverage
+ * #3175 shipped could not catch.
+ *
+ * A **worktree**, not a plain subdirectory, because that is where this actually bit: every
+ * mis-keyed row found in the wild (11 of them, all `scrutiny`) was written by `mcx track`
+ * from `.claude/worktrees/*`. A worktree carries its own checked-in `.mcx.yaml`, so the
+ * manifest resolves and the metadata write proceeds — while `findGitRoot` maps the
+ * worktree back to the main checkout, which is the root every reader uses. A plain
+ * subdirectory never gets that far: `findManifest` does not walk up, so `--scrutiny` is
+ * rejected as an unknown flag before any state is written (#3375).
+ */
+describe("phase-state round trip from a linked worktree", () => {
+  const MANIFEST_YAML = [
+    "version: 1",
+    "initial: plan",
+    "state:",
+    '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+    "phases:",
+    "  plan: { source: ./p.ts, next: [build] }",
+    "  build: { source: ./b.ts }",
+  ].join("\n");
+
+  /**
+   * Model the daemon's alias_state table, including its server-side canonicalization.
+   *
+   * Calls the same `normalizeStateRoot` the four IPC handlers call rather than restating
+   * `resolveRealpath(resolve(...))` — a hand-copy of the daemon's keying is how a test
+   * keeps passing while production splits its store (#3376).
+   */
+  function makeDaemonStore(item: WorkItem) {
+    const rows = new Map<string, unknown>();
+    const rowKey = (repoRoot: string, ns: string, key: string) => `${normalizeStateRoot(repoRoot)} ${ns} ${key}`;
+
+    const ipcCall = async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+      const p = (params ?? {}) as { repoRoot: string; namespace: string; key?: string; value?: unknown };
+      switch (method) {
+        case "trackWorkItem":
+          return item as IpcMethodResult[M];
+        case "listWorkItems":
+          return { items: [item], hiddenCount: 0, unassignedCount: 0 } as IpcMethodResult[M];
+        case "aliasStateSet":
+          rows.set(rowKey(p.repoRoot, p.namespace, p.key ?? ""), p.value);
+          return { ok: true } as IpcMethodResult[M];
+        case "aliasStateGet":
+          return { value: rows.get(rowKey(p.repoRoot, p.namespace, p.key ?? "")) } as IpcMethodResult[M];
+        case "aliasStateAll": {
+          const prefix = `${normalizeStateRoot(p.repoRoot)} ${p.namespace} `;
+          const entries: Record<string, unknown> = {};
+          for (const [k, v] of rows) if (k.startsWith(prefix)) entries[k.slice(prefix.length)] = v;
+          return { entries } as IpcMethodResult[M];
+        }
+      }
+      throw new Error(`Unexpected IPC call: ${method}`);
+    };
+    return { rows, ipcCall };
+  }
+
+  /** A real repo with `.mcx.yaml` committed, plus a real linked worktree that inherits it. */
+  function withWorktree(run: (repo: string, wt: string) => Promise<void>): Promise<void> {
+    const repo = mkdtempSync(join(tmpdir(), "mcx-track-roundtrip-"));
+    clearFindGitRootCache();
+    const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...base } = process.env;
+    const env = {
+      ...base,
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@t",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@t",
+    };
+    const opts = { env, stdout: "ignore" as const, stderr: "ignore" as const };
+    Bun.spawnSync(["git", "-C", repo, "init", "-q"], opts);
+    writeFileSync(join(repo, ".mcx.yaml"), MANIFEST_YAML);
+    Bun.spawnSync(["git", "-C", repo, "add", ".mcx.yaml"], opts);
+    Bun.spawnSync(["git", "-C", repo, "commit", "-m", "init", "-q"], opts);
+    const wt = join(repo, ".claude", "worktrees", "w1");
+    mkdirSync(join(repo, ".claude", "worktrees"), { recursive: true });
+    const added = Bun.spawnSync(["git", "-C", repo, "worktree", "add", wt, "-b", "wt-branch", "-q"], opts);
+    if (added.exitCode !== 0) throw new Error(`git worktree add failed (${added.exitCode})`);
+    clearFindGitRootCache();
+    return run(repo, wt).finally(() => {
+      clearFindGitRootCache();
+      rmSync(repo, { recursive: true, force: true });
+    });
+  }
+
+  const exit = (code: number): never => {
+    throw new ExitError(code);
+  };
+
+  test("`mcx track --scrutiny` from a worktree is visible to a reader at the main checkout", async () => {
+    const item = makeWorkItem({ id: "#42" });
+    const { rows, ipcCall } = makeDaemonStore(item);
+
+    await withWorktree(async (repo, wt) => {
+      await cmdTrack(["42", "--scrutiny", "high"], {
+        ipcCall,
+        exit,
+        loadManifest: realManifestLoader,
+        cwd: () => wt,
+      });
+
+      // Read it back the way the phase runner does: its own root derivation, at the main
+      // checkout, with no knowledge of where `mcx track` happened to be run from.
+      const state = createAliasState({
+        repoRoot: workItemStateRoot(repo),
+        namespace: workItemStateNamespace(item.id),
+        call: ipcCall,
+      });
+      expect(await state.get<string>("scrutiny")).toBe("high");
+
+      // And the row landed under the main checkout, not under the worktree that wrote it.
+      expect([...rows.keys()]).toEqual([`${resolveRealpath(repo)} workitem:#42 scrutiny`]);
+    });
+  });
+
+  test("`mcx tracked --json` from a worktree sees state written at the main checkout", async () => {
+    const item = makeWorkItem({ id: "#42" });
+    const { ipcCall } = makeDaemonStore(item);
+
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    try {
+      await withWorktree(async (repo, wt) => {
+        // Writer stands at the main checkout (a phase script), reader in the worktree.
+        await createAliasState({
+          repoRoot: workItemStateRoot(repo),
+          namespace: workItemStateNamespace(item.id),
+          call: ipcCall,
+        }).set("scrutiny", "medium");
+
+        await cmdTracked(["--json"], { ipcCall, exit, loadManifest: realManifestLoader, cwd: () => wt });
+      });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(JSON.parse(logs.join(""))[0].state).toEqual({ scrutiny: "medium" });
   });
 });
