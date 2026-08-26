@@ -54,23 +54,49 @@ versioned-install machinery, which landed dormant and has never run.
 Epics C/F/G/H (trust, sensors, email, console) and I's tail serve neither MVP —
 they wait until the loop demands them.
 
-## Deployment state (2026-08-24 ~18:35 UTC)
+## Deployment state (2026-08-26 ~15:45 UTC)
 
-- Daemon rebuilt + restarted at main HEAD `90669cb4`; client/daemon protocol
-  match; claude patched copy updated to 2.1.241; default-path spawn verified
-  end-to-end. The #3234 idle-exit fix and #3227 quota fix are live — the
-  systemd stopgap is obsolete (and caused #3243; never reinstall it).
-- `mcx domain add mcp-cli ~/github/mcp-cli` done — domain_id paths
-  now exercised for real (feeds #3155).
-- Binaries installed by atomic copy at `~/.local/bin` (per #3263 — never
-  symlink them back). The versioned-install machinery (`~/.mcp-cli/bin/`)
-  landed dormant and has never run; first real use = the v2.0.0 release.
+- **Rebuilt, reinstalled, daemon reloaded at main HEAD `47bf951b`** (operator-authorised
+  2026-08-26). Client/daemon protocol match restored — the pre-reload CLI errored
+  `Protocol mismatch: daemon 5a109abfbc9d, CLI expects 87ce34d5a538`. Reload path used was
+  `mcx daemon reload` (build `1.14.6+1787596440` → `1.14.6+1787758875`), **not** a kill.
+  New surfaces live: `_work_items` 9→10 tools, `_metrics` 5→6. All seven phases `ok`.
+- Binaries installed by **atomic copy** at `~/.local/bin` (per #3263 — never symlink;
+  verified post-install with `test -L`). A `cp` over a running binary hits `ETXTBSY`, so
+  the install is `cp` to a dotfile in the same dir then `mv` — rename replaces the
+  directory entry while the running process keeps its inode.
+- The build stamps `-dirty` because `.claude/boss/STATE.md` is uncommitted in the main
+  checkout (it lives on `sprint-81`). Verified byte-identical to the sprint-81 commit —
+  **no code drift**. The v2.0.0 cut must build from a clean tag.
+- Five idle sprint-80 sessions byed (`dda7949a c30d7dd3 2db6ec57 52f3e673 d4931cb3`),
+  all clean, all on already-merged branches. Worktrees preserved, not swept.
+- `mcx domain add mcp-cli ~/github/mcp-cli` done — domain_id paths exercised for real;
+  work items now carry the `d2:` prefix. The versioned-install machinery (`~/.mcp-cli/bin/`)
+  is still dormant and has never run; first real use = the v2.0.0 release.
+- Earlier (2026-08-24): claude patched copy at 2.1.241; #3234 idle-exit and #3227 quota
+  fixes live — the systemd stopgap is obsolete (it caused #3243; never reinstall it).
+
+### Sprint-80 debris cleared at pre-flight
+
+Three work items were merged+closed but stranded at `phase: impl` with `prNumber: null`
+— a reconciler tick (#3274) could have re-spawned impl on a closed issue. Repaired via
+`work_items_update`: **d2:#3247→done/PR 3349, d2:#3254→done/PR 3348, d2:#3344→done/PR 3347**.
+**d2:#3333 deliberately left at `impl`** — #3333 is genuinely still OPEN (PR #3346 said
+`refs`, not `fixes`, and actually closed #2915; sprint 80's retro wrongly listed it as
+delivered). Not an MVP-1 blocker; carry to sprint 82.
+
+`mcx phase run <t> --no-execute --force` does **not** do this job — it prints
+`approved [FORCED]: impl → done` and leaves the phase untouched (#3361). Use
+`work_items_update` with `phase`/`force`/`forceReason`.
 
 ## Known traps (re-verified 2026-08-26)
 
 - **No GitHub merge queue on this plan.** Never propose one (or `strict: true`).
-  #3259's part 4 is unbuildable as written. Explore `gh-stacks` instead — operator's
-  own caveat: "even more coordination". See `.claude/memory/no_github_merge_queue.md`.
+  #3259 was **closed not-planned 2026-08-26**: its part 4 (merge queue) is permanently
+  unbuildable, and its premise — a herd of unleased full suites — was fixed at the root by
+  #3344/PR #3347. Residual local-gate work lives in #3332, #2965, #3211, #3226, #3342.
+  Explore `gh-stacks` instead — operator's own caveat: "even more coordination".
+  See `.claude/memory/no_github_merge_queue.md`.
 - **The gate baton is `gate-lease.ts`, not a protocol.** `am-i-done`'s `TEST_CHANGED`
   step is `lease: true` and every hook path reaches it. Do not hand out a baton;
   sprint 80 did, for a whole sprint, and it stranded a finished item.
