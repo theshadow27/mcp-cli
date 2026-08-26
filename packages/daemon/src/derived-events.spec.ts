@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import { NO_DOMAIN_ID, PHASE_CHANGED } from "@mcp-cli/core";
+import type { DomainWorkItems } from "./db/work-items";
 import { WorkItemDb } from "./db/work-items";
 import { DerivedEventPublisher } from "./derived-events";
 import { DEFAULT_RULES, isDerivedPending, prMergedToDone } from "./derived-rules";
@@ -27,6 +28,10 @@ function prMergedInput(prNumber = 42): MonitorEventInput {
 
 function stampEvent(input: MonitorEventInput, seq = 1): MonitorEvent {
   return { ...input, seq, ts: new Date().toISOString(), domainId: NO_DOMAIN_ID };
+}
+
+function stampInDomain(input: MonitorEventInput, domainId: number, domain: string, seq = 1): MonitorEvent {
+  return { ...input, seq, ts: new Date().toISOString(), domainId, domain };
 }
 
 // ── Rule unit tests ──
@@ -115,6 +120,83 @@ describe("prMergedToDone rule", () => {
 
     expect(prMergedToDone.apply(event, ctx)).not.toBeNull();
     expect(prMergedToDone.apply(event, ctx)).toBeNull();
+  });
+});
+
+// ── Domain scoping (#3353) ──
+
+describe("prMergedToDone rule — domain scoping", () => {
+  const ALPHA = 1;
+  const BRAVO = 2;
+
+  function twoDomains(): { ctx: DerivedCtx; alpha: DomainWorkItems; bravo: DomainWorkItems } {
+    const db = freshDb();
+    const wdb = new WorkItemDb(db);
+    return {
+      ctx: { workItemDb: wdb.acrossDomains(), bus: new EventBus() },
+      alpha: wdb.forDomain(ALPHA),
+      bravo: wdb.forDomain(BRAVO),
+    };
+  }
+
+  test("a merge in one domain never advances another domain's item for the same PR", () => {
+    const { ctx, alpha, bravo } = twoDomains();
+    const a = alpha.createWorkItem({ prNumber: 7, phase: "impl" });
+    const b = bravo.createWorkItem({ prNumber: 7, phase: "qa" });
+
+    // alpha's PR #7 merged — bravo's #7 is a different project's PR that happens to share a number
+    expect(prMergedToDone.apply(stampInDomain(prMergedInput(7), ALPHA, "alpha", 5), ctx)).toBeNull();
+
+    expect(ctx.workItemDb.getWorkItem(a.id)?.phase).toBe("impl");
+    expect(ctx.workItemDb.getWorkItem(b.id)?.phase).toBe("qa");
+  });
+
+  test("advances the event's own domain even when a lower domain also holds the PR in qa", () => {
+    const { ctx, alpha, bravo } = twoDomains();
+    const a = alpha.createWorkItem({ prNumber: 7, phase: "qa" });
+    const b = bravo.createWorkItem({ prNumber: 7, phase: "qa" });
+
+    const result = prMergedToDone.apply(stampInDomain(prMergedInput(7), BRAVO, "bravo", 5), ctx);
+
+    if (!result || isDerivedPending(result)) throw new Error("expected non-null, non-pending result");
+    expect(result.workItemId).toBe(b.id);
+    expect(result.domainId).toBe(BRAVO);
+    expect(ctx.workItemDb.getWorkItem(b.id)?.phase).toBe("done");
+    expect(ctx.workItemDb.getWorkItem(a.id)?.phase).toBe("qa");
+  });
+
+  test("both domains advance, each on its own merge", () => {
+    const { ctx, alpha, bravo } = twoDomains();
+    const a = alpha.createWorkItem({ prNumber: 7, phase: "qa" });
+    const b = bravo.createWorkItem({ prNumber: 7, phase: "qa" });
+
+    prMergedToDone.apply(stampInDomain(prMergedInput(7), ALPHA, "alpha", 5), ctx);
+    prMergedToDone.apply(stampInDomain(prMergedInput(7), BRAVO, "bravo", 6), ctx);
+
+    expect(ctx.workItemDb.getWorkItem(a.id)?.phase).toBe("done");
+    expect(ctx.workItemDb.getWorkItem(b.id)?.phase).toBe("done");
+  });
+
+  test("pending (not a cross-domain write) when only another domain holds the PR", () => {
+    const { ctx, bravo } = twoDomains();
+    const b = bravo.createWorkItem({ prNumber: 7, phase: "qa" });
+
+    const result = prMergedToDone.apply(stampInDomain(prMergedInput(7), ALPHA, "alpha", 5), ctx);
+
+    if (!isDerivedPending(result)) throw new Error("expected pending result");
+    expect(result.reason).toContain("#7");
+    expect(result.reason).toContain("alpha");
+    expect(ctx.workItemDb.getWorkItem(b.id)?.phase).toBe("qa");
+  });
+
+  test("an unassigned event does not reach a domain-scoped item", () => {
+    const { ctx, bravo } = twoDomains();
+    const b = bravo.createWorkItem({ prNumber: 7, phase: "qa" });
+
+    const result = prMergedToDone.apply(stampEvent(prMergedInput(7), 5), ctx);
+
+    expect(isDerivedPending(result)).toBe(true);
+    expect(ctx.workItemDb.getWorkItem(b.id)?.phase).toBe("qa");
   });
 });
 
