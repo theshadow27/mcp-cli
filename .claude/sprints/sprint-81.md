@@ -1,7 +1,9 @@
 # Sprint 81
 
 > Planned 2026-08-26. Target: **10 PRs** (operator cap — see Capacity below).
-> Quota at plan time: not readable (`mcx quota` / `quota_status` have no surface — that is #3182); check at run start off the monitor stream.
+> **Started 2026-08-26 19:55 UTC** at main `f2352e84`.
+> Quota at run start: 5h **12%**, 7d **27%**, extra-usage 32% — normal, no gating.
+> (Plan-time note said quota was not readable; `mcx call _metrics quota_status` works — #3182 is the missing `mcx quota` CLI surface, not a missing metric.)
 > Concurrency: 3 lanes, serial within each.
 
 ## Goal
