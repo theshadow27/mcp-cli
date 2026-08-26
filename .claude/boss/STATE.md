@@ -1,7 +1,8 @@
 # mcx-boss — live state
 
 **Read this first after a compaction or a session restart.** Rewritten 2026-08-24
-during the post-sprint-79 recovery re-plan. This is the durable record of
+during the post-sprint-79 recovery re-plan; MVP-1 section updated 2026-08-26 at
+sprint-81 planning. This is the durable record of
 *operational* state; the plan of record is the recovery comment on #3019, and the
 lessons live in `.claude/memory/`.
 
@@ -20,14 +21,28 @@ void.)
 
 ## The two MVPs (operator-approved 2026-08-24)
 
+**MVP-1 STATUS 2026-08-26 — 10 exit criteria left, all scheduled into sprint 81
+(plan: `.claude/sprints/sprint-81.md`, container PR #3360).** Remaining work items:
+#3209 #3352 #3192 #3273 #3246 #3036 #3353 #3265 (+ two protect picks #3332 #3351).
+Discharged at planning: #3041 closed as dup of #3192; #2993 and #3231(d) closed as
+already-done (`release.yml` was pinned to Bun 1.4.0 by PR #3346, not just CI);
+#3155 closed — the audit ran at planning time, on purpose, so its findings could not
+re-block the release at wind-down. It found two cut-line defects, now scheduled:
+**#3353** (a merge in one project advances another project's work item) and **#3352**
+(events stamped with the daemon's domain, so `monitor -d` replays the wrong stream).
+Five non-blocking gaps filed: #3354-#3358. **The storage layer audited clean** — both
+defects are in the event/derived-rules path, not the DB.
+
+The v2.0.0 cut is sprint 81's wind-down deliverable and is *budgeted as scope*: ~15
+sprints of changelog since v1.14.6 (2026-07-13), and the first real exercise of the
+versioned-install machinery, which landed dormant and has never run.
+
 1. **MVP-1 — ship v2.0.0, restore release cadence.** The state.db→mcx.db
    migration is FINISHED (audit 2026-08-24: mcx.db is the only runtime DB;
    state.db byte-frozen since the Aug 22 import seal; enforcement spec guards the
-   legacy path). Remaining = verify/rename/delete: epic-A exit (#3036 #3041
-   #3042), integrity set (#3152 top ship-blocker, #3210 #3180 #3254 #3255 #3209
-   #3213 #3246 #3247 #3192), the #3155 exit audit (now exercisable — mcp-cli is
-   registered as a domain), naming cleanup #3273, release infra (#3264, #3231
-   minimal, #3260 #3265). The importer SHIPS in 2.0.0 (it is the upgrade path);
+   legacy path). Remaining = verify/rename/delete. The original criteria list is
+   superseded by the STATUS block above — do not work from it; sprints 80 and 81
+   closed most of it. The importer SHIPS in 2.0.0 (it is the upgrade path);
    deletion is a later-2.x decision.
 2. **MVP-2 — the operator loop, reconciler-first.** `mcx phase advance` is a
    correct single reconcile tick that nothing calls. Close the loop with: the
@@ -51,13 +66,34 @@ they wait until the loop demands them.
   symlink them back). The versioned-install machinery (`~/.mcp-cli/bin/`)
   landed dormant and has never run; first real use = the v2.0.0 release.
 
-## mcx-session hazards — fix early in sprint 80 or accept explicitly
+## Known traps (re-verified 2026-08-26)
 
-#3013 (patch-gate strands spawns after every claude auto-update until daemon
-restart — the most likely "mysteriously can't spawn"), #3110 (spawn reports
-success for dead children), #3140 (worktree collision guard), #3104/#2918
-(rate-limit events confound "is my worker done"; `mcx claude wait` returned 0 on
-a spurious `session:rate_limited` before any result in the 08-24 probe).
+- **No GitHub merge queue on this plan.** Never propose one (or `strict: true`).
+  #3259's part 4 is unbuildable as written. Explore `gh-stacks` instead — operator's
+  own caveat: "even more coordination". See `.claude/memory/no_github_merge_queue.md`.
+- **The gate baton is `gate-lease.ts`, not a protocol.** `am-i-done`'s `TEST_CHANGED`
+  step is `lease: true` and every hook path reaches it. Do not hand out a baton;
+  sprint 80 did, for a whole sprint, and it stranded a finished item.
+- **Pre-commit is a static gate now** (~20.6s measured): `am-i-done --pre-commit`,
+  no tests, no coverage (#3344/PR #3347, with a regression spec). The old direct
+  `bun run test:coverage` bypassed the lease and *was* the gate-herd contention driver.
+- **`core.hooksPath` is `.git-hooks` — RELATIVE**, resolved per working tree. Each
+  worktree runs its own checked-out hook. Sprint 80's retro claimed the opposite;
+  that action item was not filed because its premise is false.
+- **Binaries do not auto-update.** `~/.local/bin/*` are atomic copies (#3263, never
+  symlink). A `bun run build` does NOT update the `$PATH` binary or the running
+  daemon — reinstall and restart deliberately.
+
+## mcx-session hazards — all four CLEARED in sprint 80
+
+#3013 (PR #3289), #3110 (PR #3308), #3140 (PR #3322), #3104 (PR #3295) all merged.
+The rate-limit badge is now `[rate-limited 0:45 ago]`, not the old literal
+`[RATE LIMITED]`, and it expires instead of latching for the turn.
+
+Live successors worth knowing: **#3285** (spawn blocked by a stale claude patch even
+when the session would use stdio), **#3296** (a third rate-limit latch path missed by
+#3104/#3295), **#3291-#3294** (silent failure paths in claude re-probe / TLS setup),
+**#3323** (SharedWorktreeGuard endedAt race in the ~7s kill-grace window).
 
 ## Standing operator grants and rules
 
