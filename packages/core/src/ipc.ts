@@ -1120,18 +1120,10 @@ export interface IpcMethodResult {
 
 // -- Error codes --
 
-export const IPC_ERROR = {
-  PARSE_ERROR: -32700,
-  INVALID_REQUEST: -32600,
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  SERVER_NOT_FOUND: -1001,
-  TOOL_NOT_FOUND: -1002,
-  CONNECTION_FAILED: -1003,
-  AUTH_REQUIRED: -1004,
-  TIMEOUT: -1005,
-} as const;
+// Defined in `ipc-error.ts` and re-exported here so that the pure validators in
+// `domain.ts` — which `ipc.ts` imports from — can reach the codes without an import
+// cycle. Every `import { IPC_ERROR } from "@mcp-cli/core"` resolves through this line.
+export { IPC_ERROR, invalidParamsError } from "./ipc-error";
 
 // -- Helpers --
 

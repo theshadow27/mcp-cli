@@ -9,11 +9,23 @@
  * doc because "which domain am I in" is exactly the kind of question a tired
  * implementation answers with `process.cwd()` and a shrug. Any invariant an
  * orchestrator could rationalize past is a function, not prose.
+ *
+ * ## Every rejection here is `INVALID_PARAMS`, never `INTERNAL_ERROR` (#3246)
+ *
+ * These validators say no to *caller input* — a relative path, an unexpandable `~`,
+ * a phantom `C:` host. `ipc-server.ts` classifies a thrown error by reading its
+ * `code` and falls back to `INTERNAL_ERROR` when there is not one, so a bare `throw
+ * new Error` here surfaced at the CLI and at every mail tool as "the daemon broke" —
+ * sending the caller to look for a daemon bug over what is a one-argument fix on
+ * their own side. {@link invalidParamsError} codes all of them, not just the one that
+ * got reported: they are a single class of failure, and coding one of five is how the
+ * next reader concludes the code is unreliable and stops checking it.
  */
 
 import { existsSync } from "node:fs";
 import { isAbsolute, join, normalize, posix, resolve } from "node:path";
 import { resolveRealpath } from "./fs";
+import { invalidParamsError } from "./ipc-error";
 
 /** A registered domain: a name bound to `[host:]path`. */
 export interface Domain {
@@ -131,7 +143,7 @@ export function isValidDomainName(name: string): boolean {
 export function normalizeDomainPath(path: string): string {
   if (!isAbsolute(path)) {
     const tildeHint = path.startsWith("~") ? " (expand ~ before calling — it is not expanded here)" : "";
-    throw new Error(`domain path must be absolute, got ${JSON.stringify(path)}${tildeHint}`);
+    throw invalidParamsError(`domain path must be absolute, got ${JSON.stringify(path)}${tildeHint}`);
   }
   const normalized = normalize(path);
   return normalized.length > 1 && normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
@@ -180,7 +192,7 @@ export function canonicalizeDomainPath(path: string): string {
 export function canonicalizeExistingDomainPath(path: string): string {
   const normalized = normalizeDomainPath(path);
   if (!existsSync(normalized)) {
-    throw new Error(
+    throw invalidParamsError(
       `domain path ${JSON.stringify(normalized)} does not exist: create it first, or register the domain at a path that does (a path canonicalized before it exists stops resolving once it appears under a symlink)`,
     );
   }
@@ -313,15 +325,17 @@ export interface PathExpansionEnv {
  * and our cwd have no say; {@link resolveDomainLocation} passes those through verbatim.
  */
 export function expandLocalDomainPath(path: string, env: PathExpansionEnv): string {
-  if (path.length === 0) throw new Error("domain path is required");
-  if (!isAbsolute(env.cwd)) throw new Error(`cwd must be absolute, got ${JSON.stringify(env.cwd)}`);
+  if (path.length === 0) throw invalidParamsError("domain path is required");
+  if (!isAbsolute(env.cwd)) throw invalidParamsError(`cwd must be absolute, got ${JSON.stringify(env.cwd)}`);
 
   if (path === "~" || path.startsWith("~/")) {
-    if (!isAbsolute(env.home)) throw new Error(`home must be absolute to expand "~", got ${JSON.stringify(env.home)}`);
+    if (!isAbsolute(env.home)) {
+      throw invalidParamsError(`home must be absolute to expand "~", got ${JSON.stringify(env.home)}`);
+    }
     return normalizeDomainPath(path === "~" ? env.home : join(env.home, path.slice(2)));
   }
   if (path.startsWith("~")) {
-    throw new Error(`cannot expand ${JSON.stringify(path)}: only "~" for the current user is supported`);
+    throw invalidParamsError(`cannot expand ${JSON.stringify(path)}: only "~" for the current user is supported`);
   }
 
   return normalizeDomainPath(isAbsolute(path) ? path : resolve(env.cwd, path));
@@ -344,7 +358,7 @@ export function resolveDomainLocation(spec: string, env: PathExpansionEnv): Doma
     // near-miss copy here (one that forgot the length bound, say) would accept hosts the
     // rest of the codebase rejects, and nothing would notice until one was routed to.
     if (!isValidDomainHost(location.host)) {
-      throw new Error(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
+      throw invalidParamsError(`invalid host ${JSON.stringify(location.host)} in ${JSON.stringify(spec)}`);
     }
     // The PATH half is validated too (#3160 review N6). A host-bound path is stored verbatim
     // — this filesystem has no say over another machine's — but "verbatim" was doing the work
@@ -362,7 +376,7 @@ export function resolveDomainLocation(spec: string, env: PathExpansionEnv): Doma
     // rejects. A remote path is interpreted by the REMOTE machine, and every transport this
     // routes over is POSIX.
     if (!posix.isAbsolute(location.path) && !location.path.startsWith("~")) {
-      throw new Error(
+      throw invalidParamsError(
         `invalid remote path ${JSON.stringify(location.path)} in ${JSON.stringify(spec)}: a host-bound path must be absolute or start with "~" (it names a directory on ${location.host}, not here)`,
       );
     }
@@ -379,7 +393,7 @@ export function resolveDomainLocation(spec: string, env: PathExpansionEnv): Doma
   const separator = location.path.indexOf("/");
   const colon = location.path.indexOf(":");
   if (colon !== -1 && (separator === -1 || colon < separator)) {
-    throw new Error(
+    throw invalidParamsError(
       `malformed location ${JSON.stringify(spec)}: expected <path> or <host>:<path> (a host and a path are both required)`,
     );
   }
