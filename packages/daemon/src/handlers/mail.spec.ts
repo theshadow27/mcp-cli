@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IpcMethod, MailMessage } from "@mcp-cli/core";
+import { IPC_ERROR, type IpcMethod, type MailMessage } from "@mcp-cli/core";
 import { StateDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { MailHandlers } from "./mail";
@@ -197,6 +197,40 @@ describe("MailHandlers — failure directions", () => {
     ] as const) {
       await expect(invoke(f.map, method)(params, CTX)).rejects.toThrow(/domain scope/);
     }
+  });
+
+  test("a relative cwd is INVALID_PARAMS, not INTERNAL_ERROR (#3246)", async () => {
+    const f = fixture();
+    await send(f, { sender: "a", recipient: "b", cwd: f.alpha });
+
+    // `cwd: "."` is what an agent that reached for a shell idiom actually sends. The
+    // path validator refused it correctly, but with a bare `Error` — and `toIpcError`
+    // codes anything without a numeric `code` as INTERNAL_ERROR, so the caller was told
+    // the daemon had broken over its own one-argument mistake.
+    for (const [method, params] of [
+      ["sendMail", { sender: "a", recipient: "b", cwd: "." }],
+      ["readMail", { cwd: "./sub" }],
+      ["waitForMail", { recipient: "b", timeout: 1, cwd: ".." }],
+      ["replyToMail", { id: 1, sender: "b", body: "r", cwd: "relative/path" }],
+      ["markRead", { id: 1, cwd: "~/work" }],
+    ] as const) {
+      // Rejects at all, and rejects with the code that tells the caller to fix its input.
+      await expect(invoke(f.map, method)(params, CTX)).rejects.toMatchObject({
+        code: IPC_ERROR.INVALID_PARAMS,
+      });
+    }
+  });
+
+  test("waitForMail refuses a relative cwd immediately, not after its timeout", async () => {
+    // The resolve-before-the-loop property from #3038, re-asserted for the coded error:
+    // a validator that threw from inside the poll loop would look identical to a healthy
+    // empty mailbox for `timeout` seconds first.
+    const f = fixture();
+    const started = Date.now();
+    await expect(invoke(f.map, "waitForMail")({ recipient: "b", timeout: 30, cwd: "." }, CTX)).rejects.toMatchObject({
+      code: IPC_ERROR.INVALID_PARAMS,
+    });
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   /**

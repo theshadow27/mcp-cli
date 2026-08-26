@@ -28,6 +28,7 @@ import {
   resolveDomainLocation,
   toDomainFilter,
 } from "./domain";
+import { IPC_ERROR } from "./ipc-error";
 
 function domain(name: string, path: string, host: string | null = null, id = 1): Domain {
   return { id, name, host, path, createdAt: "2026-08-22T00:00:00.000Z" };
@@ -159,6 +160,63 @@ describe("normalizeDomainPath — refuses to guess (#3034 review 7)", () => {
   test("does not expand ~ into this process's home", () => {
     // A tilde in a host-bound domain means THAT machine's home, not ours.
     expect(() => normalizeDomainPath("~")).toThrow();
+  });
+});
+
+describe("rejections are INVALID_PARAMS, never INTERNAL_ERROR (#3246)", () => {
+  /**
+   * `fn` throws, and the IPC boundary reports it as INVALID_PARAMS.
+   *
+   * The classification rule from `ipc-server.ts`'s `toIpcError` is reproduced rather
+   * than imported — that helper is daemon-internal and this is core. Asserting `.code`
+   * on its own would also pass for a code the boundary ignores; running it through the
+   * boundary's own fallback is what pins down what a caller actually sees.
+   */
+  function expectInvalidParams(fn: () => unknown): void {
+    try {
+      fn();
+    } catch (err) {
+      const raw = (err as { code?: unknown }).code;
+      expect(typeof raw === "number" ? raw : IPC_ERROR.INTERNAL_ERROR).toBe(IPC_ERROR.INVALID_PARAMS);
+      return;
+    }
+    throw new Error("expected the call to throw, but it returned");
+  }
+
+  test("every non-absolute path normalizeDomainPath refuses", () => {
+    // `.` is the one the mail tools actually saw — an agent passing a shell-idiomatic
+    // cwd got "the daemon broke" for a typo it could have fixed itself.
+    for (const bad of [".", "./work", "../work", "a/b", "", "~/work", "~"]) {
+      expectInvalidParams(() => normalizeDomainPath(bad));
+    }
+  });
+
+  test("the code survives the wrappers, which is where callers actually enter", () => {
+    // Nothing outside this module calls normalizeDomainPath directly; `mcx domain which`
+    // and every mail path arrive through one of these three.
+    expectInvalidParams(() => resolveDomainForPath(".", [domain("d", "/home/u/d")]));
+    expectInvalidParams(() => canonicalizeDomainPath("."));
+    expectInvalidParams(() => canonicalizeExistingDomainPath("."));
+  });
+
+  test("a domain path that does not exist yet", () => {
+    const absent = join(tmpdir(), "mcx-3246-does-not-exist", "nested");
+    expectInvalidParams(() => canonicalizeExistingDomainPath(absent));
+  });
+
+  test("expandLocalDomainPath's four refusals", () => {
+    const env = { home: "/home/u", cwd: "/home/u/work" };
+    expectInvalidParams(() => expandLocalDomainPath("", env));
+    expectInvalidParams(() => expandLocalDomainPath("~other/work", env));
+    expectInvalidParams(() => expandLocalDomainPath("/x", { home: "/home/u", cwd: "relative" }));
+    expectInvalidParams(() => expandLocalDomainPath("~/x", { home: "relative", cwd: "/home/u" }));
+  });
+
+  test("resolveDomainLocation's three refusals", () => {
+    const env = { home: "/home/u", cwd: "/home/u/work" };
+    expectInvalidParams(() => resolveDomainLocation("  spacey:/tmp/x", env));
+    expectInvalidParams(() => resolveDomainLocation("a:b", env));
+    expectInvalidParams(() => resolveDomainLocation(":/tmp/x", env));
   });
 });
 
