@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { silentLogger } from "@mcp-cli/core";
 import type { ClaudeOAuthToken } from "./auth/keychain";
-import { QuotaPoller, type QuotaStatus, parseUsageResponse } from "./quota";
+import { QuotaPoller, type QuotaStatus, parseUsageResponse, stampActiveProfileQuota, toStoredQuota } from "./quota";
 
 const POLL_MS = 10;
 const SETTLE_MS = 50;
@@ -425,5 +428,81 @@ describe("QuotaPoller", () => {
     await waitUntil(() => calls >= 1);
     poller.stop();
     expect(calls).toBe(1); // only one immediate poll, not two
+  });
+
+  test("stamps the active profile after a successful fetch", async () => {
+    const stamped: Array<{ fiveHour: { utilization: number } | null }> = [];
+    const poller = new QuotaPoller({
+      intervalMs: 60_000,
+      readToken: async () => fakeToken,
+      fetchUsage: async () => parseUsageResponse(SAMPLE_RESPONSE),
+      stampProfile: (quota) => stamped.push(quota),
+    });
+    poller.start();
+    await waitUntil(() => stamped.length > 0);
+    poller.stop();
+    expect(stamped[0]?.fiveHour?.utilization).toBe(42);
+  });
+});
+
+describe("stampActiveProfileQuota", () => {
+  function storedQuota() {
+    return toStoredQuota(parseUsageResponse(SAMPLE_RESPONSE), "2026-08-18T12:00:00.000Z");
+  }
+
+  function profileDir() {
+    const root = mkdtempSync(join(tmpdir(), "mcx-quota-"));
+    const profilesDir = join(root, "auth-profiles");
+    mkdirSync(profilesDir, { recursive: true });
+    return {
+      profilesDir,
+      [Symbol.dispose]() {
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  test("stamps quota onto the active oauth profile without touching credentials", () => {
+    using dir = profileDir();
+    writeFileSync(join(dir.profilesDir, "active.json"), JSON.stringify({ profile: "work" }));
+    writeFileSync(
+      join(dir.profilesDir, "work.json"),
+      JSON.stringify({
+        name: "work",
+        kind: "oauth",
+        credentials: { claudeAiOauth: { accessToken: "secret" } },
+      }),
+    );
+
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(true);
+    const written = JSON.parse(readFileSync(join(dir.profilesDir, "work.json"), "utf-8"));
+    expect(written.quota.fiveHour.utilization).toBe(42);
+    expect(written.quota.capturedAt).toBe("2026-08-18T12:00:00.000Z");
+    expect(written.credentials.claudeAiOauth.accessToken).toBe("secret");
+  });
+
+  test("skips api-key profiles", () => {
+    using dir = profileDir();
+    writeFileSync(join(dir.profilesDir, "active.json"), JSON.stringify({ profile: "ci" }));
+    writeFileSync(join(dir.profilesDir, "ci.json"), JSON.stringify({ name: "ci", kind: "api-key" }));
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir.profilesDir, "ci.json"), "utf-8")).quota).toBeUndefined();
+  });
+
+  test("skips a pending switch and a missing pointer", () => {
+    using dir = profileDir();
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(false);
+    writeFileSync(join(dir.profilesDir, "active.json"), JSON.stringify({ profile: "work", pending: "other" }));
+    writeFileSync(join(dir.profilesDir, "work.json"), JSON.stringify({ name: "work", kind: "oauth" }));
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(false);
+  });
+
+  test("refuses a path-traversal profile name and never throws on corrupt JSON", () => {
+    using dir = profileDir();
+    writeFileSync(join(dir.profilesDir, "active.json"), JSON.stringify({ profile: "../escape" }));
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(false);
+    writeFileSync(join(dir.profilesDir, "active.json"), "{ not json");
+    expect(stampActiveProfileQuota(storedQuota(), dir.profilesDir)).toBe(false);
+    expect(stampActiveProfileQuota(storedQuota(), join(dir.profilesDir, "nope"))).toBe(false);
   });
 });

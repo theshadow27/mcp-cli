@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { QuotaStatus } from "@mcp-cli/core";
 import type { AuthPaths } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
@@ -18,6 +19,15 @@ const CREDENTIALS = {
     scopes: ["user:inference"],
     subscriptionType: "max",
   },
+};
+
+const SAMPLE_QUOTA: QuotaStatus = {
+  fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
+  sevenDay: { utilization: 8, resetsAt: "2026-08-25T04:00:00.000Z" },
+  sevenDaySonnet: { utilization: 6, resetsAt: "2026-08-19T18:00:00.000Z" },
+  sevenDayOpus: null,
+  extraUsage: null,
+  fetchedAt: NOW.getTime(),
 };
 
 interface Harness {
@@ -69,7 +79,13 @@ function harness(opts?: { env?: Record<string, string | undefined>; platform?: s
     err,
     info,
     deps,
-    envDeps: { paths, env: opts?.env ?? {}, platform: opts?.platform ?? "linux", now: () => NOW },
+    envDeps: {
+      paths,
+      env: opts?.env ?? {},
+      platform: opts?.platform ?? "linux",
+      now: () => NOW,
+      fetchQuota: async () => SAMPLE_QUOTA,
+    },
     [Symbol.dispose]() {
       rmSync(root, { recursive: true, force: true });
     },
@@ -192,6 +208,29 @@ describe("mcx claude auth save", () => {
     await claudeAuth(["save", "work"], h.deps, h.envDeps);
     expect(h.out.join("\n")).toContain('Updated auth profile "work"');
   });
+
+  test("quota fetch failure warns and still saves", async () => {
+    using h = harness();
+    h.envDeps.fetchQuota = async () => {
+      throw new Error("network down");
+    };
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+
+    expect(h.info.join(" ")).toContain("could not snapshot quota: network down");
+    expect(existsSync(join(h.paths.profilesDir, "work.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).quota).toBeUndefined();
+  });
+
+  test("api-key save does not call the usage API", async () => {
+    using h = harness();
+    let called = false;
+    h.envDeps.fetchQuota = async () => {
+      called = true;
+      throw new Error("should not fetch");
+    };
+    await claudeAuth(["save", "ci", "--api-key-env", "MY_KEY"], h.deps, h.envDeps);
+    expect(called).toBe(false);
+  });
 });
 
 describe("mcx claude auth load", () => {
@@ -212,6 +251,30 @@ describe("mcx claude auth load", () => {
     expect(text).toContain("org policy cache invalidated");
     expect(JSON.parse(readFileSync(h.paths.claudeConfigPath, "utf-8")).userID).toBe("user-a");
     expect(existsSync(h.paths.policyLimitsPath)).toBe(false);
+  });
+
+  test("write-back snapshots quota onto the outgoing profile even when credentials are unchanged", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(h.paths.credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: "other" } }));
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+
+    h.envDeps.fetchQuota = async () => ({
+      ...SAMPLE_QUOTA,
+      fiveHour: { utilization: 91, resetsAt: "2026-08-18T21:00:00.000Z" },
+    });
+    await claudeAuth(["load", "work"], h.deps, h.envDeps);
+
+    const personal = JSON.parse(readFileSync(join(h.paths.profilesDir, "personal.json"), "utf-8"));
+    expect(personal.quota.fiveHour.utilization).toBe(91);
+    expect(personal.quota.capturedAt).toBe(NOW.toISOString());
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).quota.fiveHour.utilization).toBe(
+      42,
+    );
   });
 
   test("--json reports the write-back target and backup location", async () => {
@@ -266,6 +329,10 @@ describe("mcx claude auth ls", () => {
     expect(text).toContain("2026-08-19 03:14");
     expect(text).toContain("yes"); // remote control allowed per the policy fixture
     expect(text).toContain("* work"); // active marker
+    expect(text).toContain("42%");
+    expect(text).toContain("2026-08-18 20:00");
+    expect(text).toContain("8%");
+    expect(text).toContain("AS OF");
     expect(text).not.toContain(ACCESS_TOKEN);
   });
 
@@ -284,6 +351,11 @@ describe("mcx claude auth ls", () => {
       account: "a@example.com",
       allowRemoteControl: true,
       expired: false,
+      quota: {
+        capturedAt: NOW.toISOString(),
+        fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
+        sevenDay: { utilization: 8, resetsAt: "2026-08-25T04:00:00.000Z" },
+      },
     });
     expect(entry.expiresAt).toBe(new Date(EXPIRES_AT).toISOString());
   });
@@ -311,12 +383,23 @@ describe("formatProfileTable", () => {
         allowRemoteControl: null,
         hasCredentials: true,
         updatedAt: NOW.toISOString(),
+        quota: {
+          capturedAt: "2020-01-01T00:00:00.000Z",
+          fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
+          sevenDay: { utilization: 10, resetsAt: "2020-01-07T00:00:00.000Z" },
+          sevenDaySonnet: null,
+          sevenDayOpus: null,
+          extraUsage: null,
+        },
       },
     ]);
 
     const text = lines.join("\n");
     expect(text).toContain("2020-01-01 00:00 (expired)");
     expect(text).toContain("unknown");
+    expect(text).toContain("97.5%");
+    expect(text).toContain("2020-01-01 05:00");
+    expect(text).toContain("AS OF");
     expect(text).not.toContain("Token");
   });
 
@@ -335,6 +418,7 @@ describe("formatProfileTable", () => {
         allowRemoteControl: true,
         hasCredentials: true,
         updatedAt: NOW.toISOString(),
+        quota: null,
       },
     ]);
     expect(lines[1]).toContain("* bare");

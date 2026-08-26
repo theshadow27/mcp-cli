@@ -7,15 +7,20 @@
  * against injected paths — no test ever touches a real `~/.claude`.
  */
 
+import { fetchQuotaUsage } from "@mcp-cli/core";
 import {
   type AuthPaths,
   AuthProfileError,
   type ProfileSummary,
+  type QuotaFetcher,
   assertPlatformSupported,
   defaultAuthPaths,
   listProfiles,
   loadProfile,
+  readLiveState,
   saveProfile,
+  snapshotQuotaFromCredentials,
+  validateProfileName,
 } from "../claude-auth-store";
 import { parseFlags } from "../flags";
 
@@ -41,6 +46,8 @@ export interface AuthEnvDeps {
   env: Record<string, string | undefined>;
   platform: string;
   now: () => Date;
+  /** Injected by tests so save/load never hit the usage API. */
+  fetchQuota: QuotaFetcher;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -51,6 +58,7 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     env,
     platform: overrides?.platform ?? process.platform,
     now: overrides?.now ?? (() => new Date()),
+    fetchQuota: overrides?.fetchQuota ?? fetchQuotaUsage,
   };
 }
 
@@ -141,16 +149,33 @@ async function runSave(
   envDeps: AuthEnvDeps,
 ): Promise<void> {
   const name = requireName(positionals, "mcx claude auth save <profile>", d);
+  validateProfileName(name);
+  const now = envDeps.now();
+  const apiKeyEnvVar = opts.forceOauth
+    ? undefined
+    : (opts.apiKeyEnvVar ?? (envDeps.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : undefined));
+
+  let quotaWarning: string | undefined;
+  let quota: Awaited<ReturnType<typeof snapshotQuotaFromCredentials>>["quota"];
+  if (!apiKeyEnvVar) {
+    const live = readLiveState(envDeps.paths, now);
+    const snap = await snapshotQuotaFromCredentials(live.credentials, now, envDeps.fetchQuota);
+    quota = snap.quota;
+    quotaWarning = snap.warning;
+  }
+
   const result = saveProfile({
     paths: envDeps.paths,
     name,
     env: envDeps.env,
-    now: envDeps.now(),
+    now,
     platform: envDeps.platform,
     apiKeyEnvVar: opts.apiKeyEnvVar,
     forceOauth: opts.forceOauth,
+    quota,
   });
 
+  if (quotaWarning) d.printInfo(`warning: ${quotaWarning}`);
   for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
 
   if (opts.json) {
@@ -166,7 +191,7 @@ async function runSave(
           apiKeyEnvVar: result.profile.apiKeyEnvVar ?? null,
           credentialsPath: envDeps.paths.credentialsPath,
           claudeConfigPath: envDeps.paths.claudeConfigPath,
-          warnings: result.warnings,
+          warnings: quotaWarning ? [quotaWarning, ...result.warnings] : result.warnings,
         },
         null,
         2,
@@ -183,12 +208,20 @@ async function runSave(
 
 async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
   const name = requireName(positionals, "mcx claude auth load <profile>", d);
+  validateProfileName(name);
+  const now = envDeps.now();
+  // Fetch before any lock so a slow usage call does not hold ~/.claude.json.
+  const live = readLiveState(envDeps.paths, now);
+  const snap = await snapshotQuotaFromCredentials(live.credentials, now, envDeps.fetchQuota);
+  if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
+
   const result = loadProfile({
     paths: envDeps.paths,
     name,
     env: envDeps.env,
-    now: envDeps.now(),
+    now,
     platform: envDeps.platform,
+    outgoingQuota: snap.quota,
   });
 
   for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
@@ -200,6 +233,7 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
           ok: true,
           action: "load",
           ...result,
+          warnings: snap.warning ? [snap.warning, ...result.warnings] : result.warnings,
           credentialsPath: envDeps.paths.credentialsPath,
           claudeConfigPath: envDeps.paths.claudeConfigPath,
         },
@@ -253,6 +287,11 @@ export function formatProfileTable(summaries: ProfileSummary[]): string[] {
     kind: s.kind,
     account: s.kind === "api-key" ? `$${s.apiKeyEnvVar ?? "ANTHROPIC_API_KEY"}` : (s.account ?? "-"),
     expires: formatExpiry(s),
+    fiveHour: formatPct(s.quota?.fiveHour?.utilization),
+    fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt),
+    sevenDay: formatPct(s.quota?.sevenDay?.utilization),
+    sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt),
+    asOf: formatStamp(s.quota?.capturedAt),
     remote: s.allowRemoteControl === null ? "unknown" : s.allowRemoteControl ? "yes" : "no",
   }));
 
@@ -262,13 +301,18 @@ export function formatProfileTable(summaries: ProfileSummary[]): string[] {
   const kindW = width((r) => r.kind, "KIND");
   const accountW = width((r) => r.account, "ACCOUNT");
   const expiresW = width((r) => r.expires, "EXPIRES");
+  const fiveW = width((r) => r.fiveHour, "5H");
+  const fiveResetW = width((r) => r.fiveReset, "5H-RESET");
+  const sevenW = width((r) => r.sevenDay, "7D");
+  const sevenResetW = width((r) => r.sevenReset, "7D-RESET");
+  const asOfW = width((r) => r.asOf, "AS OF");
 
   const lines = [
-    `  ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  REMOTE-CONTROL`,
+    `  ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
   ];
   for (const r of rows) {
     lines.push(
-      `${r.marker} ${r.name.padEnd(nameW)}  ${r.kind.padEnd(kindW)}  ${r.account.padEnd(accountW)}  ${r.expires.padEnd(expiresW)}  ${r.remote}`,
+      `${r.marker} ${r.name.padEnd(nameW)}  ${r.kind.padEnd(kindW)}  ${r.account.padEnd(accountW)}  ${r.expires.padEnd(expiresW)}  ${r.fiveHour.padEnd(fiveW)}  ${r.fiveReset.padEnd(fiveResetW)}  ${r.sevenDay.padEnd(sevenW)}  ${r.sevenReset.padEnd(sevenResetW)}  ${r.asOf.padEnd(asOfW)}  ${r.remote}`,
     );
   }
   return lines;
@@ -276,6 +320,16 @@ export function formatProfileTable(summaries: ProfileSummary[]): string[] {
 
 function formatExpiry(summary: ProfileSummary): string {
   if (summary.expiresAt === null) return "-";
-  const stamp = summary.expiresAt.replace("T", " ").slice(0, 16);
+  const stamp = formatStamp(summary.expiresAt);
   return summary.expired ? `${stamp} (expired)` : stamp;
+}
+
+function formatStamp(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  return iso.replace("T", " ").slice(0, 16);
+}
+
+function formatPct(n: number | null | undefined): string {
+  if (n == null) return "-";
+  return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
 }
