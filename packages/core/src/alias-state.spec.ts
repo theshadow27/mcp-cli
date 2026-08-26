@@ -2,16 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  GLOBAL_STATE_NAMESPACE,
-  NO_REPO_ROOT,
-  createAliasState,
-  createEphemeralState,
-  workItemStateRoot,
-} from "./alias-state";
+import { GLOBAL_STATE_NAMESPACE, createAliasState, createEphemeralState, workItemStateRoot } from "./alias-state";
 import { resolveRealpath } from "./fs";
 import { clearFindGitRootCache } from "./git";
 import type { IpcMethod, IpcMethodResult } from "./ipc";
+import { NO_REPO_ROOT, isValidStateRoot, normalizeStateRoot } from "./state-root";
 
 type Call = { method: string; params: unknown };
 
@@ -235,5 +230,49 @@ describe("createEphemeralState", () => {
     await s.set("a", 1);
     await s.set("b", 2);
     expect(await s.all()).toEqual({ a: 1, b: 2 });
+  });
+});
+
+describe("normalizeStateRoot / isValidStateRoot — the sentinel survives the wire (#3376)", () => {
+  test("NO_REPO_ROOT normalizes to itself, NOT to a daemon-cwd-relative path", () => {
+    // The regression this locks: `resolveRealpath(resolve("__none__"))` is
+    // `<daemon-cwd>/__none__` — a real, writable path that may even fall inside a
+    // registered domain. The daemon's automation reader passes the literal sentinel to
+    // db.listAliasState, so the two doors addressed different rows.
+    expect(normalizeStateRoot(NO_REPO_ROOT)).toBe(NO_REPO_ROOT);
+    expect(normalizeStateRoot(NO_REPO_ROOT)).not.toContain("/");
+  });
+
+  test("an absolute path is realpathed and trailing-slash-normalized", () => {
+    const dir = mkdtempSync(join(tmpdir(), "state-root-norm-"));
+    try {
+      expect(normalizeStateRoot(`${dir}/`)).toBe(resolveRealpath(dir));
+      expect(normalizeStateRoot(dir)).toBe(normalizeStateRoot(`${dir}/`));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("workItemStateRoot and normalizeStateRoot agree — derived root == wire root", () => {
+    // A client that derives its own root and a client that sends one must land on the
+    // same row. That is the whole invariant; assert it directly rather than by
+    // inspection of two call sites.
+    const dir = mkdtempSync(join(tmpdir(), "state-root-agree-"));
+    try {
+      const derived = workItemStateRoot(dir, () => dir);
+      expect(normalizeStateRoot(derived)).toBe(derived);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  test("workItemStateRoot's sentinel is a legal state root, and relative paths are not", () => {
+    expect(isValidStateRoot(workItemStateRoot(undefined))).toBe(true);
+    expect(isValidStateRoot(workItemStateRoot("/anywhere", () => null))).toBe(true);
+    expect(isValidStateRoot("/abs/path")).toBe(true);
+    // Rejected because resolve() would silently key them to the daemon's cwd.
+    expect(isValidStateRoot("relative/path")).toBe(false);
+    expect(isValidStateRoot("__none__x")).toBe(false);
+    expect(isValidStateRoot("")).toBe(false);
   });
 });

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME, workItemStateNamespace } from "@mcp-cli/core";
+import { NO_DOMAIN_ID, NO_REPO_ROOT, WORK_ITEMS_SERVER_NAME, workItemStateNamespace } from "@mcp-cli/core";
 import { StateDb } from "./db/state";
 import { type DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { DOMAIN_META_KEY } from "./domain-scope";
@@ -1593,6 +1593,54 @@ describe("phase_state tools", () => {
       const text = (result.content as Array<{ text: string }>)[0].text;
       expect(text).toContain("absolute");
     }
+  });
+
+  // #3209 review — the branch that regressed and had no test. `workItemStateRoot` returns
+  // NO_REPO_ROOT both outside a git repo and when git could not answer, and `mcx phase
+  // advance` writes the spawned session's id through this tool. Rejecting the sentinel
+  // meant exit(1) AFTER a live session had been paid for, with a printed recovery command
+  // that embedded the same rejected root and therefore failed identically.
+  test("NO_REPO_ROOT is accepted as a repoRoot and round-trips", async () => {
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 101 } });
+
+    const set = await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:101", repoRoot: NO_REPO_ROOT, key: "session_id", value: "sess-abc" },
+    });
+    expect(set.isError).toBeFalsy();
+
+    const get = await client.callTool({
+      name: "phase_state_get",
+      arguments: { workItemId: "issue:101", repoRoot: NO_REPO_ROOT, key: "session_id" },
+    });
+    expect(get.isError).toBeFalsy();
+    expect(JSON.parse((get.content as Array<{ text: string }>)[0].text).value).toBe("sess-abc");
+  });
+
+  test("the sentinel addresses the SAME row ctx.state uses, not <cwd>/__none__", async () => {
+    // The write must be visible to a reader that goes through the alias-state path
+    // (which stores the sentinel verbatim), otherwise the tool and `ctx.state` are two
+    // stores wearing one name — the split #3209 exists to close (#3376).
+    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
+    stateDbInst = stateDb;
+    dbPathToClean = dbPath;
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    const { client } = await server.start();
+
+    await client.callTool({ name: "work_items_track", arguments: { issueNumber: 102 } });
+    await client.callTool({
+      name: "phase_state_set",
+      arguments: { workItemId: "issue:102", repoRoot: NO_REPO_ROOT, key: "qa_session_id", value: "sess-xyz" },
+    });
+
+    const direct = stateDb.listAliasState(NO_REPO_ROOT, workItemStateNamespace("issue:102"), NO_DOMAIN_ID);
+    expect(direct).toEqual({ qa_session_id: "sess-xyz" });
   });
 
   test("phase_state_set rejects undefined value", async () => {

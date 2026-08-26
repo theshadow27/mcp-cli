@@ -18,15 +18,18 @@
  *    a tool cannot ask for a second domain's rows because it has no way to name one.
  */
 
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import {
   NO_DOMAIN_ID,
+  NO_REPO_ROOT,
   WORK_ITEMS_SERVER_NAME,
   canTransition,
   consoleLogger,
   isReservedPhaseStateKey,
   isStandardPhase,
+  isValidStateRoot,
+  normalizeStateRoot,
   resolveRealpath,
   workItemStateNamespace,
 } from "@mcp-cli/core";
@@ -125,9 +128,20 @@ function resolvePhaseStateTarget(
 
   const workItemId = String(a.workItemId ?? "");
   const rawRepoRoot = String(a.repoRoot ?? "").trim();
-  if (rawRepoRoot && !isAbsolute(rawRepoRoot)) return toolError("repoRoot must be an absolute path");
+  // `NO_REPO_ROOT` is a legal root here, not a malformed one. It is the key `ctx.state`
+  // and `ctx.globalState` already use for every caller outside a git repo — or one whose
+  // git probe could not be answered — so a `phase_state_*` call arriving with it is
+  // addressing the same bucket a phase script reads, and rejecting it split the two apart.
+  // It did so at the worst possible moment: `mcx phase advance` writes the spawn's
+  // sessionId here *after* the session exists, and an error costs `exit(1)` with a
+  // recovery command that embeds the same rejected root, so it fails identically (#3209
+  // review). Relative paths are still rejected — `resolve()` would key them to the
+  // *daemon's* cwd, which is never what the caller meant.
+  if (rawRepoRoot && !isValidStateRoot(rawRepoRoot)) {
+    return toolError(`repoRoot must be an absolute path or the "${NO_REPO_ROOT}" sentinel`);
+  }
 
-  const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
+  const repoRoot = rawRepoRoot ? normalizeStateRoot(rawRepoRoot) : "";
   const key = String(a.key ?? "");
   if (!workItemId || !repoRoot || (opts.requireKey && !key)) {
     return toolError(

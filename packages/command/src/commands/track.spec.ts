@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { join } from "node:path";
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem } from "@mcp-cli/core";
 import {
   appendTransitionLog,
   clearFindGitRootCache,
   createAliasState,
   loadManifest,
+  normalizeStateRoot,
   readAllTransitions,
   resolveRealpath,
   workItemStateNamespace,
@@ -1195,8 +1196,8 @@ describe("cmdUntrack — phase-state cleanup uses the canonical id (#3037 R2)", 
  * The (repo_root, namespace, key) round trip across two independent commands (#3209).
  *
  * These use a **real git repo with a real linked worktree** and a fake that keys rows
- * exactly the way `daemon/src/handlers/work-item.ts` does —
- * `resolveRealpath(resolve(repoRoot))`. Nothing here asserts that a function returns what
+ * exactly the way `daemon/src/handlers/work-item.ts` does — through the shared
+ * `normalizeStateRoot`. Nothing here asserts that a function returns what
  * a stub was built to return: the write goes through `cmdTrack` and the read through
  * `cmdTracked` / the phase runner's own derivation, and the test fails if those two
  * disagree about the root. That is the failure mode the pre-fix code had and the coverage
@@ -1208,7 +1209,7 @@ describe("cmdUntrack — phase-state cleanup uses the canonical id (#3037 R2)", 
  * manifest resolves and the metadata write proceeds — while `findGitRoot` maps the
  * worktree back to the main checkout, which is the root every reader uses. A plain
  * subdirectory never gets that far: `findManifest` does not walk up, so `--scrutiny` is
- * rejected as an unknown flag before any state is written (filed separately).
+ * rejected as an unknown flag before any state is written (#3375).
  */
 describe("phase-state round trip from a linked worktree", () => {
   const MANIFEST_YAML = [
@@ -1221,11 +1222,16 @@ describe("phase-state round trip from a linked worktree", () => {
     "  build: { source: ./b.ts }",
   ].join("\n");
 
-  /** Model the daemon's alias_state table, including its server-side realpath. */
+  /**
+   * Model the daemon's alias_state table, including its server-side canonicalization.
+   *
+   * Calls the same `normalizeStateRoot` the four IPC handlers call rather than restating
+   * `resolveRealpath(resolve(...))` — a hand-copy of the daemon's keying is how a test
+   * keeps passing while production splits its store (#3376).
+   */
   function makeDaemonStore(item: WorkItem) {
     const rows = new Map<string, unknown>();
-    const rowKey = (repoRoot: string, ns: string, key: string) =>
-      `${resolveRealpath(resolvePath(repoRoot))} ${ns} ${key}`;
+    const rowKey = (repoRoot: string, ns: string, key: string) => `${normalizeStateRoot(repoRoot)} ${ns} ${key}`;
 
     const ipcCall = async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
       const p = (params ?? {}) as { repoRoot: string; namespace: string; key?: string; value?: unknown };
@@ -1240,7 +1246,7 @@ describe("phase-state round trip from a linked worktree", () => {
         case "aliasStateGet":
           return { value: rows.get(rowKey(p.repoRoot, p.namespace, p.key ?? "")) } as IpcMethodResult[M];
         case "aliasStateAll": {
-          const prefix = `${resolveRealpath(resolvePath(p.repoRoot))} ${p.namespace} `;
+          const prefix = `${normalizeStateRoot(p.repoRoot)} ${p.namespace} `;
           const entries: Record<string, unknown> = {};
           for (const [k, v] of rows) if (k.startsWith(prefix)) entries[k.slice(prefix.length)] = v;
           return { entries } as IpcMethodResult[M];

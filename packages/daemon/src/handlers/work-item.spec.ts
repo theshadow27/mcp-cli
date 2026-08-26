@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
+import { NO_REPO_ROOT, resolveRealpath } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
 import { WorkItemDb } from "../db/work-items";
 import type { RequestHandler } from "../handler-types";
@@ -310,6 +312,42 @@ describe("WorkItemHandlers", () => {
         entries: Record<string, unknown>;
       };
       expect(result.entries).toEqual({});
+    });
+
+    // #3376 — the sentinel must reach the DB as the sentinel. Every handler previously did
+    // `resolveRealpath(resolve(repoRoot))`, and `resolve("__none__")` is
+    // `<daemon-cwd>/__none__`: a real path, dependent on where mcpd happened to be started,
+    // and a different row from the literal `"__none__"` the daemon's own automation reader
+    // queries. Assert against the store key, not the round trip — a round trip passes
+    // either way, which is why this went unnoticed.
+    test("NO_REPO_ROOT is stored verbatim, not resolved against the daemon's cwd", async () => {
+      const { map, aliasDb } = buildHandlers();
+      await invoke(map, "aliasStateSet")({ repoRoot: NO_REPO_ROOT, namespace, key: "k", value: 7 }, ctx);
+      expect(aliasDb.getAliasState(NO_REPO_ROOT, namespace, "k")).toBe(7);
+      expect(aliasDb.getAliasState(resolve(NO_REPO_ROOT), namespace, "k")).toBeUndefined();
+    });
+
+    test("all four handlers agree on the sentinel row", async () => {
+      const { map } = buildHandlers();
+      await invoke(map, "aliasStateSet")({ repoRoot: NO_REPO_ROOT, namespace, key: "a", value: 1 }, ctx);
+      const got = (await invoke(map, "aliasStateGet")({ repoRoot: NO_REPO_ROOT, namespace, key: "a" }, ctx)) as {
+        value: unknown;
+      };
+      expect(got.value).toBe(1);
+      const all = (await invoke(map, "aliasStateAll")({ repoRoot: NO_REPO_ROOT, namespace }, ctx)) as {
+        entries: Record<string, unknown>;
+      };
+      expect(all.entries).toEqual({ a: 1 });
+      const del = (await invoke(map, "aliasStateDelete")({ repoRoot: NO_REPO_ROOT, namespace, key: "a" }, ctx)) as {
+        deleted: boolean;
+      };
+      expect(del.deleted).toBe(true);
+    });
+
+    test("a real absolute root is still realpathed and trailing-slash-normalized", async () => {
+      const { map, aliasDb } = buildHandlers();
+      await invoke(map, "aliasStateSet")({ repoRoot: `${repoRoot}/`, namespace, key: "n", value: "v" }, ctx);
+      expect(aliasDb.getAliasState(resolveRealpath(repoRoot), namespace, "n")).toBe("v");
     });
   });
 });

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DisallowedTransitionError,
+  type GitRootResult,
+  NO_REPO_ROOT,
   RegressionError,
   TransitionLockBusyError,
   UnknownPhaseError,
@@ -12,6 +14,7 @@ import {
   parseLockfile,
   readAllTransitions,
   readTransitionHistory,
+  resolveRealpath,
   serializeLockfile,
 } from "@mcp-cli/core";
 import {
@@ -2989,6 +2992,101 @@ defineAlias(({ z }) => ({
     expect(ex.getCurrentPhase()).toBe("triage");
   }, 30_000);
 
+  // #3209 review — `work_items_update`'s repoRoot is spent on `loadManifest(repoRoot)` and
+  // nothing else, so it is a MANIFEST root and must stay worktree-local (#2737). Feeding it
+  // the alias_state root is wrong twice: findGitRoot remaps a linked worktree onto the main
+  // checkout (wrong .mcx.yaml, so a manifest-only phase is rejected against the hardcoded
+  // graph), and outside a repo it is the NO_REPO_ROOT sentinel, from which no manifest
+  // loads at all. Both failures are swallowed as "non-fatal", leaving work_items.phase
+  // stale — the reader/writer disagreement this whole PR exists to remove.
+  test("auto-update sends the WORKTREE root to work_items_update, not the state root", async () => {
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), implAlias);
+    writeFileSync(join(dir, "triage.ts"), triageAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    appendTransitionLog(join(dir, ".mcx", "transitions.jsonl"), {
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      ts: "2026-04-14T00:00:00Z",
+      status: "committed",
+    });
+
+    // The shape a sprint worker actually runs in: cwd is a linked worktree, findGitRoot
+    // remaps to the main checkout (one shared state bucket), findWorktreeRoot does not.
+    const mainCheckout = "/somewhere/main-checkout";
+    const ex = makeTrackingDeps({ workItemPhase: "impl" });
+    await executePhase(
+      ["triage", "--work-item", "#77"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      {
+        ipcCall: ex.ipcCall,
+        exec: ex.exec,
+        findGitRoot: () => mainCheckout,
+        findWorktreeRoot: () => dir,
+        now: ex.now,
+      },
+    );
+
+    const updateCalls = ex.calls.filter(
+      (c) => c.method === "callTool" && (c.params as { tool: string }).tool === "work_items_update",
+    );
+    expect(updateCalls.length).toBe(1);
+    const updateArgs = (updateCalls[0].params as { arguments: Record<string, unknown> }).arguments;
+    expect(updateArgs.repoRoot).toBe(dir);
+    expect(updateArgs.repoRoot).not.toBe(mainCheckout);
+    expect(updateArgs.repoRoot).not.toBe(NO_REPO_ROOT);
+  }, 30_000);
+
+  test("auto-update falls back to cwd, never the sentinel, when no worktree root resolves", async () => {
+    // findWorktreeRoot returns null both outside a repo and when git is unavailable. Either
+    // way `cwd` is a better manifest root than NO_REPO_ROOT: `.mcx.yaml` may well be sitting
+    // right there, and a sentinel guarantees the load fails.
+    writeFileSync(join(dir, ".mcx.yaml"), manifest);
+    writeFileSync(join(dir, "impl.ts"), implAlias);
+    writeFileSync(join(dir, "triage.ts"), triageAlias);
+    const { deps: installDeps } = makeDriftDeps(dir);
+    await cmdPhase(["install"], installDeps);
+
+    appendTransitionLog(join(dir, ".mcx", "transitions.jsonl"), {
+      workItemId: "#77",
+      from: null,
+      to: "impl",
+      ts: "2026-04-14T00:00:00Z",
+      status: "committed",
+    });
+
+    const ex = makeTrackingDeps({ workItemPhase: "impl" });
+    await executePhase(
+      ["triage", "--work-item", "#77"],
+      {
+        ...makeDriftDeps(dir).deps,
+        log: () => {},
+        logError: () => {},
+        exit: ((c: number) => {
+          throw new Error(`exit(${c})`);
+        }) as (code: number) => never,
+      },
+      { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: () => null, findWorktreeRoot: () => null, now: ex.now },
+    );
+
+    const updateCalls = ex.calls.filter(
+      (c) => c.method === "callTool" && (c.params as { tool: string }).tool === "work_items_update",
+    );
+    expect(updateCalls.length).toBe(1);
+    const updateArgs = (updateCalls[0].params as { arguments: Record<string, unknown> }).arguments;
+    expect(updateArgs.repoRoot).toBe(dir);
+  }, 30_000);
+
   test("skips auto-update when handler already set phase to target", async () => {
     writeFileSync(join(dir, ".mcx.yaml"), manifest);
     writeFileSync(join(dir, "impl.ts"), implAlias);
@@ -3357,6 +3455,8 @@ phases:
   beforeEach(async () => {
     out = [];
     err = [];
+    spawnCalls = [];
+    stateSetArgs = [];
     advDir = mkdtempSync(join(tmpdir(), "mcx-advance-"));
     writeFileSync(join(advDir, ".mcx.yaml"), advManifestYaml);
     for (const [file, name] of [
@@ -3402,6 +3502,8 @@ phases:
       stateSetIsError?: boolean;
       stateSetThrows?: boolean;
       workItemPhase?: string;
+      /** Override the git-root probe so the not-a-repo / git-unavailable branches are reachable. */
+      gitRootResult?: GitRootResult;
     } = {},
   ) {
     const {
@@ -3410,6 +3512,7 @@ phases:
       stateSetIsError = false,
       stateSetThrows = false,
       workItemPhase = "impl",
+      gitRootResult = { kind: "root", path: advDir } as GitRootResult,
     } = opts;
 
     let callIdx = 0;
@@ -3433,6 +3536,7 @@ phases:
           const p = params as Record<string, unknown> | undefined;
           if (method === "getWorkItem") return makeWorkItem(workItemPhase);
           if (method === "callTool" && (p as { tool?: string } | undefined)?.tool === "phase_state_set") {
+            stateSetArgs.push((p as { arguments: Record<string, unknown> }).arguments);
             if (stateSetThrows) throw new Error("state_set network error");
             return stateSetIsError ? { isError: true, content: ["failed"] } : { content: [] };
           }
@@ -3443,9 +3547,12 @@ phases:
           if (cmd.includes("symbolic-ref")) return { stdout: "main\n", exitCode: 0 };
           if (cmd.includes("--is-bare-repository")) return { stdout: "false\n", exitCode: 0 };
           // Spawn command (mcx claude spawn ...)
+          spawnCalls.push(cmd);
           return { stdout: spawnOutput, exitCode: spawnExitCode };
         },
-        findGitRoot: () => advDir,
+        findGitRoot: () => (gitRootResult.kind === "root" ? gitRootResult.path : null),
+        findGitRootResult: () => gitRootResult,
+        findWorktreeRoot: () => (gitRootResult.kind === "root" ? gitRootResult.path : null),
         now: () => new Date(),
         readCliConfig: () => ({}),
       },
@@ -3460,6 +3567,10 @@ phases:
 
   let out: string[];
   let err: string[];
+  /** Commands passed to `ex.exec` that were NOT git plumbing — i.e. real `mcx claude spawn` calls. */
+  let spawnCalls: string[][];
+  /** Arguments every `phase_state_set` tool call was made with. */
+  let stateSetArgs: Record<string, unknown>[];
 
   async function runAdvance(
     workItemId: string,
@@ -3657,6 +3768,45 @@ phases:
     expect(exitCode).not.toBe(null);
     expect(exitCode).not.toBe(0);
     expect(e.some((l) => l.includes("session-abc12345-xyz"))).toBe(true);
+  });
+
+  // #3209 review — the `findGitRoot → null` branch, which had no coverage at all despite
+  // being the branch that decides which DB row the spawned session's id is written to.
+  // The two causes of `null` must NOT behave the same way (#2862).
+  describe("spawn when the repo root cannot be resolved", () => {
+    const spawnOutput = { action: "spawn", command: ["mcx", "claude", "spawn", "--task", "run impl"] };
+
+    test("git-unavailable — refuses to spawn AT ALL, so nothing is paid for twice", async () => {
+      const { err: e, exitCode } = await runAdvance("#42", [spawnOutput], {
+        gitRootResult: { kind: "git-unavailable", reason: "timeout", detail: "git rev-parse timed out after 5000ms" },
+      });
+      expect(exitCode).not.toBe(null);
+      expect(exitCode).not.toBe(0);
+      // The load-bearing assertion: the guard runs BEFORE ex.exec. Failing after the spawn
+      // leaves a live session whose id was never recorded, so the next tick spawns again.
+      expect(spawnCalls).toHaveLength(0);
+      expect(stateSetArgs).toHaveLength(0);
+      expect(e.some((l) => l.includes("Refusing to spawn"))).toBe(true);
+      expect(e.some((l) => l.includes("timed out"))).toBe(true);
+    });
+
+    test("not-a-repo — DOES spawn, and records under the NO_REPO_ROOT sentinel", async () => {
+      // Not the same case: outside a repo, NO_REPO_ROOT is the correct and stable key —
+      // the same one ctx.state uses — so there is nothing to refuse. Collapsing this into
+      // the branch above would break every legitimate non-repo run.
+      const { exitCode } = await runAdvance("#42", [spawnOutput], { gitRootResult: { kind: "not-a-repo" } });
+      expect(exitCode).toBeNull();
+      expect(spawnCalls).toHaveLength(1);
+      expect(stateSetArgs).toHaveLength(1);
+      expect(stateSetArgs[0].repoRoot).toBe(NO_REPO_ROOT);
+      expect(stateSetArgs[0].value).toBe("session-abc12345-xyz");
+    });
+
+    test("resolved root — records under the realpathed git root", async () => {
+      const { exitCode } = await runAdvance("#42", [spawnOutput]);
+      expect(exitCode).toBeNull();
+      expect(stateSetArgs[0].repoRoot).toBe(resolveRealpath(advDir));
+    });
   });
 
   test("unknown action — exits non-zero with informative message", async () => {

@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import {
   AliasStateAllParamsSchema,
   AliasStateDeleteParamsSchema,
@@ -10,7 +9,7 @@ import {
   NO_DOMAIN_ID,
   TrackWorkItemParamsSchema,
   UntrackWorkItemParamsSchema,
-  resolveRealpath,
+  normalizeStateRoot,
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger, Manifest, WorkItemPhase } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
@@ -196,17 +195,24 @@ export class WorkItemHandlers {
     //
     // Un-registered repo roots resolve to NO_DOMAIN_ID, which is a real partition of its
     // own: a project with no domain keeps the pre-#3034 behaviour exactly.
+    //
+    // All four handlers canonicalize through `normalizeStateRoot`, never a bare
+    // `resolveRealpath(resolve(...))`: the latter turns the `NO_REPO_ROOT` sentinel into
+    // `<daemon-cwd>/__none__`, a real path that may even fall inside a registered domain,
+    // while the daemon's own automation reader passes the literal sentinel through to
+    // `db.listAliasState`. Same nominal key, two rows, depending on which door it came
+    // through (#3376).
 
     handlers.set("aliasStateGet", async (params, _ctx) => {
       const parsed = AliasStateGetParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key, domainId) };
     });
 
     handlers.set("aliasStateSet", async (params, _ctx) => {
       const parsed = AliasStateSetParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value, domainId);
       return { ok: true as const };
@@ -214,7 +220,7 @@ export class WorkItemHandlers {
 
     handlers.set("aliasStateDelete", async (params, _ctx) => {
       const parsed = AliasStateDeleteParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key, domainId);
       return { ok: true as const, deleted };
@@ -222,7 +228,7 @@ export class WorkItemHandlers {
 
     handlers.set("aliasStateAll", async (params, _ctx) => {
       const parsed = AliasStateAllParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace, domainId) };
     });
