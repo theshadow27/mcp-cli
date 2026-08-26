@@ -32,6 +32,7 @@ import {
   readActiveProfileName,
   readProfile,
   saveProfile,
+  snapshotQuotaFromCredentials,
   summarizeProfile,
   withExclusiveLock,
   writeFileAtomic,
@@ -245,6 +246,159 @@ describe("saveProfile", () => {
     for (const bad of ["../escape", "a/b", "", ".hidden"]) {
       expect(() => save(fs, bad)).toThrow(AuthProfileError);
     }
+  });
+});
+
+const SAMPLE_STORED_QUOTA = {
+  capturedAt: NOW.toISOString(),
+  fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
+  sevenDay: { utilization: 8, resetsAt: "2026-08-25T04:00:00.000Z" },
+  sevenDaySonnet: null,
+  sevenDayOpus: null,
+  extraUsage: null,
+};
+
+describe("saveProfile quota snapshot", () => {
+  test("stores a provided quota on oauth profiles", () => {
+    using fs = sandbox();
+    const result = saveProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      quota: SAMPLE_STORED_QUOTA,
+    });
+    expect(result.profile.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(JSON.parse(readFileSync(join(fs.profilesDir, "work.json"), "utf-8")).quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+
+  test("keeps the previous snapshot when a later save omits quota", () => {
+    using fs = sandbox();
+    saveProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      quota: SAMPLE_STORED_QUOTA,
+    });
+    const later = new Date(NOW.getTime() + 60_000);
+    const second = saveProfile({ paths: fs, name: "work", env: {}, now: later, platform: "linux" });
+    expect(second.profile.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+
+  test("replaces the snapshot when a new one is provided", () => {
+    using fs = sandbox();
+    saveProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      quota: SAMPLE_STORED_QUOTA,
+    });
+    const next = { ...SAMPLE_STORED_QUOTA, fiveHour: { utilization: 90, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    const later = new Date(NOW.getTime() + 60_000);
+    const second = saveProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: later,
+      platform: "linux",
+      quota: next,
+    });
+    expect(second.profile.quota?.fiveHour?.utilization).toBe(90);
+  });
+
+  test("api-key profiles never store quota", () => {
+    using fs = sandbox();
+    const result = saveProfile({
+      paths: fs,
+      name: "ci",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      apiKeyEnvVar: "MY_KEY",
+      quota: SAMPLE_STORED_QUOTA,
+    });
+    expect(result.profile.quota).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(fs.profilesDir, "ci.json"), "utf-8")).quota).toBeUndefined();
+  });
+});
+
+describe("loadProfile quota write-back", () => {
+  test("attaches outgoingQuota even when credentials did not change", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }), {
+      mode: 0o600,
+    });
+    save(fs, "personal");
+
+    const result = loadProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      outgoingQuota: SAMPLE_STORED_QUOTA,
+    });
+    expect(result.wroteBack).toBe("personal");
+    expect(result.wroteBackChanged).toBe(false);
+    expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+});
+
+describe("snapshotQuotaFromCredentials", () => {
+  test("returns a stored snapshot on success", async () => {
+    const snap = await snapshotQuotaFromCredentials(credentials(), NOW, async () => ({
+      fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+      fetchedAt: 1,
+    }));
+    expect(snap.warning).toBeUndefined();
+    expect(snap.quota?.capturedAt).toBe(NOW.toISOString());
+    expect(snap.quota?.fiveHour?.utilization).toBe(42);
+  });
+
+  test("returns a warning and no quota on fetch failure", async () => {
+    const snap = await snapshotQuotaFromCredentials(credentials(), NOW, async () => {
+      throw new Error("timeout");
+    });
+    expect(snap.quota).toBeUndefined();
+    expect(snap.warning).toBe("could not snapshot quota: timeout");
+  });
+
+  test("no-ops without an access token", async () => {
+    let called = false;
+    const snap = await snapshotQuotaFromCredentials({}, NOW, async () => {
+      called = true;
+      throw new Error("should not fetch");
+    });
+    expect(called).toBe(false);
+    expect(snap).toEqual({});
+  });
+});
+
+describe("summarizeProfile quota", () => {
+  test("projects the snapshot without token material", () => {
+    using fs = sandbox();
+    const { profile } = saveProfile({
+      paths: fs,
+      name: "work",
+      env: {},
+      now: NOW,
+      platform: "linux",
+      quota: SAMPLE_STORED_QUOTA,
+    });
+    const summary = summarizeProfile(profile, "work", NOW);
+    expect(summary.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(JSON.stringify(summary)).not.toContain(ACCESS_TOKEN);
   });
 });
 
@@ -574,6 +728,7 @@ describe("summarizeProfile / listProfiles", () => {
     });
     expect(summary.expiresAt).toBe(new Date(EXPIRES_AT).toISOString());
     expect(summary.expired).toBe(false);
+    expect(summary.quota).toBeNull();
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain(ACCESS_TOKEN);
     expect(serialized).not.toContain(REFRESH_TOKEN);
@@ -594,6 +749,7 @@ describe("summarizeProfile / listProfiles", () => {
     expect(summary.apiKeyEnvVar).toBe("MY_KEY");
     expect(summary.hasCredentials).toBe(false);
     expect(summary.account).toBeNull();
+    expect(summary.quota).toBeNull();
   });
 
   test("lists profiles sorted with the active one flagged", () => {
@@ -906,6 +1062,7 @@ describe("api-key profiles never hold credentials", () => {
       apiKeyEnvVar: "MY_KEY",
       credentials: credentials(),
       identity: { userID: "user-a" },
+      quota: SAMPLE_STORED_QUOTA,
     });
 
     const raw = readFileSync(join(fs.profilesDir, "ci.json"), "utf-8");

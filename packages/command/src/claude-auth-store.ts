@@ -50,7 +50,17 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { flockUnlock, options, tryFlockExclusive } from "@mcp-cli/core";
+import {
+  type QuotaStatus,
+  type StoredQuota,
+  fetchQuotaUsage,
+  flockUnlock,
+  options,
+  toStoredQuota,
+  tryFlockExclusive,
+} from "@mcp-cli/core";
+
+export type { StoredQuota };
 
 // ── Types ──
 
@@ -87,6 +97,8 @@ export interface ClaudeAuthProfile {
   /** oauth profiles only: `userID` / `oauthAccount` from `~/.claude.json`. */
   identity?: StoredIdentity;
   policy?: StoredPolicy;
+  /** oauth profiles: last usage snapshot (advisory — not live). */
+  quota?: StoredQuota;
 }
 
 /** Non-secret projection of a profile, safe to print. */
@@ -106,6 +118,8 @@ export interface ProfileSummary {
   allowRemoteControl: boolean | null;
   hasCredentials: boolean;
   updatedAt: string;
+  /** Last quota snapshot, or null when none has been captured. */
+  quota: StoredQuota | null;
 }
 
 /** Filesystem locations the store reads and writes. Injected so tests never touch a real `~/.claude`. */
@@ -402,6 +416,7 @@ export function writeProfile(paths: AuthPaths, profile: ClaudeAuthProfile): Clau
   if (record.kind === "api-key") {
     record.credentials = undefined;
     record.identity = undefined;
+    record.quota = undefined;
   }
   ensureProfilesDir(paths);
   // JSON.stringify drops undefined-valued keys, so the stripped fields never hit disk.
@@ -646,6 +661,12 @@ export interface SaveOptions {
    * never be able to snapshot the logged-in claude.ai identity.
    */
   forceOauth?: boolean;
+  /**
+   * Pre-fetched quota snapshot. Fetch happens *before* the operation lock so a
+   * 5s network timeout does not serialize other auth commands. Injected by the
+   * CLI (and tests); the store itself stays synchronous.
+   */
+  quota?: StoredQuota;
 }
 
 export interface SaveResult {
@@ -682,6 +703,10 @@ export function saveProfile(opts: SaveOptions): SaveResult {
         updatedAt: now.toISOString(),
       };
       if (live.policy) profile.policy = live.policy;
+      if (kind === "oauth") {
+        if (opts.quota) profile.quota = opts.quota;
+        else if (existing?.quota) profile.quota = existing.quota;
+      }
 
       if (kind === "api-key") {
         // Record the env var NAME only — never the key value, and never someone
@@ -743,6 +768,12 @@ export interface LoadOptions {
    * in production sets it.
    */
   hooks?: { onAfterCredentialsWrite?: () => void };
+  /**
+   * Pre-fetched quota snapshot for the *outgoing* identity. Fetched before the
+   * exclusive `~/.claude.json` lock; attached on write-back even when credentials
+   * did not change, so every profile you have switched away from has a snapshot.
+   */
+  outgoingQuota?: StoredQuota;
 }
 
 export interface LoadResult {
@@ -889,12 +920,15 @@ function loadProfileLocked(opts: LoadOptions): LoadResult {
     if (attribution.owner) {
       const origin = attribution.owner;
       const changed = !jsonEquals(live.credentials, origin.credentials) || !jsonEquals(live.identity, origin.identity);
-      if (changed) {
+      const quotaToStore = opts.outgoingQuota ?? origin.quota;
+      const quotaChanged = opts.outgoingQuota !== undefined && !jsonEquals(opts.outgoingQuota, origin.quota);
+      if (changed || quotaChanged) {
         writeProfile(paths, {
           ...origin,
           credentials: live.credentials,
           identity: live.identity,
-          updatedAt: now.toISOString(),
+          updatedAt: changed ? now.toISOString() : origin.updatedAt,
+          ...(quotaToStore ? { quota: quotaToStore } : {}),
         });
       }
       wroteBack = origin.name;
@@ -905,6 +939,7 @@ function loadProfileLocked(opts: LoadOptions): LoadResult {
         // to the older stored copy.
         target.credentials = live.credentials;
         target.identity = live.identity;
+        if (quotaToStore) target.quota = quotaToStore;
       }
     } else {
       const storedIn = anyProfileStores(paths, live.credentials);
@@ -1094,9 +1129,39 @@ function credentialsRoot(profile: ClaudeAuthProfile): Record<string, unknown> | 
   return null;
 }
 
+export type QuotaFetcher = (token: { accessToken: string }) => Promise<QuotaStatus>;
+
+/** Pull the live OAuth access token out of a credentials blob. Never logs it. */
+export function accessTokenFromCredentials(credentials: Record<string, unknown> | null | undefined): string | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  const token = (root as Record<string, unknown>).accessToken;
+  return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+/**
+ * Best-effort usage snapshot. Network happens here, outside any lock. A failure
+ * returns a warning and no quota — callers keep the previous snapshot.
+ */
+export async function snapshotQuotaFromCredentials(
+  credentials: Record<string, unknown> | null | undefined,
+  now: Date,
+  fetchQuota: QuotaFetcher = fetchQuotaUsage,
+): Promise<{ quota?: StoredQuota; warning?: string }> {
+  const accessToken = accessTokenFromCredentials(credentials);
+  if (!accessToken) return {};
+  try {
+    const status = await fetchQuota({ accessToken });
+    return { quota: toStoredQuota(status, now.toISOString()) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { warning: `could not snapshot quota: ${msg}` };
+  }
+}
+
 /**
  * Non-secret projection of a profile. Never reads or returns token material —
- * only expiry, account, and policy metadata.
+ * only expiry, account, policy, and quota-snapshot metadata.
  */
 export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string | null, now: Date): ProfileSummary {
   const root = credentialsRoot(profile);
@@ -1116,6 +1181,7 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
     allowRemoteControl: profile.policy?.allowRemoteControl ?? null,
     hasCredentials: profile.credentials !== undefined,
     updatedAt: profile.updatedAt,
+    quota: profile.quota ?? null,
   };
 }
 
