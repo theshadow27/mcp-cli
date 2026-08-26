@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { GLOBAL_STATE_NAMESPACE, NO_REPO_ROOT, createAliasState, createEphemeralState } from "./alias-state";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  GLOBAL_STATE_NAMESPACE,
+  NO_REPO_ROOT,
+  createAliasState,
+  createEphemeralState,
+  workItemStateRoot,
+} from "./alias-state";
+import { resolveRealpath } from "./fs";
+import { clearFindGitRootCache } from "./git";
 import type { IpcMethod, IpcMethodResult } from "./ipc";
 
 type Call = { method: string; params: unknown };
@@ -99,6 +110,95 @@ describe("createAliasState", () => {
   test("exports stable sentinels", () => {
     expect(GLOBAL_STATE_NAMESPACE).toBe("__global__");
     expect(NO_REPO_ROOT).toBe("__none__");
+  });
+});
+
+/**
+ * Real git repos, not stubs. The defect #3209 fixes is two production call sites
+ * *disagreeing* about a derivation, so a test that feeds both sides a hand-built fake root
+ * proves nothing — that is exactly the shape #3175 shipped and #3204 flagged.
+ */
+describe("workItemStateRoot", () => {
+  function cleanGitEnv(): Record<string, string | undefined> {
+    const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...rest } = process.env;
+    return rest;
+  }
+
+  async function withRepo(run: (repo: string) => void | Promise<void>): Promise<void> {
+    const repo = mkdtempSync(join(tmpdir(), "state-root-"));
+    clearFindGitRootCache();
+    try {
+      Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
+      await run(repo);
+    } finally {
+      clearFindGitRootCache();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }
+
+  test("a subdirectory derives the same root as the repo root itself", async () => {
+    await withRepo((repo) => {
+      const sub = join(repo, "packages", "core", "src");
+      mkdirSync(sub, { recursive: true });
+      // The whole point: a writer standing in `sub` and a reader standing at `repo`
+      // must produce one key. Before #3209 `mcx track` used `sub` verbatim.
+      expect(workItemStateRoot(sub)).toBe(workItemStateRoot(repo));
+      expect(workItemStateRoot(sub)).toBe(resolveRealpath(repo));
+    });
+  });
+
+  test("a linked worktree derives the main checkout's root", async () => {
+    await withRepo((repo) => {
+      const env = {
+        ...cleanGitEnv(),
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      };
+      const opts = { env, stdout: "ignore" as const, stderr: "ignore" as const };
+      Bun.spawnSync(["git", "-C", repo, "commit", "--allow-empty", "-m", "init", "-q"], opts);
+      const wt = join(repo, "wt");
+      const added = Bun.spawnSync(["git", "-C", repo, "worktree", "add", wt, "-b", "wt-branch", "-q"], opts);
+      expect(added.exitCode).toBe(0);
+      clearFindGitRootCache();
+      // This is the case that actually bit: every mis-keyed row found in the wild was
+      // written by `mcx track` from inside `.claude/worktrees/*`.
+      expect(workItemStateRoot(wt)).toBe(resolveRealpath(repo));
+    });
+  });
+
+  test("outside any git repository it is NO_REPO_ROOT, never the cwd", () => {
+    const dir = mkdtempSync(join(tmpdir(), "state-no-root-"));
+    clearFindGitRootCache();
+    try {
+      expect(workItemStateRoot(dir)).toBe(NO_REPO_ROOT);
+    } finally {
+      clearFindGitRootCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unknown cwd is NO_REPO_ROOT, never process.cwd()", () => {
+    // A daemon-side caller with no caller cwd must not silently key to the daemon's
+    // own directory (PR #1307 review). `undefined` means "unknown", not "here".
+    expect(workItemStateRoot(undefined)).toBe(NO_REPO_ROOT);
+    expect(workItemStateRoot("")).toBe(NO_REPO_ROOT);
+  });
+
+  test("state written from a subdirectory is readable from the repo root", async () => {
+    await withRepo(async (repo) => {
+      const sub = join(repo, "nested");
+      mkdirSync(sub, { recursive: true });
+      const store = new Map<string, unknown>();
+      const call = makeFakeCall(store);
+
+      const writer = createAliasState({ repoRoot: workItemStateRoot(sub), namespace: "workitem:#42", call });
+      const reader = createAliasState({ repoRoot: workItemStateRoot(repo), namespace: "workitem:#42", call });
+
+      await writer.set("scrutiny", "high");
+      expect(await reader.get<string>("scrutiny")).toBe("high");
+    });
   });
 });
 

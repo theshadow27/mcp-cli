@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { NdjsonRecorder, workItemStateNamespace } from "@mcp-cli/core";
+import { NdjsonRecorder, workItemStateNamespace, workItemStateRoot } from "@mcp-cli/core";
 import type { Logger } from "@mcp-cli/core";
 import {
   ACP_SERVER_NAME,
@@ -985,20 +985,24 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           );
         }
       }
-      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3192.
+      // Phase state is keyed by (repo_root, namespace, key). This site now derives its half
+      // through the one shared `workItemStateRoot` (#3209) instead of being the sixth
+      // independent spelling — it previously realpathed the daemon's cwd with no git-root
+      // call at all, so a daemon started in a subdirectory of the project read automation
+      // state from a bucket no writer ever wrote to.
       //
-      // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
-      // cwd. That is already the wrong key when the daemon starts outside the project, and it
-      // was wrong before this PR too. #3037 does NOT own it: nothing about scoping work_items
-      // by domain requires deriving a phase-state root.
+      // What is fixed here is the *derivation*. **Which cwd** this should be is still open
+      // and belongs to #3192: binding to `process.cwd()` at startup is the wrong input no
+      // matter how correctly it is then resolved, because one daemon serves many domains.
+      // Routing it through the shared helper first means #3192 changes an argument rather
+      // than re-deriving a key.
       //
-      // An earlier round of this PR tried to fix it here by substituting the domain's
-      // registered path. That was worse — `mcx scope add` stores a cwd with no git-root check
-      // and a domain may legally be registered at an ANCESTOR of the repo, so the registered
-      // path and the git root every writer uses coincide only by luck. It replaced a known
-      // stale key with a differently-wrong one and made this file the fifth independent
-      // derivation of a key that already had four. Reverted rather than patched.
-      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
+      // An earlier attempt (in #3037) substituted the domain's *registered* path instead.
+      // That was worse: a domain may legally be registered at an ANCESTOR of the repo, with
+      // no git-root check at registration, so the registered path and the git root every
+      // writer uses coincide only by luck. It replaced a known-stale key with a
+      // differently-wrong one. Reverted rather than patched.
+      const automationRepoRoot = workItemStateRoot(process.cwd());
       if (automations.length > 0) {
         automationDispatcher = new AutomationDispatcher({
           eventBus: mailEventBus,

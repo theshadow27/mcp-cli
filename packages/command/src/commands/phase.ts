@@ -34,7 +34,6 @@ import {
   ManifestError,
   type ManifestState,
   NO_DOMAIN_ID,
-  NO_REPO_ROOT,
   RegressionError,
   TransitionLockBusyError,
   type TransitionLogEntry,
@@ -78,6 +77,7 @@ import {
   suggestPhases,
   validateTransition,
   workItemStateNamespace,
+  workItemStateRoot,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
@@ -1188,8 +1188,8 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
       phase: "(dry-run)",
     },
     domain: null,
-    repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
-    gh: createGhClient({ repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT }),
+    repoRoot: workItemStateRoot(cwd),
+    gh: createGhClient({ repoRoot: workItemStateRoot(cwd) }),
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
@@ -1553,7 +1553,7 @@ export async function executePhase(
   const structured = isDefineAlias(srcText);
   const { js } = await d.bundleAlias(resolved);
 
-  const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
+  const repoRoot = workItemStateRoot(cwd, ex.findGitRoot);
   // State is namespaced by work-item id so every phase touching the same
   // item sees the same scratchpad (see sprint state declarations in
   // .mcx.yaml). When no work item is bound we use an in-memory ephemeral
@@ -1670,7 +1670,7 @@ export async function executePhase(
     try {
       const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId, cwd })) as WorkItem | null;
       if (fresh && fresh.phase !== parsed.target) {
-        const repoRoot = ex.findGitRoot(cwd) ?? cwd;
+        const repoRoot = workItemStateRoot(cwd, ex.findGitRoot);
         const updateResult = (await ex.ipcCall("callTool", {
           server: "_work_items",
           tool: "work_items_update",
@@ -1919,7 +1919,7 @@ export async function cmdPhaseAdvance(
       // phase_state_set call below fails and the recovery hint is malformed.
       d.logError(`${currentPhase}: spawn succeeded — sessionId=${sessionId}`);
 
-      const repoRoot = ex.findGitRoot(d.cwd()) ?? d.cwd();
+      const repoRoot = workItemStateRoot(d.cwd(), ex.findGitRoot);
       const recoverPayload = JSON.stringify({ workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot });
       const recoverCmd = `mcx call _work_items phase_state_set '${recoverPayload.replace(/'/g, "'\\''")}'`;
       try {

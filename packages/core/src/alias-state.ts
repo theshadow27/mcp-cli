@@ -6,6 +6,8 @@
  */
 
 import type { AliasStateAccessor } from "./alias";
+import { resolveRealpath } from "./fs";
+import { findGitRoot } from "./git";
 import { ipcCall } from "./ipc-client";
 
 /** Namespace used by ctx.globalState. */
@@ -13,6 +15,41 @@ export const GLOBAL_STATE_NAMESPACE = "__global__";
 
 /** Sentinel repo_root used when the caller is not inside a git repository. */
 export const NO_REPO_ROOT = "__none__";
+
+/**
+ * The `repo_root` half of an `alias_state` key — the counterpart to
+ * {@link workItemStateNamespace}, which owns the `namespace` half.
+ *
+ * **Every reader and writer of phase state must call this.** The derivation used to be
+ * open-coded at six call sites that did not agree (#3209): the phase runner used
+ * `findGitRoot(cwd) ?? NO_REPO_ROOT`, the auto-persist and spawn paths in the same file
+ * used `findGitRoot(cwd) ?? cwd`, `mcx track` / `mcx tracked` passed the **raw cwd** with
+ * no git-root call at all, and the daemon's automation dispatcher realpathed its own cwd.
+ * Two of those diverge with no domains involved: `mcx track <n> --meta k=v` run from a
+ * subdirectory (or a linked worktree) wrote under that subdirectory while the phase runner
+ * read under the repo root, and outside a git repo `ctx.state` used `NO_REPO_ROOT` while
+ * `phase_state_set` used the raw cwd. Neither errors. Both return `{}`, which a caller
+ * cannot distinguish from "no state" — a silent split store, not a failure anyone sees.
+ *
+ * `cwd` is **required and may be undefined on purpose**: `undefined` means "no caller cwd
+ * is known" and yields `NO_REPO_ROOT`, never `process.cwd()`. Defaulting to the current
+ * directory would silently key a daemon-side caller to the *daemon's* cwd (see PR #1307
+ * review); a caller that genuinely means "here" passes `process.cwd()` itself.
+ *
+ * `findRoot` exists only so callers that already inject a git-root stub for tests keep
+ * their seam. Production callers pass nothing.
+ */
+export function workItemStateRoot(
+  cwd: string | undefined,
+  findRoot: (cwd: string) => string | null = findGitRoot,
+): string {
+  if (!cwd) return NO_REPO_ROOT;
+  const root = findRoot(cwd);
+  // Realpath so a symlinked checkout keys identically however it was reached. The daemon
+  // realpaths every repoRoot it receives, so this only aligns what the *client* believes
+  // its root is (`ctx.repoRoot`, the `gh` client cwd) with the row it will actually hit.
+  return root === null ? NO_REPO_ROOT : resolveRealpath(root);
+}
 
 /**
  * Per-alias namespaces are prefixed so they can never collide with the
