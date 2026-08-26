@@ -41,7 +41,6 @@ export interface ReviewState {
 export interface ReviewDeps {
   gh(op: GhOp): Promise<GhResult>;
   prEdit(prNumber: number, flags: string[]): Promise<void>;
-  findModelInSprintPlan(issueNumber: number, repoRoot: string): "opus" | "sonnet" | null;
 }
 
 export type ReviewResult =
@@ -152,20 +151,23 @@ export async function runReview(
   deps: ReviewDeps,
   repoRoot: string,
 ): Promise<ReviewResult> {
-  const round = (await state.get<number>("review_round")) ?? 1;
+  const storedRound = await state.get<number>("review_round");
   const sessionId = await state.get<string>("review_session_id");
+  // #3297: the round counts SPAWNS, not review:changes transitions. The increment
+  // used to live on the changes→repair edge, but the documented way to start a new
+  // round is to clear review_session_id — which orchestrators do by hand, skipping
+  // that edge entirely. Every round then re-announced itself as round 1 and the cap
+  // could never trip. Counting at the spawn point is immune to how the re-entry was
+  // driven. (A phase_state_set to "" is also falsy, so it lands here, not on re-entry.)
+  const round = sessionId ? (storedRound ?? 1) : (storedRound ?? 0) + 1;
 
   if (!sessionId) {
-    let model: "opus" | "sonnet";
-    if (input.model) {
-      model = input.model;
-    } else {
-      const planModel =
-        work.issueNumber != null && repoRoot !== "__none__"
-          ? deps.findModelInSprintPlan(work.issueNumber, repoRoot)
-          : null;
-      model = planModel ?? "sonnet";
-    }
+    // #3290: run.md mandates sonnet for review and QA *including* the gated class —
+    // the gated class raises review rigor, not the model tier. The sprint plan's Model
+    // column is the IMPLEMENTATION model (opus), so consulting it here inverted the
+    // rule on exactly the high-scrutiny items run.md calls out. Only an explicit
+    // caller override may move the tier.
+    const model: "opus" | "sonnet" = input.model ?? "sonnet";
 
     const allowTools = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
     const resolveStep = `After replying to each addressed thread, resolve it: mcx pr comments ${work.prNumber} resolve --all-addressed`;
@@ -176,7 +178,13 @@ export async function runReview(
     const cmdBase = input.provider.startsWith("acp:")
       ? ["mcx", "acp", "spawn", "--agent", input.provider.slice(4)]
       : ["mcx", input.provider, "spawn"];
-    const command = [...cmdBase, "--worktree", "--model", model, "-t", prompt, "--allow", ...allowTools];
+    // #3290: honour the impl worktree the same way qa-fn.ts does. A reviewer spawned
+    // into a fresh --worktree lands on a scratch branch and cannot check out the PR
+    // branch (it is locked in the kept impl worktree), so it validates main and
+    // reports a meaningless verdict. Fall back to --worktree only when the key is absent.
+    const worktreePath = await state.get<string>("worktree_path");
+    const worktreeFlags = worktreePath ? ["--cwd", worktreePath] : ["--worktree"];
+    const command = [...cmdBase, ...worktreeFlags, "--model", model, "-t", prompt, "--allow", ...allowTools];
 
     const spawnedAt = Date.now();
     await state.set("review_round", round);
@@ -266,7 +274,7 @@ export async function runReview(
     };
   }
 
-  await state.set("review_round", round + 1);
+  // #3297: no increment here — the round advances when the next reviewer is spawned.
   await state.set("previous_phase", "review");
   return { action: "goto", target: "repair", reason: "review:changes → repair", round, ...withModel };
 }

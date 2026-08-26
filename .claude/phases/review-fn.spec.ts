@@ -88,9 +88,6 @@ function makeDeps(overrides: Partial<ReviewDeps> = {}): ReviewDeps {
     async prEdit(_prNumber, _flags) {
       /* no-op */
     },
-    findModelInSprintPlan(_issueNumber, _repoRoot) {
-      return null;
-    },
     ...overrides,
   };
 }
@@ -290,33 +287,21 @@ describe("runReview — no session yet", () => {
     if (result.action === "spawn") expect(result.model).toBe("sonnet");
   });
 
-  test("respects sprint plan model when found", async () => {
+  // #3290: run.md mandates sonnet for review INCLUDING the gated class — the gated
+  // class raises review rigor, not the model tier. The sprint plan's Model column is
+  // the implementation model (opus), so review must not consult it.
+  test("stays on sonnet even for a gated-class item whose plan row is opus", async () => {
     const state = makeState();
-    const deps = makeDeps({ findModelInSprintPlan: () => "opus" });
-    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
     expect(result.action).toBe("spawn");
-    if (result.action === "spawn") expect(result.model).toBe("opus");
+    if (result.action === "spawn") expect(result.model).toBe("sonnet");
   });
 
-  test("uses input.model when provided, overriding sprint plan", async () => {
+  test("uses input.model when provided — an explicit override is the only tier escape", async () => {
     const state = makeState();
-    const deps = makeDeps({ findModelInSprintPlan: () => "sonnet" });
-    const result = await runReview({ provider: "claude", model: "opus" }, makeWork(), state, deps, "/repo");
+    const result = await runReview({ provider: "claude", model: "opus" }, makeWork(), state, makeDeps(), "/repo");
     expect(result.action).toBe("spawn");
     if (result.action === "spawn") expect(result.model).toBe("opus");
-  });
-
-  test("skips sprint plan lookup when issueNumber is null", async () => {
-    const state = makeState();
-    let called = false;
-    const deps = makeDeps({
-      findModelInSprintPlan() {
-        called = true;
-        return "opus";
-      },
-    });
-    await runReview({ provider: "claude" }, makeWork({ issueNumber: null }), state, deps, "/repo");
-    expect(called).toBe(false);
   });
 
   test("sets review_session_id as pending in state", async () => {
@@ -331,6 +316,30 @@ describe("runReview — no session yet", () => {
     await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
     const spawnedAt = await state.get<number>("review_spawned_at");
     expect(spawnedAt).toBeGreaterThan(0);
+  });
+
+  // #3290: a reviewer spawned into a fresh --worktree lands on a scratch branch and
+  // cannot check out the PR branch (locked in the kept impl worktree), so it reviews
+  // main and reports a meaningless verdict. qa-fn.ts already reads this key.
+  test("spawns into the impl worktree with --cwd when worktree_path is set", async () => {
+    const state = makeState({ worktree_path: "/repo/.claude/worktrees/claude-abc" });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    if (result.action === "spawn") {
+      expect(result.command).toContain("--cwd");
+      expect(result.command).toContain("/repo/.claude/worktrees/claude-abc");
+      expect(result.command).not.toContain("--worktree");
+    }
+  });
+
+  test("falls back to --worktree when worktree_path is absent", async () => {
+    const state = makeState();
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    if (result.action === "spawn") {
+      expect(result.command).toContain("--worktree");
+      expect(result.command).not.toContain("--cwd");
+    }
   });
 
   test("uses acp spawn command for acp: provider", async () => {
@@ -418,11 +427,41 @@ describe("runReview — session exists", () => {
     }
   });
 
-  test("increments review_round in state when going to repair", async () => {
+  // #3297: the round advances when the next reviewer is SPAWNED, not on the
+  // changes→repair edge. The edge used to carry the increment, but the documented
+  // re-entry (clear review_session_id) is hand-driven and skips it, pinning every
+  // round at 1 so the cap could never trip.
+  test("does not advance review_round on the repair edge", async () => {
     const state = makeState({ review_session_id: "abc", review_round: 1, review_spawned_at: DEFAULT_SPAWNED_AT });
     const deps = makeDeps({ gh: makeGh({ labels: ["review:changes"] }) });
     await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(await state.get<number>("review_round")).toBe(1);
+  });
+
+  test("advances review_round when the next reviewer is spawned", async () => {
+    const state = makeState({ review_round: 1 });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    expect(result.round).toBe(2);
     expect(await state.get<number>("review_round")).toBe(2);
+  });
+
+  // The exact sprint-80 repro: phase_state_set writes "" rather than deleting, which
+  // is falsy and lands on the spawn path. It must still count as a new round.
+  test("a review_session_id cleared to empty string still advances the round", async () => {
+    const state = makeState({ review_session_id: "", review_round: 1 });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, makeDeps(), "/repo");
+    expect(result.action).toBe("spawn");
+    expect(result.round).toBe(2);
+    expect(result.reason).toContain("round 2");
+  });
+
+  test("the round cap trips after two spawns", async () => {
+    const state = makeState({ review_session_id: "abc", review_round: REVIEW_ROUND_CAP, review_spawned_at: DEFAULT_SPAWNED_AT });
+    const deps = makeDeps({ gh: makeGh({ labels: ["review:changes"] }) });
+    const result = await runReview({ provider: "claude" }, makeWork(), state, deps, "/repo");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("qa");
   });
 
   test("sets previous_phase to review when going to repair", async () => {

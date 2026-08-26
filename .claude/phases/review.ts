@@ -25,7 +25,7 @@
  * for a new round (so the handler spawns a fresh reviewer rather than reading
  * the previous reviewer's verdict label).
  */
-import { NO_REPO_ROOT, findModelInSprintPlan } from "@mcp-cli/core";
+import { NO_REPO_ROOT } from "@mcp-cli/core";
 import { defineAlias, z } from "mcp-cli";
 import { parsePrEditFlags } from "./phase-types";
 import { runReview } from "./review-fn";
@@ -99,7 +99,6 @@ defineAlias({
           const { addLabels, removeLabels } = parsePrEditFlags(flags);
           await ctx.gh.pr(prNumber).edit({ addLabels, removeLabels });
         },
-        findModelInSprintPlan,
       },
       ctx.repoRoot ?? NO_REPO_ROOT,
     );
