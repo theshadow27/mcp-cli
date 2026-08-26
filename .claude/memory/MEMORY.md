@@ -81,3 +81,4 @@
 - Release process: no auto-versioning. Intentional at sprint boundaries via `/release`. Tag push triggers Release workflow. Diary = retro (internal). Release notes = changelog (user-facing).
 - Branch protection on `main`: `check`/`coverage`/`build` required, auto-merge enabled. As of sprint 38, `strict_required_status_checks_policy: false` (ruleset 13509324) — branches do NOT need to be up-to-date. Merge order is orchestrator's responsibility; main-CI is the gate.
 - [**No GitHub merge queue**](no_github_merge_queue.md) — not on an enterprise plan; never propose it (or `strict: true`). Explained repeatedly. Explore `gh-stacks` instead.
+- [Normal conditions are metrics, not events](feedback_normal_conditions_are_metrics.md) — self-resolving conditions (rate limits) go in `_metrics` counters; per-occurrence events at urgent severity force the orchestrator to filter the type out and lose the signal
