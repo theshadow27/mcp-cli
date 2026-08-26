@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createCaptureLogger } from "./logger";
-import { StepRunner, formatMs } from "./runner";
+import { DEFAULT_RUN_TIMEOUT_MS, StepRunner, formatMs } from "./runner";
 import type { Logger, Step } from "./types";
 
 // Tracked temp dirs: every `mkdtempSync` in this file goes through `tempDir()`
@@ -653,5 +653,26 @@ describe("StepRunner — wall-clock deadline (#3261)", () => {
     expect(report.success).toBe(true);
     expect(report.timedOut).toBeUndefined();
     expect(spy.calls).toHaveLength(0);
+  });
+});
+
+describe("default run budget vs CI (#3332)", () => {
+  const CI_WORKFLOW = join(import.meta.dir, "..", "..", ".github", "workflows", "ci.yml");
+
+  it("defaults to the 600s ceiling CI pins", () => {
+    // The local gate must never be the stricter of the two: a dev box carries
+    // agent sessions and neighbouring fleets a CI runner does not, so a ceiling
+    // CI judged too tight for its own step list cannot be right locally.
+    expect(DEFAULT_RUN_TIMEOUT_MS).toBe(600_000);
+  });
+
+  it("is never above what CI allows itself, in either job", () => {
+    // Reads the workflow rather than a copy of its numbers: the failure this
+    // guards is the two drifting apart, which a duplicated constant can't see.
+    const workflow = readFileSync(CI_WORKFLOW, "utf8");
+    const pinned = [...workflow.matchAll(/AM_I_DONE_TIMEOUT_MS:\s*"(\d+)"/g)].map((m) => Number(m[1]));
+
+    expect(pinned.length).toBeGreaterThan(0);
+    for (const ms of pinned) expect(ms).toBeGreaterThanOrEqual(DEFAULT_RUN_TIMEOUT_MS);
   });
 });

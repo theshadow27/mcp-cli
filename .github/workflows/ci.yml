@@ -104,11 +104,13 @@ jobs:
           # that carries a real dotw-todo (see #2752 — masked until then
           # because main had zero production dotw-todos).
           GH_TOKEN: ${{ github.token }}
-          # Wall-clock liveness ceiling (#3261). The local default is 300s;
-          # this step measured 178-242s across the six most recent green runs
-          # (2026-08-24), so 300s would be a coin-flip. 600s is ~2.5x the
-          # observed worst case — still turns a wedged worker (#2973/#3250)
-          # into a 10-minute red build instead of a 6-hour job timeout.
+          # Wall-clock liveness ceiling (#3261). This step measured 178-242s
+          # across the six most recent green runs (2026-08-24), so 300s would
+          # be a coin-flip. 600s is ~2.5x the observed worst case — still turns
+          # a wedged worker (#2973/#3250) into a 10-minute red build instead of
+          # a 6-hour job timeout. Pinned explicitly even though the runner
+          # default is now the same 600s (#3332); runner.spec.ts asserts this
+          # value never drops below that default.
           AM_I_DONE_TIMEOUT_MS: "600000"
         run: bun run am-i-done --ci --skip install --skip coverage --verbose
       # ci-steps.ts persists captured stdout+stderr to /tmp/test_*.txt for

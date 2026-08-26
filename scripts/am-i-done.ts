@@ -468,7 +468,7 @@ fraction, default 0.6; 0 disables the headroom wait) and MCX_GATE_LEASE_WAIT_MS
 600s timeout workers wrap this in; each process jitters its own deadline down by
 up to 25% so losers don't all give up at once).
 
-The whole run is bounded by a strict wall-clock deadline — 300s by default,
+The whole run is bounded by a strict wall-clock deadline — 600s by default,
 AM_I_DONE_TIMEOUT_MS to override (<= 0 disables). On expiry the runner names
 the in-flight step, dumps the output that step had produced so far, kills the
 entire child process TREE (each step runs in its own process group, so a
@@ -477,8 +477,9 @@ Time spent QUEUED on the gate lease is credited back to the budget — that wait
 is bounded and self-reporting, so it must not consume the liveness ceiling.
 This is a liveness ceiling, not a flake fix: nothing is retried, nothing is
 signalled during a healthy run, and the underlying wedge (#2973 / #3250) is
-unaffected. CI raises the budget in .github/workflows/ci.yml — the \`check\` job
-legitimately runs ~240s. See #3261.
+unaffected. The default matches the ceiling CI pins in
+.github/workflows/ci.yml — a local box is never quieter than a CI runner, so
+the local gate must not be the stricter of the two (#3332). See #3261.
 
 In a Claude / AI context (CLAUDECODE / AGENT / MCP_CLI_AI env var set),
 step output is captured to build/am-i-done-<timestamp>.txt and only the

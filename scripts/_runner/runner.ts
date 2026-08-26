@@ -21,8 +21,9 @@
  *      shape so the caller can decide exit code, emit a final banner, or
  *      finalize the AI file logger.
  *
- *   5. Wall-clock deadline (#3261). The whole run is bounded — default 300s,
- *      `AM_I_DONE_TIMEOUT_MS` to override, <= 0 to disable. On expiry the
+ *   5. Wall-clock deadline (#3261). The whole run is bounded — default 600s,
+ *      the same ceiling CI uses (#3332), `AM_I_DONE_TIMEOUT_MS` to override,
+ *      <= 0 to disable. On expiry the
  *      runner names the in-flight step, dumps the output that step had
  *      produced so far (a wedged step never reaches the normal replay path,
  *      which is why #2973's 31-minute hang left a 1171-byte log), kills the
@@ -38,12 +39,29 @@ import { killTrackedTree, spawnTracked } from "./process-tree";
 import type { Logger, ScriptFunction, Step, StepResult } from "./types";
 
 /**
- * Default wall-clock ceiling for one `am-i-done` run. Sized for a developer /
- * agent gate: the observed local comprehensive run is well under this, and CI
- * — whose `check` job legitimately takes ~240s — raises it explicitly via
- * `AM_I_DONE_TIMEOUT_MS` in .github/workflows/ci.yml.
+ * Default wall-clock ceiling for one `am-i-done` run — the SAME ceiling CI
+ * uses, deliberately (#3332).
+ *
+ * It was 300s, and CI overrode it to 600s in .github/workflows/ci.yml because
+ * the `check` job measured 178-242s and the `coverage` job 178-233s across six
+ * green runs — i.e. the project already judged 300s too tight for its own step
+ * list on a dedicated runner. A local box is *never* quieter than a CI runner:
+ * it carries agent sessions and neighbouring fleets that `gate-lease` can only
+ * stagger, not queue (its lever is admission; foreign load lands inside this
+ * deadline at full charge). So the local ceiling being the strictest of the two
+ * had it backwards, and a healthy run with zero failures was killed mid-progress
+ * — a gate that produces no verdict, which at the push boundary is
+ * indistinguishable from a red one and pushes people toward `--no-verify`.
+ *
+ * 600s is a LIVENESS ceiling, not a budget the steps are expected to approach:
+ * it still turns a wedged worker (#2973 / #3250) into a 10-minute failure
+ * instead of a hang. Raising it fixes neither contention nor the step costs
+ * behind #3286 / #3343 and is not meant to — those stay open.
+ *
+ * CI keeps its explicit `AM_I_DONE_TIMEOUT_MS`, so the two values are pinned
+ * independently; `runner.spec.ts` asserts CI never drops below this default.
  */
-export const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+export const DEFAULT_RUN_TIMEOUT_MS = 600_000;
 
 /** Race token: the wall-clock deadline fired before the run finished. */
 const EXPIRED = Symbol("am-i-done-deadline-expired");
