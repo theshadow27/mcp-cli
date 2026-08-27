@@ -55,7 +55,11 @@ export interface NamedCall {
   jq_input?: string;
   /** Default body template (often a `search-template.json` imported by name). */
   body_default?: unknown;
-  /** Optional jq expression to transform the response before returning. */
+  /**
+   * Optional jq expression to transform the response before returning. Input is
+   * the bare response body; the account's captured vars and the request params
+   * are bound as the jq named args `$vars` / `$params`.
+   */
   jq_output?: string;
   headers?: Record<string, string>;
   /** Hostname hints used for credential audience matching. */

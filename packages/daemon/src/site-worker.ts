@@ -326,7 +326,7 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
           : undefined,
       });
     }
-    result = await applyJqOutput(call, result);
+    result = await applyJqOutput(call, result, bunJqRunner, { vars, params });
     return ok(result);
   } catch (err) {
     return error(err instanceof Error ? err.message : String(err));
