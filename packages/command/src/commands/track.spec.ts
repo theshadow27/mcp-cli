@@ -1375,9 +1375,16 @@ describe("cmdTrack/cmdUntrack/cmdTracked — -d redirects the state root too (#3
     // assertions below vacuous.
     callerDir = mkdtempSync(join(tmpdir(), "mcx-caller-"));
     otherDir = mkdtempSync(join(tmpdir(), "mcx-otherdom-"));
-    const opts = { stdout: "ignore" as const, stderr: "ignore" as const };
-    Bun.spawnSync(["git", "-C", callerDir, "init", "-q"], opts);
-    Bun.spawnSync(["git", "-C", otherDir, "init", "-q"], opts);
+    // Sanitized env, for the same reason `withWorktree` below does it: under the pre-push
+    // hook `GIT_DIR` is set, and `git init -C <tmp>` would honour it and initialize the
+    // hook's repo instead. The temp dir then is not a repo, `findGitRoot` (which strips the
+    // vars itself) says so, and every root here collapses to the `__none__` sentinel —
+    // green in a shell, red under the hook.
+    const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...env } = process.env;
+    const opts = { env, stdout: "ignore" as const, stderr: "ignore" as const };
+    for (const dir of [callerDir, otherDir]) {
+      expect(Bun.spawnSync(["git", "-C", dir, "init", "-q"], opts).exitCode).toBe(0);
+    }
     clearFindGitRootCache();
     // Only the TARGET domain declares a trackable field. If the command read the caller's
     // checkout the field would be undeclared and `--scrutiny` would be rejected outright.

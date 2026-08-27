@@ -28,12 +28,26 @@ interface Run {
   stderr: string;
 }
 
+/**
+ * `process.env` minus git's hook variables.
+ *
+ * The pre-push hook runs these tests with `GIT_DIR` set, and a `git` invocation that
+ * inherits it operates on the hook's repository rather than on the directory it was given.
+ * `git init -C <tmp>` then leaves `<tmp>` un-initialized, `workItemStateRoot` correctly
+ * reports no repo, and every root in this file collapses to one sentinel — passing in a
+ * shell and failing under the hook.
+ */
+function gitCleanEnv(): Record<string, string | undefined> {
+  const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...rest } = process.env;
+  return rest;
+}
+
 async function mcx(dir: string, cwd: string, args: string[]): Promise<Run> {
   const proc = Bun.spawn(["bun", MCX_SCRIPT, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     cwd,
-    env: { ...process.env, MCP_CLI_DIR: dir, NO_COLOR: "1" },
+    env: { ...gitCleanEnv(), MCP_CLI_DIR: dir, NO_COLOR: "1" },
   });
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
@@ -57,8 +71,10 @@ const MANIFEST = [
 function makeCheckout(base: string, name: string): string {
   const dir = join(base, name);
   mkdirSync(dir, { recursive: true });
-  const opts = { stdout: "ignore" as const, stderr: "ignore" as const };
-  Bun.spawnSync(["git", "-C", dir, "init", "-q"], opts);
+  const opts = { env: gitCleanEnv(), stdout: "ignore" as const, stderr: "ignore" as const };
+  // Asserted, not fire-and-forget: a directory that silently failed to become a repo makes
+  // every state-root assertion below compare one sentinel to itself.
+  expect(Bun.spawnSync(["git", "-C", dir, "init", "-q"], opts).exitCode).toBe(0);
   writeFileSync(join(dir, ".mcx.yaml"), MANIFEST);
   for (const p of ["impl", "qa"]) {
     writeFileSync(join(dir, `${p}.ts`), `export default { name: "${p}", run: async () => ({}) };\n`);
