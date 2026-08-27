@@ -234,6 +234,8 @@ is the actual fix — bumping their timeouts would be the classic wrong move).
   `fix/issue-3192-per-domain-automation-and-pollers` at base `a51c1e16`, **no upstream yet**.
   Uncommitted work on disk in `claude-mtax5f6z`: `M copilot-poller.ts`,
   `M work-item-poller.ts`, `?? domain-repos.ts`, `?? domain-roots.ts`. Do not bye.
+  **RESUMED 06:21Z** by nudge after the window rolled — came back `active` with all 82 turns
+  and all four files intact, no restart. Do not nudge again; it is running.
 - **#3273** — still queued; needs #3192 merged *and* zero other open sprint PRs.
 
 `quota_status` was stale at pause time (`fetchedAt` 02:27Z, `lastError` 429, frozen
