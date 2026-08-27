@@ -1340,3 +1340,198 @@ describe("phase-state round trip from a linked worktree", () => {
     expect(JSON.parse(logs.join(""))[0].state).toEqual({ scrutiny: "medium" });
   });
 });
+
+/**
+ * `-d <domain>` redirects the WHOLE command, not just the `work_items` row (#3391 review).
+ *
+ * The first cut of `-d` plumbed the domain name into the four work-item IPC methods and
+ * stopped there, so `mcx track 777 -d otherdom` created the item in `otherdom` while its
+ * `--meta` fields were written under the **caller's** domain and the caller's `repo_root`.
+ * `repo_root` is part of `alias_state`'s primary key, so a phase script running inside
+ * `otherdom` and reading `ctx.state` saw `{}` — the #3209 failure class, reopened by the
+ * redirect. The same split ran the other way on `untrack` (leaking the namespace forever)
+ * and on `mcx tracked --json` (annotating another domain's items with this repo's fields).
+ *
+ * These tests hold the ONE invariant that closes it: every root-derived thing the command
+ * touches comes from the same domain the row does.
+ */
+describe("cmdTrack/cmdUntrack/cmdTracked — -d redirects the state root too (#3391)", () => {
+  const OTHER_MANIFEST = [
+    "version: 1",
+    "initial: plan",
+    "state:",
+    '  scrutiny: { type: "enum[low,medium,high]", track: true }',
+    "phases:",
+    "  plan: { source: ./p.ts, next: [build] }",
+    "  build: { source: ./b.ts }",
+  ].join("\n");
+
+  let callerDir: string;
+  let otherDir: string;
+
+  beforeEach(() => {
+    // Real repos: `workItemStateRoot` resolves through `findGitRoot` and answers with a
+    // `__none__` sentinel outside one, which would make both roots compare equal and the
+    // assertions below vacuous.
+    callerDir = mkdtempSync(join(tmpdir(), "mcx-caller-"));
+    otherDir = mkdtempSync(join(tmpdir(), "mcx-otherdom-"));
+    // Sanitized env, for the same reason `withWorktree` below does it: under the pre-push
+    // hook `GIT_DIR` is set, and `git init -C <tmp>` would honour it and initialize the
+    // hook's repo instead. The temp dir then is not a repo, `findGitRoot` (which strips the
+    // vars itself) says so, and every root here collapses to the `__none__` sentinel —
+    // green in a shell, red under the hook.
+    const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...env } = process.env;
+    const opts = { env, stdout: "ignore" as const, stderr: "ignore" as const };
+    for (const dir of [callerDir, otherDir]) {
+      expect(Bun.spawnSync(["git", "-C", dir, "init", "-q"], opts).exitCode).toBe(0);
+    }
+    clearFindGitRootCache();
+    // Only the TARGET domain declares a trackable field. If the command read the caller's
+    // checkout the field would be undeclared and `--scrutiny` would be rejected outright.
+    writeFileSync(join(otherDir, ".mcx.yaml"), OTHER_MANIFEST);
+  });
+
+  afterEach(() => {
+    clearFindGitRootCache();
+    rmSync(callerDir, { recursive: true, force: true });
+    rmSync(otherDir, { recursive: true, force: true });
+  });
+
+  /** A daemon fake that keys `alias_state` rows by root the way the real handler does. */
+  function makeDeps2(item: WorkItem, seed: Array<[string, string, string, unknown]> = []) {
+    const rows = new Map<string, unknown>();
+    const key = (root: string, ns: string, k: string) => `${normalizeStateRoot(root)} ${ns} ${k}`;
+    for (const [root, ns, k, v] of seed) rows.set(key(root, ns, k), v);
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+
+    const deps: TrackDeps = {
+      exit: (code: number): never => {
+        throw new ExitError(code);
+      },
+      loadManifest: realManifestLoader,
+      cwd: () => callerDir,
+      ipcCall: async <M extends IpcMethod>(method: M, params?: unknown): Promise<IpcMethodResult[M]> => {
+        const p = (params ?? {}) as { repoRoot: string; namespace: string; key?: string; value?: unknown };
+        seen.push({ method, params: (params ?? {}) as Record<string, unknown> });
+        switch (method) {
+          case "domainShow":
+            return { id: 2, name: "otherdom", host: null, path: otherDir, createdAt: "" } as IpcMethodResult[M];
+          case "trackWorkItem":
+            return item as IpcMethodResult[M];
+          case "untrackWorkItem":
+            return { ok: true, deleted: true, id: item.id } as IpcMethodResult[M];
+          case "listWorkItems":
+            return { items: [item], hiddenCount: 0, unassignedCount: 0 } as IpcMethodResult[M];
+          case "aliasStateSet":
+            rows.set(key(p.repoRoot, p.namespace, p.key ?? ""), p.value);
+            return { ok: true } as IpcMethodResult[M];
+          case "aliasStateDelete":
+            return { ok: true, deleted: rows.delete(key(p.repoRoot, p.namespace, p.key ?? "")) } as IpcMethodResult[M];
+          case "aliasStateAll": {
+            const prefix = `${normalizeStateRoot(p.repoRoot)} ${p.namespace} `;
+            const entries: Record<string, unknown> = {};
+            for (const [k, v] of rows) if (k.startsWith(prefix)) entries[k.slice(prefix.length)] = v;
+            return { entries } as IpcMethodResult[M];
+          }
+        }
+        throw new Error(`Unexpected IPC call: ${method}`);
+      },
+    };
+    return { deps, rows, seen };
+  }
+
+  test("track -d writes --meta under the TARGET domain's root, not the caller's", async () => {
+    const item = makeWorkItem({ id: "d2:#777", issueNumber: 777, domainId: 2 });
+    const { deps, rows } = makeDeps2(item);
+
+    await cmdTrack(["777", "-d", "otherdom", "--scrutiny", "high"], deps);
+
+    // The reader that matters is a phase script standing in the target domain.
+    expect([...rows.keys()]).toEqual([`${normalizeStateRoot(otherDir)} workitem:d2:#777 scrutiny`]);
+    expect([...rows.values()]).toEqual(["high"]);
+    // And nothing at all landed under the caller's checkout.
+    for (const k of rows.keys()) expect(k.startsWith(normalizeStateRoot(callerDir))).toBe(false);
+  });
+
+  test("track -d validates --meta against the TARGET domain's manifest", async () => {
+    const item = makeWorkItem({ id: "d2:#777", issueNumber: 777, domainId: 2 });
+    const { deps } = makeDeps2(item);
+    // `scrutiny` is declared only in otherDir's manifest; the caller's dir has none at all.
+    // A caller-rooted read would either accept anything (no fields declared → no checking)
+    // or call the flag unknown. Rejecting `bogus` by the enum's own value list is what only
+    // the target's manifest can do.
+    const err = await cmdTrack(["777", "-d", "otherdom", "--scrutiny", "bogus"], deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ExitError);
+  });
+
+  test("track -d sends the target domain's root as repoRoot, so the daemon validates the right manifest", async () => {
+    const item = makeWorkItem({ id: "d2:#777", issueNumber: 777, domainId: 2 });
+    const { deps, seen } = makeDeps2(item);
+
+    await cmdTrack(["777", "-d", "otherdom"], deps);
+
+    const track = seen.find((s) => s.method === "trackWorkItem");
+    expect(track?.params.repoRoot).toBe(otherDir);
+    expect(track?.params.domain).toBe("otherdom");
+    // `initial: plan` comes from the target's manifest, not from a caller with none.
+    expect(track?.params.initialPhase).toBe("plan");
+  });
+
+  test("untrack -d deletes the namespace in the target domain, not the caller's", async () => {
+    const item = makeWorkItem({ id: "d2:#777", issueNumber: 777, domainId: 2 });
+    const { deps, rows } = makeDeps2(item, [
+      [otherDir, "workitem:d2:#777", "scrutiny", "high"],
+      [callerDir, "workitem:d2:#777", "scrutiny", "decoy"],
+    ]);
+
+    await cmdUntrack(["777", "-d", "otherdom"], deps);
+
+    expect(rows.has(`${normalizeStateRoot(otherDir)} workitem:d2:#777 scrutiny`)).toBe(false);
+    // The caller's own partition is untouched — untrack is not a cross-domain delete.
+    expect(rows.get(`${normalizeStateRoot(callerDir)} workitem:d2:#777 scrutiny`)).toBe("decoy");
+  });
+
+  test("tracked -d --json reads state from the target domain's root", async () => {
+    const item = makeWorkItem({ id: "d2:#777", issueNumber: 777, domainId: 2 });
+    const { deps } = makeDeps2(item, [[otherDir, "workitem:d2:#777", "scrutiny", "high"]]);
+
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    try {
+      await cmdTracked(["--json", "-d", "otherdom"], deps);
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(JSON.parse(logs.join(""))[0].state).toEqual({ scrutiny: "high" });
+  });
+
+  // `_` is a partition, not a checkout: there is no manifest to read and no root to key
+  // state under, so the command behaves exactly as it does from a directory with neither.
+  test("track -d _ writes no metadata and sends no repoRoot", async () => {
+    const item = makeWorkItem({ id: "#777", issueNumber: 777, domainId: 0 });
+    const { deps, rows, seen } = makeDeps2(item);
+
+    await cmdTrack(["777", "-d", "_"], deps);
+
+    expect([...rows.keys()]).toEqual([]);
+    const track = seen.find((s) => s.method === "trackWorkItem");
+    expect(track?.params.repoRoot).toBeUndefined();
+    expect(track?.params.domain).toBe("_");
+    // No domain lookup either — `_` resolves without a row, on both sides of the wire.
+    expect(seen.map((s) => s.method)).not.toContain("domainShow");
+  });
+
+  test("without -d nothing changes: the caller's own root is still the state root", async () => {
+    writeFileSync(join(callerDir, ".mcx.yaml"), OTHER_MANIFEST);
+    clearFindGitRootCache();
+    const item = makeWorkItem({ id: "#777", issueNumber: 777, domainId: 0 });
+    const { deps, rows, seen } = makeDeps2(item);
+
+    await cmdTrack(["777", "--scrutiny", "low"], deps);
+
+    expect([...rows.keys()]).toEqual([`${normalizeStateRoot(callerDir)} workitem:#777 scrutiny`]);
+    expect(seen.map((s) => s.method)).not.toContain("domainShow");
+  });
+});

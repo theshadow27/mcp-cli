@@ -17,14 +17,17 @@ import {
   coerceTrackValue,
   getTrackableFields,
   ipcCall,
+  isUnassignedDomainName,
   loadManifest,
   pruneStaleHistory,
   validateTrackValue,
   workItemStateNamespace,
   workItemStateRoot,
 } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
+import { extractDomainFlag } from "../parse";
 
 /** Parse SQLite `datetime('now')` format ("YYYY-MM-DD HH:MM:SS", UTC without timezone indicator) as UTC. `new Date()` would parse it as local time. */
 function parseSqliteUtc(s: string): Date {
@@ -128,18 +131,63 @@ export function parseMetadataFlags(
   return { metadata, consumed, errors };
 }
 
+/**
+ * The checkout `-d <domain>` points this command at — the caller's own when it did not.
+ *
+ * `-d` redirects the *whole* command, not just the `work_items` row it partitions. Every
+ * other thing `mcx track` reads or writes hangs off one directory: the `.mcx.yaml` that
+ * declares `initial:` and the trackable `--meta` fields, the `.mcx/transitions.jsonl` it
+ * prunes, and the `alias_state` root those fields are written under. `repo_root` is part of
+ * `alias_state`'s primary key, so a row written under the *caller's* root is invisible to a
+ * phase script reading `workItemStateRoot()` inside the target domain — the #3209 failure
+ * class, reopened by taking the partition from `-d` and everything else from `$PWD` (#3391
+ * review). Both halves now come from the same place.
+ *
+ * `null` means "no repository context". `-d _` names the unassigned partition, which is a
+ * partition and not a checkout: there is no manifest to read and no root to key state under.
+ * Callers treat it as "no manifest, no metadata" — which is exactly what running from a
+ * directory outside every domain already does — rather than substituting the caller's.
+ */
+async function resolveScopeRoot(
+  deps: TrackDeps,
+  domain: string | undefined,
+  callerCwd: string,
+): Promise<string | null> {
+  if (domain === undefined) return callerCwd;
+  if (isUnassignedDomainName(domain)) return null;
+  const found = await deps.ipcCall("domainShow", { name: domain });
+  if (!found) {
+    printError(`Unknown domain "${domain}". Run \`mcx domain ls\` to see what is registered.`);
+    return deps.exit(1);
+  }
+  return found.path;
+}
+
 // -- mcx track --
 
-export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
-  const cwd = (deps.cwd ?? (() => process.cwd()))();
-  const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
-  const trackableFields = getTrackableFields(manifest?.state);
+export async function cmdTrack(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+  const callerCwd = (deps.cwd ?? (() => process.cwd()))();
+  const readManifest = deps.loadManifest ?? tryLoadManifest;
 
-  if (!args.length || args[0] === "--help" || args[0] === "-h") {
-    printTrackHelp(trackableFields);
+  if (!rawArgs.length || rawArgs[0] === "--help" || rawArgs[0] === "-h") {
+    printTrackHelp(getTrackableFields(readManifest(callerCwd)?.state));
     return;
   }
 
+  // `-d <domain>` comes off first, ahead of BOTH parsers below (#3036). `parseMetadataFlags`
+  // walks every `--flag` it does not recognise and reports it as an undeclared metadata
+  // field, so a `--domain` left in place fails a repo with trackable fields declared while
+  // passing one without — the flag would work or not depending on the manifest.
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
+  }
+
+  const scopeRoot = await resolveScopeRoot(deps, domain, callerCwd);
+  const cwd = scopeRoot ?? callerCwd;
+  const manifest = scopeRoot ? readManifest(scopeRoot) : null;
+  const trackableFields = getTrackableFields(manifest?.state);
   const initialPhase = manifest?.initial;
 
   // Parse dynamic metadata flags first (they skip BUILTIN_FLAGS internally).
@@ -184,19 +232,22 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     try {
       const item = await deps.ipcCall("trackWorkItem", {
         cwd,
+        ...(domain ? { domain } : {}),
         branch,
         ...(initialPhase ? { initialPhase } : {}),
         ...(automationOverrides ? { automationOverrides } : {}),
-        // Deliberately the raw cwd, NOT `workItemStateRoot(cwd)`. The daemon uses this
-        // one field to load a manifest and validate `initialPhase` — and `.mcx.yaml` is
-        // per-checkout (#2737), while the state root maps a linked worktree back to the
+        // Deliberately the raw scope root, NOT `workItemStateRoot(...)`. The daemon uses
+        // this one field to load a manifest and validate `initialPhase` — and `.mcx.yaml`
+        // is per-checkout (#2737), while the state root maps a linked worktree back to the
         // main checkout. Unifying it here would validate a worktree's phases against the
         // wrong manifest. Different root, different job; only `alias_state` keys go
-        // through `workItemStateRoot` (#3209).
-        repoRoot: cwd,
+        // through `workItemStateRoot` (#3209). Omitted for `-d _`, which has no checkout.
+        ...(scopeRoot ? { repoRoot: scopeRoot } : {}),
       });
-      pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
-      await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
+      if (scopeRoot) {
+        pruneStaleHistory(join(scopeRoot, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
+      }
+      await persistMetadata(deps, scopeRoot, item.id, metadata, trackableFields);
       console.error(`Tracking branch ${branch} (${item.id})`);
     } catch (err) {
       printError(`Failed to track branch: ${err instanceof Error ? err.message : String(err)}`);
@@ -215,14 +266,17 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   try {
     const item = await deps.ipcCall("trackWorkItem", {
       cwd,
+      ...(domain ? { domain } : {}),
       number: num,
       ...(initialPhase ? { initialPhase } : {}),
       ...(automationOverrides ? { automationOverrides } : {}),
       // Manifest root, not a state key — see the `--branch` branch above.
-      repoRoot: cwd,
+      ...(scopeRoot ? { repoRoot: scopeRoot } : {}),
     });
-    pruneStaleHistory(join(cwd, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
-    await persistMetadata(deps, cwd, item.id, metadata, trackableFields);
+    if (scopeRoot) {
+      pruneStaleHistory(join(scopeRoot, ".mcx", "transitions.jsonl"), item.id, parseSqliteUtc(item.createdAt));
+    }
+    await persistMetadata(deps, scopeRoot, item.id, metadata, trackableFields);
     console.error(`Tracking #${num} (${item.id})`);
   } catch (err) {
     printError(`Failed to track #${num}: ${err instanceof Error ? err.message : String(err)}`);
@@ -233,22 +287,29 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
 /**
  * Write `--meta` fields into the work item's phase-state namespace.
  *
- * `cwd` is the caller's directory, **not** the state root: this used to pass the raw cwd
+ * `scopeRoot` is a directory, **not** the state root: this used to pass the raw cwd
  * straight through as `repoRoot`, so `mcx track <n> --scrutiny high` run from a
  * subdirectory or a linked worktree wrote under that path while every phase runner read
  * under `findGitRoot()`. The write landed in a store nothing read, and neither side
  * errored — the reader just saw `{}` (#3209). Eleven such rows were found on the box this
  * was fixed on, all written from `.claude/worktrees/*`.
+ *
+ * It is the root of the domain the item was *created in* (see `resolveScopeRoot`), not the
+ * caller's — under `-d <other>` those differ, and using the caller's put the metadata in a
+ * partition and under a `repo_root` the owning domain's phase scripts never read. `null`
+ * (the `-d _` case) means there is no repository to key state under, so there is nothing to
+ * write: the same no-op as tracking from a directory with no manifest.
  */
 async function persistMetadata(
   deps: TrackDeps,
-  cwd: string,
+  scopeRoot: string | null,
   workItemId: string,
   metadata: Map<string, string | number | boolean>,
   trackableFields: TrackableField[],
 ): Promise<void> {
+  if (scopeRoot === null) return;
   if (metadata.size === 0 && !trackableFields.some((f) => f.defaultValue !== undefined)) return;
-  const repoRoot = workItemStateRoot(cwd);
+  const repoRoot = workItemStateRoot(scopeRoot);
   const ns = workItemStateNamespace(workItemId);
   let existingState: Record<string, unknown> = {};
   try {
@@ -275,9 +336,14 @@ async function persistMetadata(
  * passing the typed spelling silently cleaned up nothing and leaked the scratchpad forever
  * (#3037 review R2) — while `persistMetadata` on the other half of the same command had
  * always used `item.id` and written to the real one.
+ *
+ * `scopeRoot` follows `persistMetadata`'s: the root of the domain the item lives in, so a
+ * cross-domain `untrack -d <other>` deletes the namespace it actually wrote rather than
+ * leaking it there and no-opping in the caller's own domain.
  */
-async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string): Promise<void> {
-  const repoRoot = workItemStateRoot(cwd);
+async function cleanupMetadata(deps: TrackDeps, scopeRoot: string | null, workItemId: string): Promise<void> {
+  if (scopeRoot === null) return;
+  const repoRoot = workItemStateRoot(scopeRoot);
   const ns = workItemStateNamespace(workItemId);
   try {
     const { entries } = await deps.ipcCall("aliasStateAll", { repoRoot, namespace: ns });
@@ -291,15 +357,25 @@ async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string)
 
 // -- mcx untrack --
 
-export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
-  if (!args.length || args[0] === "--help" || args[0] === "-h") {
+export async function cmdUntrack(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+  if (!rawArgs.length || rawArgs[0] === "--help" || rawArgs[0] === "-h") {
     console.log(
-      "Usage: mcx untrack <number|#NNNN|pr:NNNN>\n       mcx untrack --branch <name>\n       mcx untrack branch:<name>",
+      `Usage: mcx untrack <number|#NNNN|pr:NNNN>\n       mcx untrack --branch <name>\n       mcx untrack branch:<name>\n\n${DOMAIN_DEFAULT_HELP_LINE}`,
     );
     return;
   }
 
-  const cwd = (deps.cwd ?? (() => process.cwd()))();
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
+  }
+  const scope = domain ? { domain } : {};
+
+  const callerCwd = (deps.cwd ?? (() => process.cwd()))();
+  // The domain the item lives in owns its phase-state namespace too — see `persistMetadata`.
+  const scopeRoot = await resolveScopeRoot(deps, domain, callerCwd);
+  const cwd = scopeRoot ?? callerCwd;
 
   if (args[0].startsWith("branch:")) {
     const branch = args[0].slice("branch:".length);
@@ -308,9 +384,9 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd, ...scope });
       if (result.deleted && result.id) {
-        await cleanupMetadata(deps, cwd, result.id);
+        await cleanupMetadata(deps, scopeRoot, result.id);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -329,9 +405,9 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd, ...scope });
       if (result.deleted && result.id) {
-        await cleanupMetadata(deps, cwd, result.id);
+        await cleanupMetadata(deps, scopeRoot, result.id);
         console.error(`Untracked branch ${branch}`);
       } else {
         console.error(`Branch ${branch} was not tracked`);
@@ -351,9 +427,9 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
   }
 
   try {
-    const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd });
+    const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd, ...scope });
     if (result.deleted && result.id) {
-      await cleanupMetadata(deps, cwd, result.id);
+      await cleanupMetadata(deps, scopeRoot, result.id);
       console.error(`Untracked #${num}`);
     } else {
       console.error(`#${num} was not tracked`);
@@ -366,7 +442,13 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
 
 // -- mcx tracked --
 
-export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+export async function cmdTracked(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
+  }
+
   const { flags, errors, help } = parseFlags(args, {
     json: { type: "boolean" },
     phase: { type: "string" },
@@ -374,7 +456,9 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   });
 
   if (help) {
-    console.log("Usage: mcx tracked [--json] [--phase <phase>] [--include-archived]");
+    console.log(
+      `Usage: mcx tracked [--json] [--phase <phase>] [--include-archived] [-d <domain>]\n\n${DOMAIN_DEFAULT_HELP_LINE}`,
+    );
     return;
   }
 
@@ -386,8 +470,13 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   const jsonFlag = !!flags.json;
   const includeArchived = !!flags["include-archived"];
   let phase: string | undefined;
-  const cwd = (deps.cwd ?? (() => process.cwd()))();
-  const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
+  const callerCwd = (deps.cwd ?? (() => process.cwd()))();
+  // `-d <other>` lists another domain's items, so the manifest that says which phases and
+  // which trackable fields those items have is that domain's too — reading the caller's
+  // annotated the listing with fields the listed items never had (#3391 review).
+  const scopeRoot = await resolveScopeRoot(deps, domain, callerCwd);
+  const cwd = scopeRoot ?? callerCwd;
+  const manifest = scopeRoot ? (deps.loadManifest ?? tryLoadManifest)(scopeRoot) : null;
   const declaredPhases = manifest ? Object.keys(manifest.phases) : null;
 
   const rawPhase = flags.phase as string | undefined;
@@ -420,6 +509,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   try {
     const { items, hiddenCount, unassignedCount } = await deps.ipcCall("listWorkItems", {
       cwd,
+      ...(domain ? { domain } : {}),
       ...(phase ? { phase } : {}),
       includeArchived,
     });
@@ -432,13 +522,13 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
             ...it,
             phaseValid: declaredPhases ? declaredPhases.includes(it.phase) : WORK_ITEM_PHASES.includes(it.phase),
           };
-          if (trackableKeys.size === 0) return base;
+          if (trackableKeys.size === 0 || scopeRoot === null) return base;
           try {
             const { entries } = await deps.ipcCall("aliasStateAll", {
               // Same derivation the phase runner and `persistMetadata` use, so
               // `mcx tracked --json` from a subdirectory shows the state a phase
               // script actually sees rather than an empty subdirectory bucket (#3209).
-              repoRoot: workItemStateRoot(cwd),
+              repoRoot: workItemStateRoot(scopeRoot),
               namespace: workItemStateNamespace(it.id),
             });
             const state: Record<string, unknown> = {};
@@ -542,6 +632,9 @@ function printTrackHelp(trackableFields: TrackableField[] = []): void {
     "  mcx tracked --json                        Machine-readable output",
     "  mcx tracked --phase <phase>               Filter by phase (impl, review, repair, qa, done)",
     "  mcx tracked --include-archived            Include stale done items (phase=done, >7 days old)",
+    "",
+    "  -d <domain>                               Act in this domain instead of the one owning $PWD",
+    `  ${DOMAIN_DEFAULT_HELP_LINE}`,
   ];
 
   if (trackableFields.length > 0) {
