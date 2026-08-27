@@ -84,16 +84,25 @@ export class EventBus {
    * quota, heartbeat): an un-domained event is excluded by a `-d` filter, so inventing a
    * domain here would silently attribute daemon state to one project.
    *
-   * Not resolvable yet: work-item and CI events keyed only by `workItemId`/`prNumber`.
-   * `work_items` has neither a repo column nor a `domain_id` writer — that is #3036/#3037.
-   * The daemon-local producers that poll a single known repo declare `repoRoot` instead,
-   * which covers them via step 2 until those land.
+   * Work-item and CI events keyed only by `workItemId`/`prNumber` resolve their item's own
+   * domain at the producer and arrive here as a step-1 `domainId` (`event-domain.ts`,
+   * #3352). They used to declare the daemon's `repoRoot` instead, which partitioned them by
+   * where the daemon was started rather than by which work item they were about.
+   *
+   * **The NAME is this bus's to state, never the producer's alone.** `domain` and
+   * `domainId` are two representations of one fact, and the live filter matches on the name
+   * (`event-filter.ts`) while replay filters on the column (`event-log.ts`) — so a row whose
+   * name and id disagree is visible to exactly one of them. A producer-supplied name is
+   * therefore kept only when it came with the id it claims to name (mail stamps both, and
+   * partition 0 has a name — `UNASSIGNED_DOMAIN_NAME` — that no resolver will return).
+   * Anything else is dropped rather than persisted alongside a contradicting column.
    */
   private stampDomain(input: MonitorEventInput): { domainId: number; domain?: string } {
     const domainId = this.resolveDomainId(input);
-    if (domainId === NO_DOMAIN_ID) return { domainId };
-    const name = this.domains.nameForId(domainId);
-    return name === null ? { domainId } : { domainId, domain: name };
+    const name = domainId === NO_DOMAIN_ID ? null : this.domains.nameForId(domainId);
+    if (name !== null) return { domainId, domain: name };
+    const claimed = input.domainId === domainId ? input.domain : undefined;
+    return { domainId, domain: claimed };
   }
 
   private resolveDomainId(input: MonitorEventInput): number {

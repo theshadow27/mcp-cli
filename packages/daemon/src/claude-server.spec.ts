@@ -1687,6 +1687,28 @@ describe("forwardWorkItemEvent", () => {
     }
   });
 
+  test("carries the item's identity and no domain name — the bus states the name (#3352)", () => {
+    const { server, dispose } = makeServer();
+    try {
+      const events = collect(server);
+      server.forwardWorkItemEvent({ type: "phase:changed", itemId: "d2:#42", from: "impl", to: "review" });
+      server.forwardWorkItemEvent({ type: "checks:passed", prNumber: 42 });
+      // The identity the domain is resolved FROM must be on the event...
+      expect(events[0].workItemId).toBe("d2:#42");
+      expect(events[1].prNumber).toBe(42);
+      // ...and the domain itself must not be, in either representation: a name here is a
+      // second derivation of a field EventBus.publish owns, and it used to be silently
+      // overwritten with the daemon's own domain one call later.
+      for (const event of events) {
+        expect(event.domain).toBeUndefined();
+        expect(event.domainId).toBeUndefined();
+        expect(event.repoRoot).toBeUndefined();
+      }
+    } finally {
+      dispose();
+    }
+  });
+
   test("pr:merged maps to pr.merged with prNumber", () => {
     const { server, dispose } = makeServer();
     try {

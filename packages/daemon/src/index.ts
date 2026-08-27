@@ -89,6 +89,7 @@ import { createDomainResolver, createStateDbDomainSource } from "./domain-resolv
 import { resolveDomainScope } from "./domain-scope";
 import { DomainSupervisor } from "./domain-supervisor";
 import { EventBus } from "./event-bus";
+import { createEventDomainStamper } from "./event-domain";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
 import { CopilotPoller } from "./github/copilot-poller";
@@ -776,11 +777,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Own instance rather than reaching into the automation-dispatcher block's
   // scoped one (#3234) — cheap to construct (WorkItemDb.migrate() is a no-op once
   // the schema is current) and this one lives for the daemon's whole lifetime so
-  // the idle-timer callback (declared below, invoked well after this point) can
-  // always close over it. `.acrossDomains()`: the idle-shutdown check is a single
-  // daemon-lifetime concern, not scoped to any one domain — see
-  // CrossDomainWorkItems.countActiveWorkItems.
-  const idleWorkItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
+  // the callbacks declared below (the idle timer, the event-domain stamper), invoked
+  // well after this point, can always close over it. `.acrossDomains()`: both the
+  // idle-shutdown check and "which domain owns this PR's events" are daemon-lifetime
+  // concerns spanning every domain, not scoped to any one — see
+  // CrossDomainWorkItems.countActiveWorkItems and event-domain.ts.
+  const daemonWorkItems = new WorkItemDb(db.getDatabase()).acrossDomains();
 
   let lastIdleReset = Date.now();
   /** Monotonic timestamp (ms) when the current idle timer was scheduled */
@@ -839,7 +841,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // fire time, not just reset-on-event, so a connection opened between resets is
       // still caught.
       const monitorSubs = ipcServer.activeStreamCount;
-      const activeWorkItems = idleWorkItemDb.countActiveWorkItems();
+      const activeWorkItems = daemonWorkItems.countActiveWorkItems();
       if (monitorSubs > 0 || activeWorkItems > 0) {
         logger.info(
           `[mcpd] Idle timer fired but ${monitorSubs} monitor subscription(s), ${activeWorkItems} active work item(s) — staying up`,
@@ -863,6 +865,18 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // rather than each recomputing `resolve(process.cwd())` under a different name.
   // Epic B (domain servers) is what makes this per-domain rather than per-daemon.
   const daemonRepoRoot = resolveRealpath(resolve(process.cwd()));
+
+  // The one answer to "which domain owns this poller-produced event" (#3352). The pollers
+  // watch every domain's work items from a process whose cwd sits in at most one of them,
+  // so the item's own domain — not the daemon's root — is what their events get stamped
+  // with. `daemonRepoRoot` stays as the fallback for an event that names no item at all.
+  const eventDomains = createEventDomainStamper({
+    lookup: {
+      byId: (itemId) => daemonWorkItems.getWorkItem(itemId),
+      byPr: (prNumber) => firstOf(daemonWorkItems.findByPr(prNumber), `PR #${prNumber}`, logger.warn),
+    },
+    daemonRepoRoot,
+  });
 
   // One shared factory, not a hand-copy: the IPC server's fallback and the specs use the
   // same source, so the candidate order cannot drift between them (#3169 review R7).
@@ -1165,19 +1179,16 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
-  // Work-item and CI events from the daemon's own pollers carry only a prNumber/branch:
-  // `work_items` has no repo column and no domain_id writer yet (#3036/#3037), so there
-  // is nothing on the event to resolve. The daemon polls exactly one repo, so it declares
-  // that root here rather than leaving ~19% of the traffic un-domained (#3040 review R3).
-  // A producer that already said which repo it means is left alone.
+  // Work-item and CI events from the daemon's own pollers carry the work item's identity
+  // (`workItemId`/`prNumber`) and no path, so their domain is resolved from that item —
+  // which is in whatever domain the item belongs to, not necessarily the daemon's own
+  // (#3352). The daemon's root is still stamped on an event that resolves to no item, so
+  // this traffic is not left un-domained (#3040 review R3). Only these two categories:
+  // a session-category event with no session is genuinely un-domained, and inventing the
+  // daemon's root for it would attribute another project's session to this one.
+  // A producer that already said which domain or repo it means is left alone.
   claudeServer.onMonitorEvent = (input) =>
-    mailEventBus.publish(
-      input.repoRoot === undefined &&
-        input.sessionId === undefined &&
-        (input.category === "work_item" || input.category === "ci")
-        ? { ...input, repoRoot: daemonRepoRoot }
-        : input,
-    );
+    mailEventBus.publish(input.category === "work_item" || input.category === "ci" ? eventDomains.stamp(input) : input);
   if (codexServer) {
     codexServer.onActivity = () => resetIdleTimer();
   }
@@ -1433,24 +1444,6 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           // and scopes per call, from the caller's cwd.
           const workItemDb = workItems.acrossDomains();
 
-          /**
-           * Domain name for a work-item event, resolved PER EVENT from the row it concerns.
-           *
-           * Previously a single name captured at startup from the daemon's cwd, which was
-           * wrong for every item outside that partition — and the daemon has no cwd of its
-           * own worth trusting. `null` when the item is unassigned or unknown; never a guess.
-           */
-          const domainNameFor = (event: import("@mcp-cli/core").WorkItemEvent): string | null => {
-            const item =
-              "itemId" in event
-                ? workItemDb.getWorkItem(event.itemId)
-                : "prNumber" in event
-                  ? firstOf(workItemDb.findByPr(event.prNumber), `PR #${event.prNumber}`, logger.warn)
-                  : null;
-            if (!item || item.domainId === NO_DOMAIN_ID) return null;
-            return db.getDomainById(item.domainId)?.name ?? null;
-          };
-
           // Create the poller first so we can pass pollNow to the server
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
@@ -1458,7 +1451,10 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // Explicit repoDetectCwd, not the poller's bare `detectRepo()` default —
             // respects the repoRoot override the same way resolveIssuePr does (#3243).
             detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, domainNameFor(event)),
+            // Neither hop stamps a domain: the event carries the item's identity and
+            // `eventDomains` turns that into the item's own domain at the publish seam —
+            // one resolution for all three pollers, not one per producer (#3352).
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
@@ -1546,19 +1542,16 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
             // Same repoRoot-override seam as WorkItemPoller above (#3243).
             detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
             onEvent: (rawEvent) => {
-              // Same reasoning as the work-item poller: these are repo-scoped events
-              // (review, issue, PR comments) from a poller bound to the daemon's one
-              // repo, and they key only on prNumber — so the producer states its root
-              // rather than publishing un-domained (#3040 review R3).
-              // Only when the event names no other identity. Note the bus's order is
-              // preference, not strict precedence — an unresolvable repoRoot falls through
-              // to the session — but stamping the daemon's root onto a session-bearing
-              // event would still win whenever that root DOES resolve, which would
-              // attribute another domain's session to this one.
-              const event =
-                rawEvent.repoRoot === undefined && rawEvent.sessionId === undefined
-                  ? { ...rawEvent, repoRoot: daemonRepoRoot }
-                  : rawEvent;
+              // Same seam as the work-item poller: these events (review, issue, PR
+              // comments) key on workItemId/prNumber, so the producer states the domain
+              // of that item rather than publishing un-domained (#3040 review R3) — and
+              // rather than its own root, which is a different project's domain for every
+              // item outside the daemon's cwd (#3352). Only when the event names no other
+              // identity: the bus's order is preference, not strict precedence — an
+              // unresolvable repoRoot falls through to the session — but stamping onto a
+              // session-bearing event would still win whenever it DOES resolve, which
+              // would attribute another domain's session to this one.
+              const event = eventDomains.stamp(rawEvent);
               if (event.event === PR_REVIEW_COMMENT_POSTED) {
                 const key = `${event.event}:${event.prNumber}:${event.author}`;
                 mailEventBus.publishCoalesced(event, key, {
@@ -1604,19 +1597,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
 
   function publishCiEvent(bus: EventBus, event: CiEvent): void {
-    const base = {
+    // The producer states its own domain rather than leaving it to be inferred (#3040
+    // review R3) — but the domain it states is the WORK ITEM's, resolved from the
+    // prNumber/workItemId the event already carries, not the daemon's startup cwd (#3352).
+    // Stamped on `base` so every variant below publishes the same partition.
+    const base = eventDomains.stamp({
       src: "daemon.work-item-poller",
       event: event.type,
       category: "ci" as const,
       prNumber: event.prNumber,
       workItemId: event.workItemId,
-      // The producer states its own domain rather than leaving it to be inferred
-      // (#3040 review R3). CI events key only on prNumber/workItemId, and `work_items`
-      // has no repo column or domain_id writer yet (#3036/#3037) — so until it does,
-      // the daemon's own root is the honest answer: this poller polls exactly one repo,
-      // detected from the daemon's cwd at startup.
-      repoRoot: daemonRepoRoot,
-    };
+    });
     const coalesceKey = `ci:${event.prNumber}`;
 
     if (event.type === "ci.started") {

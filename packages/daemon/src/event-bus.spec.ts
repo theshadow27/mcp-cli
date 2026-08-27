@@ -735,6 +735,32 @@ describe("EventBus domain stamping", () => {
     expect(bus.publish({ ...sessionEvent(), sessionId: "s-rootless" }).domainId).toBe(NO_DOMAIN_ID);
   });
 
+  // #3352: `domain` and `domainId` are two representations of one fact, and they are
+  // filtered by different consumers — the live stream matches the name, replay matches the
+  // column. A row where they disagree is visible to exactly one of them.
+  test("the resolved name wins over a producer's — the bus states the name", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ ...workItemEvent(), domainId: 3, domain: "stale-rename" });
+    expect(event.domainId).toBe(3);
+    expect(event.domain).toBe("phoenix");
+  });
+
+  test("a name with no id behind it is dropped rather than persisted alongside domain 0", () => {
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ ...workItemEvent(), domain: "phoenix" });
+    expect(event.domainId).toBe(NO_DOMAIN_ID);
+    expect(event.domain).toBeUndefined();
+  });
+
+  test("a name a producer stamped WITH its matching id survives (partition 0 is named)", () => {
+    // Mail names partition 0 `_` (UNASSIGNED_DOMAIN_NAME, #3038) — a name no resolver
+    // returns, stamped by a producer that also declared the id it names.
+    const bus = new EventBus(undefined, Date.now, resolver);
+    const event = bus.publish({ ...mailEvent(), domainId: NO_DOMAIN_ID, domain: "_" });
+    expect(event.domainId).toBe(NO_DOMAIN_ID);
+    expect(event.domain).toBe("_");
+  });
+
   test("the serialized copy handed to subscribers carries the domain", () => {
     const bus = new EventBus(undefined, Date.now, resolver);
     let serialized = "";
