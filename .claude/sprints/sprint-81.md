@@ -220,12 +220,15 @@ is the actual fix — bumping their timeouts would be the classic wrong move).
 
 ## Quota pause — 2026-08-27 02:53Z → 06:20Z
 
-5h session limit hit. Both live lanes stopped; **no session byed, no restart** (playbook:
-`feedback_rate_limited_send_first`).
+5h session limit hit. **No session byed, no restart** (playbook:
+`feedback_rate_limited_send_first`). Of the two live lanes, only #3192 actually stalled.
 
-- **#3036 / PR #3391** — phase `qa`, session `f3779dd1` rate-limited at **turn 0**, cost $0.
-  PR head `787b167b`, all five checks SUCCESS, labels cleared. QA has done nothing yet;
-  it needs a resume nudge, not a re-spawn.
+- **#3036 / PR #3391** — **MERGED 03:06:49Z** (`09c147d0`), issue closed. Not blocked after
+  all: session `f3779dd1` looked stuck at turn 0 in a snapshot taken mid-throttle, but
+  sonnet rode the backpressure out and finished at 72 turns / $2.97, posting `qa:pass` with
+  file:line evidence against head `787b167b` — the actual PR head. Session byed clean.
+  **Lesson: a rate-limited session is throttled, not dead — read the log before concluding
+  it needs intervention.**
 - **#3192** — phase `impl`, session `5376c919` idle at turn 82 ($6.02), stopped mid-`Edit`
   on `packages/daemon/src/github/copilot-poller.ts`. Branch
   `fix/issue-3192-per-domain-automation-and-pollers` at base `a51c1e16`, **no upstream yet**.
