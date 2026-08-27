@@ -1,43 +1,14 @@
 {
-  "list_updates": {
-    "name": "list_updates",
-    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v3/teams/users/me/updates",
+  "calendar_view": {
+    "name": "calendar_view",
+    "url": "https://teams.cloud.microsoft/api/mt/emea/v2.0/me/calendars/default/calendarView?StartDate=:startDate&EndDate=:endDate&shouldDecryptData=true",
     "method": "GET",
-    "description": "Everything in the sidebar: chats, teams, channels, conversation folders.",
+    "description": "Calendar events for a date range. Returns subject, start/end, organizer, location, online-meeting flag.",
     "paramDocs": {
-      "isPrefetch": "optional bool, default false",
-      "enableMembershipSummary": "optional bool, default true"
-    }
-  },
-  "discover": {
-    "name": "discover",
-    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/discover",
-    "method": "GET",
-    "description": "Discover feed — teams/channels suggested to the user.",
-    "paramDocs": {
-      "pageSize": "default 7",
-      "continuationToken": "pagination cursor"
-    }
-  },
-  "pinned_channels": {
-    "name": "pinned_channels",
-    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/pinnedChannels",
-    "method": "GET",
-    "description": "User's pinned channels."
-  },
-  "get_messages": {
-    "name": "get_messages",
-    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
-    "method": "GET",
-    "description": "Fetch messages in a chat or channel thread.",
-    "paramDocs": {
-      "threadId": "required — e.g. 19:abc@thread.v2 or 19:uid1_uid2@unq.gbl.spaces",
-      "pageSize": "default 20, max 200",
-      "view": "default 'msnp24Equivalent|supportsMessageProperties'",
-      "startTime": "epoch ms — use 1 for the beginning",
-      "syncState": "delta token from a previous response's _metadata.syncState"
+      "startDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-16T00:00:00.000Z",
+      "endDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-17T00:00:00.000Z"
     },
-    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
+    "jq_output": "if type != \"object\" then { error: . } else [.value[] | {subject, start: .startTime, end: .endTime, organizer: .organizerName, location, online: .isOnlineMeeting, showAs, response: .myResponseType}] end"
   },
   "consumption_horizons": {
     "name": "consumption_horizons",
@@ -49,26 +20,157 @@
     },
     "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
   },
-  "thread_replies": {
-    "name": "thread_replies",
-    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId;messageid=:messageId/messages",
+  "discover": {
+    "name": "discover",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/discover",
     "method": "GET",
-    "description": "Replies to a specific parent message (channel thread).",
+    "description": "Discover feed — teams/channels suggested to the user.",
     "paramDocs": {
-      "threadId": "channel thread id",
-      "messageId": "parent message id",
-      "pageSize": "default 200"
+      "pageSize": "default 7",
+      "continuationToken": "pagination cursor"
+    },
+    "audHints": ["chatsvcagg.teams.microsoft.com"]
+  },
+  "get_inbox": {
+    "name": "get_inbox",
+    "url": "https://graph.microsoft.com/v1.0/me/messages",
+    "method": "GET",
+    "description": "Read MS Graph mail inbox"
+  },
+  "get_messages": {
+    "name": "get_messages",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
+    "method": "GET",
+    "description": "Fetch messages in a chat or channel thread, normalised: stable `id`, `version`, ISO `at`, sender `from_id`/`from`/`is_me`, parsed `mentions` + `mentions_me`, `edited`/`deleted` flags, `reply_to` (quoted-message id), and `text` with HTML stripped, links unpacked, mentions as @Name and system events summarised. The envelope carries `cursor` (= max version) for polling, `next_start_time` (cursor + 1) and the extracted `sync_state` token. `mentions_me`/`is_me` need the captured `me_mri` var (`mcx site capture teams`); without it both read false. Note `reply_to` is the QUOTED message (properties.qtdMsgs) while `replyTo` is the channel-thread parent (parentmessageid) — different things, and the quote blockquote is stripped from `text`. Use get_messages_raw for the wire shape.",
+    "paramDocs": {
+      "threadId": "required — e.g. 19:abc@thread.v2 (channel/group) or 19:uid1_uid2@unq.gbl.spaces (1:1)",
+      "pageSize": "default 20, max 200 (250 → HTTP 400)",
+      "view": "default 'msnp24Equivalent|supportsMessageProperties'",
+      "startTime": "epoch ms — SERVER-SIDE cursor, filtered on each message's `version` (not `id`), bound INCLUSIVE. Use 1 for the beginning. To poll for new activity persist the `cursor` from a previous response (= max version) and pass `startTime = cursor + 1`. Because the filter is on `version`, this also returns edits, deletes and reaction changes to older messages. The feed is ordered by `version` desc.",
+      "syncState": "delta token. NOTE: `_metadata.syncState` in a response is a full URL, not a token — pass the `syncState` query parameter from inside that URL. Passing the token alone pages BACKWARD (history); a correct delta replays both `startTime` and `syncState` from that URL. `startTime = cursor + 1` alone is simpler and equivalent."
+    },
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"],
+    "jq_output": "if type != \"object\" then { error: . } else\n  ($vars.me_mri // null) as $me\n| ((.messages // []) | map(\n    ((.properties // {}) | if type == \"object\" then . else {} end) as $p\n  | (.from // \"\" | tostring | split(\"/\") | last) as $fromId\n  | (($p.mentions // \"[]\") | if type == \"string\" then (fromjson? // []) else (. // []) end\n     | if type == \"array\" then . else [] end\n     | map({ mri: .mri, name: .displayName })) as $mentions\n  | {\n      id: (.id // null),\n      version: ((.version // .id) | tonumber? // null),\n      seq: .sequenceId,\n      at: ((.originalarrivaltime // .composetime // null)\n           | if type == \"string\" then sub(\"\\\\.(?<f>[0-9]{3})[0-9]*Z$\"; \".\" + .f + \"Z\") else . end),\n      from_id: (if $fromId == \"\" then null else $fromId end),\n      from: (if (.messagetype // \"\") | startswith(\"ThreadActivity/\") then \"system\" else (.imdisplayname // \"system\") end),\n      is_me: ($me != null and $fromId == $me),\n      type: .messagetype,\n      mentions: $mentions,\n      mentions_me: ($me != null and (($mentions | map(.mri)) | index($me)) != null),\n      edited: ($p.edittime != null),\n      deleted: ($p.deletetime != null),\n      hard_deleted: ($p.hardDeleteTime != null),\n      reply_to: (($p.qtdMsgs // []) | if type == \"array\" and length > 0 then (.[0].messageId | tostring) else null end),\n      replyTo: .parentmessageid,\n      time: (.composetime // .originalarrivaltime),\n      reactions: ((.annotationsSummary // {}) | if type == \"object\" then (.emotions // null) else null end),\n      text: ((.content // \"\") | tostring\n        | gsub(\"<blockquote[^>]*schema\\\\.skype\\\\.com/Reply[^>]*>[\\\\s\\\\S]*?</blockquote>\\\\n?\"; \"\")\n        | gsub(\"<a[^>]*href=\\\"(?<u>[^\\\"]*)\\\"[^>]*>(?<t>[^<]*)</a>\"; if .t == .u then .u else .t + \" (\" + .u + \")\" end)\n        | gsub(\"<span[^>]*schema\\\\.skype\\\\.com/Mention[^>]*>(?<n>[^<]*)</span>\"; \"@\" + .n)\n        | gsub(\"<img[^>]*alt=\\\"(?<a>[^\\\"]*)\\\"[^>]*>\"; .a)\n        | gsub(\"<addmember>[\\\\s\\\\S]*?<target>(?<t>[^<]*)</target>[\\\\s\\\\S]*?</addmember>\"; \"[joined: \" + .t + \"]\")\n        | gsub(\"<deletemember>[\\\\s\\\\S]*?<target>(?<t>[^<]*)</target>[\\\\s\\\\S]*?</deletemember>\"; \"[left: \" + .t + \"]\")\n        | gsub(\"<topicupdate>[\\\\s\\\\S]*?<value>(?<v>[^<]*)</value>[\\\\s\\\\S]*?</topicupdate>\"; \"[topic: \" + .v + \"]\")\n        | gsub(\"<[^>]+>\"; \"\")\n        | gsub(\"&nbsp;\"; \" \") | gsub(\"&amp;\"; \"&\") | gsub(\"&lt;\"; \"<\") | gsub(\"&gt;\"; \">\")\n        | gsub(\"&quot;\"; \"\\\"\") | gsub(\"&#39;\"; \"'\") | gsub(\"&apos;\"; \"'\")\n        | gsub(\"\\\\s+\"; \" \") | sub(\"^\\\\s+\"; \"\") | sub(\"\\\\s+$\"; \"\"))\n    })) as $msgs\n| (($msgs | map(.version) | map(select(type == \"number\")) | max) // null) as $cursor\n| {\n    count: ($msgs | length),\n    cursor: $cursor,\n    next_start_time: (if $cursor == null then null else $cursor + 1 end),\n    sync_state: (((._metadata // {}) | if type == \"object\" then (.syncState // \"\") else \"\" end)\n                 | tostring | (capture(\"syncState=(?<t>[^&]+)\")? | .t) // null),\n    messages: $msgs\n  }\nend"
+  },
+  "get_messages_raw": {
+    "name": "get_messages_raw",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
+    "method": "GET",
+    "description": "Same request as get_messages but returns the raw chatsvc response — full HTML, attachments, reactions (properties.emotions / annotationsSummary), properties.qtdMsgs, _metadata, all wire fields.",
+    "paramDocs": {
+      "threadId": "required — e.g. 19:abc@thread.v2 (channel/group) or 19:uid1_uid2@unq.gbl.spaces (1:1)",
+      "pageSize": "default 20, max 200 (250 → HTTP 400)",
+      "view": "default 'msnp24Equivalent|supportsMessageProperties'",
+      "startTime": "epoch ms — SERVER-SIDE cursor, filtered on each message's `version` (not `id`), bound INCLUSIVE. Use 1 for the beginning. To poll for new activity persist the `cursor` from a previous response (= max version) and pass `startTime = cursor + 1`. Because the filter is on `version`, this also returns edits, deletes and reaction changes to older messages. The feed is ordered by `version` desc.",
+      "syncState": "delta token. NOTE: `_metadata.syncState` in a response is a full URL, not a token — pass the `syncState` query parameter from inside that URL. Passing the token alone pages BACKWARD (history); a correct delta replays both `startTime` and `syncState` from that URL. `startTime = cursor + 1` alone is simpler and equivalent."
     },
     "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
   },
-  "user_fetch": {
-    "name": "user_fetch",
-    "url": "https://teams.cloud.microsoft/api/mt/emea/beta/users/fetch",
-    "method": "POST",
-    "description": "Resolve userIds / emails to display names + avatars.",
+  "get_share_content": {
+    "name": "get_share_content",
+    "url": "https://graph.microsoft.com/v1.0/shares/:shareToken/driveItem/content",
+    "method": "GET"
+  },
+  "graph_sites_search": {
+    "name": "graph_sites_search",
+    "url": "https://graph.microsoft.com/v1.0/sites?search=:q",
+    "method": "GET",
+    "description": "Search SharePoint sites by name"
+  },
+  "list_threads": {
+    "name": "list_threads",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v3/teams/users/me/updates?migratePinnedToFavorites=false&supportsAdditionalSystemGeneratedFolders=true&supportsSliceItems=true&enableEngageCommunities=true",
+    "method": "GET",
+    "description": "Thread directory from the same sidebar payload as list_updates: every chat with its title and member MRIs, every channel with its display name and member count, every team with its channels. Use it to identify an unknown 19:… thread id. Members carry MRIs only — resolve names with user_fetch.",
     "paramDocs": {
-      "_body": "JSON body: array of identifiers, e.g. [{ mri: '8:orgid:<guid>' }]."
+      "isPrefetch": "optional bool, default false",
+      "enableMembershipSummary": "optional bool, default true"
+    },
+    "headers": {
+      "accept": "application/json",
+      "x-ms-synctoken": "${updatesSyncToken}"
+    },
+    "audHints": ["chatsvcagg.teams.microsoft.com"],
+    "jq_output": "if type != \"object\" then { error: . } else\n{\n  chats: [ (.chats // [])[] | {\n      threadId: .id,\n      title: (.title // .lastMessage.imDisplayName // null),\n      type: (.threadType // .chatType),\n      oneOnOne: .isOneOnOne,\n      external: .isExternal,\n      memberCount: ((.members // []) | length),\n      members: [ (.members // [])[] | .mri ]\n    } ],\n  channels: [ (.channels // [])[] | {\n      threadId: .id,\n      displayName: .displayName,\n      team: .parentTeamId,\n      memberCount: ((.membershipSummary // {}) | if type==\"object\" then .totalMemberCount else null end)\n    } ],\n  teams: [ (.teams // [])[] | {\n      teamId: .id,\n      displayName: .displayName,\n      channels: [ (.channels // [])[] | { threadId: .id, displayName: .displayName } ]\n    } ]\n}\nend"
+  },
+  "list_updates": {
+    "name": "list_updates",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v3/teams/users/me/updates?migratePinnedToFavorites=false&supportsAdditionalSystemGeneratedFolders=true&supportsSliceItems=true&enableEngageCommunities=true",
+    "method": "GET",
+    "description": "Unread/recent sidebar triage (chats + channels). The x-ms-synctoken header anchors the sync window and is supplied by the captured `updatesSyncToken` var — run `mcx site capture teams --limit 2000` first. The header is dropped entirely while that var is uncaptured (which also answers whether the service tolerates omitting it). The response's own next token is surfaced as `syncToken`. Use list_threads for the full chat/channel roster.",
+    "paramDocs": {
+      "isPrefetch": "optional bool, default false",
+      "enableMembershipSummary": "optional bool, default true"
+    },
+    "headers": {
+      "accept": "application/json",
+      "x-ms-synctoken": "${updatesSyncToken}"
+    },
+    "audHints": ["chatsvcagg.teams.microsoft.com"],
+    "jq_output": "if type != \"object\" then { error: . } else\n{\n  counts: {\n    unreadChats:    ([(.chats // [])[]    | select(.isRead==false and (.hidden|not))] | length),\n    unreadChannels: ([(.channels // [])[] | select(.isMessageRead==false and (.isMuted|not))] | length),\n    chatsInWindow:  ((.chats // [])|length),\n    channelsInWindow:((.channels // [])|length)\n  },\n  syncToken: ((.metadata // {}) | if type==\"object\" then (.syncToken // null) else null end),\n  unreadChats: [\n    (.chats // [])[] | select(.isRead==false and (.hidden|not))\n    | { title: (.title // .lastMessage.imDisplayName // \"(1:1)\"),\n        from: (.lastMessage.imDisplayName // .lastMessage.from),\n        time: (.lastMessage.originalArrivalTime // .lastMessage.composeTime),\n        oneOnOne: .isOneOnOne, external: .isExternal, important: .isHighImportance,\n        fromMe: .isLastMessageFromMe,\n        preview: ((.lastMessage.content // \"\") | gsub(\"<[^>]*>\";\" \") | gsub(\"&nbsp;\";\" \") | gsub(\"\\\\s+\";\" \") | .[0:160]),\n        threadId: .id }\n  ] | map(select(.fromMe|not)) | sort_by(.time) | reverse,\n  unreadChannels: [\n    (.channels // [])[] | select(.isMessageRead==false and (.isMuted|not))\n    | { channel: .displayName, team: .parentTeamId,\n        from: (.lastMessage.imDisplayName // .lastMessage.from),\n        time: (.lastMessage.originalArrivalTime // .lastMessage.composeTime),\n        important: (.isImportantMessageRead==false),\n        preview: ((.lastMessage.content // \"\") | gsub(\"<[^>]*>\";\" \") | gsub(\"&nbsp;\";\" \") | gsub(\"\\\\s+\";\" \") | .[0:160]),\n        threadId: .id }\n  ] | sort_by(.time) | reverse\n}\nend"
+  },
+  "org_chart": {
+    "name": "org_chart",
+    "url": "https://nam.loki.delve.office.com/api/v1/organization?smtp=:email&personaType=User",
+    "method": "GET",
+    "description": "Org chart for a person: management chain up to CEO plus direct reports. Each entry includes displayName, jobTitle, department, smtp, aadObjectId.",
+    "headers": {
+      "X-ClientType": "Teams",
+      "X-ClientFeature": "LivePersonaCard",
+      "X-ClientScenario": "ManagersAndDirects",
+      "Accept": "application/json"
+    },
+    "paramDocs": {
+      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
+    },
+    "audHints": ["loki.delve.office.com"]
+  },
+  "person_profile": {
+    "name": "person_profile",
+    "url": "https://nam.loki.delve.office.com/api/v2/person?smtp=:email&personaType=User&locale=en-us",
+    "method": "GET",
+    "description": "Detailed profile for a person: full name, phone numbers, email, department, job title, office location, company.",
+    "headers": {
+      "X-ClientType": "Teams",
+      "X-ClientFeature": "LivePersonaCard",
+      "Accept": "application/json"
+    },
+    "paramDocs": {
+      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
+    },
+    "audHints": ["loki.delve.office.com"]
+  },
+  "pinned_channels": {
+    "name": "pinned_channels",
+    "url": "https://teams.cloud.microsoft/api/csa/amer/api/v1/teams/users/me/pinnedChannels",
+    "method": "GET",
+    "description": "User's pinned channels.",
+    "audHints": ["chatsvcagg.teams.microsoft.com"]
+  },
+  "react_to_message": {
+    "name": "react_to_message",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages/:messageId/properties?name=emotions",
+    "method": "PUT",
+    "description": "React to a chat message. threadId, messageId required; key = like|heart|laugh|surprised|sad|angry (default like). Body: {emotions:{key,value:now-ms}}",
+    "jq_input": "{emotions: [{key: (.params.key // \"like\"), users: [{time: ((now*1000)|floor), value: ((now*1000)|floor|tostring)}]}]} | {emotions: ((.emotions[0].key) as $k | {key: $k, value: ((now*1000)|floor)})}",
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"],
+    "paramDocs": {
+      "threadId": "required — conversation id",
+      "messageId": "required — server message id (the number in the message deep link)",
+      "key": "optional — like|heart|laugh|surprised|sad|angry (default like)"
     }
+  },
+  "search_files": {
+    "name": "search_files",
+    "url": "https://substrate.office.com/searchservice/api/v2/query",
+    "method": "POST",
+    "description": "Substrate search across files (OneDrive, SharePoint).",
+    "paramDocs": {
+      "q": "required — the search query",
+      "size": "optional — max hits, default 15"
+    },
+    "jq_input": "{ EntityRequests: [{ entityType: \"File\", contentSources: [\"OneDriveBusiness\",\"Exchange\"], fields: [\"FileName\",\"FileType\",\"HitHighlightedSummary\",\"LastModifiedTime\",\"LinkingUrl\",\"ModifiedBy\",\"Path\",\"Title\",\"SpWebUrl\",\"FileExtension\"], query: { queryString: .q, displayQueryString: .q }, size: (.size // 15), from: 0 }] }",
+    "jq_output": "if type != \"object\" then { error: . } else { total: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Results // [] | map(.Source | { title: .Title, fileName: .FileName, fileType: .FileType, summary: .HitHighlightedSummary, modified: .LastModifiedTime, modifiedBy: (.ModifiedBy // {}).DisplayName, url: .LinkingUrl })) } end"
   },
   "search_teams": {
     "name": "search_teams",
@@ -80,7 +182,7 @@
       "size": "optional — max hits, default 3"
     },
     "jq_input": ".params as $p | .body_default | .AnswerEntityRequests[].Query.QueryString = $p.q | (.EntityRequests[] | select(.query != null)).query.displayQueryString = $p.q | (.EntityRequests[] | select(.query != null)).query.queryString = $p.q | (.EntityRequests[] | select(.Query != null)).Query.DisplayQueryString = $p.q | (.EntityRequests[] | select(.Query != null)).Query.QueryString = $p.q | (.EntityRequests[] | select(.entityType == \"Message\")).query.queryString = (\"NOT (isClientSoftDeleted:TRUE) AND \" + $p.q) | (.EntityRequests[] | select(.entityType == \"Message\")).size = ($p.size // 3)",
-    "jq_output": "{ total: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Results // [] | map(.Source | { id: .Id, threadId: .ClientThreadId, from: .From.EmailAddress.Name, preview: .Preview, dateTime: .DateTimeSent, hasAttachments: .HasAttachments })) }",
+    "jq_output": "if type != \"object\" then { error: . } else { total: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"Message\")) | first | .ResultSets[0].Results // [] | map(.Source | { id: .Id, threadId: .ClientThreadId, from: .From.EmailAddress.Name, preview: .Preview, dateTime: .DateTimeSent, hasAttachments: .HasAttachments })) } end",
     "body_default": {
       "AnswerEntityRequests": [
         {
@@ -340,77 +442,56 @@
       }
     }
   },
-  "search_files": {
-    "name": "search_files",
-    "url": "https://substrate.office.com/searchservice/api/v2/query",
-    "method": "POST",
-    "description": "Substrate search across files (OneDrive, SharePoint).",
-    "paramDocs": {
-      "q": "required — the search query",
-      "size": "optional — max hits, default 15"
-    },
-    "jq_input": "{ EntityRequests: [{ entityType: \"File\", contentSources: [\"OneDriveBusiness\",\"Exchange\"], fields: [\"FileName\",\"FileType\",\"HitHighlightedSummary\",\"LastModifiedTime\",\"LinkingUrl\",\"ModifiedBy\",\"Path\",\"Title\",\"SpWebUrl\",\"FileExtension\"], query: { queryString: .q, displayQueryString: .q }, size: (.size // 15), from: 0 }] }",
-    "jq_output": "{ total: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Total), hits: ((.EntitySets // []) | map(select(.EntityType==\"File\")) | first | .ResultSets[0].Results // [] | map(.Source | { title: .Title, fileName: .FileName, fileType: .FileType, summary: .HitHighlightedSummary, modified: .LastModifiedTime, modifiedBy: (.ModifiedBy // {}).DisplayName, url: .LinkingUrl })) }"
-  },
   "send_message": {
     "name": "send_message",
     "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId/messages",
     "method": "POST",
-    "description": "Send a message to a chat thread. Returns 201 with OriginalArrivalTime on success. clientmessageid is auto-generated from nanosecond epoch; repeat sends with the same id should be dedup'd by Teams (observed inconsistent for 48:notes self-chat; matches real-client behavior for group threads).",
+    "description": "Send a message to a chat thread. Returns { id, at } — `id` is the server message id (the response's OriginalArrivalTime, which equals the last segment of the Location header and the `id` get_messages reports). clientmessageid is auto-generated from the nanosecond epoch unless supplied. Supports @mentions (--mention) and quoted replies (--reply-to).",
     "paramDocs": {
       "threadId": "required — 48:notes (self-chat), 19:abc@thread.v2 (channel/group), 19:abc@unq.gbl.spaces (1:1)",
       "content": "required — message body, HTML wrapped in <p> tags, e.g. '<p>hello</p>'",
       "messagetype": "optional — default 'RichText/Html'. Use 'Text' for plain text.",
       "contenttype": "optional — default 'text'",
-      "clientmessageid": "optional — override the auto-generated idempotency key (useful for explicit retries)"
+      "clientmessageid": "optional — override the auto-generated idempotency key (useful for explicit retries)",
+      "mention": "optional — comma-separated mention list, each item `<mri>` or `<mri>=<display name>`, e.g. '8:orgid:<guid>=User One,8:orgid:<guid2>=User Two'. A display name alone cannot be accepted: name→MRI resolution needs a lookup the catalog layer cannot do, so resolve first via list_threads (chats[].members[].mri) or user_fetch. Each mention emits the matching <span itemtype=\"http://schema.skype.com/Mention\" itemid=\"N\">Name</span> in the content and the JSON-encoded properties.mentions entry. If the content contains the literal '@<display name>' that occurrence is replaced in place; otherwise the spans are prepended inside the leading <p>. An MRI never contains a comma; a display name containing one is not supported (use --mentions).",
+      "mentions": "optional — escape hatch: the raw JSON-encoded STRING for properties.mentions, passed through verbatim (overrides --mention). Content must already carry matching <span … itemid=\"N\"> tags.",
+      "reply-to": "optional — id of the message being quoted (from get_messages `id`). Emits the schema.skype.com/Reply blockquote in the content plus properties.qtdMsgs + hasValidMsgReferences.",
+      "reply-to-mri": "optional — MRI of the quoted message's sender (defaults to the captured me_mri var)",
+      "reply-to-name": "optional — display name of the quoted message's sender, shown in the quote header",
+      "reply-to-preview": "optional — quoted text preview shown inside the blockquote",
+      "quote-mode": "optional — 'both' (default: blockquote + properties.qtdMsgs) or 'blockquote' (blockquote only)"
     },
     "body_default": {
       "messagetype": "RichText/Html",
       "contenttype": "text"
     },
-    "jq_input": ".body_default + (.params | del(.threadId)) + {clientmessageid: (.params.clientmessageid // ((now * 1000000000) | floor | tostring))}",
+    "jq_input": ".params as $p | (.vars // {}) as $v | (.body_default // {}) as $d\n| (($p.mention // \"\") | tostring\n   | if . == \"\" then [] else split(\",\") end\n   | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\")) | map(select(length > 0))\n   | to_entries | map({\n       itemid: .key,\n       mri: (.value | split(\"=\")[0] | gsub(\"^\\\\s+|\\\\s+$\"; \"\")),\n       name: (.value | split(\"=\") | if length > 1 then (.[1:] | join(\"=\") | gsub(\"^\\\\s+|\\\\s+$\"; \"\")) else .[0] end)\n     })) as $mentions\n| (reduce $mentions[] as $m ({ html: (($p.content // \"\") | tostring), prefix: \"\" };\n     (\"<span itemtype=\\\"http://schema.skype.com/Mention\\\" itemscope=\\\"\\\" itemid=\\\"\"\n      + ($m.itemid | tostring) + \"\\\">\" + $m.name + \"</span>\") as $span\n   | (\"@\" + ($m.name | gsub(\"(?<c>[.*+?^${}()|\\\\[\\\\]\\\\\\\\])\"; \"\\\\\" + .c))) as $needle\n   | if (.html | test($needle)) then .html |= sub($needle; $span) else .prefix += ($span + \" \") end\n  )) as $woven\n| (if $woven.prefix == \"\" then $woven.html\n   elif ($woven.html | startswith(\"<p>\")) then ($woven.html | sub(\"^<p>\"; \"<p>\" + $woven.prefix))\n   else $woven.prefix + $woven.html end) as $mentioned\n| (($p.replyTo // null) | if . == null then null else tostring end) as $rid\n| (($p.replyToMri // $v.me_mri // \"\") | tostring) as $rmri\n| (($p.replyToName // \"\") | tostring) as $rname\n| (($p.replyToPreview // \"\") | tostring) as $rprev\n| (if $rid == null then \"\" else\n     \"<blockquote itemscope itemtype=\\\"http://schema.skype.com/Reply\\\" itemid=\\\"\" + $rid\n     + \"\\\"><strong itemprop=\\\"mri\\\" itemid=\\\"\" + $rmri + \"\\\">\" + $rname + \"</strong>\"\n     + \"<span itemprop=\\\"time\\\" itemid=\\\"\" + $rid + \"\\\"></span>\"\n     + \"<p itemprop=\\\"preview\\\">\" + $rprev + \"</p></blockquote>\\n\"\n   end) as $quote\n| ($d + ($p | del(.threadId, .mention, .mentions, .replyTo, .replyToMri, .replyToName, .replyToPreview, .quoteMode))\n   + { content: ($quote + $mentioned),\n       clientmessageid: (($p.clientmessageid // ((now * 1000000000) | floor)) | tostring) }) as $base\n| ($base\n   + (if ($p.mentions != null) then { properties: (($base.properties // {}) + { mentions: ($p.mentions | tostring) }) }\n      elif ($mentions | length) > 0 then\n        { properties: (($base.properties // {}) + { mentions: ($mentions | map({\n            \"@type\": \"http://schema.skype.com/Mention\", itemid: .itemid, mri: .mri,\n            mentionType: \"person\", displayName: .name }) | tojson) }) }\n      else {} end))\n| (if $rid == null or (($p.quoteMode // \"both\") == \"blockquote\") then .\n   else . + { properties: ((.properties // {}) + {\n       qtdMsgs: [{ messageId: ($rid | tonumber), sender: $rmri, time: ($rid | tonumber),\n                   message: null, validationResult: \"Valid\", sharedRefId: null, replyChainId: null }],\n       hasValidMsgReferences: true }) } end)",
+    "jq_output": "if type != \"object\" then { error: . }\nelif (.OriginalArrivalTime | type) != \"number\" then { error: . }\nelse { id: (.OriginalArrivalTime | tostring),\n        at: ((.OriginalArrivalTime / 1000 | floor | todate | sub(\"Z$\"; \"\")) + \".\" + ((.OriginalArrivalTime % 1000 + 1000) | tostring | .[1:]) + \"Z\") }\nend",
     "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
   },
-  "calendar_view": {
-    "name": "calendar_view",
-    "url": "https://teams.cloud.microsoft/api/mt/emea/v2.0/me/calendars/default/calendarView?StartDate=:startDate&EndDate=:endDate&shouldDecryptData=true",
+  "thread_replies": {
+    "name": "thread_replies",
+    "url": "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/:threadId;messageid=:messageId/messages",
     "method": "GET",
-    "description": "Calendar events for a date range. Returns subject, start/end, organizer, location, online-meeting flag.",
+    "description": "Replies to a specific parent message (channel thread).",
     "paramDocs": {
-      "startDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-16T00:00:00.000Z",
-      "endDate": "required — ISO 8601 UTC datetime, e.g. 2026-04-17T00:00:00.000Z"
+      "threadId": "channel thread id",
+      "messageId": "parent message id",
+      "pageSize": "default 200"
     },
-    "jq_output": "[.value[] | {subject, start: .startTime, end: .endTime, organizer: .organizerName, location, online: .isOnlineMeeting, showAs, response: .myResponseType}]"
+    "audHints": ["ic3.teams.office.com", "chatsvcagg.teams.microsoft.com"]
   },
-  "org_chart": {
-    "name": "org_chart",
-    "url": "https://nam.loki.delve.office.com/api/v1/organization?smtp=:email&personaType=User",
-    "method": "GET",
-    "description": "Org chart for a person: management chain up to CEO plus direct reports. Each entry includes displayName, jobTitle, department, smtp, aadObjectId.",
-    "headers": {
-      "X-ClientType": "Teams",
-      "X-ClientFeature": "LivePersonaCard",
-      "X-ClientScenario": "ManagersAndDirects",
-      "Accept": "application/json"
-    },
+  "user_fetch": {
+    "name": "user_fetch",
+    "url": "https://teams.cloud.microsoft/api/mt/emea/beta/users/fetch?isMailAddress=false&enableGuest=true&skypeTeamsInfo=true&canBeSmtpAddress=false&includeIBBarredUsers=true&includeDisabledAccounts=true",
+    "method": "POST",
+    "description": "Resolve MRIs to display names / profile fields. The live body is a bare JSON array of MRI STRINGS — [\"8:orgid:<guid>\"] — and the six isMailAddress/enableGuest/… query parameters are required; the older documented [{ mri }] object form answers 400 'Invalid Users Request', and so does [{ Mri, userType }] (that object shape belongs to the sibling users/fetchfeaturesettings endpoint, which returns feature flags rather than profiles). Normalised output; the raw response is { type, value: [...] }.",
     "paramDocs": {
-      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
+      "mri": "comma-separated MRIs, e.g. '8:orgid:<guid>,8:orgid:<guid2>'. Defaults to the captured me_mri var (your own profile) when omitted.",
+      "_body": "optional — raw JSON body, bypassing the --mri template."
     },
-    "audHints": ["loki.delve.office.com"]
-  },
-  "person_profile": {
-    "name": "person_profile",
-    "url": "https://nam.loki.delve.office.com/api/v2/person?smtp=:email&personaType=User&locale=en-us",
-    "method": "GET",
-    "description": "Detailed profile for a person: full name, phone numbers, email, department, job title, office location, company.",
-    "headers": {
-      "X-ClientType": "Teams",
-      "X-ClientFeature": "LivePersonaCard",
-      "Accept": "application/json"
-    },
-    "paramDocs": {
-      "email": "required — the person's SMTP address (e.g. first.last@example.com)"
-    },
-    "audHints": ["loki.delve.office.com"]
+    "jq_input": ".params as $p | (.vars // {}) as $v\n| (($p.mri // \"\") | tostring | if . == \"\" then (($v.me_mri // \"\") | tostring) else . end)\n| split(\",\") | map(gsub(\"^\\\\s+|\\\\s+$\"; \"\")) | map(select(length > 0))",
+    "jq_output": "if type != \"object\" then { error: . }\nelif (.value | type) != \"array\" then { error: . }\nelse [ .value[] | {\n    mri, objectId,\n    name: .displayName,\n    email: (.email // .mail),\n    upn: .userPrincipalName,\n    jobTitle, department, companyName,\n    location: .userLocation,\n    userType,\n    shortProfile: .isShortProfile\n  } ]\nend",
+    "audHints": ["api.spaces.skype.com"]
   }
 }
