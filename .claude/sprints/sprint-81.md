@@ -217,3 +217,22 @@ is the actual fix — bumping their timeouts would be the classic wrong move).
   false. `core.hooksPath` is `.git-hooks`, **relative**, resolved per working tree —
   so each worktree runs its own checked-out hook, the opposite of what the retro
   concluded.
+
+## Quota pause — 2026-08-27 02:53Z → 06:20Z
+
+5h session limit hit. Both live lanes stopped; **no session byed, no restart** (playbook:
+`feedback_rate_limited_send_first`).
+
+- **#3036 / PR #3391** — phase `qa`, session `f3779dd1` rate-limited at **turn 0**, cost $0.
+  PR head `787b167b`, all five checks SUCCESS, labels cleared. QA has done nothing yet;
+  it needs a resume nudge, not a re-spawn.
+- **#3192** — phase `impl`, session `5376c919` idle at turn 82 ($6.02), stopped mid-`Edit`
+  on `packages/daemon/src/github/copilot-poller.ts`. Branch
+  `fix/issue-3192-per-domain-automation-and-pollers` at base `a51c1e16`, **no upstream yet**.
+  Uncommitted work on disk in `claude-mtax5f6z`: `M copilot-poller.ts`,
+  `M work-item-poller.ts`, `?? domain-repos.ts`, `?? domain-roots.ts`. Do not bye.
+- **#3273** — still queued; needs #3192 merged *and* zero other open sprint PRs.
+
+`quota_status` was stale at pause time (`fetchedAt` 02:27Z, `lastError` 429, frozen
+utilization 71) — the authoritative signal was the session's own
+`You've hit your session limit · resets 6:20am (UTC)`. See `feedback_quota_status_staleness`.
