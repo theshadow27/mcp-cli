@@ -48,8 +48,13 @@ import { extractDomainFlag } from "./parse";
  *   different one cannot redirect it. Accepting such a flag would be the same silent
  *   mis-scope in the other direction: a flag that looks like it scoped the command and did
  *   not. It is therefore an error, with the remedy (`cd`) named.
+ * - `wide` — the command already reads *every* domain when `-d` is absent, and says so in
+ *   its own help. There is no guess to remove: an omitted `-d` is a documented answer, not a
+ *   missing one. `-d` still narrows, and an unknown name is still an error, but the
+ *   outside-every-domain refusal does not apply. Ignoring this distinction regressed
+ *   `mcx monitor` from a cron job into a hard failure (#3391 review).
  */
-export type DomainScopeKind = "named" | "ambient";
+export type DomainScopeKind = "named" | "ambient" | "wide";
 
 /**
  * The domain-partitioned CLI surface, enumerated from the schema rather than guessed.
@@ -74,6 +79,15 @@ export type DomainScopeKind = "named" | "ambient";
  * <tool>` shorthand, so classifying an invocation needs more than the first two argv slots.
  * Filed rather than guessed at.
  */
+/**
+ * `ls` and its long spelling. `CLAUDE_SUB_ALIASES` maps `list` → `ls` before dispatch, so a
+ * guard that matched only the short one left `mcx claude list` unclassified — the same
+ * command, unguarded, under its other name (#3391 review).
+ */
+function isListVerb(sub: string | undefined): boolean {
+  return sub === "ls" || sub === "list";
+}
+
 function scopeKindFor(
   command: string | undefined,
   sub: string | undefined,
@@ -90,18 +104,21 @@ function scopeKindFor(
     case "mail":
       return "named";
 
-    // monitor_events — `-d` is the reference implementation this issue generalizes.
+    // monitor_events — `-d` is the reference implementation this issue generalizes, and its
+    // documented default ("omit to see every domain") is the reason `wide` exists. `monitor`
+    // has never scoped by domain without `-d`; it scopes by `--repo`, which is a separate
+    // axis and untouched here.
     case "monitor":
-      return "named";
+      return "wide";
 
     // agent_sessions. Only the listing verbs are scoped: every other agent verb takes an
     // explicit session id, where a domain would add nothing but a way to get it wrong.
     // `--all` is the documented machine-wide escape and is handled by the caller.
     case "claude":
-      return sub === "ls" ? "named" : null;
+      return isListVerb(sub) ? "named" : null;
     case "agent":
       // `mcx agent <provider> ls`
-      return third === "ls" ? "named" : null;
+      return isListVerb(third) ? "named" : null;
     // Deprecated `mcx <provider> …` spellings still route to cmdAgent, so they inherit it.
     case "codex":
     case "acp":
@@ -109,7 +126,7 @@ function scopeKindFor(
     case "gemini":
     case "opencode":
     case "grok":
-      return sub === "ls" ? "named" : null;
+      return isListVerb(sub) ? "named" : null;
 
     // work_items + alias_state, but reached through THIS checkout's `.mcx.yaml` and lockfile.
     case "phase":
@@ -139,18 +156,50 @@ export const DOMAIN_DEFAULT_HELP_LINE =
   "Domain: resolved by walking up from $PWD to the nearest registered domain; -d <name> overrides. Outside every domain, -d is required.";
 
 /**
+ * Commands that print their usage when handed no arguments at all (`mcx phase`, `mcx alias`,
+ * `mcx track`). `tracked`, `mail` and `aliases` are absent on purpose: bare, they are real
+ * commands that read rows — `mcx aliases` dispatches to `alias ls`.
+ */
+const BARE_IS_HELP = new Set(["track", "untrack", "phase", "alias"]);
+
+/**
+ * Commands that additionally spell help as a bare subcommand (`mcx phase help`). The
+ * shorthands are absent because their argv is rewritten before dispatch: `mcx aliases help`
+ * becomes `alias ls help`, and `mcx save help` saves an alias called "help".
+ */
+const HELP_SUBCOMMAND = new Set(["phase", "alias"]);
+
+/**
  * True when `args` asks for help rather than for work.
  *
- * Checked over the *whole* argument list, not just the first slot: `mcx tracked --phase qa
- * --help` is a help request, and refusing it for want of a domain would mean the one command
- * that tells you about `-d` cannot be run from the place where you need to be told.
+ * `--help`/`-h` count anywhere — that is `hasHelpFlag`'s contract everywhere else in the
+ * CLI, and `mcx tracked --phase qa --help` is a help request. A *bare* `help` counts only in
+ * the subcommand slot, and only for the commands that actually implement that spelling.
+ *
+ * The earlier version scanned the whole list for the bare token, so any argument that
+ * happened to be the word "help" — a `--meta` value, a branch name — turned the guard off:
+ * `cd /tmp && mcx track 42 help` wrote to partition 0 with no refusal, which is precisely
+ * the silent fallback #3036 exists to close (#3391 review).
  */
-function isHelpRequest(args: readonly string[]): boolean {
-  return args.includes("--help") || args.includes("-h") || args.includes("help");
+function isHelpRequest(command: string, args: readonly string[]): boolean {
+  if (args.includes("--help") || args.includes("-h")) return true;
+  if (args.length === 0) return BARE_IS_HELP.has(command);
+  return args[0] === "help" && HELP_SUBCOMMAND.has(command);
 }
 
+/**
+ * Commands whose `--all` is a *documented* machine-wide escape: the read-only session
+ * listings, where "every session on this box" is a supported question.
+ *
+ * `track`/`untrack`/`tracked`/`mail` define no such flag, so honouring `--all` for them was
+ * a bypass and not an escape — `cd /tmp && mcx untrack 555 --all` ran unguarded against the
+ * unassigned partition, a real and populated one (#3391 review).
+ */
+const MACHINE_WIDE_ESCAPE = new Set(["claude", "agent", "codex", "acp", "copilot", "gemini", "opencode", "grok"]);
+
 /** The documented machine-wide escape on the session listings. `-d` has already been removed. */
-function isExplicitlyMachineWide(rest: readonly string[]): boolean {
+function isExplicitlyMachineWide(command: string, rest: readonly string[]): boolean {
+  if (!MACHINE_WIDE_ESCAPE.has(command)) return false;
   return rest.includes("--all") || rest.includes("-a");
 }
 
@@ -163,25 +212,44 @@ function formatRegistered(registered: readonly string[]): string {
 /**
  * Refuse a domain-scoped command that cannot say which domain it is acting in.
  *
- * Returns normally — having written nothing and called nothing — for every invocation that
- * is not domain-scoped, so `main.ts` can call it unconditionally.
+ * Returns the argument list `main.ts` should dispatch with — `argv` unchanged for every
+ * invocation that is not domain-scoped, so `main.ts` can call it unconditionally.
+ *
+ * The one case where the returned list differs is a *validated* `-d` on an `ambient`
+ * command, where the flag is by definition a no-op (it can only name the domain the command
+ * is already in) and is therefore removed. `phase`'s and `alias`'s own parsers are strict and
+ * do not declare `-d`, so leaving it in place made `mcx phase run impl -d <this-domain>` die
+ * with `unknown flag: -d` — i.e. `-d` never succeeded on the two ambient commands that
+ * mutate state, while the guard's own tests, which only ever called this function, called it
+ * a harmless no-op (#3391 review). The `named` and `wide` commands parse `-d` themselves and
+ * get their argv back untouched.
  *
  * `argv` is the post-global-flag argument list, command first (`["tracked", "--json"]`).
  */
-export async function requireDomainScope(argv: readonly string[], deps: DomainGuardDeps): Promise<void> {
-  const [command, sub, third] = argv;
+export async function requireDomainScope(argv: readonly string[], deps: DomainGuardDeps): Promise<string[]> {
+  const passthrough = [...argv];
+
+  // `-d` comes off BEFORE classification. Reading fixed argv slots for the subcommand meant
+  // a flag placed ahead of it (`mcx claude -d phoenix ls`) left `sub` as `"-d"` and the
+  // invocation classified as unguarded (#3391 review).
+  const { domain, rest: positional, error } = extractDomainFlag(passthrough);
+  const [command, sub, third] = positional;
   const kind = scopeKindFor(command, sub, third);
-  if (kind === null) return;
+  if (kind === null || command === undefined) return passthrough;
 
-  const args = argv.slice(1);
-  if (isHelpRequest(args)) return;
+  const args = positional.slice(1);
+  if (isHelpRequest(command, args)) return passthrough;
 
-  const { domain, rest, error } = extractDomainFlag(args);
   if (error) {
     deps.error(error);
     return deps.exit(1);
   }
-  if (domain === undefined && isExplicitlyMachineWide(rest)) return;
+  if (domain === undefined) {
+    // A command that already reads every domain has nothing to resolve and nothing to
+    // refuse; skipping the round trip keeps `mcx monitor` exactly as it shipped.
+    if (kind === "wide") return passthrough;
+    if (isExplicitlyMachineWide(command, args)) return passthrough;
+  }
 
   // One round trip answers both questions: which domain owns $PWD, and what is registered.
   // Asked even when `-d` was given, because "unknown domain" has to be able to say what IS
@@ -189,8 +257,11 @@ export async function requireDomainScope(argv: readonly string[], deps: DomainGu
   const { domain: ambient, registered } = await deps.ipcCall("domainWhich", { path: deps.cwd() });
 
   if (domain !== undefined) {
-    if (isUnassignedDomainName(domain)) return; // partition 0, named on purpose
-    if (!registered.includes(domain)) {
+    // `_` names partition 0 on purpose and resolves without a row — but it is validated
+    // here, alongside every other name, rather than in an early return placed above the
+    // `ambient` check. That early return let `mcx phase show impl -d _` and `mcx alias ls
+    // -d _` skip the guard entirely from outside every registered domain (#3391 review).
+    if (!isUnassignedDomainName(domain) && !registered.includes(domain)) {
       deps.error(`Unknown domain "${domain}".`);
       deps.error(formatRegistered(registered));
       deps.error(
@@ -198,17 +269,27 @@ export async function requireDomainScope(argv: readonly string[], deps: DomainGu
       );
       return deps.exit(1);
     }
-    if (kind === "ambient" && domain !== ambient?.name) {
-      // Not a scoping failure but a category error, and it gets its own message: this
-      // command reads THIS checkout's `.mcx.yaml`, lockfile and scripts, so pointing it at
-      // another domain's name would run local code and report it as that domain's. Silently
-      // honouring the flag for the partition key while the files came from here is exactly
-      // the half-scoped write this issue exists to remove.
-      deps.error(`\`mcx ${command}\` acts on the repository in $PWD, so -d ${domain} cannot redirect it.`);
-      deps.error(`Run it from inside "${domain}" instead: cd to that domain and re-run.`);
-      return deps.exit(1);
+    if (kind === "ambient") {
+      if (domain !== ambient?.name) {
+        // Not a scoping failure but a category error, and it gets its own message: this
+        // command reads THIS checkout's `.mcx.yaml`, lockfile and scripts, so pointing it at
+        // another domain's name would run local code and report it as that domain's.
+        // Silently honouring the flag for the partition key while the files came from here
+        // is exactly the half-scoped write this issue exists to remove. `_` lands here too:
+        // partition 0 is not this checkout either.
+        deps.error(`\`mcx ${command}\` acts on the repository in $PWD, so -d ${domain} cannot redirect it.`);
+        deps.error(
+          isUnassignedDomainName(domain)
+            ? `"${UNASSIGNED_DOMAIN_NAME}" is a partition, not a checkout — there is no repository there for it to act on.`
+            : `Run it from inside "${domain}" instead: cd to that domain and re-run.`,
+        );
+        return deps.exit(1);
+      }
+      // Validated, and it named the domain the command is already in — a no-op. Hand back
+      // an argv without it, because the ambient commands' parsers do not declare `-d`.
+      return positional;
     }
-    return;
+    return passthrough;
   }
 
   // An install with NO domains at all is not partitioned, and the *default-resolution* half
@@ -228,7 +309,7 @@ export async function requireDomainScope(argv: readonly string[], deps: DomainGu
   // The rule engages the moment a first domain exists — the one-domain case included, which
   // stays an error from outside precisely because partition 0 is then a second, reachable,
   // wrong answer.
-  if (registered.length === 0) return;
+  if (registered.length === 0) return passthrough;
 
   if (ambient === null) {
     deps.error(
@@ -242,6 +323,8 @@ export async function requireDomainScope(argv: readonly string[], deps: DomainGu
     );
     return deps.exit(1);
   }
+
+  return passthrough;
 }
 
 /** Exported for the spec: the classification is the part worth pinning per surface. */

@@ -470,16 +470,31 @@ partition, and that needs a wrong partition to exist — with zero domains there
 one, and every row on the box already lives in it. The rule engages the moment a first
 domain is registered, the one-domain case included. An unknown `-d` is an error either way.
 
-Two kinds of command sit behind the rule, and they treat `-d` differently:
+Three kinds of command sit behind the rule, and they treat `-d` differently:
 
-| | `-d <other-domain>` | Examples |
-|---|---|---|
-| **named** — acts on daemon-side rows | redirects the command | `track`, `tracked`, `untrack`, `mail`, `monitor`, `claude ls`, `agent <p> ls` |
-| **ambient** — acts on the repository in `$PWD` | **error**; `cd` there instead | `phase run/show/advance`, `alias` |
+| | no `-d`, outside every domain | `-d <other-domain>` | Examples |
+|---|---|---|---|
+| **named** — acts on daemon-side rows | **error** | redirects the command | `track`, `tracked`, `untrack`, `mail`, `claude ls`, `agent <p> ls` |
+| **ambient** — acts on the repository in `$PWD` | **error** | **error**; `cd` there instead | `phase run/show/advance`, `alias` |
+| **wide** — already reads every domain | allowed | narrows to that domain | `monitor` |
 
 An ambient command reads *this* checkout's `.mcx.yaml`, lockfile and scripts. Honouring
 `-d other` for the partition key while the files came from here would be a half-scoped
-write — the same silent mis-scope in the other direction.
+write — the same silent mis-scope in the other direction. `-d _` is an error for the same
+reason: partition 0 is a partition, not a checkout. `-d` naming the domain the command is
+already in is accepted and removed before dispatch, so the flag is safe to pass
+unconditionally from a script.
+
+A **wide** command's omitted `-d` is a documented answer rather than a missing one — `mcx
+monitor` has always streamed every domain unless narrowed, and refusing it outside a
+checkout would break every cron job that watches the box. The rule removes guesses, and
+there is no guess here. `-d` is still validated: an unknown name is an error.
+
+`-d` redirects the **whole** command, not only the partition it writes to. `mcx track 42 -d
+phoenix --scrutiny high` reads phoenix's `.mcx.yaml` for `initial:` and for the trackable
+fields, and writes the phase state under phoenix's root — so a phase script running inside
+phoenix reads back what was written. Taking the row's partition from `-d` and everything
+else from `$PWD` produced an item in one domain whose metadata lived in another.
 
 > **Upgrading:** if a repo you work in is not yet a registered domain, these commands will
 > refuse until it is. `mcx domain add <name> .` from the repo root is the whole migration.
