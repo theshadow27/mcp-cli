@@ -513,6 +513,25 @@ export const DeleteNoteParamsSchema = z.object({
 
 // -- Work item schemas --
 
+/**
+ * Why the work-item methods take a `domain` name and the alias-state ones do not (#3036).
+ *
+ * These four are reached only over IPC, by `mcx` on behalf of someone who typed a command —
+ * so `-d phoenix` is a scoping choice the operator made, and the daemon honouring it is the
+ * whole point. Same shape as the mail scope above (`hasMailScope`), which is the precedent.
+ *
+ * `aliasState*` deliberately has no such field. Those are reachable from `ctx.state` inside a
+ * phase script, where a wire-level `domain` would be a client-supplied partition key: any
+ * script could read another project's state by naming it. There the domain is derived from the
+ * caller's `repoRoot`, which makes that unrepresentable rather than merely discouraged — see
+ * the note above the `aliasState*` handlers in `packages/daemon/src/handlers/work-item.ts`.
+ *
+ * `cwd` remains the default for all of them: absent a `domain`, the caller's directory is
+ * resolved through the domains table, and a directory outside every domain resolves to the
+ * unassigned partition. The CLI refuses to *reach* that fallback silently — see
+ * `packages/command/src/domain-guard.ts`.
+ */
+
 export const TrackWorkItemParamsSchema = z
   .object({
     /** Issue or PR number to track. */
@@ -529,6 +548,8 @@ export const TrackWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`mcx track -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
     /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). Each entry must be name=true or name=false. */
     automationOverrides: z
       .string()
@@ -568,6 +589,8 @@ export const UntrackWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`mcx untrack -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -587,6 +610,8 @@ export const ListWorkItemsParamsSchema = z.object({
    * which is where every pre-domain row lives.
    */
   cwd: z.string().optional(),
+  /** An explicit domain name (`mcx tracked -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+  domain: z.string().optional(),
 });
 
 export const GetWorkItemParamsSchema = z
@@ -600,6 +625,8 @@ export const GetWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`-d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
   })
   .refine((p) => p.id != null || p.number != null || p.branch != null, {
     message: "One of id, number, or branch is required",

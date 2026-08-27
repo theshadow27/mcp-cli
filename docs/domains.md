@@ -438,12 +438,53 @@ lockfile, with type errors surfaced at `mcx install` rather than in a browser.
 ## Everything else takes `-d`
 
 ```bash
-mcx card ls    -d phoenix
-mcx sensor ls  -d phoenix
-mcx console browser
+mcx tracked    -d phoenix
 mcx claude ls  -d phoenix
 mcx monitor    -d phoenix
+mcx mail read  -d phoenix
 ```
+
+### The resolution rule
+
+> A command that acts on domain-partitioned state resolves its domain by walking up from
+> `$PWD` to the nearest registered domain. `-d <name>` overrides. **Outside any registered
+> domain, `-d` is required and its absence is an error, never a guess.**
+
+Enforced once, in `packages/command/src/domain-guard.ts`, called from `main.ts` before
+dispatch — not per command, because the failure it prevents is precisely a surface that
+forgot to add its own check. `mcx domain` is exempt: it is how a domain comes to exist.
+
+**The failure mode is the feature.** From outside every domain, a domain-scoped command
+exits non-zero, names the registered domains, and writes nothing. It does not fall back to
+`process.cwd()`, does not pick the only domain when there happens to be exactly one, and
+does not pick the first row. A guess that is right nine times out of ten is worse than an
+error, because the tenth writes into another project's tables and nothing reports it —
+which is not hypothetical: #3352 and #3353 were both live instances of that class.
+
+`-d <unknown>` errors and lists what *is* registered. `-d _` addresses partition 0 on
+purpose (see [Partition 0](#partition-0-is-a-partition-not-a-fallback)).
+
+**One carve-out, for the premise rather than the rule:** on an install with *no* domains
+registered at all, default resolution is not enforced. The hazard is landing in the wrong
+partition, and that needs a wrong partition to exist — with zero domains there is exactly
+one, and every row on the box already lives in it. The rule engages the moment a first
+domain is registered, the one-domain case included. An unknown `-d` is an error either way.
+
+Two kinds of command sit behind the rule, and they treat `-d` differently:
+
+| | `-d <other-domain>` | Examples |
+|---|---|---|
+| **named** — acts on daemon-side rows | redirects the command | `track`, `tracked`, `untrack`, `mail`, `monitor`, `claude ls`, `agent <p> ls` |
+| **ambient** — acts on the repository in `$PWD` | **error**; `cd` there instead | `phase run/show/advance`, `alias` |
+
+An ambient command reads *this* checkout's `.mcx.yaml`, lockfile and scripts. Honouring
+`-d other` for the partition key while the files came from here would be a half-scoped
+write — the same silent mis-scope in the other direction.
+
+> **Upgrading:** if a repo you work in is not yet a registered domain, these commands will
+> refuse until it is. `mcx domain add <name> .` from the repo root is the whole migration.
+> `mcx domain ls` shows what is already registered — every `~/.mcp-cli/scopes/*.json`
+> sidecar was auto-imported as a domain at daemon start.
 
 ### Tables are a wall; the event stream is a filter
 

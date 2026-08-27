@@ -83,6 +83,7 @@ import {
   stopDaemon,
 } from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
+import { requireDomainScope } from "./domain-guard";
 import { maybeAutoSaveEphemeral } from "./ephemeral";
 import { readFileWithLimit } from "./file-read";
 import { maybeShowFirstRunPrompt } from "./first-run";
@@ -184,6 +185,17 @@ async function main(): Promise<void> {
   }
 
   try {
+    // Which domain is this acting in? Asked once, here, for every domain-partitioned
+    // surface — before a single row is written (#3036). Returns immediately for the
+    // commands that reach no `domain_id`. See `domain-guard.ts` for why the daemon's
+    // resolve-to-partition-0 fallback is right there and wrong for a command a human typed.
+    await requireDomainScope(cleanArgs, {
+      ipcCall,
+      cwd: () => process.cwd(),
+      error: (msg) => printError(msg),
+      exit: (code) => process.exit(code),
+    });
+
     switch (command) {
       case "ls":
       case "list":

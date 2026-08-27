@@ -83,6 +83,7 @@ import {
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
 import type { ExecFn, ExecResult, GitRootResult } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
 
@@ -2031,6 +2032,11 @@ export async function cmdPhaseAdvance(
 
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
+
+run/show/advance act on domain-scoped work items:
+  ${DOMAIN_DEFAULT_HELP_LINE}
+  They read THIS checkout's .mcx.yaml, lockfile and scripts, so -d cannot point
+  them at another domain — cd there and re-run.
 
 Subcommands:
   mcx phase install

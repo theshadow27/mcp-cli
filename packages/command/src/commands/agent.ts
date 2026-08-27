@@ -21,6 +21,7 @@ import {
   resolveGitRootOrCwd,
   validateAllowPatterns,
 } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 import { CLAUDE_SUB_ALIASES, formatHelp, getHelp, hasHelpFlag } from "../help";
 import { emitMailEvent, pollMailUntil } from "./mail-wait";
@@ -2048,6 +2049,7 @@ Usage:
   mcx agent ${name} ls [--short] [--json]        List active sessions (scoped to current domain)
   mcx agent ${name} ls -d <domain>               List sessions in a named domain, from anywhere
                                                    (exact domain: excludes nested sub-domains)
+                                                   ${DOMAIN_DEFAULT_HELP_LINE}
   mcx agent ${name} send <session> <message>     Send follow-up prompt
   mcx agent ${name} wait [session]               Block until session event
   mcx agent ${name} bye <session> [--keep]       End session (--keep preserves worktree)

@@ -23,8 +23,10 @@ import {
   workItemStateNamespace,
   workItemStateRoot,
 } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 import { c, printError } from "../output";
+import { extractDomainFlag } from "../parse";
 
 /** Parse SQLite `datetime('now')` format ("YYYY-MM-DD HH:MM:SS", UTC without timezone indicator) as UTC. `new Date()` would parse it as local time. */
 function parseSqliteUtc(s: string): Date {
@@ -130,14 +132,24 @@ export function parseMetadataFlags(
 
 // -- mcx track --
 
-export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+export async function cmdTrack(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
   const cwd = (deps.cwd ?? (() => process.cwd()))();
   const manifest = (deps.loadManifest ?? tryLoadManifest)(cwd);
   const trackableFields = getTrackableFields(manifest?.state);
 
-  if (!args.length || args[0] === "--help" || args[0] === "-h") {
+  if (!rawArgs.length || rawArgs[0] === "--help" || rawArgs[0] === "-h") {
     printTrackHelp(trackableFields);
     return;
+  }
+
+  // `-d <domain>` comes off first, ahead of BOTH parsers below (#3036). `parseMetadataFlags`
+  // walks every `--flag` it does not recognise and reports it as an undeclared metadata
+  // field, so a `--domain` left in place fails a repo with trackable fields declared while
+  // passing one without — the flag would work or not depending on the manifest.
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
   }
 
   const initialPhase = manifest?.initial;
@@ -184,6 +196,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
     try {
       const item = await deps.ipcCall("trackWorkItem", {
         cwd,
+        ...(domain ? { domain } : {}),
         branch,
         ...(initialPhase ? { initialPhase } : {}),
         ...(automationOverrides ? { automationOverrides } : {}),
@@ -215,6 +228,7 @@ export async function cmdTrack(args: string[], deps: TrackDeps = defaultDeps): P
   try {
     const item = await deps.ipcCall("trackWorkItem", {
       cwd,
+      ...(domain ? { domain } : {}),
       number: num,
       ...(initialPhase ? { initialPhase } : {}),
       ...(automationOverrides ? { automationOverrides } : {}),
@@ -291,13 +305,20 @@ async function cleanupMetadata(deps: TrackDeps, cwd: string, workItemId: string)
 
 // -- mcx untrack --
 
-export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
-  if (!args.length || args[0] === "--help" || args[0] === "-h") {
+export async function cmdUntrack(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+  if (!rawArgs.length || rawArgs[0] === "--help" || rawArgs[0] === "-h") {
     console.log(
-      "Usage: mcx untrack <number|#NNNN|pr:NNNN>\n       mcx untrack --branch <name>\n       mcx untrack branch:<name>",
+      `Usage: mcx untrack <number|#NNNN|pr:NNNN>\n       mcx untrack --branch <name>\n       mcx untrack branch:<name>\n\n${DOMAIN_DEFAULT_HELP_LINE}`,
     );
     return;
   }
+
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
+  }
+  const scope = domain ? { domain } : {};
 
   const cwd = (deps.cwd ?? (() => process.cwd()))();
 
@@ -308,7 +329,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd, ...scope });
       if (result.deleted && result.id) {
         await cleanupMetadata(deps, cwd, result.id);
         console.error(`Untracked branch ${branch}`);
@@ -329,7 +350,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
       return deps.exit(1);
     }
     try {
-      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd });
+      const result = await deps.ipcCall("untrackWorkItem", { branch, cwd, ...scope });
       if (result.deleted && result.id) {
         await cleanupMetadata(deps, cwd, result.id);
         console.error(`Untracked branch ${branch}`);
@@ -351,7 +372,7 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
   }
 
   try {
-    const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd });
+    const result = await deps.ipcCall("untrackWorkItem", { number: num, cwd, ...scope });
     if (result.deleted && result.id) {
       await cleanupMetadata(deps, cwd, result.id);
       console.error(`Untracked #${num}`);
@@ -366,7 +387,13 @@ export async function cmdUntrack(args: string[], deps: TrackDeps = defaultDeps):
 
 // -- mcx tracked --
 
-export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+export async function cmdTracked(rawArgs: string[], deps: TrackDeps = defaultDeps): Promise<void> {
+  const { domain, rest: args, error: domainError } = extractDomainFlag(rawArgs);
+  if (domainError) {
+    printError(domainError);
+    return deps.exit(1);
+  }
+
   const { flags, errors, help } = parseFlags(args, {
     json: { type: "boolean" },
     phase: { type: "string" },
@@ -374,7 +401,9 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   });
 
   if (help) {
-    console.log("Usage: mcx tracked [--json] [--phase <phase>] [--include-archived]");
+    console.log(
+      `Usage: mcx tracked [--json] [--phase <phase>] [--include-archived] [-d <domain>]\n\n${DOMAIN_DEFAULT_HELP_LINE}`,
+    );
     return;
   }
 
@@ -420,6 +449,7 @@ export async function cmdTracked(args: string[], deps: TrackDeps = defaultDeps):
   try {
     const { items, hiddenCount, unassignedCount } = await deps.ipcCall("listWorkItems", {
       cwd,
+      ...(domain ? { domain } : {}),
       ...(phase ? { phase } : {}),
       includeArchived,
     });
@@ -542,6 +572,9 @@ function printTrackHelp(trackableFields: TrackableField[] = []): void {
     "  mcx tracked --json                        Machine-readable output",
     "  mcx tracked --phase <phase>               Filter by phase (impl, review, repair, qa, done)",
     "  mcx tracked --include-archived            Include stale done items (phase=done, >7 days old)",
+    "",
+    "  -d <domain>                               Act in this domain instead of the one owning $PWD",
+    `  ${DOMAIN_DEFAULT_HELP_LINE}`,
   ];
 
   if (trackableFields.length > 0) {

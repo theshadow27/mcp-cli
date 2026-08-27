@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { IpcMethod, IpcMethodResult } from "@mcp-cli/core";
 import { ipcCall, safeAliasPath } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { readFileWithLimit } from "../file-read";
 import { parseFlags } from "../flags";
 import { printAliasDebug, printAliasList, printError } from "../output";
@@ -410,6 +411,11 @@ Commands:
   check <name>      Validate an alias (schema + structure)
   promote <name>    Promote ephemeral alias to permanent defineAlias
   rm, delete        Delete an alias
+
+Aliases are stored per domain:
+  ${DOMAIN_DEFAULT_HELP_LINE}
+  These commands act on the alias files in THIS checkout, so -d cannot point them
+  at another domain — cd there and re-run.
 
 Examples:
 

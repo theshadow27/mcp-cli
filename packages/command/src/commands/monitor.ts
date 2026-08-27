@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import type { MonitorEvent } from "@mcp-cli/core";
 import { formatMonitorEvent, globToRegex, openEventStream, resolveRealpath } from "@mcp-cli/core";
 import { isDaemonPidAlive } from "../daemon-lifecycle";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 
 // The daemon emits a heartbeat after 30s of event-bus silence (see
@@ -162,6 +163,7 @@ Filters (evaluated server-side):
   --repo <path>              Scope to repo root (default: current working directory)
   --all-repos               Disable repo scoping — show events from all repos
   -d, --domain <name>        Scope to one domain (omit to see every domain)
+                             ${DOMAIN_DEFAULT_HELP_LINE}
   --since <seq>              Replay from cursor (reserved)
 
 Terminators:

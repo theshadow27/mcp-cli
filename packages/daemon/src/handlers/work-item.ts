@@ -8,7 +8,10 @@ import {
   ListWorkItemsParamsSchema,
   NO_DOMAIN_ID,
   TrackWorkItemParamsSchema,
+  UNASSIGNED_DOMAIN_NAME,
   UntrackWorkItemParamsSchema,
+  invalidParamsError,
+  isUnassignedDomainName,
   normalizeStateRoot,
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger, Manifest, WorkItemPhase } from "@mcp-cli/core";
@@ -40,8 +43,34 @@ export class WorkItemHandlers {
    * serves every domain on the box, so a handler-lifetime domain would be whichever project
    * happened to start it (#3037).
    */
-  private scopeFor(cwd: string | undefined): DomainWorkItems {
-    return this.workItemDb.forDomain(resolveDomainId(this.db, cwd));
+  private scopeFor(cwd: string | undefined, domain?: string): DomainWorkItems {
+    return this.workItemDb.forDomain(this.domainIdFor(cwd, domain));
+  }
+
+  /**
+   * The partition key for this request: an explicitly named domain, else the caller's cwd.
+   *
+   * `domain` is what `mcx track -d phoenix` puts on the wire (#3036). It wins over `cwd`
+   * because it is the more specific statement of intent — the operator named a domain, and
+   * the alternative is resolving the directory they happened to be standing in, which is the
+   * guess this epic exists to remove.
+   *
+   * An unknown name is an **error**, not a fall-through to `cwd` and not the unassigned
+   * partition. Falling back would make `-d phoenex` a typo that silently acted on wherever
+   * the shell was, which is worse than the unscoped call it was meant to replace. `"_"` is
+   * the one name that resolves without a row: it addresses partition 0 on purpose, the same
+   * spelling mail accepts.
+   */
+  private domainIdFor(cwd: string | undefined, domain?: string): number {
+    if (domain === undefined) return resolveDomainId(this.db, cwd);
+    if (isUnassignedDomainName(domain)) return NO_DOMAIN_ID;
+    const found = this.db.getDomainByName(domain);
+    if (!found) {
+      throw invalidParamsError(
+        `unknown domain ${JSON.stringify(domain)} — register it with \`mcx domain add\`, or use "${UNASSIGNED_DOMAIN_NAME}" for the unassigned partition`,
+      );
+    }
+    return found.id;
   }
 
   private resolveAndUpdateWorkItem(scoped: DomainWorkItems, itemId: string, issueNumber: number): void {
@@ -71,9 +100,9 @@ export class WorkItemHandlers {
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("trackWorkItem", async (params, _ctx) => {
-      const { number, branch, initialPhase, repoRoot, cwd, automationOverrides } =
+      const { number, branch, initialPhase, repoRoot, cwd, domain, automationOverrides } =
         TrackWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd ?? repoRoot);
+      const scoped = this.scopeFor(cwd ?? repoRoot, domain);
 
       // Validate initialPhase server-side when a manifest is available (#1351).
       // When no manifest is present (repoRoot absent or manifest missing), accept any string.
@@ -132,8 +161,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("untrackWorkItem", async (params, _ctx) => {
-      const { number, branch, cwd } = UntrackWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd);
+      const { number, branch, cwd, domain } = UntrackWorkItemParamsSchema.parse(params);
+      const scoped = this.scopeFor(cwd, domain);
 
       if (branch) {
         const existing = scoped.getWorkItemByBranch(branch) ?? scoped.getWorkItem(`branch:${branch}`);
@@ -155,8 +184,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("listWorkItems", async (params, _ctx) => {
-      const { phase, includeArchived, cwd } = ListWorkItemsParamsSchema.parse(params ?? {});
-      const scoped = this.scopeFor(cwd);
+      const { phase, includeArchived, cwd, domain } = ListWorkItemsParamsSchema.parse(params ?? {});
+      const scoped = this.scopeFor(cwd, domain);
       // Only filter when caller explicitly opts in (includeArchived === false).
       // Unset or true means show everything so callers like mcx claude ls are unaffected.
       const excludeArchived = includeArchived === false;
@@ -169,8 +198,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("getWorkItem", async (params, _ctx) => {
-      const { id, number, branch, cwd } = GetWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd);
+      const { id, number, branch, cwd, domain } = GetWorkItemParamsSchema.parse(params);
+      const scoped = this.scopeFor(cwd, domain);
       if (id) return scoped.getWorkItem(id);
       if (number !== undefined) {
         return scoped.getWorkItemByPr(number) ?? scoped.getWorkItemByIssue(number);

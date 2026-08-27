@@ -33,6 +33,7 @@ import {
   validateAllowPatterns,
 } from "@mcp-cli/core";
 import { getStaleDaemonWarning, ipcCall } from "../daemon-lifecycle";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { readFileWithLimit, resolveAtPath } from "../file-read";
 import { parseFlags } from "../flags";
 import { applyJqFilter } from "../jq/index";
@@ -2477,6 +2478,7 @@ Usage:
   mcx claude ls [--pr] [--all]             List sessions (scoped to current domain/repo by default)
   mcx claude ls -d <domain>                List sessions in a named domain, from anywhere
                                            (exact domain: excludes nested sub-domains)
+                                           ${DOMAIN_DEFAULT_HELP_LINE}
   mcx claude send <session> <message>      Send follow-up prompt (non-blocking)
   mcx claude wait [session] [--all]        Block until a session event occurs
   mcx claude wait -d <domain>              Block on events in a named domain only
