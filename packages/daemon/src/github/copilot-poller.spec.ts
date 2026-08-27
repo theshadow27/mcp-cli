@@ -312,6 +312,9 @@ describe("CopilotPoller", () => {
     });
 
     test("repo detection failure backs off, but never gives up permanently (#3243)", async () => {
+      // A tracked item is what makes the poller ask for a repo at all: detection is per
+      // domain and therefore lazy (#3192), so a daemon tracking nothing spawns no `git`.
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let attempts = 0;
       let now = 0;
       const { poller } = makePoller({
@@ -340,6 +343,7 @@ describe("CopilotPoller", () => {
     });
 
     test("repo detection recovers once detectRepo starts succeeding again (#3243)", async () => {
+      seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
       let now = 0;
       let shouldFail = true;
       const { poller } = makePoller({
@@ -701,6 +705,77 @@ describe("CopilotPoller", () => {
   });
 
   // ── Repo-scoped batching (#1738) ──
+
+  describe("per-domain repos (#3192)", () => {
+    test("each domain's items are polled against that domain's repo", async () => {
+      const wdb = new WorkItemDb(rawDb);
+      wdb.forDomain(1).createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      wdb.forDomain(2).createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+
+      const fetchedRepos: string[] = [];
+      const { poller } = makePoller({
+        repos: {
+          repoFor: async (domainId: number) => ({ owner: "acme", repo: `r${domainId}` }),
+          cached: () => null,
+          lastError: null,
+        },
+        fetchRepoComments: async (repo) => {
+          fetchedRepos.push(repo.repo);
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetchedRepos.sort()).toEqual(["r1", "r2"]);
+    });
+
+    test("the repo-comment cursor is per domain, so a skipped domain does not lose its window", async () => {
+      // One shared cursor let a domain that was skipped this cycle (repo backoff) have its
+      // window advanced by a domain that was not — silently dropping the comments between.
+      const wdb = new WorkItemDb(rawDb);
+      wdb.forDomain(1).createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      wdb.forDomain(2).createWorkItem({ id: "wi:2", prNumber: 43, prState: "open" });
+
+      const { poller } = makePoller({
+        repos: {
+          // Domain 1's repo will not resolve; domain 2's does.
+          repoFor: async (domainId: number) => (domainId === 2 ? TEST_REPO : null),
+          cached: () => null,
+          lastError: "no git remote",
+        },
+      });
+
+      await poller.poll();
+
+      expect(stateDb.getLastRepoPollTs(2)).not.toBeNull();
+      expect(stateDb.getLastRepoPollTs(1)).toBeNull();
+    });
+
+    test("a domain with no cursor of its own resumes from the pre-#3192 global cursor", async () => {
+      // Otherwise the first poll after upgrade paginates a repo's entire comment history.
+      const wdb = new WorkItemDb(rawDb);
+      wdb.forDomain(1).createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
+      stateDb.updateLastRepoPollTs("2026-08-01T00:00:00.000Z", NO_DOMAIN_ID);
+
+      const sinceSeen: Array<string | null> = [];
+      const { poller } = makePoller({
+        repos: {
+          repoFor: async () => TEST_REPO,
+          cached: () => null,
+          lastError: null,
+        },
+        fetchRepoComments: async (_repo, since) => {
+          sinceSeen.push(since);
+          return okResult([]);
+        },
+      });
+
+      await poller.poll();
+
+      expect(sinceSeen).toEqual(["2026-08-01T00:00:00.000Z"]);
+    });
+  });
 
   describe("repo-scoped batching", () => {
     test("groups comments by pull_request_url to correct PRs", async () => {

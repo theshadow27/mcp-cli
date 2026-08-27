@@ -474,6 +474,32 @@ export class WorkItemDb {
  * would reintroduce the ambiguity #3034 removed. Callers that can only act on one must say
  * which, in the open.
  */
+/**
+ * Pick one row when a ring-0 lookup legitimately matched several domains.
+ *
+ * A PR/branch/issue number is unique **per domain**, so a cross-domain lookup can return
+ * more than one row. Callers whose interface is single-valued take the first — but say so,
+ * because a silently-chosen row is the ambiguity #3034 removed from the schema creeping back
+ * in at the consumer. A domain-scoped handle ({@link WorkItemDb.forDomain}) never needs this:
+ * inside one partition the key is unique, which is why per-project dispatch (#3192) removes
+ * the choice rather than making it better.
+ */
+export function firstOf<T extends { domainId: number }>(
+  matches: T[],
+  label: string,
+  warn: (msg: string) => void,
+): T | null {
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    warn(
+      `[mcpd] ${label} matches ${matches.length} work items across domains (${matches
+        .map((m) => m.domainId)
+        .join(", ")}); acting on domain ${matches[0].domainId}.`,
+    );
+  }
+  return matches[0];
+}
+
 export class CrossDomainWorkItems {
   private db: Database;
   private owner: WorkItemDb;

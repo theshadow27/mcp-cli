@@ -1,40 +1,42 @@
 /**
  * IPC handlers for automation module introspection.
  *
- * Limitation: the daemon currently manages a single AutomationDispatcher
- * bound to the repo root it was started from. The repoRoot parameter is
- * parsed but not yet used for per-repo dispatcher resolution — callers
- * from a different repo will see the startup-directory dispatcher's data.
+ * The daemon runs one dispatcher per project (#3192), so the `repoRoot` every one of these
+ * requests already carried — parsed and ignored back when there was a single dispatcher
+ * bound to the daemon's startup directory — is what selects one. A caller in a project the
+ * daemon runs no automation for gets an empty answer rather than another project's modules.
  *
  * #2018
  */
 
 import { GetAutomationLogParamsSchema, type IpcMethod, ListAutomationParamsSchema } from "@mcp-cli/core";
-import type { AutomationDispatcher } from "../automation-dispatcher";
+import type { AutomationRegistry } from "../automation-bootstrap";
 import type { RequestHandler } from "../handler-types";
 
 export class AutomationHandlers {
-  constructor(private dispatcher: AutomationDispatcher | null) {}
+  constructor(private automation: AutomationRegistry | null) {}
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("listAutomation", async (params) => {
-      ListAutomationParamsSchema.parse(params);
-      if (!this.dispatcher) {
+      const parsed = ListAutomationParamsSchema.parse(params);
+      const dispatcher = this.automation?.forRoot(parsed.repoRoot);
+      if (!dispatcher) {
         return { modules: [], preset: "supervised" };
       }
       return {
-        modules: this.dispatcher.listModules(),
-        preset: this.dispatcher.currentPreset,
+        modules: dispatcher.listModules(),
+        preset: dispatcher.currentPreset,
       };
     });
 
     handlers.set("getAutomationLog", async (params) => {
       const parsed = GetAutomationLogParamsSchema.parse(params);
-      if (!this.dispatcher) {
+      const dispatcher = this.automation?.forRoot(parsed.repoRoot);
+      if (!dispatcher) {
         return { entries: [] };
       }
       return {
-        entries: this.dispatcher.getAuditLog(parsed.module, parsed.limit),
+        entries: dispatcher.getAuditLog(parsed.module, parsed.limit),
       };
     });
   }
