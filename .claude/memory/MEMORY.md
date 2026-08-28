@@ -20,6 +20,7 @@
 - [No gpgsign bypass](feedback_no_gpgsign_bypass.md) — never add `-c commit.gpgsign=false` or similar without explicit ask; only legit orchestrator flag is `SPRINT_OVERRIDE=1`
 - [Verify auto-merge actually fired](feedback_verify_merge_actually_fired.md) — after qa:pass + `gh pr merge --auto`, poll until state=MERGED; QA verdict + auto-merge queue ≠ proof of merge
 - [Repair → QA transition](feedback_phase_repair_to_qa.md) — after repair pushes, advance via `phase=qa` write, NOT by re-ticking `mcx phase run repair`; the latter spawns a new repair round
+- [Bye needs pushed, not clean](feedback_bye_requires_pushed_not_clean.md) — `git status` clean = committed, not pushed; gate bye on `git log origin/<branch>..HEAD` empty (sprint 81 #3209)
 - [No rebase of sprint branch](feedback_no_rebase_sprint_branch.md) — sprint-{N} branch is meta-only and main is strict=false; commit on top, never rebase to "catch up" (sprint 59 startup fumble)
 - [Agent briefs run full gate](feedback_agent_briefs_full_gate.md) — tell code-editing agents to run `bun run am-i-done`, not a subset; enumerate ALL packages when partitioning (#2344 missed codex)
 - [Trust gate exit code](feedback_trust_gate_exit_code.md) — check clean/dirty via exit code, not a grep of output (plural-only grep missed "1 violation", #2344)
