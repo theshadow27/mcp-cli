@@ -44,6 +44,7 @@ import { StepRunner } from "./_runner/runner";
 import type { Step } from "./_runner/types";
 import { doingItWrongStep } from "./doing-it-wrong";
 import { ORPHAN_TOLERANT_TEST_FILES } from "./orphan-tolerant-tests";
+import { PARALLEL_FLAG } from "./test-parallelism";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 
@@ -130,8 +131,8 @@ const ORPHAN_TOLERANT_IGNORE_FLAGS = ORPHAN_TOLERANT_TEST_FILES.map((f) => `--pa
 const TEST_PARALLEL: Step = {
   name: "test-parallel",
   description:
-    "bun test --parallel (excluding packages/control — yoga-layout TDZ, #2362; excluding orphan-tolerant tests — see #619)",
-  command: `bun test --parallel --no-orphans --path-ignore-patterns=packages/control/** ${ORPHAN_TOLERANT_IGNORE_FLAGS}`,
+    "bun test --parallel=N (N from scripts/test-parallelism.ts; excluding packages/control — yoga-layout TDZ, #2362; excluding orphan-tolerant tests — see #619)",
+  command: `bun test ${PARALLEL_FLAG} --no-orphans --path-ignore-patterns=packages/control/** ${ORPHAN_TOLERANT_IGNORE_FLAGS}`,
   lease: true,
 };
 
