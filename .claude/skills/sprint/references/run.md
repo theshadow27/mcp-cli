@@ -191,6 +191,21 @@ wrong as `true` now.
 `mcx claude wait`, and `mcx monitor` scope to the current repo's git root —
 use `--all` (ls/wait) or `--src <pattern>` (monitor) for a cross-repo view.
 
+### Tracker invariant
+
+```bash
+mcx tracked --json | jq -r '.[] | "\(.id)\t\(.phase)\tPR \(.prNumber // "-")"'
+```
+
+**`mcx tracked` must hold exactly this sprint's issues and nothing else.**
+Plan Step 0b reconciles it; this is the assertion that it happened. Anything
+unexpected is a planning miss — resolve it here (untrack a finished item,
+amend an unfinished one into the plan) rather than starting the run beside it.
+
+This is load-bearing once the phase reconciler ticks on its own: a tracked item
+is a standing instruction to spawn its phase, so a stranded row starts
+unplanned work with nobody watching.
+
 ### Quota check
 
 ```bash
@@ -899,7 +914,9 @@ When ≤2 sessions are active:
 3. After all sessions complete: report merged / failed / in-progress via
    `mcx tracked --json`
 4. `mcx untrack` any remaining items — **by issue number only** (#3240: a
-   PR number silently deletes a different item)
+   PR number silently deletes a different item). Anything genuinely
+   unfinished stays tracked and is carried into the next plan by its
+   Step 0b reconcile — leave it, don't untrack work that isn't done.
 5. `mcx gc` to prune merged branches and stale worktrees
 6. Confirm no concurrent cross-repo sprints (#1250)
 7. `git checkout main && git pull && bun run build`

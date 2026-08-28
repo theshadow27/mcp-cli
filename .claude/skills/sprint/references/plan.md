@@ -47,6 +47,43 @@ never `bye` a session you didn't start.
 The run-phase pre-flight (`run.md`) repeats this check before spawning;
 that's intentional and idempotent when dist is already current.
 
+## Step 0b: Reconcile the work-item tracker
+
+**A sprint plan is written against the tracker, so the tracker's state is
+plan input — not bookkeeping deferred to wind-down.** Every item in
+`mcx tracked` is either finished work that should be gone, or unfinished work
+that belongs in this plan. There is no third category, and "leftover from last
+sprint" is not one.
+
+```bash
+mcx tracked --json | jq -r '.[] | "\(.id)\t\(.phase)\tPR \(.prNumber // "-")\t\(.branch // "-")"'
+```
+
+Classify every row:
+
+| State | Action |
+|-------|--------|
+| `phase: done`, PR merged | **Untrack.** Finished; the row is residue. |
+| Unfinished, still wanted | **Write it into the plan** as a carried item — its issue number, its real current phase, and what remains. It occupies a slot like any other pick. |
+| Unfinished, no longer wanted | **Untrack**, and say so in the plan's Excluded table with the reason. |
+| Phase disagrees with reality (merged PR still at `impl`, open issue at `done`) | Repair with `work_items_update` (`phase`/`force`/`forceReason`) **before** deciding, then re-classify. `mcx phase run <t> --no-execute --force` does not do this job — it prints an approval and leaves the phase untouched (#3361). |
+
+Untrack **by issue number only** — `mcx untrack` resolves by-PR first and
+silently deletes a different item than the number you typed (#3240).
+
+The plan file must end up able to state, in one line, that the tracker holds
+exactly this sprint's issues and nothing else. If it cannot, the sprint starts
+with work items no one has decided about.
+
+**Why this is a plan-time step and not a wind-down step.** Wind-down already
+says to untrack (run.md step 4) and it is the step most likely to be skipped —
+a sprint ends when sessions drain, attention is on the release, and residue
+survives. Planning is where someone is already reading the board with intent.
+More sharply: once the reconciler ticker (#3274) runs, a stale tracked item is
+no longer cosmetic — **it is a standing instruction to spawn.** An item stranded
+at `impl` with no PR will have impl spawned on it, unattended, for work nobody
+planned. The tracker stops being a report and becomes a queue.
+
 ## Step 1: Survey the board
 
 **Author trust constraint (security):** Only issues filed by `theshadow27`
