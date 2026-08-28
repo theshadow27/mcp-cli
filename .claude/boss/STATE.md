@@ -19,6 +19,24 @@ into run.md.
 its own boundary from the then-current board. (The old 79–83 waterfall here is
 void.)
 
+## Current sprint
+
+**Sprint 82 — close the reconciler loop** (planned 2026-08-28). Plan:
+`.claude/sprints/sprint-82.md`; container PR on branch `sprint-82`. Goal is MVP-2
+in one sprint: the ticker (#3274) is the clock, the exception sink (#3272) is the
+mouth, and four defects (#3366 #3393 #3357 #3245) are what would make an
+unattended tick lie. Serial chain #3274 → #3272 → #3398 on `daemon/src/index.ts`
+— foundation must be MERGED, not merely open.
+
+**Dogfood hazard, close before #3274 merges:** `d2:#3333` is tracked at
+`phase: impl` with no PR and #3333 is genuinely open. The reconciler's first tick
+would spawn impl on unplanned work. Untrack it (by ISSUE number only — #3240) at
+run pre-flight, along with the 13 stale `phase: done` items from sprints 80–81.
+
+Planning-time meta fixes landed as PR #3412: triage now treats assigned scrutiny
+as a floor it may raise but never lower (#3384), and run.md's low-risk anecdote
+pass (#3061, 981→966 lines; the structural pass waits for a few clean sprints).
+
 ## The two MVPs (operator-approved 2026-08-24)
 
 **MVP-1 COMPLETE 2026-08-28 — v2.0.0 SHIPPED. The release hold is discharged.**
