@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 
 function tmpDbPath(): string {
   return join(tmpdir(), `mcp-cli-sessions-domain-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -21,12 +21,12 @@ function tmpDbPath(): string {
 
 describe("agent_sessions domain persistence", () => {
   const paths: string[] = [];
-  const dbs: StateDb[] = [];
+  const dbs: McxDb[] = [];
 
-  function open(): StateDb {
+  function open(): McxDb {
     const path = tmpDbPath();
     paths.push(path);
-    const db = new StateDb(path);
+    const db = new McxDb(path);
     dbs.push(db);
     return db;
   }
@@ -120,12 +120,12 @@ describe("agent_sessions domain persistence", () => {
 
 describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", () => {
   const paths: string[] = [];
-  const dbs: StateDb[] = [];
+  const dbs: McxDb[] = [];
 
-  function open(): StateDb {
+  function open(): McxDb {
     const path = tmpDbPath();
     paths.push(path);
-    const db = new StateDb(path);
+    const db = new McxDb(path);
     dbs.push(db);
     return db;
   }
@@ -230,12 +230,12 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
 
 describe("deleteDomain must not orphan live processes (#3039 review 7)", () => {
   const paths: string[] = [];
-  const dbs: StateDb[] = [];
+  const dbs: McxDb[] = [];
 
-  function open(): StateDb {
+  function open(): McxDb {
     const path = tmpDbPath();
     paths.push(path);
-    const db = new StateDb(path);
+    const db = new McxDb(path);
     dbs.push(db);
     return db;
   }

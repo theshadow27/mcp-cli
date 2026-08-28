@@ -3,7 +3,7 @@ import { ACP_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { AcpServer, buildAcpToolCache, isAcpWorkerEvent } from "./acp-server";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 
 /** Minimal Worker stub that emits "ready" synchronously via postMessage. */
@@ -31,7 +31,7 @@ const instantClient = () =>
     close: async () => {},
   }) as unknown as Client;
 
-function makeMockServer(db: StateDb) {
+function makeMockServer(db: McxDb) {
   return new AcpServer(db, undefined, instantClient, silentLogger, undefined, undefined, mockWorkerFactory());
 }
 
@@ -131,7 +131,7 @@ describe("ACP_SERVER_NAME", () => {
 describe("AcpServer.descriptor", () => {
   test("descriptor has correct providerName, serverName, and workerScript", () => {
     using opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const server = new AcpServer(db, undefined, undefined, silentLogger);
     const desc = server.descriptor;
 
@@ -144,7 +144,7 @@ describe("AcpServer.descriptor", () => {
 
   test("descriptor has correct metric names", () => {
     using opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const server = new AcpServer(db, undefined, undefined, silentLogger);
     const { metrics } = server.descriptor;
 
@@ -160,7 +160,7 @@ describe("AcpServer.descriptor", () => {
 
 describe("AcpServer", () => {
   let server: AcpServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -171,7 +171,7 @@ describe("AcpServer", () => {
 
   test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -187,7 +187,7 @@ describe("AcpServer", () => {
 
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -199,7 +199,7 @@ describe("AcpServer", () => {
 
   test("worker db:cost event updates cost and tokens", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -213,7 +213,7 @@ describe("AcpServer", () => {
 
   test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -227,7 +227,7 @@ describe("AcpServer", () => {
 
   test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     expect(server.hasActiveSessions()).toBe(false);
@@ -235,7 +235,7 @@ describe("AcpServer", () => {
 
   test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -248,7 +248,7 @@ describe("AcpServer", () => {
 
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -264,7 +264,7 @@ describe("AcpServer", () => {
 
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -273,7 +273,7 @@ describe("AcpServer", () => {
 
   test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AcpServer(db, undefined, undefined, silentLogger);
 
     let activityCount = 0;
@@ -303,7 +303,7 @@ describe("AcpServer", () => {
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -323,7 +323,7 @@ describe("AcpServer", () => {
 
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -344,7 +344,7 @@ describe("AcpServer", () => {
 
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -373,7 +373,7 @@ describe("AcpServer", () => {
 
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -395,7 +395,7 @@ describe("AcpServer", () => {
 
   test("start() terminates worker and nulls state if client.connect() throws", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const fakeClient = {
       connect: async () => {
@@ -427,7 +427,7 @@ describe("AcpServer", () => {
 
 describe("AcpServer connect timeout metric", () => {
   let server: AcpServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -438,7 +438,7 @@ describe("AcpServer connect timeout metric", () => {
 
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const neverConnect = {
       connect: () => new Promise<void>(() => {}),
@@ -454,7 +454,7 @@ describe("AcpServer connect timeout metric", () => {
 
   test("does not increment timeout counter when connect resolves instantly", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const instantConnect = {
       connect: async () => {},

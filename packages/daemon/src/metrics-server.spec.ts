@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUILD_COMMIT, BUILD_VERSION, METRICS_SERVER_NAME, PROTOCOL_VERSION } from "@mcp-cli/core";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 import { MetricsServer, buildInfo } from "./metrics-server";
 
@@ -391,7 +391,7 @@ describe("MetricsServer", () => {
     }
   });
 
-  test("get_domain_spend returns error when no StateDb is configured", async () => {
+  test("get_domain_spend returns error when no McxDb is configured", async () => {
     const collector = new MetricsCollector();
     const server = new MetricsServer(collector); // no db
     try {
@@ -399,7 +399,7 @@ describe("MetricsServer", () => {
       const result = await client.callTool({ name: "get_domain_spend", arguments: {} });
       expect(result.isError).toBe(true);
       const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-      expect(text).toContain("StateDb");
+      expect(text).toContain("McxDb");
     } finally {
       await server.stop();
     }
@@ -407,7 +407,7 @@ describe("MetricsServer", () => {
 
   test("get_domain_spend rolls up agent_sessions by domain", async () => {
     const collector = new MetricsCollector();
-    const db = new StateDb(tmpDbPath());
+    const db = new McxDb(tmpDbPath());
     const phoenix = db.createDomain("phoenix", "/repo/phoenix");
     db.upsertSession({ sessionId: "p1", model: "opus" });
     db.updateSessionCost("p1", 1.5, 1000);
@@ -433,7 +433,7 @@ describe("MetricsServer", () => {
 
   test("get_domain_spend rejects a non-string domain argument", async () => {
     const collector = new MetricsCollector();
-    const db = new StateDb(tmpDbPath());
+    const db = new McxDb(tmpDbPath());
     const server = new MetricsServer(collector, undefined, db);
     try {
       const { client } = await server.start();
@@ -447,7 +447,7 @@ describe("MetricsServer", () => {
 
   test("get_domain_spend rejects a non-number sinceMs argument", async () => {
     const collector = new MetricsCollector();
-    const db = new StateDb(tmpDbPath());
+    const db = new McxDb(tmpDbPath());
     const server = new MetricsServer(collector, undefined, db);
     try {
       const { client } = await server.start();

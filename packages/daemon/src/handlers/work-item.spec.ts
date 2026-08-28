@@ -22,8 +22,8 @@ function noopLogger() {
   };
 }
 
-/** Minimal in-memory mock of the StateDb alias state methods. */
-function makeAliasStateDb() {
+/** Minimal in-memory mock of the McxDb alias state methods. */
+function makeAliasMcxDb() {
   const store = new Map<string, unknown>();
   const key = (root: string, ns: string, k: string) => `${root}\0${ns}\0${k}`;
   return {
@@ -54,7 +54,7 @@ function makeAliasStateDb() {
 function buildHandlers() {
   const sqliteDb = new Database(":memory:");
   const workItemDb = new WorkItemDb(sqliteDb);
-  const aliasDb = makeAliasStateDb();
+  const aliasDb = makeAliasMcxDb();
   const map = new Map<IpcMethod, RequestHandler>();
   new WorkItemHandlers(workItemDb, aliasDb as never, null, null, noopLogger() as never).register(map);
   return { map, workItemDb, aliasDb };
@@ -109,7 +109,7 @@ describe("WorkItemHandlers", () => {
       const map = new Map<IpcMethod, RequestHandler>();
       new WorkItemHandlers(
         workItemDb,
-        makeAliasStateDb() as never,
+        makeAliasMcxDb() as never,
         null,
         (_root: string) => ({ phases: { impl: {}, review: {} } }) as never,
         noopLogger() as never,
@@ -365,7 +365,7 @@ describe("WorkItemHandlers – domain scoping (#3037)", () => {
     const sqliteDb = new Database(":memory:");
     const workItemDb = new WorkItemDb(sqliteDb);
     const db = {
-      ...makeAliasStateDb(),
+      ...makeAliasMcxDb(),
       resolveDomain(path: string) {
         for (const d of [ALPHA, BETA]) {
           if (path === d.path || path.startsWith(`${d.path}/`)) return d;

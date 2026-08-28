@@ -25,7 +25,7 @@ import {
   type WorkerServerDescriptor,
 } from "./abstract-worker-server";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurProcess } from "./process-identity";
 
@@ -89,7 +89,7 @@ export class ClaudeServer extends AbstractWorkerServer {
   }
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,

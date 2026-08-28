@@ -22,7 +22,7 @@ import {
 import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { CrossDomainWorkItems } from "../db/work-items";
 import {
   DomainRepoResolver,
@@ -117,7 +117,7 @@ export interface CopilotPollerOptions {
    * A daemon-internal poller has no domain of its own to be scoped to.
    */
   workItemDb: CrossDomainWorkItems;
-  stateDb: StateDb;
+  mcxDb: McxDb;
   logger?: Logger;
   intervalMs?: number;
   fetchRepoComments?: (repo: RepoInfo, since: string | null, token: string) => Promise<FetchCommentsResult>;
@@ -141,7 +141,7 @@ export interface CopilotPollerOptions {
 
 export class CopilotPoller {
   private workItemDb: CrossDomainWorkItems;
-  private stateDb: StateDb;
+  private mcxDb: McxDb;
   private logger: Logger;
   private fixedInterval: number | null;
   private currentIntervalMs: number;
@@ -163,7 +163,7 @@ export class CopilotPoller {
 
   constructor(opts: CopilotPollerOptions) {
     this.workItemDb = opts.workItemDb;
-    this.stateDb = opts.stateDb;
+    this.mcxDb = opts.mcxDb;
     this.logger = opts.logger ?? consoleLogger;
     this.fixedInterval = opts.intervalMs ?? null;
     this.currentIntervalMs = this.fixedInterval ?? IDLE_INTERVAL_MS;
@@ -256,9 +256,9 @@ export class CopilotPoller {
           item.prNumber !== null &&
           (item.prState === "merged" || item.prState === "closed" || item.phase === "done")
         ) {
-          this.stateDb.deleteCopilotCommentState(item.prNumber);
+          this.mcxDb.deleteCopilotCommentState(item.prNumber);
         } else if (item.prNumber === null && item.issueNumber !== null && item.phase === "done") {
-          this.stateDb.deleteCopilotCommentState(item.issueNumber);
+          this.mcxDb.deleteCopilotCommentState(item.issueNumber);
         }
       }
 
@@ -325,7 +325,7 @@ export class CopilotPoller {
           // Seeded from the pre-#3192 global cursor so the first poll after upgrade
           // resumes from where the daemon left off instead of paginating a repo's entire
           // comment history.
-          const since = this.stateDb.getLastRepoPollTs(domainId) ?? this.stateDb.getLastRepoPollTs();
+          const since = this.mcxDb.getLastRepoPollTs(domainId) ?? this.mcxDb.getLastRepoPollTs();
           // `since=` is inclusive (>=updated_at); record pre-fetch ts so no comments fall through the gap
           const preFetchTs = new Date().toISOString();
           try {
@@ -352,7 +352,7 @@ export class CopilotPoller {
           if (this.stopped) return;
           collectResult(await this.pollPRComments(repo, item, token), item.id);
         }
-        if (repoPollTs) this.stateDb.updateLastRepoPollTs(repoPollTs, domainId);
+        if (repoPollTs) this.mcxDb.updateLastRepoPollTs(repoPollTs, domainId);
         for (const item of domainIssues) {
           if (this.stopped) return;
           collectResult(await this.pollIssueComments(repo, item, token), item.id);
@@ -385,14 +385,14 @@ export class CopilotPoller {
     const prNumber = item.prNumber as number;
     const comments = allComments.filter((c) => c.in_reply_to_id == null);
 
-    const seenIds = new Set(this.stateDb.getSeenCommentIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
     if (newComments.length === 0) {
       if (currentIds.length > 0) {
         const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
-        this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
+        this.mcxDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
       return;
     }
@@ -429,7 +429,7 @@ export class CopilotPoller {
     }
 
     const unionIds = [...new Set([...seenIds, ...currentIds])];
-    this.stateDb.updateSeenCommentIds(prNumber, unionIds);
+    this.mcxDb.updateSeenCommentIds(prNumber, unionIds);
   }
 
   private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
@@ -453,7 +453,7 @@ export class CopilotPoller {
     const reviews = result.reviews;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenReviewIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenReviewIds(prNumber));
     const currentIds = reviews.map((r) => r.id);
     const newReviews = reviews.filter((r) => !seenIds.has(r.id));
 
@@ -499,7 +499,7 @@ export class CopilotPoller {
     }
     if (stickyCandidate) {
       const bodyHash = hashBody(stickyCandidate.body);
-      const lastHash = this.stateDb.getStickyBodyHash(prNumber);
+      const lastHash = this.mcxDb.getStickyBodyHash(prNumber);
       if (seenIds.has(stickyCandidate.id) && lastHash !== null && lastHash !== bodyHash) {
         this.onEvent({
           src: "daemon.copilot-poller",
@@ -512,12 +512,12 @@ export class CopilotPoller {
           bodyHash,
         });
       }
-      this.stateDb.updateStickyBodyHash(prNumber, bodyHash);
+      this.mcxDb.updateStickyBodyHash(prNumber, bodyHash);
     }
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenReviewIds(prNumber, unionIds);
+      this.mcxDb.updateSeenReviewIds(prNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }
@@ -543,7 +543,7 @@ export class CopilotPoller {
     const comments = result.comments;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenPRCommentIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenPRCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
@@ -561,7 +561,7 @@ export class CopilotPoller {
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenPRCommentIds(prNumber, unionIds);
+      this.mcxDb.updateSeenPRCommentIds(prNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }
@@ -587,7 +587,7 @@ export class CopilotPoller {
     const comments = result.comments;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenIssueCommentIds(issueNumber));
+    const seenIds = new Set(this.mcxDb.getSeenIssueCommentIds(issueNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
@@ -604,7 +604,7 @@ export class CopilotPoller {
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenIssueCommentIds(issueNumber, unionIds);
+      this.mcxDb.updateSeenIssueCommentIds(issueNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }

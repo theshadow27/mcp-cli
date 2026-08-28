@@ -9,7 +9,7 @@ import {
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import { DOMAIN_META_KEY, DOMAIN_SCOPED_SERVERS, resolveDomainScope } from "../domain-scope";
 import type { RequestHandler } from "../handler-types";
 import { metrics } from "../metrics";
@@ -27,7 +27,7 @@ export class ToolHandlers {
 
   constructor(
     private pool: ServerPool,
-    private db: StateDb,
+    private db: McxDb,
     private aliasServer: AliasServer | null,
     private daemonId: string,
     private logger: Logger,

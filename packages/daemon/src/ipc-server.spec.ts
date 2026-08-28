@@ -8,7 +8,7 @@ import { IPC_ERROR, NO_DOMAIN_ID, PROTOCOL_VERSION, options, silentLogger } from
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer } from "./claude-server";
 import { installDaemonLogCapture } from "./daemon-log";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
@@ -62,7 +62,7 @@ function mockDb(overrides?: Partial<Record<string, unknown>>) {
     listSessions: () => [],
     getDatabase: () => new Database(":memory:"),
     // Mail is domain-partitioned (#3038). These tests exercise the IPC transport, not the
-    // partition rule — the partition itself is covered end-to-end against a real StateDb
+    // partition rule — the partition itself is covered end-to-end against a real McxDb
     // in handlers/mail.spec.ts and db/state.spec.ts. An empty domains table puts every
     // mail request here in the unassigned partition, which is what pre-#3038 mail was.
     listDomains: () => [],
@@ -2653,7 +2653,7 @@ describe("IpcServer HTTP transport", () => {
 
       // Simulate the bridge: ClaudeServer.onMonitorEvent publishes to the daemon bus
       using bridgedOpts = testOptions();
-      const bridgedDb = new StateDb(bridgedOpts.DB_PATH);
+      const bridgedDb = new McxDb(bridgedOpts.DB_PATH);
       const claudeServer = new ClaudeServer(bridgedDb, undefined, undefined, silentLogger);
       claudeServer.onMonitorEvent = (input) => bus.publish(input);
 

@@ -11,7 +11,7 @@
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { InvalidGrantError, OAuthError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import { metrics } from "../metrics";
 import { type CallbackServer, OAuthCallbackTimeoutError, startCallbackServer } from "./callback-server";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, type OAuthProviderOpts } from "./oauth-provider";
@@ -61,7 +61,7 @@ export interface OAuthRetryDeps {
 export async function runOAuthFlowWithDcrRetry(
   server: string,
   serverUrl: string,
-  db: StateDb,
+  db: McxDb,
   opts: Pick<
     OAuthProviderOpts,
     "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain" | "skipKeychainTokens"
@@ -82,7 +82,7 @@ export async function runOAuthFlowWithDcrRetry(
 async function _runFlow(
   server: string,
   serverUrl: string,
-  db: StateDb,
+  db: McxDb,
   opts: Pick<
     OAuthProviderOpts,
     "clientId" | "clientSecret" | "callbackPort" | "scope" | "readKeychain" | "skipKeychainTokens"

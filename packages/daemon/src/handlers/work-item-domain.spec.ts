@@ -27,7 +27,7 @@ function invoke(map: Map<IpcMethod, RequestHandler>, method: IpcMethod): Request
 const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
 /**
- * A StateDb stub holding only what domain resolution needs: name lookup, and the longest-
+ * A McxDb stub holding only what domain resolution needs: name lookup, and the longest-
  * prefix path walk-up. Narrow on purpose — the point under test is which id the handler
  * picks, not how `resolveDomainForPath` computes one.
  */

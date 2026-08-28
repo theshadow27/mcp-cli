@@ -2,7 +2,7 @@ import type { JsonSchema, Logger, ToolInfo } from "@mcp-cli/core";
 import { OPENCODE_SERVER_NAME, formatToolSignature } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { AbstractWorkerServer, type WorkerServerDescriptor } from "./abstract-worker-server";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 import { OPENCODE_TOOLS } from "./opencode-session/tools";
 
@@ -14,7 +14,7 @@ export class OpenCodeServer extends AbstractWorkerServer {
   }
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,

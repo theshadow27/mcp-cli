@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { EventBus } from "./event-bus";
 import { resolveCallerDomain, resolveDelivery } from "./mail-domain";
 import { publishMailSent } from "./mail-events";
@@ -113,7 +113,7 @@ export class MailServer {
   private stopped = false;
 
   constructor(
-    private db: StateDb,
+    private db: McxDb,
     private eventBus: EventBus | null = null,
   ) {}
 

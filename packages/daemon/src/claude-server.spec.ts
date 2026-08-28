@@ -5,7 +5,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer, WORKER_EVENT_TYPES, buildClaudeToolCache, isWorkerEvent } from "./claude-server";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { MetricsCollector } from "./metrics";
 
@@ -131,7 +131,7 @@ describe("CLAUDE_SERVER_NAME", () => {
 
 describe("ClaudeServer", () => {
   let server: ClaudeServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -145,7 +145,7 @@ describe("ClaudeServer", () => {
   // so they share a single Worker to avoid per-test spawn overhead.
   describe("read-only (shared worker)", () => {
     let sharedServer: ClaudeServer;
-    let sharedDb: StateDb;
+    let sharedDb: McxDb;
     let sharedClient: Awaited<ReturnType<ClaudeServer["start"]>>["client"];
     let sharedOpts: ReturnType<typeof testOptions>;
     let initialized = false;
@@ -153,7 +153,7 @@ describe("ClaudeServer", () => {
     async function ensureServer(): Promise<void> {
       if (!initialized) {
         sharedOpts = testOptions();
-        sharedDb = new StateDb(sharedOpts.DB_PATH);
+        sharedDb = new McxDb(sharedOpts.DB_PATH);
         sharedServer = new ClaudeServer(sharedDb, undefined, undefined, silentLogger);
         const { client: c } = await sharedServer.start();
         sharedClient = c;
@@ -251,7 +251,7 @@ describe("ClaudeServer", () => {
 
   test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     // Call the private handleWorkerEvent directly to test DB routing (no start() needed)
@@ -270,7 +270,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert captures pidStartTime and persists it to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const fakeStartTime = 1_700_000_000_000;
     // Inject a getProcessStartTime that returns a known value for any PID
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => fakeStartTime);
@@ -293,7 +293,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert logs warning and increments metric when getProcessStartTime returns null", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const { logger, messages } = capturingLogger();
     // Inject a getProcessStartTime that always returns null (simulates PID lookup failure)
     server = new ClaudeServer(db, undefined, undefined, logger, 10_000, undefined, () => null);
@@ -317,7 +317,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert uses worker-provided pidStartTime without calling getProcessStartTimeFn", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     let fnCallCount = 0;
     // getProcessStartTimeFn should NOT be called when pidStartTime is provided by worker
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => {
@@ -342,7 +342,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert falls back to getProcessStartTimeFn when worker omits pidStartTime", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const fallbackStartTime = 1_700_222_222_000;
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, () => fallbackStartTime);
 
@@ -359,7 +359,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert with worker pidStartTime: null disables PID protection (no fallback)", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const { logger, messages } = capturingLogger();
     let fnCallCount = 0;
     server = new ClaudeServer(db, undefined, undefined, logger, 10_000, undefined, () => {
@@ -384,7 +384,7 @@ describe("ClaudeServer", () => {
 
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -397,7 +397,7 @@ describe("ClaudeServer", () => {
 
   test("worker db:cost event updates cost and tokens", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -411,7 +411,7 @@ describe("ClaudeServer", () => {
 
   test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -425,7 +425,7 @@ describe("ClaudeServer", () => {
 
   test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     expect(server.hasActiveSessions()).toBe(false);
@@ -433,7 +433,7 @@ describe("ClaudeServer", () => {
 
   test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -448,7 +448,7 @@ describe("ClaudeServer", () => {
 
   test("hasActiveSessions() tracks multiple sessions independently", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -466,7 +466,7 @@ describe("ClaudeServer", () => {
 
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -482,7 +482,7 @@ describe("ClaudeServer", () => {
 
   test("stop() nulls onRestarted to prevent post-shutdown re-registration", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -497,7 +497,7 @@ describe("ClaudeServer", () => {
 
   test("stop() terminates worker cleanly", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -511,7 +511,7 @@ describe("ClaudeServer", () => {
 
   test("restoreActiveSessions: null ownership + dead PID → session ended", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(
       db,
       undefined,
@@ -536,7 +536,7 @@ describe("ClaudeServer", () => {
 
   test("restoreActiveSessions: null ownership + alive PID → session preserved", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(
       db,
       undefined,
@@ -563,7 +563,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash ends orphaned sessions after successful restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -594,7 +594,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -618,7 +618,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash emits tools/list_changed notification after restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -646,7 +646,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -668,7 +668,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash terminates worker and closes client before nulling", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -710,7 +710,7 @@ describe("ClaudeServer", () => {
 
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -736,7 +736,7 @@ describe("ClaudeServer", () => {
 
   test("restart cleans up old worker message/error handlers to prevent closure leaks", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -765,7 +765,7 @@ describe("ClaudeServer", () => {
 
   test("stop() cleans up worker message/error handlers", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -785,7 +785,7 @@ describe("ClaudeServer", () => {
 
   test("pruneDeadSessions removes sessions with dead PIDs", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -802,7 +802,7 @@ describe("ClaudeServer", () => {
 
   test("pruneDeadSessions keeps sessions with live PIDs", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -817,7 +817,7 @@ describe("ClaudeServer", () => {
 
   test("pruneDeadSessions uses sessionPidStartTimes via findDeadPids for dead PID", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const fakeStartTime = 1_700_000_000_000;
     // Inject getProcessStartTime to return a value at db:upsert time so the session
     // is tracked in sessionPidStartTimes. The dead PID (999999) won't actually exist,
@@ -844,7 +844,7 @@ describe("ClaudeServer", () => {
 
   test("pruneDeadSessions handles sessions without PIDs (no prune)", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -861,7 +861,7 @@ describe("ClaudeServer", () => {
 
   test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     let activityCount = 0;
@@ -891,7 +891,7 @@ describe("ClaudeServer", () => {
 
   test("monitor:event forwards input to onMonitorEvent callback", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const received: Array<{ src: string; event: string; category: string }> = [];
@@ -912,7 +912,7 @@ describe("ClaudeServer", () => {
 
   test("monitor:event is safe when onMonitorEvent is not set", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleProviderEvent: (e: unknown) => void }).handleProviderEvent.bind(
@@ -928,7 +928,7 @@ describe("ClaudeServer", () => {
 
   test("monitor:event preserves extra fields (cost, tokens, prNumber)", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const received: Array<Record<string, unknown>> = [];
@@ -959,7 +959,7 @@ describe("ClaudeServer", () => {
 
   test("orphaned sessions are cleaned up after worker crash+restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -985,7 +985,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash restores sessions when configuredWsPort is set", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     // Use port 0 to let the OS pick, but the configuredWsPort parameter being set
     // is what matters — it signals that sessions can reconnect to the same port.
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, 0);
@@ -1023,7 +1023,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash without configuredWsPort ends orphaned sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     // No configuredWsPort — sessions can't reconnect to the new random port
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
@@ -1052,7 +1052,7 @@ describe("ClaudeServer", () => {
 
   test("start() terminates worker and nulls state if client.connect() throws", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Inject a factory that produces a client whose connect() always throws —
     // avoids polluting the global Client.prototype across test files.
@@ -1083,7 +1083,7 @@ describe("ClaudeServer", () => {
 
   test("handleWorkerCrash increments mcpd_claude_server_crashes_total", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, undefined, silentLogger, undefined, undefined, undefined, testMetrics);
 
@@ -1101,7 +1101,7 @@ describe("ClaudeServer", () => {
 
   test("stop() logs cleared crash timestamps count after a crash", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const { logger, texts } = capturingLogger();
     server = new ClaudeServer(db, undefined, undefined, logger);
 
@@ -1120,7 +1120,7 @@ describe("ClaudeServer", () => {
 
   test("stop() does not log crash timestamps when none exist", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const { logger, texts } = capturingLogger();
     server = new ClaudeServer(db, undefined, undefined, logger);
 
@@ -1135,7 +1135,7 @@ describe("ClaudeServer", () => {
 
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -1147,7 +1147,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert with repoRoot persists to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -1163,7 +1163,7 @@ describe("ClaudeServer", () => {
 
   test("db:upsert without repoRoot stores null", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -1182,7 +1182,7 @@ describe("ClaudeServer", () => {
 
   test("stop() calls db.endSession() for all active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -1210,7 +1210,7 @@ describe("ClaudeServer", () => {
 
   test("pruneDeadSessions prunes pid-less sessions after TTL expires", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -1233,7 +1233,7 @@ describe("ClaudeServer", () => {
 
   test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -1265,7 +1265,7 @@ describe("ClaudeServer", () => {
 
   test("db:cost event also refreshes sessionAddedAt", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -1286,7 +1286,7 @@ describe("ClaudeServer", () => {
 
 describe("ClaudeServer connect timeout metric", () => {
   let server: ClaudeServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -1297,7 +1297,7 @@ describe("ClaudeServer connect timeout metric", () => {
 
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Mock client that never resolves connect() — forces the handshake timeout to fire
     const neverConnect = {
@@ -1314,7 +1314,7 @@ describe("ClaudeServer connect timeout metric", () => {
 
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const testMetrics = new MetricsCollector();
     server = new ClaudeServer(db, undefined, undefined, silentLogger, 10_000, undefined, undefined, testMetrics);
 
@@ -1328,7 +1328,7 @@ describe("ClaudeServer connect timeout metric", () => {
 
 describe("session persistence", () => {
   let server: ClaudeServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -1339,7 +1339,7 @@ describe("session persistence", () => {
 
   test("start() restores active sessions from SQLite", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Seed the DB with an active session (simulating a previous daemon's state)
     db.upsertSession({
@@ -1363,7 +1363,7 @@ describe("session persistence", () => {
 
   test("start() skips sessions whose processes are dead", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Seed with a session whose PID doesn't exist
     db.upsertSession({
@@ -1388,7 +1388,7 @@ describe("session persistence", () => {
 
   test("start() restores sessions without PIDs", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Session with no PID (e.g., PID wasn't captured before crash)
     db.upsertSession({
@@ -1410,7 +1410,7 @@ describe("session persistence", () => {
 
   test("start() skips already-ended sessions in DB", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // Insert and then end a session
     db.upsertSession({
@@ -1429,7 +1429,7 @@ describe("session persistence", () => {
 
   test("start() calls onActivity when sessions are restored (resets idle timer)", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     db.upsertSession({
       sessionId: "idle-reset-1",
@@ -1454,7 +1454,7 @@ describe("session persistence", () => {
 
   test("start() does NOT call onActivity when no sessions are restored", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     // No sessions in DB
     server = new ClaudeServer(db, undefined, undefined, silentLogger);
@@ -1477,7 +1477,7 @@ describe("session persistence", () => {
 describe("monitor event bridge: worker.onmessage demuxer via MessageChannel (#1616)", () => {
   test("structured-clone round-trip: all MonitorEventInput fields survive postMessage boundary", async () => {
     using opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const sv = new ClaudeServer(db, undefined, undefined, silentLogger);
     let channel: MessageChannel | undefined;
 
@@ -1563,7 +1563,7 @@ describe("monitor event bridge: worker.onmessage demuxer via MessageChannel (#16
 describe("monitor event bridge integration", () => {
   test("worker monitor:event reaches EventBus subscribers with correct seq", () => {
     using opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const server = new ClaudeServer(db, undefined, undefined, silentLogger);
     const bus = new EventBus();
 
@@ -1611,7 +1611,7 @@ describe("monitor event bridge integration", () => {
 
   test("seq is monotonic across session and work-item events from worker", () => {
     using opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const server = new ClaudeServer(db, undefined, undefined, silentLogger);
     const bus = new EventBus();
 
@@ -1645,9 +1645,9 @@ describe("monitor event bridge integration", () => {
 // ── forwardWorkItemEvent direct main-thread publish (#1618) ──
 
 describe("forwardWorkItemEvent", () => {
-  function makeServer(): { server: ClaudeServer; db: StateDb; dispose: () => void } {
+  function makeServer(): { server: ClaudeServer; db: McxDb; dispose: () => void } {
     const opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     const server = new ClaudeServer(db, undefined, undefined, silentLogger);
     return {
       server,

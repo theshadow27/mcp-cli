@@ -33,7 +33,7 @@
 
 import { type Domain, NO_DOMAIN_ID, WORK_ITEMS_SERVER_NAME } from "@mcp-cli/core";
 
-/** The slice of StateDb this module needs. Narrow so tests need no database. */
+/** The slice of McxDb this module needs. Narrow so tests need no database. */
 export interface DomainResolver {
   /** Which domain owns `path`? `null` outside every registered domain. */
   resolveDomain(path: string): Domain | null;

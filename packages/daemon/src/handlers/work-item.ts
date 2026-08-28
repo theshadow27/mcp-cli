@@ -15,7 +15,7 @@ import {
   normalizeStateRoot,
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger, Manifest, WorkItemPhase } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { DomainWorkItems, WorkItemDb } from "../db/work-items";
 import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import { resolveDomainId } from "../domain-scope";
@@ -24,7 +24,7 @@ import type { RequestHandler } from "../handler-types";
 export class WorkItemHandlers {
   constructor(
     private readonly workItemDb: WorkItemDb,
-    private readonly db: StateDb,
+    private readonly db: McxDb,
     private readonly resolveIssuePr:
       | ((number: number, domainId: number) => Promise<{ prNumber: number | null }>)
       | null,

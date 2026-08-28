@@ -7,7 +7,7 @@ import {
   WaitForMailParamsSchema,
 } from "@mcp-cli/core";
 import type { IpcMethod } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { EventBus } from "../event-bus";
 import type { RequestHandler } from "../handler-types";
 import { resolveCallerDomain, resolveDelivery } from "../mail-domain";
@@ -18,12 +18,12 @@ import { publishMailSent } from "../mail-events";
  *
  * Each resolves the caller's partition **before** touching the DB, via
  * `resolveCallerDomain`, which throws rather than guessing. Reads then pass that
- * partition into `StateDb`, whose mail methods require it as their first parameter —
+ * partition into `McxDb`, whose mail methods require it as their first parameter —
  * so there is no handler here that can read or write without having named a partition.
  */
 export class MailHandlers {
   constructor(
-    private readonly db: StateDb,
+    private readonly db: McxDb,
     private readonly eventBus: EventBus | null,
     private readonly isDraining: () => boolean,
   ) {}

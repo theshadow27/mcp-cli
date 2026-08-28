@@ -20,13 +20,13 @@
  */
 
 import { type Domain, NO_DOMAIN_ID, canonicalizeDomainPath, resolveDomainForPath } from "@mcp-cli/core";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 
 /**
- * The slice of `StateDb` a resolver needs. Narrow so tests need no database.
+ * The slice of `McxDb` a resolver needs. Narrow so tests need no database.
  *
  * `getSessionPath` is **required**, not optional. An optional member here is the exact
- * shape of #3040 review R1 — it would let `createDomainResolver(someStateDb)` compile
+ * shape of #3040 review R1 — it would let `createDomainResolver(someMcxDb)` compile
  * against a source with no session lookup and silently yield a resolver whose session
  * path is dead, which is 80% of the daemon's traffic. A partition input a caller can
  * omit is prose; one the compiler demands is a function. Tests that genuinely do not
@@ -61,7 +61,7 @@ export interface DomainSource {
 }
 
 /**
- * The production {@link DomainSource}, over a real `StateDb`.
+ * The production {@link DomainSource}, over a real `McxDb`.
  *
  * Exists because this wiring was hand-copied into three places — the daemon, the IPC
  * server's fallback, and a spec — with nothing making them agree (#3169 review). That is
@@ -70,7 +70,7 @@ export interface DomainSource {
  * does something else. One exported factory makes the three agree by construction, which
  * is stronger than a rule that checks they still do.
  *
- * Typed structurally rather than as `StateDb` so a test can pass a stub, and imported as
+ * Typed structurally rather than as `McxDb` so a test can pass a stub, and imported as
  * a type only so this module keeps no runtime dependency on the database layer.
  *
  * `worktree` is deliberately NOT a candidate: `agent_sessions.worktree` holds a worktree
@@ -78,7 +78,7 @@ export interface DomainSource {
  * never resolve. On a live log it contributed exactly zero — 34,917 rows resolved with
  * and without it — while its presence in a `??` chain actively suppressed `cwd`.
  */
-export function createStateDbDomainSource(db: Pick<StateDb, "listDomains" | "getSession">): DomainSource {
+export function createMcxDbDomainSource(db: Pick<McxDb, "listDomains" | "getSession">): DomainSource {
   return {
     listDomains: () => db.listDomains(),
     getSessionPaths: (sessionId: string) => {

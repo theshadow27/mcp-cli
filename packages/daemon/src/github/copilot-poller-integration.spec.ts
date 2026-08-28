@@ -44,7 +44,7 @@ import {
   type IssueComment,
 } from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
-import { createCopilotStateDb } from "./test-helpers";
+import { createCopilotMcxDb } from "./test-helpers";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const TEST_REPO: RepoInfo = { owner: "acme", repo: "widget" };
@@ -81,14 +81,14 @@ describe("CopilotPoller — review/sticky integration", () => {
   let workItemDb: CrossDomainWorkItems;
   /** Scoped handle used only to ARRANGE rows. */
   let seed: DomainWorkItems;
-  let stateDb: ReturnType<typeof createCopilotStateDb>;
+  let mcxDb: ReturnType<typeof createCopilotMcxDb>;
 
   beforeEach(() => {
     rawDb = new Database(":memory:");
     const wdb = new WorkItemDb(rawDb);
     workItemDb = wdb.acrossDomains();
     seed = wdb.forDomain(NO_DOMAIN_ID);
-    stateDb = createCopilotStateDb(rawDb);
+    mcxDb = createCopilotMcxDb(rawDb);
   });
 
   afterEach(() => {
@@ -99,7 +99,7 @@ describe("CopilotPoller — review/sticky integration", () => {
     const events: MonitorEventInput[] = [];
     const poller = new CopilotPoller({
       workItemDb,
-      stateDb: stateDb as unknown as CopilotPollerOptions["stateDb"] extends infer T ? T : never,
+      mcxDb: mcxDb as unknown as CopilotPollerOptions["mcxDb"] extends infer T ? T : never,
       logger: SILENT_LOGGER,
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",

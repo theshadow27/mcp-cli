@@ -4,7 +4,7 @@
  * Spawns a Bun Worker running an MCP Server that manages MockSession
  * instances — fully in-process, no external binary. Connects a Client
  * via WorkerClientTransport and provides the client for injection into
- * ServerPool. Forwards DB event messages from the worker to StateDb.
+ * ServerPool. Forwards DB event messages from the worker to McxDb.
  *
  * Simplified version of CodexServer — no crash recovery or auto-restart
  * since this is a testing-only provider.
@@ -21,7 +21,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { DbUpsertSession } from "./abstract-worker-server";
 import { closeClientWithTimeout } from "./close-timeout";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { MOCK_TOOLS } from "./mock-session/tools";
 import { setupRecording } from "./recording-hooks";
 import { safeSetTimeout } from "./safe-timers";
@@ -99,7 +99,7 @@ export class MockServer {
   private worker: Worker | null = null;
   private transport: WorkerClientTransport | null = null;
   private client: Client | null = null;
-  private db: StateDb;
+  private db: McxDb;
   private readonly clientFactory: ClientFactory;
   private readonly workerFactory: WorkerFactory;
   private readonly activeSessions = new Set<string>();
@@ -112,7 +112,7 @@ export class MockServer {
   recorder: NdjsonRecorder | null = null;
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     private daemonId?: string,
     clientFactory?: ClientFactory,
     logger?: Logger,
@@ -293,7 +293,7 @@ export class MockServer {
         this.activeSessions.add(event.session.sessionId);
         this.sessionAddedAt.set(event.session.sessionId, Date.now());
         // Same null-stripping AbstractWorkerServer does: the wire type allows
-        // `pidStartTime: null` ("looked, found nothing") and StateDb takes only a
+        // `pidStartTime: null` ("looked, found nothing") and McxDb takes only a
         // number. MockServer predates that base class and keeps its own handler,
         // which is exactly why it silently lacked `domainId` until now.
         const { pidStartTime, ...rest } = event.session;

@@ -7,7 +7,7 @@ import {
   SESSION_RESULT,
 } from "@mcp-cli/core";
 import type { BudgetConfig, MonitorEvent } from "@mcp-cli/core";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import type { QuotaPoller } from "./quota";
@@ -32,7 +32,7 @@ const RECONCILE_EVENTS = [
 
 export class BudgetWatcher {
   private readonly bus: EventBus;
-  private readonly db: StateDb;
+  private readonly db: McxDb;
   private readonly quotaPoller: QuotaPoller;
   private readonly eventLog: EventLog | null;
   private readonly subId: number;
@@ -44,7 +44,7 @@ export class BudgetWatcher {
 
   constructor(opts: {
     bus: EventBus;
-    db: StateDb;
+    db: McxDb;
     quotaPoller: QuotaPoller;
     quotaPollIntervalMs?: number;
     eventLog?: EventLog;

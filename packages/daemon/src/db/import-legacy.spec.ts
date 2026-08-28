@@ -17,7 +17,7 @@ import {
   readImportMarkerValue,
   recoveryInstructions,
 } from "./import-legacy";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 /**
@@ -81,8 +81,8 @@ function writeLegacyDb(path: string): void {
 /**
  * Delete a SQLite database the way an operator deleting `mcx.db` would experience it.
  *
- * `StateDb` runs in WAL mode, so the database is three files. Removing only the main one
- * leaves `-wal`/`-shm` sidecars that the next `new StateDb(path)` opens against a main
+ * `McxDb` runs in WAL mode, so the database is three files. Removing only the main one
+ * leaves `-wal`/`-shm` sidecars that the next `new McxDb(path)` opens against a main
  * file that no longer exists — SQLite reports that as `disk I/O error` during migrate,
  * not as "empty database", so the test fails on the setup instead of on the assertion it
  * was written for.
@@ -91,8 +91,8 @@ function removeDb(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
 }
 
-function freshTargetDb(path: string): StateDb {
-  const state = new StateDb(path);
+function freshTargetDb(path: string): McxDb {
+  const state = new McxDb(path);
   new WorkItemDb(state.database);
   new EventLog(state.database);
   migrateDerivedCursor(state.database);
@@ -121,7 +121,7 @@ describe("importLegacyState", () => {
     };
   }
 
-  function target(path: string): StateDb {
+  function target(path: string): McxDb {
     const state = freshTargetDb(path);
     open.push(state);
     return state;
@@ -386,7 +386,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
 
-  function target(path: string): StateDb {
+  function target(path: string): McxDb {
     const state = freshTargetDb(path);
     open.push(state);
     return state;
@@ -669,7 +669,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
     expect(missing).toEqual([]);
   });
 
-  test("imports a legacy DB built by the real StateDb/WorkItemDb/EventLog code", () => {
+  test("imports a legacy DB built by the real McxDb/WorkItemDb/EventLog code", () => {
     // The other fixtures are hand-written and therefore cannot drift with the schema.
     // This one is produced by the production DDL on both sides, so a column added to a
     // real table is exercised here without anyone remembering to update a string literal.
@@ -760,7 +760,7 @@ describe("import atomicity — an unsealed run leaves the target untouched (#303
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
 
-  function target(path: string): StateDb {
+  function target(path: string): McxDb {
     const state = freshTargetDb(path);
     open.push(state);
     return state;
@@ -1325,7 +1325,7 @@ describe("the target must be empty (#3035 review finding 1)", () => {
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
 
-  function target(path: string): StateDb {
+  function target(path: string): McxDb {
     const state = freshTargetDb(path);
     open.push(state);
     return state;
@@ -1558,7 +1558,7 @@ describe("importLegacyState domain mapping", () => {
    * test pushed this file past the 5s time budget on its own.
    */
   let dir = "";
-  let state: StateDb;
+  let state: McxDb;
   let phoenixRoot = "";
   let otherRoot = "";
   let phoenixId = -1;
@@ -1661,7 +1661,7 @@ describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
    * expensive part (three migrations plus a full copy).
    */
   let dir = "";
-  let state: StateDb;
+  let state: McxDb;
   let result: ReturnType<typeof importLegacyState>;
   let phoenixRoot = "";
   let phoenixId = -1;
@@ -1744,8 +1744,8 @@ describe("what a failed import actually leaves on disk (#3160 review N2)", () =>
   }
 
   /** A target missing `work_items`, so exactly one table's copy fails outright. */
-  function targetMissingWorkItems(path: string): StateDb {
-    const state = new StateDb(path);
+  function targetMissingWorkItems(path: string): McxDb {
+    const state = new McxDb(path);
     open.push(state);
     new EventLog(state.database);
     migrateDerivedCursor(state.database);

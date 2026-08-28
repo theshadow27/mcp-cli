@@ -16,7 +16,7 @@ import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
 import { resolveCallerDomain, resolveDelivery } from "../mail-domain";
-import { DomainConflictError, DomainHasDependentsError, StateDb } from "./state";
+import { DomainConflictError, DomainHasDependentsError, McxDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 const repoRoot = resolve(import.meta.dir, "../../../..");
@@ -78,10 +78,10 @@ describe("domain schema", () => {
     paths.length = 0;
   });
 
-  function createStateDb(): StateDb {
+  function createMcxDb(): McxDb {
     const p = tmpDbPath();
     paths.push(p);
-    const db = new StateDb(p);
+    const db = new McxDb(p);
     open.push(db);
     return db;
   }
@@ -108,7 +108,7 @@ describe("domain schema", () => {
   });
 
   test("domains table exists with exactly the designed columns and no state column", () => {
-    const state = createStateDb();
+    const state = createMcxDb();
     const cols = columnsOf(state.database, "domains");
     expect([...cols].sort()).toEqual(["created_at", "host", "id", "name", "path"]);
     // A domain does not know whether anything is running — see docs/domains.md.
@@ -138,7 +138,7 @@ describe("domain schema", () => {
   }
 
   test("every partitioned table carries domain_id", () => {
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     new EventLog(raw);
@@ -154,7 +154,7 @@ describe("domain schema", () => {
   });
 
   test("every partitioned table ENFORCES the partition, not just the column", () => {
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     new EventLog(raw);
@@ -172,7 +172,7 @@ describe("domain schema", () => {
     // that is already globally unique (an AUTOINCREMENT rowid or a generated id), so no
     // two domains can collide on it. Prove that rather than trusting the list — otherwise
     // the exemption set is just a loophole for the next natural-keyed table.
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     new EventLog(raw);
@@ -191,7 +191,7 @@ describe("domain schema", () => {
     // never read the database, so an 11th partitioned table added to a live mcx.db was
     // missed entirely (#3034 review Y4). The classification is now checked against the
     // schema, so a table added without a decision fails here.
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     new EventLog(raw);
@@ -205,7 +205,7 @@ describe("domain schema", () => {
     // Prove the check above is not another tautology: add an 11th partitioned table to a
     // live database and confirm the derived set grows while the hand-maintained
     // classification does not.
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     new EventLog(raw);
@@ -222,9 +222,9 @@ describe("domain schema", () => {
   });
 
   test("countDomainDependents follows the schema, not a hand-maintained list", () => {
-    // StateDb.DOMAIN_DEPENDENT_TABLES is gone; the refuse-with-counts invariant reads the
+    // McxDb.DOMAIN_DEPENDENT_TABLES is gone; the refuse-with-counts invariant reads the
     // same derivation, so a new partitioned table is counted the moment it exists.
-    const state = createStateDb();
+    const state = createMcxDb();
     const raw = state.database;
     new WorkItemDb(raw);
     const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
@@ -239,7 +239,7 @@ describe("domain schema", () => {
   test("aliases are partitioned by domain — two domains can each own a phase named impl", () => {
     // Phases are stored as aliases. Without (domain_id, name) in the key, the second
     // domain to run `mcx phase install` overwrites the first domain's bundled_js.
-    const state = createStateDb();
+    const state = createMcxDb();
     const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
     const beta = state.createDomain("beta", "/mcx-test/u/beta");
 
@@ -288,14 +288,14 @@ describe("domain schema", () => {
   });
 
   test("domain ids start at 1, so NO_DOMAIN_ID can never collide with a real domain", () => {
-    const state = createStateDb();
+    const state = createMcxDb();
     const first = state.createDomain("phoenix", "/mcx-test/u/github/phoenix");
     expect(first.id).toBeGreaterThan(NO_DOMAIN_ID);
   });
 
-  describe("StateDb domain accessors", () => {
+  describe("McxDb domain accessors", () => {
     test("create, get, list, rename, delete", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const phoenix = state.createDomain("phoenix", "/mcx-test/u/github/phoenix");
       expect(phoenix.name).toBe("phoenix");
       expect(phoenix.host).toBeNull();
@@ -327,26 +327,26 @@ describe("domain schema", () => {
     });
 
     test("a trailing slash on the registered path is normalized away", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const d = state.createDomain("phoenix", "/mcx-test/u/github/phoenix/");
       expect(d.path).toBe("/mcx-test/u/github/phoenix");
     });
 
     test("rejects an invalid domain name rather than storing an unaddressable one", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       expect(() => state.createDomain("has space", "/mcx-test/x")).toThrow(/invalid domain name/);
       expect(() => state.createDomain("ok", "/mcx-test/x")).not.toThrow();
       expect(() => state.renameDomain("ok", "has/slash")).toThrow(/invalid domain name/);
     });
 
     test("duplicate names are rejected", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("phoenix", "/mcx-test/u/a");
       expect(() => state.createDomain("phoenix", "/mcx-test/u/b")).toThrow();
     });
 
     test("two local domains cannot share a location", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("phoenix", "/mcx-test/u/a");
       // NULL host must not defeat the uniqueness index.
       expect(() => state.createDomain("other", "/mcx-test/u/a")).toThrow();
@@ -356,7 +356,7 @@ describe("domain schema", () => {
     });
 
     test("resolveDomain walks up to the nearest registered domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const outer = state.createDomain("outer", "/mcx-test/u/github");
       const inner = state.createDomain("inner", "/mcx-test/u/github/phoenix");
 
@@ -368,7 +368,7 @@ describe("domain schema", () => {
 
   describe("domain ids and deletion (#3034 review B6)", () => {
     test("a deleted domain's id is never reused, so nothing gets adopted", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       new WorkItemDb(raw);
 
@@ -384,7 +384,7 @@ describe("domain schema", () => {
     });
 
     test("deleteDomain REFUSES while dependents exist, naming per-table counts", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
       const beta = state.createDomain("beta", "/mcx-test/u/beta");
@@ -405,7 +405,7 @@ describe("domain schema", () => {
     });
 
     test("cascade deletes the dependents with the domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
       const beta = state.createDomain("beta", "/mcx-test/u/beta");
@@ -422,7 +422,7 @@ describe("domain schema", () => {
     });
 
     test("created_at is a single sortable format across CLI and import paths", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const d = state.createDomain("alpha", "/mcx-test/u/alpha");
       // ISO-8601 with a Z, matching what the importer writes — mixing this with
       // datetime('now') made any ORDER BY created_at sort imported domains as a block.
@@ -430,7 +430,7 @@ describe("domain schema", () => {
     });
 
     test("the refusal is a TYPE carrying the counts it was decided on (#3180)", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const beta = state.createDomain("beta", "/mcx-test/u/beta");
       state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
 
@@ -456,25 +456,25 @@ describe("domain schema", () => {
       // busy_timeout does NOT retry. This test drives a commit into exactly that window.
       const p = tmpDbPath();
       paths.push(p);
-      const state = new StateDb(p);
+      const state = new McxDb(p);
       open.push(state);
       const beta = state.createDomain("beta", "/mcx-test/u/beta");
       state.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('a','b',?)", [beta.id]);
 
       // A second connection on the same file. busy_timeout 0 so this single-threaded test
       // records the lockout immediately instead of sitting out the daemon's real 3s.
-      const other = new StateDb(p);
+      const other = new McxDb(p);
       open.push(other);
       other.database.exec("PRAGMA busy_timeout = 0");
 
       const interleaved: string[] = [];
-      const racing = Object.create(state) as StateDb;
+      const racing = Object.create(state) as McxDb;
       Object.defineProperty(racing, "countDomainDependents", {
         value: (id: number) => {
           // Delegate FIRST: under DEFERRED the read snapshot is taken by this call, not by
           // BEGIN, so a commit racing in before it is no race at all. The window that
           // matters opens once the transaction has read something.
-          const counts = StateDb.prototype.countDomainDependents.call(state, id);
+          const counts = McxDb.prototype.countDomainDependents.call(state, id);
           try {
             other.database.run("INSERT INTO mail (sender, recipient, domain_id) VALUES ('c','d',0)");
             interleaved.push("committed");
@@ -497,7 +497,7 @@ describe("domain schema", () => {
     });
 
     test("resolveDomain matches through a symlinked path", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
       const link = join(tmpdir(), `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
       symlinkSync(real, link);
@@ -514,7 +514,7 @@ describe("domain schema", () => {
 
   describe("review round 2 — Y5/Y6", () => {
     test("Y5: work_item_transitions inherit their parent's domain, so counts do not lie", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       const wi = new WorkItemDb(raw);
       const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
@@ -544,7 +544,7 @@ describe("domain schema", () => {
     });
 
     test("Y5: a transition for an unassigned work item stays at the sentinel", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const wi = new WorkItemDb(state.database).forDomain(NO_DOMAIN_ID);
       const item = wi.createWorkItem({ issueNumber: 8 });
       wi.recordTransition(item.id, null, "impl", false);
@@ -554,7 +554,7 @@ describe("domain schema", () => {
     });
 
     test("Y6: an empty or malformed host is rejected instead of taking the remote branch", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       // "" used to be remote for canonicalization (stored verbatim, never checked for
       // absoluteness) and local for uniqueness (COALESCE(host,'')) at the same time.
       expect(() => state.createDomain("empty", "relative/not/absolute", "")).toThrow(/invalid domain host/);
@@ -570,7 +570,7 @@ describe("domain schema", () => {
 
   describe("per-domain uniqueness", () => {
     test("two domains can each own a work item with issue_number = 42", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
       const beta = state.createDomain("beta", "/mcx-test/u/beta");
@@ -591,7 +591,7 @@ describe("domain schema", () => {
     });
 
     test("uniqueness still bites inside a single domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       const alpha = state.createDomain("alpha", "/mcx-test/u/alpha");
       const wi = new WorkItemDb(raw);
@@ -601,14 +601,14 @@ describe("domain schema", () => {
     });
 
     test("uniqueness bites in the unassigned partition too — NULL would have dropped it", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const wi = new WorkItemDb(state.database).forDomain(NO_DOMAIN_ID);
       wi.createWorkItem({ issueNumber: 42 });
       expect(() => wi.createWorkItem({ issueNumber: 42 })).toThrow();
     });
 
     test("alias_state is keyed per domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
       raw.run("INSERT INTO alias_state (domain_id, repo_root, namespace, key, value_json) VALUES (?, ?, ?, ?, ?)", [
         1,
@@ -646,7 +646,7 @@ describe("domain schema", () => {
     });
 
     test("copilot comment state is keyed per domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.updateSeenCommentIds(42, [1, 2], 1);
       state.updateSeenCommentIds(42, [9], 2);
       expect(state.getSeenCommentIds(42, 1)).toEqual([1, 2]);
@@ -665,7 +665,7 @@ describe("domain schema", () => {
     });
 
     test("ci run states are keyed per domain", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const wi = new WorkItemDb(state.database);
       wi.forDomain(1).upsertCiRunState(42, {
         suiteId: 1,
@@ -689,7 +689,7 @@ describe("domain schema", () => {
 
   describe("the schema claims only what it enforces (#3180)", () => {
     test("a NEW database declares no foreign key, because nothing turns enforcement on", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const raw = state.database;
 
       // `mail.reply_to REFERENCES mail(id)` was the only FK in this schema, and
@@ -718,7 +718,7 @@ describe("domain schema", () => {
    */
   describe("a registration collision is decided inside the write (#3210)", () => {
     test("a duplicate name is a typed refusal that names where the existing domain lives", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("phoenix", "/srv/phoenix");
 
       try {
@@ -736,7 +736,7 @@ describe("domain schema", () => {
     });
 
     test("a duplicate location is a typed refusal that names the owner", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("phoenix", "/srv/phoenix");
 
       try {
@@ -758,9 +758,9 @@ describe("domain schema", () => {
       // committed is visible to the decision that refuses.
       const p = tmpDbPath();
       paths.push(p);
-      const mine = new StateDb(p);
+      const mine = new McxDb(p);
       open.push(mine);
-      const theirs = new StateDb(p);
+      const theirs = new McxDb(p);
       open.push(theirs);
 
       theirs.createDomain("beta", "/srv/shared");
@@ -777,7 +777,7 @@ describe("domain schema", () => {
     });
 
     test("rename to an occupied name is the same typed refusal, and nothing moves", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const a = state.createDomain("a", "/srv/a");
       state.createDomain("b", "/srv/b");
 
@@ -792,7 +792,7 @@ describe("domain schema", () => {
     });
 
     test("renaming a domain to its own name stays a no-op rather than colliding with itself", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const a = state.createDomain("a", "/srv/a");
       expect(state.renameDomain("a", "a")).toEqual(a);
     });
@@ -806,7 +806,7 @@ describe("domain schema", () => {
    */
   describe("v9: the domains table enforces its own path shape (#3210)", () => {
     test("a local domain path that is not absolute cannot be written, even by raw SQL", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       expect(() => state.database.run("INSERT INTO domains (name, host, path) VALUES ('bad', NULL, 'rel/x')")).toThrow(
         /CHECK constraint failed/,
       );
@@ -816,7 +816,7 @@ describe("domain schema", () => {
     });
 
     test("a host-bound path is exempt — it is that host's to interpret, not this one's", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const remote = state.createDomain("remote", "~/work", "boxen0010");
       expect(remote.path).toBe("~/work");
     });
@@ -828,7 +828,7 @@ describe("domain schema", () => {
       // Build the pre-v9 shape by hand: the same table WITHOUT the CHECK, carrying a row
       // that the constraint will reject. No writer can produce that row today — the point
       // is that the one database which has one still boots.
-      const before = new StateDb(p);
+      const before = new McxDb(p);
       before.createDomain("a", "/srv/a");
       before.createDomain("b", "/srv/b");
       const raw = before.database;
@@ -851,7 +851,7 @@ describe("domain schema", () => {
       raw.run("UPDATE schema_versions SET version = 8 WHERE name = 'state'");
       before.close();
 
-      const after = new StateDb(p);
+      const after = new McxDb(p);
       open.push(after);
 
       // Conforming rows survive with their ids, which is what every `domain_id` reference
@@ -885,7 +885,7 @@ describe("domain schema", () => {
      * the stamp under test is the one production writes rather than a literal this file
      * agreed with itself about. Returns the new row's id.
      */
-    function sendCrossDomain(state: StateDb, from: string, to: string, local = "boss"): number {
+    function sendCrossDomain(state: McxDb, from: string, to: string, local = "boss"): number {
       const caller = resolveCallerDomain(state, { domain: from });
       const delivery = resolveDelivery(state, caller, local, `worker@${to}`);
       expect(delivery.crossDomain).toBe(true);
@@ -893,7 +893,7 @@ describe("domain schema", () => {
     }
 
     /** Resolve a reply to `id` as `replyToMail` does: re-parse the stored sender. */
-    function replyTo(state: StateDb, readerDomain: string, id: number) {
+    function replyTo(state: McxDb, readerDomain: string, id: number) {
       const reader = resolveCallerDomain(state, { domain: readerDomain });
       const original = state.getMailById(id, reader.id);
       if (!original) throw new Error(`message ${id} is not in ${readerDomain}'s partition`);
@@ -901,7 +901,7 @@ describe("domain schema", () => {
     }
 
     test("a rename re-stamps the return address, so the reply still routes home", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("alpha", "/home/u/alpha");
       const beta = state.createDomain("beta", "/home/u/beta");
       const id = sendCrossDomain(state, "alpha", "beta");
@@ -917,7 +917,7 @@ describe("domain schema", () => {
     });
 
     test("only the stamp is rewritten: bare senders and other domains' stamps are untouched", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const alpha = state.createDomain("alpha", "/home/u/alpha");
       const beta = state.createDomain("beta", "/home/u/beta");
       state.insertMail(beta.id, "local-only", "worker", "s");
@@ -940,7 +940,7 @@ describe("domain schema", () => {
       // domain name. A `LIKE '%@' || name` rewrite would restamp alphaXb's mail while
       // renaming alpha_b, redirecting a third party's replies to a domain that never sent
       // them — a silent cross-domain misroute, not a cosmetic over-match.
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("alpha_b", "/home/u/a");
       state.createDomain("alphaXb", "/home/u/x");
       const target = state.createDomain("target", "/home/u/t");
@@ -959,7 +959,7 @@ describe("domain schema", () => {
       // to a name no domain holds — the exact state this issue is about, reached from the
       // other direction. A BEFORE UPDATE trigger is the deterministic way to fail the
       // second write after the first has already happened inside the transaction.
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("alpha", "/home/u/alpha");
       const beta = state.createDomain("beta", "/home/u/beta");
       const id = sendCrossDomain(state, "alpha", "beta");
@@ -973,7 +973,7 @@ describe("domain schema", () => {
     });
 
     test("rm REFUSES a domain that is still a return address, even with no dependent rows of its own", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const alpha = state.createDomain("alpha", "/home/u/alpha");
       state.createDomain("beta", "/home/u/beta");
       sendCrossDomain(state, "alpha", "beta");
@@ -997,7 +997,7 @@ describe("domain schema", () => {
     });
 
     test("a cascade removes the domain and LEAVES the stamps, which re-registering the name recovers", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       state.createDomain("alpha", "/home/u/alpha");
       const beta = state.createDomain("beta", "/home/u/beta");
       const id = sendCrossDomain(state, "alpha", "beta");
@@ -1014,7 +1014,7 @@ describe("domain schema", () => {
     });
 
     test("a stamp in the domain's OWN partition is a dependent, counted once and cascaded", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const alpha = state.createDomain("alpha", "/home/u/alpha");
       // Not reachable through `resolveDelivery` (a same-partition send stores a bare
       // sender), but a row like this must not be counted by both mechanisms: the refusal
@@ -1028,7 +1028,7 @@ describe("domain schema", () => {
     });
 
     test("both refusal reasons at once read as two clauses with two remedies", () => {
-      const state = createStateDb();
+      const state = createMcxDb();
       const alpha = state.createDomain("alpha", "/home/u/alpha");
       state.createDomain("beta", "/home/u/beta");
       sendCrossDomain(state, "alpha", "beta");
