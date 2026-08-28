@@ -21,17 +21,17 @@ void.)
 
 ## The two MVPs (operator-approved 2026-08-24)
 
-**MVP-1 STATUS 2026-08-26 — 10 exit criteria left, all scheduled into sprint 81
-(plan: `.claude/sprints/sprint-81.md`, container PR #3360).** Remaining work items:
-#3209 #3352 #3192 #3273 #3246 #3036 #3353 #3265 (+ two protect picks #3332 #3351).
-Discharged at planning: #3041 closed as dup of #3192; #2993 and #3231(d) closed as
-already-done (`release.yml` was pinned to Bun 1.4.0 by PR #3346, not just CI);
-#3155 closed — the audit ran at planning time, on purpose, so its findings could not
-re-block the release at wind-down. It found two cut-line defects, now scheduled:
-**#3353** (a merge in one project advances another project's work item) and **#3352**
-(events stamped with the daemon's domain, so `monitor -d` replays the wrong stream).
-Five non-blocking gaps filed: #3354-#3358. **The storage layer audited clean** — both
-defects are in the event/derived-rules path, not the DB.
+**MVP-1 COMPLETE 2026-08-28 — v2.0.0 SHIPPED. The release hold is discharged.**
+Sprint 81 merged all ten remaining exit criteria (#3332 #3246 #3353 #3351 #3265 #3209
+#3352 #3036 #3192 #3273) and cut **v2.0.0** at `184d1578`, tagged and published with all
+four platform artifacts. First real run of the versioned-install machinery — it worked for
+binaries but published an **empty release body** (#3409); notes were attached after the fact
+with `gh release edit`. Release criterion verified: `git grep -w 'StateDb|stateDb'` on main
+returns **0 files**; surviving `state.db` strings are the importer naming the legacy file it
+migrates from, which ships in 2.0.0 as the upgrade path.
+
+**Next release is 2.x from a clean main.** Prior guidance to never cut 1.14.x still holds —
+it is now moot.
 
 The v2.0.0 cut is sprint 81's wind-down deliverable and is *budgeted as scope*: ~15
 sprints of changelog since v1.14.6 (2026-07-13), and the first real exercise of the
@@ -54,9 +54,12 @@ versioned-install machinery, which landed dormant and has never run.
 Epics C/F/G/H (trust, sensors, email, console) and I's tail serve neither MVP —
 they wait until the loop demands them.
 
-## Deployment state (2026-08-26 ~15:45 UTC)
+## Deployment state (2026-08-28 ~08:20 UTC)
 
-- **Rebuilt, reinstalled, daemon reloaded at main HEAD `47bf951b`** (operator-authorised
+- **v2.0.0 tagged at `184d1578` and published.** Main checkout is clean at that commit —
+  the `-dirty` stamp cause below is resolved (the meta files that caused it now live on main).
+  Local binaries still predate the tag: rebuild + reinstall + reload deliberately.
+- **Earlier (2026-08-26): rebuilt, reinstalled, daemon reloaded at main HEAD `47bf951b`** (operator-authorised
   2026-08-26). Client/daemon protocol match restored — the pre-reload CLI errored
   `Protocol mismatch: daemon 5a109abfbc9d, CLI expects 87ce34d5a538`. Reload path used was
   `mcx daemon reload` (build `1.14.6+1787596440` → `1.14.6+1787758875`), **not** a kill.
@@ -121,7 +124,29 @@ delivered). Not an MVP-1 blocker; carry to sprint 82.
 `approved [FORCED]: impl → done` and leaves the phase untouched (#3361). Use
 `work_items_update` with `phase`/`force`/`forceReason`.
 
-## Known traps (re-verified 2026-08-26)
+## Known traps (re-verified 2026-08-28)
+
+- **An armed-but-silent waker is indistinguishable from a killed one.** Sprint 81 stalled
+  ~17h because the orchestrator's monitor filter used
+  `select((.ts|fromdateiso8601? // 0)*1000 >= $start)` — jq's `fromdateiso8601` cannot parse
+  the fractional-second timestamps mcx emits, `?` swallowed the error, `// 0` made every
+  comparison false. The process was healthy for 20.6h and wrote a **0-byte** output file.
+  **The tell is output size.** Check it before concluding "nothing is happening". Do not put
+  date arithmetic in a monitor filter.
+- **The task supervisor can kill a background wrapper and orphan its children** (exit 144 =
+  128+16). Both wakers died at once; `sleep` and `mcx monitor` kept running with nowhere to
+  report. Filed #3396. Do NOT respond with a reaper — see the cpu-wedge memory / #2637.
+- **Stale `session_id` blocks `mcx phase advance`** — seen at impl, repair, and qa across two
+  sprints. The key is `session_id`, not `<phase>_session_id`. Worse: clearing it makes impl
+  **re-spawn** on an issue whose PR is already open and green. Correct order is
+  `work_items_update` to the target phase FIRST, then `phase advance`. Never clear the
+  session id on a phase that actually completed.
+- **`phase_state_delete` returns `deleted: false`** for a key that never existed rather than
+  erroring — a wrong key name looks like a successful no-op.
+- **`worktree_path` must be set before advancing to review/QA** (#3393), or the phase falls
+  back to `--worktree` and reviews a fresh `main` checkout containing none of the diff.
+- **The release workflow publishes an empty body** — an annotated tag's message is NOT used
+  as the release notes (#3409). Attach them with `gh release edit --notes-file` after.
 
 - **No GitHub merge queue on this plan.** Never propose one (or `strict: true`).
   #3259 was **closed not-planned 2026-08-26**: its part 4 (merge queue) is permanently
