@@ -19,7 +19,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 
 import { workerPath } from "./worker-path";
 
@@ -93,14 +93,14 @@ export class AliasServer {
   private serverTransport: Transport | null = null;
   private clientTransport: Transport | null = null;
   private currentAliases: AliasToolDef[] = [];
-  private db: StateDb;
+  private db: McxDb;
   private executorPath: string;
   private semaphore = new Semaphore(MAX_CONCURRENT_SUBPROCESSES);
   private workItemResolver: ((cwd: string) => Promise<AliasWorkItemInfo | null>) | null = null;
   private domainResolver: ((cwd: string) => AliasDomainInfo | null) | null = null;
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     private daemonId?: string,
   ) {
     this.db = db;
@@ -117,7 +117,7 @@ export class AliasServer {
     this.workItemResolver = resolver;
   }
 
-  /** Late-bound for the same reason as the work-item resolver: StateDb outlives this server. */
+  /** Late-bound for the same reason as the work-item resolver: McxDb outlives this server. */
   setDomainResolver(resolver: (cwd: string) => AliasDomainInfo | null): void {
     this.domainResolver = resolver;
   }
@@ -417,7 +417,7 @@ export class AliasServer {
 }
 
 /** Build ToolInfo[] from DB for pre-populating the pool's tool cache. */
-export function buildAliasToolCache(db: StateDb): Map<string, ToolInfo> {
+export function buildAliasToolCache(db: McxDb): Map<string, ToolInfo> {
   const tools = new Map<string, ToolInfo>();
   const aliases = db.listAliases();
 

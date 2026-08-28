@@ -11,13 +11,13 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
-import { createDomainResolver, createStateDbDomainSource } from "../domain-resolver";
+import { createDomainResolver, createMcxDbDomainSource } from "../domain-resolver";
 import { EventLog } from "../event-log";
 import { adoptUnassignedDomains } from "./adopt-domains";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 
 const dirs: string[] = [];
-const open: StateDb[] = [];
+const open: McxDb[] = [];
 
 afterEach(() => {
   for (const d of open) d.close();
@@ -33,9 +33,9 @@ function setup() {
   const outside = join(home, "elsewhere");
   mkdirSync(inside, { recursive: true });
   mkdirSync(outside, { recursive: true });
-  const db = new StateDb(join(home, "mcx.db"));
+  const db = new McxDb(join(home, "mcx.db"));
   open.push(db);
-  // `monitor_events` belongs to EventLog's migration, not StateDb's. Without it every
+  // `monitor_events` belongs to EventLog's migration, not McxDb's. Without it every
   // adoption call here logged "no such table" and silently exercised `alias_state` alone,
   // leaving the `json_extract(payload, '$.repoRoot')` root expression uncovered (#3213).
   new EventLog(db.getDatabase());
@@ -43,7 +43,7 @@ function setup() {
 }
 
 /** Append a raw sentinel-partition event whose payload carries `repoRoot`. */
-function insertEvent(db: StateDb, repoRoot: string): void {
+function insertEvent(db: McxDb, repoRoot: string): void {
   db.getDatabase().run(
     `INSERT INTO monitor_events (ts, src, event, category, domain_id, payload)
      VALUES (?, 'daemon', 'server.ready', 'server', ?, ?)`,
@@ -58,7 +58,7 @@ describe("state written before a domain existed", () => {
     const { db, inside } = setup();
 
     // Pre-domain: a phase script writes ctx.state. Resolves to the sentinel.
-    const before = createDomainResolver(createStateDbDomainSource(db));
+    const before = createDomainResolver(createMcxDbDomainSource(db));
     expect(before.idForPath(inside)).toBe(NO_DOMAIN_ID);
     db.setAliasState(inside, "workitem:#42", "round", 3, NO_DOMAIN_ID);
 
@@ -76,7 +76,7 @@ describe("state written before a domain existed", () => {
     expect(result.stamped).toBeGreaterThan(0);
 
     // The next daemon boot resolves a real domain and finds the value.
-    const after = createDomainResolver(createStateDbDomainSource(db));
+    const after = createDomainResolver(createMcxDbDomainSource(db));
     expect(db.getAliasState(inside, "workitem:#42", "round", after.idForPath(inside))).toBe(3);
   });
 
@@ -98,7 +98,7 @@ describe("state written before a domain existed", () => {
 
     adoptUnassignedDomains(db.getDatabase(), db.listDomains(), silent);
 
-    const resolver = createDomainResolver(createStateDbDomainSource(db));
+    const resolver = createDomainResolver(createMcxDbDomainSource(db));
     expect(resolver.idForPath(outside)).toBe(NO_DOMAIN_ID);
     expect(db.getAliasState(outside, "ns", "k", NO_DOMAIN_ID)).toBe("mine");
   });

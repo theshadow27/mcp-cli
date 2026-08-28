@@ -62,7 +62,7 @@ export interface HolderRow {
   endedAt: string | null;
 }
 
-/** The slice of `StateDb` this guard needs. */
+/** The slice of `McxDb` this guard needs. */
 export interface SessionLookup {
   listSessions(active?: boolean): HolderRow[];
 }

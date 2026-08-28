@@ -17,7 +17,7 @@ function domain(id: number, name: string, path: string, host: string | null = nu
 
 /**
  * A `DomainLookup` over a fixed list, resolving by longest matching prefix — the
- * same rule `StateDb.resolveDomain` applies, without a SQLite file. Segment-aware
+ * same rule `McxDb.resolveDomain` applies, without a SQLite file. Segment-aware
  * so the sibling-prefix cases below are testing the real rule and not a stub that
  * happens to agree with it.
  */

@@ -29,7 +29,7 @@ import type {
   MonitorEvent,
   WorkItem,
 } from "@mcp-cli/core";
-import { MONITOR_CATEGORIES, isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
+import { MONITOR_CATEGORIES, NO_DOMAIN_ID, isModuleEnabledForItem, parseAutomationOverrides } from "@mcp-cli/core";
 import type { EventBus } from "./event-bus";
 
 const AUDIT_RING_CAPACITY = 200;
@@ -57,6 +57,8 @@ export class AutomationDispatcher {
   private auditCount = 0;
   private auditTotal = 0;
   private repoRoot: string;
+  private readonly domainId: number | null;
+  private readonly acceptUndomainedEvents: boolean;
   private eventBus: EventBus;
   private getWorkItemOverrides: (workItemId: string) => string | undefined;
   private resolveWorkItemId: (prNumber: number) => string | undefined;
@@ -71,6 +73,29 @@ export class AutomationDispatcher {
   constructor(opts: {
     eventBus: EventBus;
     repoRoot: string;
+    /**
+     * The domain this dispatcher serves, or null to take every event regardless of domain.
+     *
+     * One daemon runs one dispatcher **per project** (#3192): the modules it loads come from
+     * that project's manifest and act on that project's work items, so handing them another
+     * project's events would run project A's automation against project B's PR numbers. Null
+     * is the single-project case — no domain registered, nothing to partition.
+     */
+    domainId?: number | null;
+    /**
+     * Whether to also take events that resolved to no domain at all (`NO_DOMAIN_ID`).
+     *
+     * True only for a *sole* dispatcher, where "the only project there is" is the honest
+     * reading of an un-domained event. With two or more, the same event would fan out to
+     * every project and fire every module twice, so it is dropped instead — a missed
+     * automation is recoverable, a duplicate `bye-and-untrack` is not.
+     *
+     * Setting this obliges the caller to widen the work-item lookups it injects to match:
+     * accepting an event whose row the injected lookups structurally cannot see either fires
+     * a module with no item at all, or resolves a same-numbered row of the wrong domain. See
+     * `workItemsFor` in `automation-bootstrap.ts` (#3397 review).
+     */
+    acceptUndomainedEvents?: boolean;
     getWorkItemOverrides?: (workItemId: string) => string | undefined;
     resolveWorkItemId?: (prNumber: number) => string | undefined;
     getWorkItemByBranch?: (branch: string) => WorkItem | null;
@@ -83,6 +108,8 @@ export class AutomationDispatcher {
   }) {
     this.eventBus = opts.eventBus;
     this.repoRoot = opts.repoRoot;
+    this.domainId = opts.domainId ?? null;
+    this.acceptUndomainedEvents = opts.acceptUndomainedEvents ?? false;
     this.getWorkItemOverrides = opts.getWorkItemOverrides ?? (() => undefined);
     this.resolveWorkItemId = opts.resolveWorkItemId ?? (() => undefined);
     this.getWorkItemByBranch = opts.getWorkItemByBranch ?? (() => null);
@@ -125,8 +152,16 @@ export class AutomationDispatcher {
           console.error("[AutomationDispatcher] unhandled error in onEvent:", err);
         });
       },
-      (event) => allEvents.has(event.event),
+      (event) => allEvents.has(event.event) && this.acceptsDomainOf(event),
     );
+  }
+
+  /** Whether this dispatcher's project is the one `event` belongs to. See `domainId`. */
+  private acceptsDomainOf(event: MonitorEvent): boolean {
+    if (this.domainId === null) return true;
+    const eventDomain = event.domainId ?? NO_DOMAIN_ID;
+    if (eventDomain === this.domainId) return true;
+    return eventDomain === NO_DOMAIN_ID && this.acceptUndomainedEvents;
   }
 
   stop(): void {
@@ -215,10 +250,10 @@ export class AutomationDispatcher {
       src: `automation:${moduleName}`,
       event: eventName,
       category: "automation",
-      // The dispatcher is still constructed once from the daemon's cwd — per-domain
-      // dispatchers are #3041. Until then, naming the repoRoot it *is* bound to is what
-      // lets EventBus stamp a domain, so `mcx monitor -d <name>` sees this project's
-      // automation instead of silently dropping it as un-domained (#3040).
+      // Naming the repoRoot this dispatcher is bound to is what lets EventBus stamp a
+      // domain, so `mcx monitor -d <name>` sees this project's automation instead of
+      // silently dropping it as un-domained (#3040). Since #3192 that root is the domain's
+      // own registered path, not whichever directory started the daemon.
       repoRoot: this.repoRoot,
       module: moduleName,
       triggerEvent: triggerEvent.event,
@@ -308,6 +343,16 @@ export class AutomationDispatcher {
 
   get currentPreset(): AutomationPreset {
     return this.preset;
+  }
+
+  /** The manifest root this dispatcher loaded from — how a caller's cwd selects it. */
+  get root(): string {
+    return this.repoRoot;
+  }
+
+  /** The domain this dispatcher serves, or null when it serves every event. */
+  get domain(): number | null {
+    return this.domainId;
   }
 
   private async executeActionSideEffects(

@@ -15,12 +15,12 @@ import {
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger } from "@mcp-cli/core";
 import type { AliasServer } from "../alias-server";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 
 export class AliasHandlers {
   constructor(
-    private db: StateDb,
+    private db: McxDb,
     private aliasServer: AliasServer | null,
     private logger: Logger,
     private onAliasChanged?: (name: string) => void,

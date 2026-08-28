@@ -1,114 +1,91 @@
 /**
  * Proactive quota monitoring via Claude Code's OAuth usage endpoint.
  *
- * Polls GET https://api.anthropic.com/api/oauth/usage with the Claude Code
- * session OAuth token to track utilization across 5-hour and 7-day windows.
- * Requires `anthropic-beta: oauth-2025-04-20` header.
+ * Fetch + parse live in @mcp-cli/core (command calls them too). This module is
+ * the poller, plus a best-effort stamp of the result onto the active auth profile
+ * so `mcx claude auth ls` can show quota without talking to the daemon.
  */
 
-import type { Logger } from "@mcp-cli/core";
-import { consoleLogger } from "@mcp-cli/core";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
+import type { Logger, QuotaExtraUsage, QuotaStatus, QuotaUsageBucket, StoredQuota } from "@mcp-cli/core";
+import { consoleLogger, fetchQuotaUsage, options, parseUsageResponse, toStoredQuota } from "@mcp-cli/core";
 import { type ClaudeOAuthToken, readClaudeSessionToken } from "./auth/keychain";
 import { safeSetTimeout } from "./safe-timers";
 
-const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const BETA_HEADER = "oauth-2025-04-20";
-const REQUEST_TIMEOUT_MS = 5_000;
+export type { QuotaStatus, StoredQuota };
+export type UsageBucket = QuotaUsageBucket;
+export type ExtraUsageBucket = QuotaExtraUsage;
+export { fetchQuotaUsage, parseUsageResponse, toStoredQuota };
 
-/** A single usage bucket from the API response. */
-export interface UsageBucket {
-  /** Percentage used (0-100). */
-  utilization: number;
-  /** ISO 8601 timestamp when this window resets. */
-  resetsAt: string;
-}
+const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
+const ACTIVE_FILE = "active.json";
+const FILE_MODE = 0o600;
 
-/** Extra usage / overage bucket. */
-export interface ExtraUsageBucket {
-  isEnabled: boolean;
-  monthlyLimit: number;
-  usedCredits: number;
-  /** Percentage of extra usage budget consumed (0-100). Null when usedCredits is 0. */
-  utilization: number | null;
-}
+/**
+ * Best-effort: write `quota` onto the currently-active oauth auth profile.
+ *
+ * Does not create the profile store, does not take the auth operation lock, and
+ * never throws — a missed stamp is preferable to blocking the poller or tearing
+ * a credential file. Concurrent `auth save/load` wins the race via atomic rename.
+ *
+ * Returns whether a profile file was written.
+ */
+export function stampActiveProfileQuota(quota: StoredQuota, profilesDir: string = options.AUTH_PROFILES_DIR): boolean {
+  try {
+    const activePath = join(profilesDir, ACTIVE_FILE);
+    if (!existsSync(activePath)) return false;
 
-/** Parsed quota status from the usage endpoint. */
-export interface QuotaStatus {
-  fiveHour: UsageBucket | null;
-  sevenDay: UsageBucket | null;
-  sevenDaySonnet: UsageBucket | null;
-  sevenDayOpus: UsageBucket | null;
-  extraUsage: ExtraUsageBucket | null;
-  /** When this data was fetched. */
-  fetchedAt: number;
-}
+    const activeRaw: unknown = JSON.parse(readFileSync(activePath, "utf-8"));
+    if (typeof activeRaw !== "object" || activeRaw === null || Array.isArray(activeRaw)) return false;
+    const active = activeRaw as Record<string, unknown>;
+    if (typeof active.pending === "string") return false;
+    const name = active.profile;
+    if (typeof name !== "string" || !PROFILE_NAME_RE.test(name)) return false;
 
-/** Raw JSON shape from the API. */
-interface RawUsageResponse {
-  five_hour?: { utilization: number; resets_at: string } | null;
-  seven_day?: { utilization: number; resets_at: string } | null;
-  seven_day_sonnet?: { utilization: number; resets_at: string } | null;
-  seven_day_opus?: { utilization: number; resets_at: string } | null;
-  extra_usage?: {
-    is_enabled: boolean;
-    monthly_limit: number;
-    used_credits: number;
-    utilization: number | null;
-  } | null;
-}
+    const profilePath = join(profilesDir, `${name}.json`);
+    if (!existsSync(profilePath)) return false;
 
-function parseBucket(raw: { utilization: number; resets_at: string } | null | undefined): UsageBucket | null {
-  if (!raw) return null;
-  return { utilization: raw.utilization, resetsAt: raw.resets_at };
-}
+    const profileRaw: unknown = JSON.parse(readFileSync(profilePath, "utf-8"));
+    if (typeof profileRaw !== "object" || profileRaw === null || Array.isArray(profileRaw)) return false;
+    const profile = profileRaw as Record<string, unknown>;
+    if (profile.kind === "api-key") return false;
 
-function parseExtraUsage(
-  raw:
-    | { is_enabled: boolean; monthly_limit: number; used_credits: number; utilization: number | null }
-    | null
-    | undefined,
-): ExtraUsageBucket | null {
-  if (!raw) return null;
-  return {
-    isEnabled: raw.is_enabled,
-    monthlyLimit: raw.monthly_limit,
-    usedCredits: raw.used_credits,
-    utilization: raw.utilization,
-  };
-}
-
-/** Parse the raw API response into a QuotaStatus. */
-export function parseUsageResponse(raw: RawUsageResponse): QuotaStatus {
-  return {
-    fiveHour: parseBucket(raw.five_hour),
-    sevenDay: parseBucket(raw.seven_day),
-    sevenDaySonnet: parseBucket(raw.seven_day_sonnet),
-    sevenDayOpus: parseBucket(raw.seven_day_opus),
-    extraUsage: parseExtraUsage(raw.extra_usage),
-    fetchedAt: Date.now(),
-  };
-}
-
-/** Fetch quota usage from the Anthropic OAuth usage endpoint. */
-export async function fetchQuotaUsage(token: ClaudeOAuthToken): Promise<QuotaStatus> {
-  const resp = await fetch(USAGE_URL, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token.accessToken}`,
-      "Content-Type": "application/json",
-      "anthropic-beta": BETA_HEADER,
-      "User-Agent": "mcp-cli/1.0",
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`Quota API returned ${resp.status}: ${body}`);
+    profile.quota = quota;
+    writeProfileAtomic(profilePath, `${JSON.stringify(profile, null, 2)}\n`);
+    return true;
+  } catch {
+    // Advisory snapshot — never fail the poller for a profile-store hiccup.
+    return false;
   }
+}
 
-  const raw: RawUsageResponse = await resp.json();
-  return parseUsageResponse(raw);
+function writeProfileAtomic(path: string, content: string): void {
+  const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    const fd = openSync(tmp, "w", FILE_MODE);
+    try {
+      writeSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(tmp, FILE_MODE);
+    renameSync(tmp, path);
+  } catch (err) {
+    if (existsSync(tmp)) unlinkSync(tmp);
+    throw err;
+  }
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -137,17 +114,25 @@ export class QuotaPoller {
   private readToken: () => Promise<ClaudeOAuthToken | null>;
   /** Injected fetch function for testing. */
   private fetchUsage: (token: ClaudeOAuthToken) => Promise<QuotaStatus>;
+  /** Injected active-profile stamp. Defaults to stampActiveProfileQuota. */
+  private stampProfile: (quota: StoredQuota) => void;
 
-  constructor(options?: {
+  constructor(opts?: {
     logger?: Logger;
     intervalMs?: number;
     readToken?: () => Promise<ClaudeOAuthToken | null>;
     fetchUsage?: (token: ClaudeOAuthToken) => Promise<QuotaStatus>;
+    stampProfile?: (quota: StoredQuota) => void;
   }) {
-    this.logger = options?.logger ?? consoleLogger;
-    this.intervalMs = options?.intervalMs ?? (Number(process.env.MCP_QUOTA_POLL_INTERVAL) || DEFAULT_POLL_INTERVAL_MS);
-    this.readToken = options?.readToken ?? readClaudeSessionToken;
-    this.fetchUsage = options?.fetchUsage ?? fetchQuotaUsage;
+    this.logger = opts?.logger ?? consoleLogger;
+    this.intervalMs = opts?.intervalMs ?? (Number(process.env.MCP_QUOTA_POLL_INTERVAL) || DEFAULT_POLL_INTERVAL_MS);
+    this.readToken = opts?.readToken ?? readClaudeSessionToken;
+    this.fetchUsage = opts?.fetchUsage ?? fetchQuotaUsage;
+    this.stampProfile =
+      opts?.stampProfile ??
+      ((quota) => {
+        stampActiveProfileQuota(quota);
+      });
   }
 
   /** Current quota status (null if not yet fetched or unavailable). */
@@ -216,6 +201,12 @@ export class QuotaPoller {
       this._errorLogged = false;
       this._lastErrorType = null;
       this._backoffMs = null;
+
+      try {
+        this.stampProfile(toStoredQuota(status));
+      } catch (err) {
+        this.logger.debug(`[mcpd] Quota profile stamp skipped: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       this.checkThresholds(status);
     } catch (err) {

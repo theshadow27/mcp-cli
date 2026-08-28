@@ -61,6 +61,8 @@ const TIMING_EXCLUSIONS: Record<string, string> = {
   "packages/core/src/alias-bundle-tsc.spec.ts": "bunx tsc subprocess spawning per test (~3-4s each)",
   "packages/core/src/git-core-bare-repro.spec.ts": "Subprocess-heavy git race reproduction tests (~7s)",
   "test/cli-orchestration.spec.ts": "CLI→daemon orchestration smoke tests with real daemon + mock sessions",
+  "test/domain-guard.integration.spec.ts":
+    "Domain guard through the real mcx binary — one `bun main.ts` cold start per assertion, batched with Promise.all where the invocations are independent (#3036)",
 };
 
 /**

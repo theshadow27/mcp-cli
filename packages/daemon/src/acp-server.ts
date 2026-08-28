@@ -3,7 +3,7 @@ import { ACP_SERVER_NAME, formatToolSignature } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { AbstractWorkerServer, type WorkerServerDescriptor } from "./abstract-worker-server";
 import { ACP_TOOLS } from "./acp-session/tools";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 
 export { isBaseWorkerEvent as isAcpWorkerEvent } from "./abstract-worker-server";
@@ -14,7 +14,7 @@ export class AcpServer extends AbstractWorkerServer {
   }
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,

@@ -752,8 +752,19 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       // isolation, since check() never awaits so no interleaving is possible
       // within one event-loop turn. This drives the same race through the
       // actual daemon/worker pipeline: two unawaited callTool dispatches at
-      // the exact same cwd, neither of which has a session row yet — the race
-      // the reservation exists to close, not just the Map logic behind it.
+      // the exact same cwd — the race the reservation exists to close, not
+      // just the Map logic behind it.
+      //
+      // What this test owns is the invariant in its name: exactly one wins.
+      // It deliberately does NOT assert WHICH guard branch rejects the loser,
+      // because `Promise.all` cannot order two RPCs (#3351). `check()` reads
+      // the DB before the reservation (worktree-holder.ts), so when the winner
+      // lands its session row before the loser reaches the guard, the refusal
+      // comes from the DB-backed live-session branch instead of the in-flight
+      // one. Both are correct; asserting one made this fail on a loaded CI
+      // runner while passing on an idle box. Deterministic coverage of the
+      // in-flight branch specifically lives in worktree-holder.spec.ts, where
+      // `check()` is driven directly and the ordering is not a wall clock.
       const raceDir = mkdtempSync(join(tmpdir(), "mcx-3140-race-"));
       try {
         const [a, b] = await Promise.all([
@@ -773,7 +784,12 @@ describe("CLI→daemon orchestration (mock provider)", () => {
         const failed = [a, b].filter((r) => r.error !== undefined);
         expect(succeeded).toHaveLength(1);
         expect(failed).toHaveLength(1);
-        expect(failed[0].error?.message).toMatch(/already in flight/);
+        // Still pinned tightly enough that an unrelated failure (worker crash,
+        // RPC error) cannot satisfy it: the refusal must come from the guard
+        // and must name the contested directory.
+        const refusal = failed[0].error?.message ?? "";
+        expect(refusal).toContain(`refusing to spawn into ${raceDir}`);
+        expect(refusal).toMatch(/already in flight|already working there/);
 
         const winnerId = JSON.parse((succeeded[0].result as { content: Array<{ text: string }> }).content[0].text)
           .sessionId as string;

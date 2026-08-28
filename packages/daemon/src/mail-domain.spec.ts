@@ -6,7 +6,7 @@ import { type MailDomainDb, resolveCallerDomain, resolveDelivery } from "./mail-
  * Addressing and precedence only.
  *
  * The partition semantics — who can read what — are asserted in `handlers/mail.spec.ts`
- * and `db/state.spec.ts` against a **concrete `StateDb`**, deliberately not here. A fake
+ * and `db/state.spec.ts` against a **concrete `McxDb`**, deliberately not here. A fake
  * can present a combination of states the real database cannot produce, and mutation-
  * testing a guard against such a fake proves the fake is wired to the guard, not that the
  * guard is reachable. That is precisely how an unreachable guard survived review once in

@@ -11,7 +11,7 @@
  * module never mixes the two into one silently-summed total, so a later join point has to
  * label the mix rather than average over it away.
  *
- * Read-only: queries `StateDb`'s exposed raw connection (`db.database`, see db/state.ts's
+ * Read-only: queries `McxDb`'s exposed raw connection (`db.database`, see db/state.ts's
  * `get database()`) plus its existing public `getDomainById` — no new tables, no writes.
  * Deliberately **not** cached — every call re-queries `agent_sessions` fresh, so a pruned
  * or re-domained session is reflected on the next read instead of lingering in a stale
@@ -20,7 +20,7 @@
 
 import type { DomainSpendQuery, DomainSpendResult, DomainSpendSessionRow, DomainSpendTotal } from "@mcp-cli/core";
 import { NO_DOMAIN_ID, SPEND_SOURCE_DAEMON, UNASSIGNED_DOMAIN } from "@mcp-cli/core";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 
 export { SPEND_SOURCE_DAEMON, UNASSIGNED_DOMAIN };
 export type { DomainSpendQuery, DomainSpendResult, DomainSpendSessionRow, DomainSpendTotal };
@@ -52,7 +52,7 @@ function parseSqliteDatetime(s: string): number {
  * that need this repeatedly (the `_metrics` tool, the `mcx spend` CLI) call it fresh each
  * time rather than reading a cached/periodic snapshot.
  */
-export function queryDomainSpend(db: StateDb, query: DomainSpendQuery = {}): DomainSpendResult {
+export function queryDomainSpend(db: McxDb, query: DomainSpendQuery = {}): DomainSpendResult {
   let domainIdFilter: number | null = null;
   if (query.domain !== undefined) {
     const domain = db.getDomainByName(query.domain);

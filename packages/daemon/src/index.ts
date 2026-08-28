@@ -71,7 +71,7 @@ import {
 } from "@mcp-cli/core";
 import { AcpServer, buildAcpToolCache } from "./acp-server";
 import { AliasServer, buildAliasToolCache } from "./alias-server";
-import { AutomationDispatcher } from "./automation-dispatcher";
+import { startAutomationDispatchers } from "./automation-bootstrap";
 import { BudgetWatcher } from "./budget-watcher";
 import { ClaudeServer, buildClaudeToolCache } from "./claude-server";
 import { CodexServer, buildCodexToolCache } from "./codex-server";
@@ -79,15 +79,18 @@ import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { adoptUnassignedDomains } from "./db/adopt-domains";
-import { importLegacyState } from "./db/import-legacy";
-import { StateDb } from "./db/state";
-import { WorkItemDb } from "./db/work-items";
+import { importLegacyState, recoveryInstructions } from "./db/import-legacy";
+import { McxDb } from "./db/state";
+import { WorkItemDb, firstOf } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
-import { createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
+import { DomainRepoResolver } from "./domain-repos";
+import { createDomainResolver, createMcxDbDomainSource } from "./domain-resolver";
+import { resolveDomainRoots } from "./domain-roots";
 import { resolveDomainScope } from "./domain-scope";
 import { DomainSupervisor } from "./domain-supervisor";
 import { EventBus } from "./event-bus";
+import { createEventDomainStamper } from "./event-domain";
 import { EventLog } from "./event-log";
 import type { CiEvent } from "./github/ci-events";
 import { CopilotPoller } from "./github/copilot-poller";
@@ -188,7 +191,7 @@ function defaultGitOps(): PruneGitOps {
  * Returns the number of repos where the key was removed.
  */
 export function sweepCoreBare(
-  db: StateDb,
+  db: McxDb,
   logger: Logger = consoleLogger,
   gitOps: PruneGitOps = defaultGitOps(),
 ): number {
@@ -223,7 +226,7 @@ export function sweepCoreBare(
 
 /** Remove worktrees from ended sessions that are clean and have no active session. */
 export function pruneOrphanedWorktrees(
-  db: StateDb,
+  db: McxDb,
   logger: Logger = consoleLogger,
   gitOps: PruneGitOps = defaultGitOps(),
 ): void {
@@ -367,7 +370,7 @@ export interface DaemonHandle {
   /** Resolves when shutdown completes. Useful for tests that need to await cleanup. */
   readonly shutdownComplete: Promise<void>;
   readonly isShuttingDown: boolean;
-  readonly db: StateDb;
+  readonly db: McxDb;
   readonly pool: ServerPool;
   readonly ipcServer: IpcServer;
   readonly watcher: ConfigWatcher;
@@ -446,42 +449,10 @@ export async function resolveHeadBranch(cwd: string): Promise<string | null> {
  * Start the daemon and return a handle for lifecycle management.
  * Does not install process signal handlers or call process.exit — the caller is responsible.
  */
-/**
- * Pick one row when a ring-0 lookup legitimately matched several domains.
- *
- * A PR/branch/issue number is unique **per domain**, so a cross-domain lookup can return
- * more than one row. Callers whose interface is single-valued take the first — but say so,
- * because a silently-chosen row is the ambiguity #3034 removed from the schema creeping back
- * in at the consumer. Per-domain dispatch removes the choice entirely (#3022).
- */
-function firstOf<T extends { domainId: number }>(matches: T[], label: string, warn: (msg: string) => void): T | null {
-  if (matches.length === 0) return null;
-  if (matches.length > 1) {
-    warn(
-      `[mcpd] ${label} matches ${matches.length} work items across domains (${matches
-        .map((m) => m.domainId)
-        .join(", ")}); acting on domain ${matches[0].domainId}. Per-domain dispatch is #3022.`,
-    );
-  }
-  return matches[0];
-}
-
 export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHandle> {
   // Allow env-based override for subprocess integration tests
   const skipVirtualServers = opts?.skipVirtualServers ?? process.env.MCP_DAEMON_SKIP_VIRTUAL_SERVERS === "1";
   const logger = opts?.logger ?? consoleLogger;
-
-  // Cached repo info for resolveIssuePr — detected once from daemon startup cwd
-  /**
-   * PRE-EXISTING GAP, deliberately unchanged — see #3192.
-   *
-   * One repo, detected from the daemon's cwd. Wrong the moment two domains are two different
-   * repos, and wrong before this PR too: the readers were unscoped then, so the poller has
-   * always queried every tracked PR number against this one repo. Making the readers ring 0
-   * restored that behaviour exactly rather than widening it, so #3037 neither caused nor owns
-   * this. Per-domain pollers are #3022.
-   */
-  let cachedRepo: RepoInfo | null = null;
 
   if (!opts?.skipLogSetup) {
     installDaemonLogCapture();
@@ -523,7 +494,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     writeFileSync(options.PID_PATH, JSON.stringify(pidData));
   }
 
-  // Preflight: verify SQLite >= 3.38 BEFORE opening StateDb — the constructor
+  // Preflight: verify SQLite >= 3.38 BEFORE opening McxDb — the constructor
   // runs migrations whose DEFAULT (unixepoch()) expressions would throw first
   // on macOS 12 Monterey (SQLite 3.37.0), swallowing the friendly error. See #2092.
   {
@@ -538,7 +509,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
 
   // Open SQLite database
-  const db = new StateDb(options.DB_PATH);
+  const db = new McxDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
 
   // One-shot best-effort import from the pre-domain state.db (#3034). Runs before
@@ -555,7 +526,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const importResult = importLegacyState({ db: db.getDatabase(), log: (msg) => logger.warn(msg) });
   if (importResult.ran && !importResult.sealed) {
     logger.warn(
-      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will retry on the next start`,
+      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will NOT automatically retry; ${recoveryInstructions()}`,
     );
   } else if (!importResult.ran) {
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
@@ -595,7 +566,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // because `importScopesAsDomains` creates domains before the `agent_sessions` copy so
   // `createDomain`'s own adopt hook could not catch those rows. That mechanism is
   // invented: `importScopesAsDomains` writes with a raw prepared INSERT on the attached
-  // target and never calls `StateDb.createDomain`, so the hook was never in play. The
+  // target and never calls `McxDb.createDomain`, so the hook was never in play. The
   // conclusion was right for the simpler reason above.)
   //
   // Best-effort, like the import directly above: it is idempotent and self-heals on the
@@ -642,31 +613,58 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const wsPort = cliConfig.wsPort ?? DEFAULT_CLAUDE_WS_PORT;
   const claudeServer = new ClaudeServer(db, daemonId, undefined, logger, 10_000, wsPort);
 
-  // Repo-detection cwd for GitHub repo detection (`git remote get-url origin`) — used
-  // by resolveIssuePr, resolveBranchFromPr, and both GitHub pollers (#3243). Defaults
-  // to the daemon's startup process.cwd(), same as always, but no non-interactive
-  // launcher (systemd, Docker, etc.) can guarantee that's the project root — a missing
-  // `WorkingDirectory=` silently defaults cwd to $HOME. An explicit override (env takes
-  // precedence over config, matching the rest of this file's env/config layering)
-  // gives operators a seam that doesn't depend on getting the launcher's cwd right.
+  // Fallback root for GitHub repo detection (`git remote get-url origin`) — used only for
+  // work items in no domain, and by a box with no domain registered at all (#3243, #3192).
+  // No non-interactive launcher (systemd, Docker, etc.) can guarantee the daemon's cwd is a
+  // project root — a missing `WorkingDirectory=` silently defaults cwd to $HOME. An explicit
+  // override (env takes precedence over config, matching the rest of this file's env/config
+  // layering) gives operators a seam that doesn't depend on the launcher's cwd.
   const repoRootOverride = process.env.MCP_DAEMON_REPO_ROOT || cliConfig.repoRoot;
-  const repoDetectCwd = repoRootOverride ? resolveRealpath(resolve(repoRootOverride)) : process.cwd();
+  // Realpath-resolved either way: this value is compared against domain paths and used as an
+  // `alias_state` key, and a symlinked cwd silently fails both.
+  const repoDetectCwd = resolveRealpath(resolve(repoRootOverride || process.cwd()));
 
-  // Make repo-detection failure loud at startup (#3243) instead of only surfacing
-  // through periodic poller retry-warnings several seconds/minutes later. Runs in the
-  // background — never blocks daemon startup — and warms `cachedRepo` on success so
-  // resolveIssuePr/resolveBranchFromPr's first call doesn't re-run `git remote`.
-  detectRepo(repoDetectCwd)
-    .then((repo) => {
-      cachedRepo = repo;
-      logger.info(`[mcpd] Detected repo: ${repo.owner}/${repo.repo} (cwd=${repoDetectCwd})`);
-    })
-    .catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(
-        `[mcpd] Repo detection failed at startup (cwd=${repoDetectCwd}): ${msg} — PR/CI events (pr.*, ci.*) and issue<->PR resolution will be unavailable until this resolves. The work-item and Copilot pollers will keep retrying with backoff; fix by correcting the daemon's launch cwd (e.g. a systemd unit's WorkingDirectory=), or set an explicit repo root via \`mcx config set repo-root /path/to/repo\` (or $MCP_DAEMON_REPO_ROOT).`,
-      );
-    });
+  // The projects this daemon serves. Read from the `domains` table, so which projects get
+  // automation and which repos the pollers query no longer depends on where mcpd was
+  // started (#3192). The cwd is the fallback for a box with nothing registered.
+  const domainRoots = resolveDomainRoots({ domains: db.listDomains(), fallbackRoot: repoDetectCwd });
+  logger.info(
+    `[mcpd] Serving ${domainRoots.length} project root(s): ${domainRoots.map((r) => `${r.name}=${r.path}`).join(", ") || "(none)"}`,
+  );
+
+  // One repo per domain, shared by both pollers and by issue↔PR resolution. `rootFor` reads
+  // the table live rather than closing over `domainRoots` so a domain registered after
+  // startup (`mcx domain add`) resolves without a daemon restart.
+  const domainRepos = new DomainRepoResolver({
+    rootFor: (domainId) => {
+      const row = db.getDomainById(domainId);
+      return row && row.host === null ? resolveRealpath(row.path) : null;
+    },
+    detectRepo: (cwd) => detectRepo(cwd),
+    fallbackRoot: repoDetectCwd,
+    logger,
+  });
+
+  // Make repo-detection failure loud at startup (#3243) instead of only surfacing through
+  // periodic poller retry-warnings several seconds/minutes later. Runs in the background —
+  // never blocks daemon startup — and warms the cache so the first `mcx track` doesn't have
+  // to re-run `git remote`.
+  for (const root of domainRoots) {
+    domainRepos
+      .repoFor(root.id)
+      .then((repo) => {
+        if (repo) logger.info(`[mcpd] Detected repo for ${root.name}: ${repo.owner}/${repo.repo} (cwd=${root.path})`);
+        else
+          logger.warn(
+            `[mcpd] Repo detection failed at startup for ${root.name} (cwd=${root.path}) — PR/CI events (pr.*, ci.*) and issue<->PR resolution are unavailable for that project until this resolves. The work-item and Copilot pollers keep retrying with backoff; fix by correcting the domain's registered path (\`mcx domain\`), or — for an unregistered box — the daemon's launch cwd or \`mcx config set repo-root /path/to/repo\` (or $MCP_DAEMON_REPO_ROOT).`,
+          );
+      })
+      .catch((err) => {
+        // `repoFor` reports failure by returning null; a throw here is a bug in the
+        // resolver, not a detection failure, and must not be swallowed silently.
+        logger.error(`[mcpd] Repo detection threw for ${root.name}: ${err instanceof Error ? err.message : err}`);
+      });
+  }
 
   // Bun.which() is a synchronous builtin — no subprocess, no await needed.
   const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled, grokInstalled] = [
@@ -775,11 +773,12 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // Own instance rather than reaching into the automation-dispatcher block's
   // scoped one (#3234) — cheap to construct (WorkItemDb.migrate() is a no-op once
   // the schema is current) and this one lives for the daemon's whole lifetime so
-  // the idle-timer callback (declared below, invoked well after this point) can
-  // always close over it. `.acrossDomains()`: the idle-shutdown check is a single
-  // daemon-lifetime concern, not scoped to any one domain — see
-  // CrossDomainWorkItems.countActiveWorkItems.
-  const idleWorkItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
+  // the callbacks declared below (the idle timer, the event-domain stamper), invoked
+  // well after this point, can always close over it. `.acrossDomains()`: both the
+  // idle-shutdown check and "which domain owns this PR's events" are daemon-lifetime
+  // concerns spanning every domain, not scoped to any one — see
+  // CrossDomainWorkItems.countActiveWorkItems and event-domain.ts.
+  const daemonWorkItems = new WorkItemDb(db.getDatabase()).acrossDomains();
 
   let lastIdleReset = Date.now();
   /** Monotonic timestamp (ms) when the current idle timer was scheduled */
@@ -838,7 +837,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       // fire time, not just reset-on-event, so a connection opened between resets is
       // still caught.
       const monitorSubs = ipcServer.activeStreamCount;
-      const activeWorkItems = idleWorkItemDb.countActiveWorkItems();
+      const activeWorkItems = daemonWorkItems.countActiveWorkItems();
       if (monitorSubs > 0 || activeWorkItems > 0) {
         logger.info(
           `[mcpd] Idle timer fired but ${monitorSubs} monitor subscription(s), ${activeWorkItems} active work item(s) — staying up`,
@@ -854,18 +853,32 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const eventLog = new EventLog(db.getDatabase());
   const seqBefore = eventLog.currentSeq();
   eventLog.startPruning();
-  // One resolver for the whole daemon (#3040): the EventBus stamps every event with it
-  // and the IPC server partitions alias_state with it, so "which domain owns this path"
-  // has a single answer and a single memo to invalidate.
-  // The daemon serves exactly one repo today — detected from its startup cwd. Named once
-  // here so the several producers that need to state their domain all cite the same value
-  // rather than each recomputing `resolve(process.cwd())` under a different name.
-  // Epic B (domain servers) is what makes this per-domain rather than per-daemon.
-  const daemonRepoRoot = resolveRealpath(resolve(process.cwd()));
+  // Last-resort root for an event that names no work item and no project of its own. Named
+  // once here so the producers that need it cite one value rather than each recomputing
+  // `resolve(process.cwd())` under a different name.
+  //
+  // It is NOT the daemon's project: per-project machinery (automation manifests, GitHub repo
+  // detection) is enumerated from the `domains` table by `resolveDomainRoots` below, because
+  // `mcpd` is auto-started by whichever `mcx` call needed it and its cwd is an accident of
+  // process ancestry (#3192). The operator override applies here too, so a launcher with the
+  // wrong `WorkingDirectory=` can still be corrected without a code change.
+  const daemonRepoRoot = repoDetectCwd;
+
+  // The one answer to "which domain owns this poller-produced event" (#3352). The pollers
+  // watch every domain's work items from a process whose cwd sits in at most one of them,
+  // so the item's own domain — not the daemon's root — is what their events get stamped
+  // with. `daemonRepoRoot` stays as the fallback for an event that names no item at all.
+  const eventDomains = createEventDomainStamper({
+    lookup: {
+      byId: (itemId) => daemonWorkItems.getWorkItem(itemId),
+      byPr: (prNumber) => firstOf(daemonWorkItems.findByPr(prNumber), `PR #${prNumber}`, logger.warn),
+    },
+    daemonRepoRoot,
+  });
 
   // One shared factory, not a hand-copy: the IPC server's fallback and the specs use the
   // same source, so the candidate order cannot drift between them (#3169 review R7).
-  const domainResolver = createDomainResolver(createStateDbDomainSource(db));
+  const domainResolver = createDomainResolver(createMcxDbDomainSource(db));
   const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
 
@@ -936,165 +949,30 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     logger.info("[mcpd] Session metrics aggregator started");
   }
 
-  // Start automation dispatcher (#2018) — reads lockfile, subscribes to event bus
-  let automationDispatcher: AutomationDispatcher | null = null;
-  {
-    // Ring 0: the dispatcher's work-item lookups span every domain. It must not be bound to
-    // "the daemon's domain" — mcpd is auto-started by whichever mcx call needed it, sometimes
-    // with no cwd, so a startup-time binding partitions it by process ancestry (see
-    // WorkItemDb.acrossDomains).
-    const workItemDb = new WorkItemDb(db.getDatabase()).acrossDomains();
-    // KNOWN GAP, not an oversight: the automation manifest and its lockfile are still read
-    // from the daemon's cwd, so which project's automation runs depends on where mcpd was
-    // started. This is the same class of defect the ring-0 change above removes from the
-    // work-item readers, but it cannot be fixed the same way: automation is inherently
-    // per-project, so the fix is one dispatcher per domain (epic B / #3022), not one
-    // dispatcher reading across domains. Tracked separately; deliberately NOT bundled into
-    // #3037. The startup log below names the root it bound to so the choice is visible
-    // rather than implied.
-    let manifestResult: ReturnType<typeof loadManifest> | null = null;
-    try {
-      manifestResult = loadManifest(process.cwd());
-    } catch (err) {
-      if (err instanceof ManifestVersionError) {
-        logger.warn(`[mcpd] ${err.message}`);
-      } else {
-        logger.warn(`[mcpd] Failed to load manifest for automation: ${err} — skipping`);
-      }
-    }
-    if (manifestResult?.manifest?.automation) {
-      const lockfilePath = join(process.cwd(), LOCKFILE_NAME);
-      let automations: import("@mcp-cli/core").LockedAutomation[] = [];
+  // Start automation — one dispatcher per project (#2018; per-project since #3192).
+  //
+  // Each root loads its own manifest and lockfile, reads its own domain's work items, and
+  // takes only its own domain's events. See `automation-bootstrap.ts` for why that is a
+  // module rather than a block here, and `resolveDomainRoots` for where the roots come from
+  // now that they are not "wherever mcpd was started".
+  const automation = startAutomationDispatchers({
+    roots: domainRoots,
+    eventBus: mailEventBus,
+    workItems: new WorkItemDb(db.getDatabase()),
+    mcxDb: db,
+    domainIdForPath: (repoRoot) => domainResolver.idForPath(repoRoot),
+    endSession: async (sessionId, reason) => {
       try {
-        const lockText = readFileSync(lockfilePath, "utf-8");
-        const lock = parseLockfile(lockText);
-        const currentManifestHash = sha256Hex(readFileSync(manifestResult.path, "utf-8"));
-        if (lock.manifestHash !== currentManifestHash) {
-          logger.warn(
-            `[mcpd] Lockfile manifest hash mismatch (locked: ${lock.manifestHash.slice(0, 8)}… vs current: ${currentManifestHash.slice(0, 8)}…) — run \`mcx phase install\``,
-          );
-        }
-        automations = lock.automations ?? [];
+        await pool.callTool(CLAUDE_SERVER_NAME, "claude_bye", { sessionId, message: reason });
       } catch (err) {
-        const isEnoent = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
-        if (isEnoent) {
-          logger.warn("[mcpd] Automation configured but no lockfile found — run `mcx phase install`");
-        } else {
-          logger.warn(
-            `[mcpd] Automation configured but lockfile is corrupt: ${err instanceof Error ? err.message : String(err)} — run \`mcx phase install\``,
-          );
-        }
-      }
-      // PRE-EXISTING GAP, deliberately left exactly as it was — see #3192.
-      //
-      // Phase state is keyed by (repo_root, namespace, key), and this root is the daemon's
-      // cwd. That is already the wrong key when the daemon starts outside the project, and it
-      // was wrong before this PR too. #3037 does NOT own it: nothing about scoping work_items
-      // by domain requires deriving a phase-state root.
-      //
-      // An earlier round of this PR tried to fix it here by substituting the domain's
-      // registered path. That was worse — `mcx scope add` stores a cwd with no git-root check
-      // and a domain may legally be registered at an ANCESTOR of the repo, so the registered
-      // path and the git root every writer uses coincide only by luck. It replaced a known
-      // stale key with a differently-wrong one and made this file the fifth independent
-      // derivation of a key that already had four. Reverted rather than patched.
-      const automationRepoRoot = resolveRealpath(resolve(process.cwd()));
-      if (automations.length > 0) {
-        automationDispatcher = new AutomationDispatcher({
-          eventBus: mailEventBus,
-          repoRoot: automationRepoRoot,
-          getWorkItemOverrides: (workItemId) => {
-            const item = workItemDb.getWorkItem(workItemId);
-            return item?.automationOverrides ?? undefined;
-          },
-          // The dispatcher's callbacks are single-valued, but a PR/branch/issue number can
-          // name one item per domain. Take the first and SAY SO when there are more, rather
-          // than silently picking one — this restores the pre-#3037 behaviour (these reads
-          // were unscoped) while making the ambiguity visible instead of implicit. Per-domain
-          // dispatch is #3022.
-          resolveWorkItemId: (prNumber) => firstOf(workItemDb.findByPr(prNumber), `PR #${prNumber}`, logger.warn)?.id,
-          getWorkItemByBranch: (branch) => firstOf(workItemDb.findByBranch(branch), `branch ${branch}`, logger.warn),
-          getWorkItemByIssue: (issueNumber) =>
-            firstOf(workItemDb.findByIssue(issueNumber), `issue #${issueNumber}`, logger.warn),
-          updateWorkItem: (id, patch) => {
-            const item = workItemDb.getWorkItem(id);
-            if (!item) return;
-            // Write into the row's OWN partition, not a partition the daemon guessed.
-            workItemDb.forRow(item).updateWorkItem(id, patch as import("@mcp-cli/core").WorkItemPatch);
-          },
-          getWorkItem: (workItemId) => {
-            const item = workItemDb.getWorkItem(workItemId);
-            if (!item) return null;
-            return {
-              id: item.id,
-              domainId: item.domainId,
-              issueNumber: item.issueNumber,
-              prNumber: item.prNumber,
-              branch: item.branch,
-              phase: item.phase,
-            };
-          },
-          getWorkItemState: (workItemId) => {
-            // Automation state lives in alias_state under `workitem:<id>` — the same
-            // rows `ctx.state` writes from a phase script, so it must be read from the
-            // same partition or a module would see an empty snapshot for a work item
-            // whose phase script had just written to it (#3040). `workItemId` here is
-            // always the canonical id straight off a DB row (see `resolveWorkItemId` /
-            // `resolveWorkItemIdFromEvent` above) — never a caller-typed spelling — so
-            // `workItemStateNamespace` is safe to use directly (#3037).
-            return db.listAliasState(
-              automationRepoRoot,
-              workItemStateNamespace(workItemId),
-              domainResolver.idForPath(automationRepoRoot),
-            );
-          },
-          actionExecutor: {
-            async byeAndUntrack(workItemId, sessionIds) {
-              const byeResults = await Promise.allSettled(
-                sessionIds.map(async (sid) => {
-                  try {
-                    await pool.callTool(CLAUDE_SERVER_NAME, "claude_bye", {
-                      sessionId: sid,
-                      message: "automation cleanup: PR merged",
-                    });
-                  } catch (err) {
-                    logger.warn(
-                      `[automation] claude_bye failed for ${sid}: ${err instanceof Error ? err.message : String(err)} — ending in DB`,
-                    );
-                    db.endSession(sid);
-                  }
-                }),
-              );
-              for (let i = 0; i < byeResults.length; i++) {
-                if (byeResults[i].status === "rejected") {
-                  logger.warn(`[automation] failed to end session ${sessionIds[i]}`);
-                }
-              }
-              const owning = workItemDb.getWorkItem(workItemId);
-              if (owning) {
-                const rowScoped = workItemDb.forRow(owning);
-                try {
-                  rowScoped.updateWorkItem(workItemId, { phase: "done" });
-                } catch {
-                  logger.warn(`[automation] failed to set phase=done on ${workItemId}`);
-                }
-                try {
-                  rowScoped.deleteWorkItem(workItemId);
-                } catch {
-                  logger.warn(`[automation] failed to untrack ${workItemId}`);
-                }
-              }
-            },
-          },
-        });
-        automationDispatcher.load(manifestResult.manifest.automation, automations);
-        automationDispatcher.start();
-        logger.info(
-          `[mcpd] Automation dispatcher started (${automations.length} module(s), preset: ${manifestResult.manifest.automation.preset ?? "supervised"}) — manifest root ${automationRepoRoot} (from daemon cwd; per-domain dispatch is #3022)`,
+        logger.warn(
+          `[automation] claude_bye failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)} — ending in DB`,
         );
+        db.endSession(sessionId);
       }
-    }
-  }
+    },
+    logger,
+  });
 
   // Start IPC server
   const ipcServer = new IpcServer(pool, config, db, aliasServer, {
@@ -1124,15 +1002,13 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         lastError: quotaPoller.lastError,
       };
     },
-    resolveIssuePr: async (number: number) => {
-      // Cache repo detection so we don't re-run `git remote` on every track call.
-      // Uses the daemon's startup cwd which is the project root at launch time (#3192).
-      // repoDetectCwd defaults to the daemon's startup cwd but can be overridden
-      // (repoRoot config / MCP_DAEMON_REPO_ROOT) — see its definition above (#3243).
-      if (!cachedRepo) {
-        cachedRepo = await detectRepo(repoDetectCwd);
-      }
-      const resolved = await resolveNumber(cachedRepo, number);
+    resolveIssuePr: async (number: number, domainId: number) => {
+      // The repo of the domain the caller is tracking into, cached per domain so we don't
+      // re-run `git remote` on every track call (#3192). `mcx track 42` in project B must
+      // not resolve issue 42 against project A's repo just because A started the daemon.
+      const repo = await domainRepos.repoFor(domainId);
+      if (!repo) return { prNumber: null };
+      const resolved = await resolveNumber(repo, number);
       return { prNumber: resolved.prNumber };
     },
     eventBus: mailEventBus,
@@ -1141,26 +1017,23 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
         logger.error(`[mcpd] Monitor restart for "${name}" failed: ${err}`);
       });
     },
-    automationDispatcher: automationDispatcher ?? undefined,
+    automation,
     domains: domainResolver,
   });
   await ipcServer.start();
 
   // Reset idle timer on Claude/Codex/ACP session worker events (db:upsert, db:state, db:cost)
   claudeServer.onActivity = () => resetIdleTimer();
-  // Work-item and CI events from the daemon's own pollers carry only a prNumber/branch:
-  // `work_items` has no repo column and no domain_id writer yet (#3036/#3037), so there
-  // is nothing on the event to resolve. The daemon polls exactly one repo, so it declares
-  // that root here rather than leaving ~19% of the traffic un-domained (#3040 review R3).
-  // A producer that already said which repo it means is left alone.
+  // Work-item and CI events from the daemon's own pollers carry the work item's identity
+  // (`workItemId`/`prNumber`) and no path, so their domain is resolved from that item —
+  // which is in whatever domain the item belongs to, not necessarily the daemon's own
+  // (#3352). The daemon's root is still stamped on an event that resolves to no item, so
+  // this traffic is not left un-domained (#3040 review R3). Only these two categories:
+  // a session-category event with no session is genuinely un-domained, and inventing the
+  // daemon's root for it would attribute another project's session to this one.
+  // A producer that already said which domain or repo it means is left alone.
   claudeServer.onMonitorEvent = (input) =>
-    mailEventBus.publish(
-      input.repoRoot === undefined &&
-        input.sessionId === undefined &&
-        (input.category === "work_item" || input.category === "ci")
-        ? { ...input, repoRoot: daemonRepoRoot }
-        : input,
-    );
+    mailEventBus.publish(input.category === "work_item" || input.category === "ci" ? eventDomains.stamp(input) : input);
   if (codexServer) {
     codexServer.onActivity = () => resetIdleTimer();
   }
@@ -1416,32 +1289,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
           // and scopes per call, from the caller's cwd.
           const workItemDb = workItems.acrossDomains();
 
-          /**
-           * Domain name for a work-item event, resolved PER EVENT from the row it concerns.
-           *
-           * Previously a single name captured at startup from the daemon's cwd, which was
-           * wrong for every item outside that partition — and the daemon has no cwd of its
-           * own worth trusting. `null` when the item is unassigned or unknown; never a guess.
-           */
-          const domainNameFor = (event: import("@mcp-cli/core").WorkItemEvent): string | null => {
-            const item =
-              "itemId" in event
-                ? workItemDb.getWorkItem(event.itemId)
-                : "prNumber" in event
-                  ? firstOf(workItemDb.findByPr(event.prNumber), `PR #${event.prNumber}`, logger.warn)
-                  : null;
-            if (!item || item.domainId === NO_DOMAIN_ID) return null;
-            return db.getDomainById(item.domainId)?.name ?? null;
-          };
-
           // Create the poller first so we can pass pollNow to the server
           workItemPoller = new WorkItemPoller({
             db: workItemDb,
             logger,
-            // Explicit repoDetectCwd, not the poller's bare `detectRepo()` default —
-            // respects the repoRoot override the same way resolveIssuePr does (#3243).
-            detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
-            onEvent: (event) => claudeServer.forwardWorkItemEvent(event, domainNameFor(event)),
+            // One repo per domain, resolved from the domain's registered path (#3192) and
+            // shared with the Copilot poller and issue↔PR resolution so all three agree.
+            repos: domainRepos,
+            // Neither hop stamps a domain: the event carries the item's identity and
+            // `eventDomains` turns that into the item's own domain at the publish seam —
+            // one resolution for all three pollers, not one per producer (#3352).
+            onEvent: (event) => claudeServer.forwardWorkItemEvent(event),
             onCiEvent: (event) => publishCiEvent(mailEventBus, event),
           });
 
@@ -1494,18 +1352,14 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
                 return null;
               }
             },
-            resolveBranchFromPr: async (prNumber: number) => {
-              // Re-use the cached repo (see #3192) so the --repo flag is always explicit,
-              // avoiding `gh pr view` resolving against an ambiguous cwd. Returns null when
+            resolveBranchFromPr: async (prNumber: number, domainId: number) => {
+              // The repo of the domain the row lives in (#3192), so the --repo flag is
+              // always explicit — `gh pr view` must not resolve against an ambiguous cwd,
+              // and PR #7 in this domain is not PR #7 in another one. Returns null when
               // detection fails; the caller treats that as "branch not known" and continues.
-              if (!cachedRepo) {
-                try {
-                  cachedRepo = await detectRepo(repoDetectCwd);
-                } catch {
-                  return null;
-                }
-              }
-              return resolveBranchFromPr(prNumber, { repo: cachedRepo });
+              const repo = await domainRepos.repoFor(domainId);
+              if (!repo) return null;
+              return resolveBranchFromPr(prNumber, { repo });
             },
             logger,
           });
@@ -1524,24 +1378,21 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           copilotPoller = new CopilotPoller({
             workItemDb,
-            stateDb: db,
+            mcxDb: db,
             logger,
-            // Same repoRoot-override seam as WorkItemPoller above (#3243).
-            detectRepo: (cwd) => detectRepo(cwd ?? repoDetectCwd),
+            // Same per-domain repo map as WorkItemPoller above (#3192).
+            repos: domainRepos,
             onEvent: (rawEvent) => {
-              // Same reasoning as the work-item poller: these are repo-scoped events
-              // (review, issue, PR comments) from a poller bound to the daemon's one
-              // repo, and they key only on prNumber — so the producer states its root
-              // rather than publishing un-domained (#3040 review R3).
-              // Only when the event names no other identity. Note the bus's order is
-              // preference, not strict precedence — an unresolvable repoRoot falls through
-              // to the session — but stamping the daemon's root onto a session-bearing
-              // event would still win whenever that root DOES resolve, which would
-              // attribute another domain's session to this one.
-              const event =
-                rawEvent.repoRoot === undefined && rawEvent.sessionId === undefined
-                  ? { ...rawEvent, repoRoot: daemonRepoRoot }
-                  : rawEvent;
+              // Same seam as the work-item poller: these events (review, issue, PR
+              // comments) key on workItemId/prNumber, so the producer states the domain
+              // of that item rather than publishing un-domained (#3040 review R3) — and
+              // rather than its own root, which is a different project's domain for every
+              // item outside the daemon's cwd (#3352). Only when the event names no other
+              // identity: the bus's order is preference, not strict precedence — an
+              // unresolvable repoRoot falls through to the session — but stamping onto a
+              // session-bearing event would still win whenever it DOES resolve, which
+              // would attribute another domain's session to this one.
+              const event = eventDomains.stamp(rawEvent);
               if (event.event === PR_REVIEW_COMMENT_POSTED) {
                 const key = `${event.event}:${event.prNumber}:${event.author}`;
                 mailEventBus.publishCoalesced(event, key, {
@@ -1587,19 +1438,17 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
 
   function publishCiEvent(bus: EventBus, event: CiEvent): void {
-    const base = {
+    // The producer states its own domain rather than leaving it to be inferred (#3040
+    // review R3) — but the domain it states is the WORK ITEM's, resolved from the
+    // prNumber/workItemId the event already carries, not the daemon's startup cwd (#3352).
+    // Stamped on `base` so every variant below publishes the same partition.
+    const base = eventDomains.stamp({
       src: "daemon.work-item-poller",
       event: event.type,
       category: "ci" as const,
       prNumber: event.prNumber,
       workItemId: event.workItemId,
-      // The producer states its own domain rather than leaving it to be inferred
-      // (#3040 review R3). CI events key only on prNumber/workItemId, and `work_items`
-      // has no repo column or domain_id writer yet (#3036/#3037) — so until it does,
-      // the daemon's own root is the honest answer: this poller polls exactly one repo,
-      // detected from the daemon's cwd at startup.
-      repoRoot: daemonRepoRoot,
-    };
+    });
     const coalesceKey = `ci:${event.prNumber}`;
 
     if (event.type === "ci.started") {
@@ -1634,7 +1483,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
       clearInterval(metricsInterval);
-      automationDispatcher?.stop();
+      automation.stop();
       eventLog.stopPruning();
       quotaPoller.stop();
       budgetWatcher.dispose();

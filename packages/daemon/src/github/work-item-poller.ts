@@ -13,29 +13,26 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
 import { type CrossDomainWorkItems, ciRunStateKey, parseCiRunStateKey } from "../db/work-items";
+import {
+  DomainRepoResolver,
+  type DomainRepos,
+  groupByDomain,
+  repoDetectBackoffMs,
+  skippedDomainsError,
+} from "../domain-repos";
 import { safeSetTimeout } from "../safe-timers";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
 import { type FetchPRsOptions, type PRStatus, type RepoInfo, detectRepo, fetchTrackedPRs } from "./graphql-client";
 
 export { computeSrcChurn };
+// Re-exported where it has always lived for this poller's callers; the policy itself moved
+// to `domain-repos.ts` when repo detection became per-domain (#3192), because it was two
+// verbatim copies of the same never-give-up backoff (#3243).
+export { repoDetectBackoffMs };
 
 const ACTIVE_INTERVAL_MS = 30_000;
 const STABLE_INTERVAL_MS = 5 * 60_000;
-
-// Repo detection retry backoff (#3243): a poller must never give up on repo detection
-// permanently. `detectRepo()` can fail for reasons that resolve themselves without a
-// daemon restart — a missing `WorkingDirectory=` on the systemd unit gets fixed, a repo
-// that didn't exist yet at daemon startup appears, a transient `git`/network hiccup
-// clears. Capped exponential backoff, doubling from the base up to the cap, keeps
-// retrying forever instead of "3 tries, then dead for the rest of the process".
-const REPO_DETECT_BACKOFF_BASE_MS = 30_000;
-const REPO_DETECT_BACKOFF_MAX_MS = 15 * 60_000;
-
-/** Capped exponential backoff delay for the Nth consecutive repo-detect failure (N ≥ 1). */
-export function repoDetectBackoffMs(failureCount: number): number {
-  return Math.min(REPO_DETECT_BACKOFF_BASE_MS * 2 ** (failureCount - 1), REPO_DETECT_BACKOFF_MAX_MS);
-}
 
 export interface WorkItemPollerOptions {
   /**
@@ -48,12 +45,8 @@ export interface WorkItemPollerOptions {
    *
    * Reads span domains; writes dispatch through `forRow(item)` into the row's own partition.
    *
-   * KNOWN LIMIT, unchanged by #3037 and stated so it is not mistaken for a new one: the
-   * poller resolves ONE GitHub repo (from the daemon's cwd) and queries every tracked PR
-   * number against it. That is correct only while every domain is the same repo. It was
-   * equally true before domains existed — these reads were unscoped then too — so ring 0
-   * restores the prior behaviour exactly rather than widening it. Per-domain pollers are
-   * #3022.
+   * The repo each item's PR number is queried against is likewise per-domain — see
+   * {@link WorkItemPollerOptions.repos}.
    */
   db: CrossDomainWorkItems;
   logger?: Logger;
@@ -61,7 +54,21 @@ export interface WorkItemPollerOptions {
   intervalMs?: number;
   /** Injected for testing. */
   fetchPRs?: (repo: RepoInfo, prNumbers: readonly number[], opts?: FetchPRsOptions) => Promise<PRStatus[]>;
-  /** Injected for testing. */
+  /**
+   * Resolves the GitHub repo for a work item's domain (#3192).
+   *
+   * The poller reads every domain's items, so it cannot have one repo. It used to detect
+   * exactly one — from the daemon's startup cwd — and query every tracked PR number against
+   * it, which silently looked up project A's PR #7 in project B's repo the moment a box
+   * served two projects. Items are grouped by domain and each group is fetched against its
+   * own repo; a domain whose repo will not resolve is skipped for that cycle, not fatal to
+   * the others.
+   *
+   * Defaults to a resolver over {@link WorkItemPollerOptions.detectRepo}, which ignores the
+   * domain — that is the single-project behaviour, and what the tests exercise.
+   */
+  repos?: DomainRepos;
+  /** Injected for testing, and the cwd-based fallback when `repos` is absent. */
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   /** Called on each work item event. */
   onEvent?: (event: WorkItemEvent) => void;
@@ -77,16 +84,14 @@ export class WorkItemPoller {
   private fixedInterval: number | null;
   private currentIntervalMs: number;
   private timer: Timer | null = null;
+  /** The one repo this cycle polled, or null — diagnostics only. See the `repo` getter. */
   private _repo: RepoInfo | null = null;
   private _lastError: string | null = null;
   private _pollCount = 0;
   private polling = false;
   private stopped = false;
-  private repoDetectFailures = 0;
-  /** Epoch ms (per `nowFn`) before which repo detection is skipped — capped backoff, never permanent. */
-  private nextRepoDetectAttemptMs = 0;
+  private repos: DomainRepos;
   private fetchPRs: NonNullable<WorkItemPollerOptions["fetchPRs"]>;
-  private detectRepoFn: NonNullable<WorkItemPollerOptions["detectRepo"]>;
   private onEvent: (event: WorkItemEvent) => void;
   private lastRateLimitWarnMs = 0;
   private onCiEvent: (event: CiEvent) => void;
@@ -105,10 +110,19 @@ export class WorkItemPoller {
     this.fixedInterval = opts.intervalMs ?? null;
     this.currentIntervalMs = this.fixedInterval ?? ACTIVE_INTERVAL_MS;
     this.fetchPRs = opts.fetchPRs ?? fetchTrackedPRs;
-    this.detectRepoFn = opts.detectRepo ?? detectRepo;
+    this.nowFn = opts.now ?? (() => Date.now());
+    this.repos =
+      opts.repos ??
+      new DomainRepoResolver({
+        // No domain roots to consult: this is the single-project fallback, where every
+        // domain resolves to the same cwd-detected repo — exactly the pre-#3192 behaviour.
+        rootFor: () => null,
+        detectRepo: opts.detectRepo ?? detectRepo,
+        logger: this.logger,
+        now: this.nowFn,
+      });
     this.onEvent = opts.onEvent ?? (() => {});
     this.onCiEvent = opts.onCiEvent ?? (() => {});
-    this.nowFn = opts.now ?? (() => Date.now());
     this.ciRunStates = this.db.loadCiRunStates();
   }
 
@@ -120,6 +134,14 @@ export class WorkItemPoller {
     return this._pollCount;
   }
 
+  /**
+   * The repo the last poll cycle used, when there was exactly one.
+   *
+   * Diagnostic only, and singular only because a single-project daemon has one. Null once a
+   * cycle spans several domains, rather than whichever domain the loop happened to visit last
+   * (#3397 review) — "the repo" is not a question a multi-project daemon has an answer to.
+   * Ask {@link DomainRepos.cached} for a specific domain's repo instead.
+   */
   get repo(): RepoInfo | null {
     return this._repo;
   }
@@ -165,33 +187,6 @@ export class WorkItemPoller {
     if (this.polling || this.stopped) return;
     this.polling = true;
     try {
-      // Detect repo — capped exponential backoff on failure, retried forever (#3243).
-      // Never gives up permanently: a repo that doesn't exist yet at daemon startup,
-      // a cwd fix, or a transient `git`/network failure can all resolve without a
-      // daemon restart.
-      if (!this._repo) {
-        const now = this.nowFn();
-        if (now < this.nextRepoDetectAttemptMs) {
-          this._pollCount++;
-          return;
-        }
-        try {
-          this._repo = await this.detectRepoFn();
-          this.repoDetectFailures = 0;
-        } catch (err) {
-          this.repoDetectFailures++;
-          const msg = err instanceof Error ? err.message : String(err);
-          const delayMs = repoDetectBackoffMs(this.repoDetectFailures);
-          this.nextRepoDetectAttemptMs = now + delayMs;
-          this.logger.warn(
-            `[mcpd] Repo detection failed (attempt ${this.repoDetectFailures}): ${msg} — retrying in ${Math.round(delayMs / 1000)}s`,
-          );
-          this._lastError = msg;
-          this._pollCount++;
-          return;
-        }
-      }
-
       const allItems = this.db.listWorkItems();
       const tracked = allItems.filter((item) => item.prNumber !== null);
 
@@ -213,44 +208,64 @@ export class WorkItemPoller {
         (item) => item.phase !== "done" && item.prState !== "merged" && item.prState !== "closed",
       );
 
-      // Safe: we filtered for prNumber !== null above
-      const prNumbers = tracked.map((item) => item.prNumber as number);
-      const statuses = await this.fetchPRs(this._repo, prNumbers, {
-        warn: (msg) => {
-          const now = Date.now();
-          if (now - this.lastRateLimitWarnMs >= 60_000) {
-            this.lastRateLimitWarnMs = now;
-            this.logger.warn(msg);
-          }
-        },
-      });
+      // One fetch per domain, against that domain's own repo (#3192). A PR number is unique
+      // per repo, not per daemon, so a single cross-domain fetch would look project A's
+      // PR #7 up in project B's repo and reconcile whatever came back onto A's row.
+      const skippedDomains: number[] = [];
+      const polledRepos = new Map<number, RepoInfo>();
+      for (const [domainId, items] of groupByDomain(tracked)) {
+        if (this.stopped) return;
+        const repo = await this.repos.repoFor(domainId);
+        if (!repo) {
+          // Backing off or unresolvable: skip this domain for this cycle. One project with
+          // no git remote must not stop the others from being polled. Its reason is read
+          // per domain at the end, not from a scalar another domain may have cleared.
+          skippedDomains.push(domainId);
+          continue;
+        }
+        polledRepos.set(domainId, repo);
 
-      if (this.stopped) return; // bail before writing if stopped during fetch
+        // Safe: we filtered for prNumber !== null above
+        const prNumbers = items.map((item) => item.prNumber as number);
+        const statuses = await this.fetchPRs(repo, prNumbers, {
+          warn: (msg) => {
+            const now = Date.now();
+            if (now - this.lastRateLimitWarnMs >= 60_000) {
+              this.lastRateLimitWarnMs = now;
+              this.logger.warn(msg);
+            }
+          },
+        });
 
-      // Build lookup by PR number
-      const statusMap = new Map<number, PRStatus>();
-      for (const s of statuses) {
-        statusMap.set(s.number, s);
-      }
+        if (this.stopped) return; // bail before writing if stopped during fetch
 
-      // Compute cascade head from the current snapshot of all fetched statuses
-      const cascadeHead = computeCascadeHead(
-        statuses.map(
-          (s): MergeStatePR => ({
-            prNumber: s.number,
-            mergeStateStatus: s.mergeStateStatus,
-            autoMergeEnabled: s.autoMergeEnabled,
-            updatedAt: s.updatedAt,
-          }),
-        ),
-      );
+        // Build lookup by PR number
+        const statusMap = new Map<number, PRStatus>();
+        for (const s of statuses) {
+          statusMap.set(s.number, s);
+        }
 
-      // Compare and update
-      for (const item of tracked) {
-        if (this.stopped) return; // bail before writing if stopped mid-reconcile
-        const status = statusMap.get(item.prNumber as number);
-        if (!status) continue;
-        this.reconcile(item, status, cascadeHead);
+        // Cascade head is a property of one repo's merge queue — computed per domain, from
+        // that domain's statuses only, so another project's BEHIND PR cannot become this
+        // one's cascade head.
+        const cascadeHead = computeCascadeHead(
+          statuses.map(
+            (s): MergeStatePR => ({
+              prNumber: s.number,
+              mergeStateStatus: s.mergeStateStatus,
+              autoMergeEnabled: s.autoMergeEnabled,
+              updatedAt: s.updatedAt,
+            }),
+          ),
+        );
+
+        // Compare and update
+        for (const item of items) {
+          if (this.stopped) return; // bail before writing if stopped mid-reconcile
+          const status = statusMap.get(item.prNumber as number);
+          if (!status) continue;
+          this.reconcile(item, status, cascadeHead);
+        }
       }
 
       // Prune ciRunStates no longer tracked (e.g. work item untracked via prNumber clear).
@@ -265,7 +280,8 @@ export class WorkItemPoller {
         }
       }
 
-      this._lastError = null;
+      this._repo = polledRepos.size === 1 ? [...polledRepos.values()][0] : null;
+      this._lastError = skippedDomainsError(this.repos, skippedDomains);
       this._pollCount++;
       this.adjustInterval(hasActive);
     } catch (err) {

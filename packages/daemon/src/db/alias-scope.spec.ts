@@ -12,15 +12,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 
 describe("aliases.scope column", () => {
   let tmpDir: string;
-  let db: StateDb;
+  let db: McxDb;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-scope-"));
-    db = new StateDb(join(tmpDir, "state.db"));
+    db = new McxDb(join(tmpDir, "mcx.db"));
   });
 
   afterEach(() => {

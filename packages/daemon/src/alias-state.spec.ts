@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { silentLogger } from "@mcp-cli/core";
 import { installDaemonLogCapture } from "./daemon-log";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
 
 installDaemonLogCapture();
@@ -60,7 +60,7 @@ function serverOpts() {
 describe("aliasState IPC handlers — repoRoot canonicalization", () => {
   let server: IpcServer | undefined;
   let socketPath: string;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
   let dbPath: string;
 
   afterEach(() => {
@@ -79,7 +79,7 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
 
   function start(): { rpc: (body: unknown) => Promise<IpcResponse> } {
     dbPath = tmpDbPath();
-    db = new StateDb(dbPath);
+    db = new McxDb(dbPath);
     socketPath = tmpSocket();
     server = new IpcServer(mockPool() as never, mockConfig(), db, null, serverOpts());
     server.start(socketPath);

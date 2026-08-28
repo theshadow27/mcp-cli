@@ -214,6 +214,10 @@ export function workItemIdCandidates(domainId: number, id: string): string[] {
  * This function exists so the namespace is spelled once rather than in the nine places that
  * previously hand-built it across four files. Callers that hold only a caller-supplied id
  * must resolve it through the database first.
+ *
+ * The other half of the key has the same story and the same rule: derive it with
+ * `workItemStateRoot(cwd)` from `alias-state.ts` (#3209), never by open-coding a
+ * `findGitRoot` fallback at the call site.
  */
 export function workItemStateNamespace(workItemId: string): string {
   return `workitem:${workItemId}`;

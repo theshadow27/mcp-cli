@@ -3,7 +3,7 @@ import { CODEX_SERVER_NAME, formatToolSignature } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { AbstractWorkerServer, type WorkerServerDescriptor } from "./abstract-worker-server";
 import { CODEX_TOOLS } from "./codex-session/tools";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 
 export { isBaseWorkerEvent as isWorkerEvent } from "./abstract-worker-server";
@@ -14,7 +14,7 @@ export class CodexServer extends AbstractWorkerServer {
   }
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,

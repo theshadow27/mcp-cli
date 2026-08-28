@@ -3,7 +3,7 @@
  *
  * The CLI never opens the database itself, which is why `which` cannot grow its own
  * walk-up loop: the resolution rule lives in `resolveDomainForPath` and reaches the CLI
- * only through {@link StateDb.resolveDomain}.
+ * only through {@link McxDb.resolveDomain}.
  */
 
 import {
@@ -27,7 +27,7 @@ import {
   readImportMarkerValue,
   recoveryInstructions as recoveryInstructionsImpl,
 } from "../db/import-legacy";
-import { DomainHasDependentsError, type StateDb } from "../db/state";
+import { DomainHasDependentsError, type McxDb } from "../db/state";
 import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 
@@ -46,7 +46,7 @@ export class DomainHandlers {
    * that does not care needs no extra wiring.
    */
   constructor(
-    private db: StateDb,
+    private db: McxDb,
     private clearMarker: () => ImportArmState = () => clearImportMarker(),
     private recoveryInstructions: () => string = () => recoveryInstructionsImpl(),
     private readMarker: () => { present: boolean; value: string | null } = () => readImportMarkerValue(),

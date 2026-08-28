@@ -34,7 +34,6 @@ import {
   ManifestError,
   type ManifestState,
   NO_DOMAIN_ID,
-  NO_REPO_ROOT,
   RegressionError,
   TransitionLockBusyError,
   type TransitionLogEntry,
@@ -55,6 +54,7 @@ import {
   expandPreset,
   extractMetadata,
   findGitRoot,
+  findGitRootResult,
   findWorktreeRoot,
   findWorktreeRootResult,
   hashFileSync,
@@ -78,10 +78,12 @@ import {
   suggestPhases,
   validateTransition,
   workItemStateNamespace,
+  workItemStateRoot,
   wrapDryRunContext,
 } from "@mcp-cli/core";
 import type { AliasMetadata } from "@mcp-cli/core";
 import type { ExecFn, ExecResult, GitRootResult } from "@mcp-cli/core";
+import { DOMAIN_DEFAULT_HELP_LINE } from "../domain-guard";
 import { parseFlags } from "../flags";
 import { printError } from "../output";
 
@@ -1166,6 +1168,10 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
   process.once("SIGINT", onInt);
   process.once("SIGTERM", onTerm);
 
+  // One local, so `ctx.repoRoot` and the `gh` client provably agree rather than agreeing
+  // because two call sites happen to spell the same derivation.
+  const dryRunRepoRoot = workItemStateRoot(cwd);
+
   const baseCtx: AliasContext = {
     mcp: {},
     args: extraArgs,
@@ -1188,8 +1194,8 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
       phase: "(dry-run)",
     },
     domain: null,
-    repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT,
-    gh: createGhClient({ repoRoot: findGitRoot(cwd) ?? NO_REPO_ROOT }),
+    repoRoot: dryRunRepoRoot,
+    gh: createGhClient({ repoRoot: dryRunRepoRoot }),
     signal: controller.signal,
     waitForEvent: createWaitForEvent({ signal: controller.signal }),
   };
@@ -1216,7 +1222,25 @@ async function runPhase(argv: string[], d: PhaseInstallDeps): Promise<void> {
 export interface PhaseExecuteDeps {
   ipcCall: typeof ipcCall;
   exec: ExecFn;
+  /**
+   * Repo root for `alias_state` keys — remaps a linked worktree onto the main checkout so
+   * every worktree of a repo shares one phase-state bucket. Always consumed through
+   * `workItemStateRoot`, never called bare (#3209).
+   */
   findGitRoot: (cwd: string) => string | null;
+  /**
+   * Same probe, with `git-unavailable` distinguished from `not-a-repo` (#2862). Needed
+   * where "we could not find out" must not be spent as though it were an answer — see the
+   * pre-spawn guard in `cmdPhaseAdvance`.
+   */
+  findGitRootResult: (cwd: string) => GitRootResult;
+  /**
+   * Working-tree root of *this* checkout, NOT remapped to the main checkout. This is the
+   * root for per-checkout files — `.mcx.yaml` above all (#2737) — so it is what the daemon
+   * needs whenever it is going to `loadManifest(repoRoot)`. Deliberately distinct from
+   * `findGitRoot`: a state key and a manifest path are different jobs.
+   */
+  findWorktreeRoot: (cwd: string) => string | null;
   now: () => Date;
   readCliConfig: () => CliConfig;
   /** Backoff delay for the post-handler commit retry; injected so tests need no real time. */
@@ -1238,6 +1262,8 @@ const defaultExecuteDeps: PhaseExecuteDeps = {
   ipcCall,
   exec: spawnExec,
   findGitRoot,
+  findGitRootResult,
+  findWorktreeRoot,
   now: () => new Date(),
   readCliConfig,
   sleep: (ms) => Bun.sleep(ms),
@@ -1553,7 +1579,7 @@ export async function executePhase(
   const structured = isDefineAlias(srcText);
   const { js } = await d.bundleAlias(resolved);
 
-  const repoRoot = ex.findGitRoot(cwd) ?? NO_REPO_ROOT;
+  const repoRoot = workItemStateRoot(cwd, ex.findGitRoot);
   // State is namespaced by work-item id so every phase touching the same
   // item sees the same scratchpad (see sprint state declarations in
   // .mcx.yaml). When no work item is bound we use an in-memory ephemeral
@@ -1670,7 +1696,19 @@ export async function executePhase(
     try {
       const fresh = (await ex.ipcCall("getWorkItem", { id: parsed.workItemId, cwd })) as WorkItem | null;
       if (fresh && fresh.phase !== parsed.target) {
-        const repoRoot = ex.findGitRoot(cwd) ?? cwd;
+        // A MANIFEST root, not a state key — `work_items_update` spends this argument on
+        // `loadManifest(repoRoot)` to validate the phase name, and nothing else. So it
+        // follows the `.mcx.yaml`-is-per-checkout rule (#2737) and stays worktree-local,
+        // exactly as `mcx track` does for its own `repoRoot`. `workItemStateRoot` would be
+        // wrong twice over here: it remaps a linked worktree onto the main checkout (so a
+        // sprint worker's phases would be validated against a different branch's manifest),
+        // and outside a repo it yields the `NO_REPO_ROOT` sentinel, from which no manifest
+        // can load at all. Either way the load fails silently and validation falls back to
+        // the hardcoded VALID_TRANSITIONS graph, which cannot represent a manifest-only
+        // phase — so a legal transition is rejected, and this call is swallowed as
+        // "non-fatal", leaving `work_items.phase` stale while the transition log says it
+        // moved. That reader/writer disagreement is the exact failure class #3209 closes.
+        const repoRoot = ex.findWorktreeRoot(cwd) ?? cwd;
         const updateResult = (await ex.ipcCall("callTool", {
           server: "_work_items",
           tool: "work_items_update",
@@ -1899,6 +1937,31 @@ export async function cmdPhaseAdvance(
         d.exit(1);
       }
 
+      // Resolve the state root BEFORE spending the spawn, and refuse to spend it if the
+      // answer is "git could not tell us" (#3209 review).
+      //
+      // The write below is not best-effort — it records which session owns this phase, and
+      // a phase that spawns without it re-spawns on the next tick, paying for a second
+      // session. `git-unavailable` is the case that must abort: the key we would write
+      // under (`NO_REPO_ROOT`) is not the key the next, healthy run will read under (the
+      // real root), so the write silently lands in a bucket nobody reads. `not-a-repo` is
+      // NOT that case — `NO_REPO_ROOT` is then the correct, stable key that `ctx.state` also
+      // uses, so it proceeds. Collapsing the two is what `findGitRootResult` exists to
+      // prevent (#2862). Aborting here costs a retry; aborting after `ex.exec` costs a live
+      // session plus a recovery command that embeds the same unusable root.
+      const rootResult = ex.findGitRootResult(d.cwd());
+      if (rootResult.kind === "git-unavailable") {
+        d.logError(
+          [
+            `phase "${currentPhase}" wants to spawn, but the repo root could not be resolved from ${d.cwd()}: ${rootResult.detail}.`,
+            "Refusing to spawn — the session id could not be recorded against a key the next run will read,",
+            "so the spawn would be paid for twice. Re-run `mcx phase advance` once the host is not starved.",
+          ].join(" "),
+        );
+        d.exit(1);
+      }
+      const repoRoot = workItemStateRoot(d.cwd(), ex.findGitRoot);
+
       const spawnResult = ex.exec(command);
       if (spawnResult.exitCode !== 0) {
         d.logError(`spawn command failed (exit ${spawnResult.exitCode ?? "signal"}): ${spawnResult.stdout.trim()}`);
@@ -1919,7 +1982,6 @@ export async function cmdPhaseAdvance(
       // phase_state_set call below fails and the recovery hint is malformed.
       d.logError(`${currentPhase}: spawn succeeded — sessionId=${sessionId}`);
 
-      const repoRoot = ex.findGitRoot(d.cwd()) ?? d.cwd();
       const recoverPayload = JSON.stringify({ workItemId: opts.workItemId, key: stateKey, value: sessionId, repoRoot });
       const recoverCmd = `mcx call _work_items phase_state_set '${recoverPayload.replace(/'/g, "'\\''")}'`;
       try {
@@ -1970,6 +2032,11 @@ export async function cmdPhaseAdvance(
 
 function printPhaseHelp(d: PhaseInstallDeps): void {
   d.log(`mcx phase — orchestration phase graph
+
+run/show/advance act on domain-scoped work items:
+  ${DOMAIN_DEFAULT_HELP_LINE}
+  They read THIS checkout's .mcx.yaml, lockfile and scripts, so -d cannot point
+  them at another domain — cd there and re-run.
 
 Subcommands:
   mcx phase install

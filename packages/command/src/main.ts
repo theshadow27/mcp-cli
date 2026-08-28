@@ -83,6 +83,7 @@ import {
   stopDaemon,
 } from "./daemon-lifecycle";
 import { checkDeprecatedName } from "./deprecation";
+import { requireDomainScope } from "./domain-guard";
 import { maybeAutoSaveEphemeral } from "./ephemeral";
 import { readFileWithLimit } from "./file-read";
 import { maybeShowFirstRunPrompt } from "./first-run";
@@ -145,7 +146,10 @@ async function main(): Promise<void> {
   // Extract global flags before command dispatch
   const { verbose, rest: afterVerbose } = extractVerboseFlag(args);
   const { dryRun, rest: afterDryRun } = extractDryRunFlag(afterVerbose);
-  const { quiet, rest: cleanArgs } = extractQuietFlag(afterDryRun);
+  const { quiet, rest: globalCleanArgs } = extractQuietFlag(afterDryRun);
+  // Reassigned once, by the domain guard, which strips a validated no-op `-d` from the
+  // ambient commands whose own parsers do not declare it (see `domain-guard.ts`).
+  let cleanArgs = globalCleanArgs;
   _dryRun = dryRun;
   if (verbose) process.env.MCX_VERBOSE = "1";
 
@@ -184,6 +188,17 @@ async function main(): Promise<void> {
   }
 
   try {
+    // Which domain is this acting in? Asked once, here, for every domain-partitioned
+    // surface — before a single row is written (#3036). Returns immediately for the
+    // commands that reach no `domain_id`. See `domain-guard.ts` for why the daemon's
+    // resolve-to-partition-0 fallback is right there and wrong for a command a human typed.
+    cleanArgs = await requireDomainScope(cleanArgs, {
+      ipcCall,
+      cwd: () => process.cwd(),
+      error: (msg) => printError(msg),
+      exit: (code) => process.exit(code),
+    });
+
     switch (command) {
       case "ls":
       case "list":

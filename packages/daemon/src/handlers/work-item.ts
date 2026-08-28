@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import {
   AliasStateAllParamsSchema,
   AliasStateDeleteParamsSchema,
@@ -9,11 +8,14 @@ import {
   ListWorkItemsParamsSchema,
   NO_DOMAIN_ID,
   TrackWorkItemParamsSchema,
+  UNASSIGNED_DOMAIN_NAME,
   UntrackWorkItemParamsSchema,
-  resolveRealpath,
+  invalidParamsError,
+  isUnassignedDomainName,
+  normalizeStateRoot,
 } from "@mcp-cli/core";
 import type { IpcMethod, Logger, Manifest, WorkItemPhase } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { DomainWorkItems, WorkItemDb } from "../db/work-items";
 import { type DomainResolver, NULL_DOMAIN_RESOLVER } from "../domain-resolver";
 import { resolveDomainId } from "../domain-scope";
@@ -22,8 +24,10 @@ import type { RequestHandler } from "../handler-types";
 export class WorkItemHandlers {
   constructor(
     private readonly workItemDb: WorkItemDb,
-    private readonly db: StateDb,
-    private readonly resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null,
+    private readonly db: McxDb,
+    private readonly resolveIssuePr:
+      | ((number: number, domainId: number) => Promise<{ prNumber: number | null }>)
+      | null,
     private readonly loadManifestFn: ((repoRoot: string) => Manifest | null) | null,
     private readonly logger: Logger,
     private readonly domains: DomainResolver = NULL_DOMAIN_RESOLVER,
@@ -41,13 +45,41 @@ export class WorkItemHandlers {
    * serves every domain on the box, so a handler-lifetime domain would be whichever project
    * happened to start it (#3037).
    */
-  private scopeFor(cwd: string | undefined): DomainWorkItems {
-    return this.workItemDb.forDomain(resolveDomainId(this.db, cwd));
+  private scopeFor(cwd: string | undefined, domain?: string): DomainWorkItems {
+    return this.workItemDb.forDomain(this.domainIdFor(cwd, domain));
+  }
+
+  /**
+   * The partition key for this request: an explicitly named domain, else the caller's cwd.
+   *
+   * `domain` is what `mcx track -d phoenix` puts on the wire (#3036). It wins over `cwd`
+   * because it is the more specific statement of intent — the operator named a domain, and
+   * the alternative is resolving the directory they happened to be standing in, which is the
+   * guess this epic exists to remove.
+   *
+   * An unknown name is an **error**, not a fall-through to `cwd` and not the unassigned
+   * partition. Falling back would make `-d phoenex` a typo that silently acted on wherever
+   * the shell was, which is worse than the unscoped call it was meant to replace. `"_"` is
+   * the one name that resolves without a row: it addresses partition 0 on purpose, the same
+   * spelling mail accepts.
+   */
+  private domainIdFor(cwd: string | undefined, domain?: string): number {
+    if (domain === undefined) return resolveDomainId(this.db, cwd);
+    if (isUnassignedDomainName(domain)) return NO_DOMAIN_ID;
+    const found = this.db.getDomainByName(domain);
+    if (!found) {
+      throw invalidParamsError(
+        `unknown domain ${JSON.stringify(domain)} — register it with \`mcx domain add\`, or use "${UNASSIGNED_DOMAIN_NAME}" for the unassigned partition`,
+      );
+    }
+    return found.id;
   }
 
   private resolveAndUpdateWorkItem(scoped: DomainWorkItems, itemId: string, issueNumber: number): void {
     if (!this.resolveIssuePr) return;
-    this.resolveIssuePr(issueNumber)
+    // The issue is resolved against the repo of the domain it is being tracked into, not
+    // against whichever repo the daemon happened to start in (#3192).
+    this.resolveIssuePr(issueNumber, scoped.domainId)
       .then((resolved) => {
         if (!resolved.prNumber) return;
 
@@ -72,9 +104,9 @@ export class WorkItemHandlers {
 
   register(handlers: Map<IpcMethod, RequestHandler>): void {
     handlers.set("trackWorkItem", async (params, _ctx) => {
-      const { number, branch, initialPhase, repoRoot, cwd, automationOverrides } =
+      const { number, branch, initialPhase, repoRoot, cwd, domain, automationOverrides } =
         TrackWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd ?? repoRoot);
+      const scoped = this.scopeFor(cwd ?? repoRoot, domain);
 
       // Validate initialPhase server-side when a manifest is available (#1351).
       // When no manifest is present (repoRoot absent or manifest missing), accept any string.
@@ -133,8 +165,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("untrackWorkItem", async (params, _ctx) => {
-      const { number, branch, cwd } = UntrackWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd);
+      const { number, branch, cwd, domain } = UntrackWorkItemParamsSchema.parse(params);
+      const scoped = this.scopeFor(cwd, domain);
 
       if (branch) {
         const existing = scoped.getWorkItemByBranch(branch) ?? scoped.getWorkItem(`branch:${branch}`);
@@ -156,8 +188,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("listWorkItems", async (params, _ctx) => {
-      const { phase, includeArchived, cwd } = ListWorkItemsParamsSchema.parse(params ?? {});
-      const scoped = this.scopeFor(cwd);
+      const { phase, includeArchived, cwd, domain } = ListWorkItemsParamsSchema.parse(params ?? {});
+      const scoped = this.scopeFor(cwd, domain);
       // Only filter when caller explicitly opts in (includeArchived === false).
       // Unset or true means show everything so callers like mcx claude ls are unaffected.
       const excludeArchived = includeArchived === false;
@@ -170,8 +202,8 @@ export class WorkItemHandlers {
     });
 
     handlers.set("getWorkItem", async (params, _ctx) => {
-      const { id, number, branch, cwd } = GetWorkItemParamsSchema.parse(params);
-      const scoped = this.scopeFor(cwd);
+      const { id, number, branch, cwd, domain } = GetWorkItemParamsSchema.parse(params);
+      const scoped = this.scopeFor(cwd, domain);
       if (id) return scoped.getWorkItem(id);
       if (number !== undefined) {
         return scoped.getWorkItemByPr(number) ?? scoped.getWorkItemByIssue(number);
@@ -196,17 +228,24 @@ export class WorkItemHandlers {
     //
     // Un-registered repo roots resolve to NO_DOMAIN_ID, which is a real partition of its
     // own: a project with no domain keeps the pre-#3034 behaviour exactly.
+    //
+    // All four handlers canonicalize through `normalizeStateRoot`, never a bare
+    // `resolveRealpath(resolve(...))`: the latter turns the `NO_REPO_ROOT` sentinel into
+    // `<daemon-cwd>/__none__`, a real path that may even fall inside a registered domain,
+    // while the daemon's own automation reader passes the literal sentinel through to
+    // `db.listAliasState`. Same nominal key, two rows, depending on which door it came
+    // through (#3376).
 
     handlers.set("aliasStateGet", async (params, _ctx) => {
       const parsed = AliasStateGetParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       return { value: this.db.getAliasState(repoRoot, parsed.namespace, parsed.key, domainId) };
     });
 
     handlers.set("aliasStateSet", async (params, _ctx) => {
       const parsed = AliasStateSetParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       this.db.setAliasState(repoRoot, parsed.namespace, parsed.key, parsed.value, domainId);
       return { ok: true as const };
@@ -214,7 +253,7 @@ export class WorkItemHandlers {
 
     handlers.set("aliasStateDelete", async (params, _ctx) => {
       const parsed = AliasStateDeleteParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       const deleted = this.db.deleteAliasState(repoRoot, parsed.namespace, parsed.key, domainId);
       return { ok: true as const, deleted };
@@ -222,7 +261,7 @@ export class WorkItemHandlers {
 
     handlers.set("aliasStateAll", async (params, _ctx) => {
       const parsed = AliasStateAllParamsSchema.parse(params);
-      const repoRoot = resolveRealpath(resolve(parsed.repoRoot));
+      const repoRoot = normalizeStateRoot(parsed.repoRoot);
       const domainId = this.domains.idForPath(repoRoot);
       return { entries: this.db.listAliasState(repoRoot, parsed.namespace, domainId) };
     });

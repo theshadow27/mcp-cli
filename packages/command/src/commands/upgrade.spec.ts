@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CheckForUpdateDeps, FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
@@ -448,6 +458,90 @@ describe("cmdUpgrade full flow", () => {
     const markedTarget = marker?.binaries.find((b) => b.path === target);
     expect(markedTarget?.size).toBe(statSync(target).size);
     expect(markedTarget?.sha256).toBe(createHash("sha256").update(readFileSync(target)).digest("hex"));
+  });
+
+  /** Run the happy-path 1.0.0 → 2.0.0 install against a prepared tarball. */
+  async function runUpgrade(tarball: Uint8Array): Promise<void> {
+    await cmdUpgrade(["--yes"], {
+      version: "1.0.0",
+      fetch: ((_url: string | URL | Request, _init?: RequestInit) =>
+        Promise.resolve(new Response(tarball as unknown as BodyInit, { status: 200 }))) as unknown as typeof fetch,
+      checkForUpdate: () =>
+        Promise.resolve({
+          current: "1.0.0",
+          latest: "2.0.0",
+          updateAvailable: true,
+          asset: "mcx-darwin-arm64.tar.gz",
+          provenance: "unknown" as const,
+        }),
+      fetchLatestRelease: () =>
+        Promise.resolve({
+          tag: "v2.0.0",
+          version: "2.0.0",
+          assets: [{ name: "mcx-darwin-arm64.tar.gz", url: "https://example.com/asset", size: tarball.length }],
+        }),
+      selectAsset: () => "mcx-darwin-arm64.tar.gz",
+      confirm: () => Promise.resolve(true),
+      spawn: Bun.spawn,
+      log: () => {},
+      error: () => {},
+    });
+  }
+
+  test("replaces a pre-existing symlink at the $PATH target instead of writing through it (#3231)", async () => {
+    const tarball = await createTarball();
+
+    // The #3231 failure mode: `<bin>/mcx` is an old symlink into some other
+    // tree (a git worktree's dist/). Installing must replace the *link* with a
+    // real file — never follow it and rewrite whatever it points at, which is
+    // how a routine `bun build` came to hot-swap the live daemon's binary.
+    const decoy = join(tmpDir, "decoy-dist", "mcx");
+    mkdirSync(join(tmpDir, "decoy-dist"), { recursive: true });
+    writeFileSync(decoy, "decoy-bytes", { mode: 0o755 });
+    mkdirSync(binDir(), { recursive: true });
+    const target = join(binDir(), "mcx");
+    symlinkSync(decoy, target);
+    expect(lstatSync(target).isSymbolicLink()).toBe(true);
+
+    await runUpgrade(tarball);
+
+    // The link is gone: the target is now a regular file holding the new bytes.
+    expect(lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(lstatSync(target).isFile()).toBe(true);
+    expect(readFileSync(target, "utf-8")).toBe(readFileSync(join(versionDir("2.0.0"), "mcx"), "utf-8"));
+    expect(readFileSync(target, "utf-8")).not.toBe("decoy-bytes");
+
+    // The file the old link pointed at is untouched — nothing was written
+    // through the symlink.
+    expect(existsSync(decoy)).toBe(true);
+    expect(lstatSync(decoy).isFile()).toBe(true);
+    expect(readFileSync(decoy, "utf-8")).toBe("decoy-bytes");
+
+    // The exec bit survives, and no sibling temp/backup file is left behind.
+    expect(statSync(target).mode & 0o111).not.toBe(0);
+    expect(existsSync(`${target}.new-${process.pid}`)).toBe(false);
+    expect(existsSync(`${target}.bak-${process.pid}`)).toBe(false);
+  });
+
+  test("replaces a dangling symlink at the $PATH target (#3231: the linked tree is already gone)", async () => {
+    const tarball = await createTarball();
+
+    // Same shape, but the worktree the link pointed into has since been
+    // deleted. `existsSync(target)` is false through a dangling link, so the
+    // install takes the no-backup branch — the rename must still land.
+    mkdirSync(binDir(), { recursive: true });
+    const target = join(binDir(), "mcx");
+    symlinkSync(join(tmpDir, "deleted-worktree", "dist", "mcx"), target);
+    expect(lstatSync(target).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
+
+    await runUpgrade(tarball);
+
+    expect(lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(lstatSync(target).isFile()).toBe(true);
+    expect(readFileSync(target, "utf-8")).toBe(readFileSync(join(versionDir("2.0.0"), "mcx"), "utf-8"));
+    expect(statSync(target).mode & 0o111).not.toBe(0);
+    expect(existsSync(`${target}.new-${process.pid}`)).toBe(false);
   });
 
   test("outputs JSON on successful upgrade, including install locations", async () => {

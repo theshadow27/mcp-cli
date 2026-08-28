@@ -1,7 +1,7 @@
 import { BUILD_VERSION, PROTOCOL_VERSION } from "@mcp-cli/core";
 import type { IpcMethod, ServeInstanceInfo } from "@mcp-cli/core";
 import { options } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { getPortHolder } from "../port-holder";
 import type { ServerPool } from "../server-pool";
@@ -10,7 +10,7 @@ import type { ServeHandlers } from "./serve";
 export class StatusHandler {
   constructor(
     private readonly pool: ServerPool,
-    private readonly db: StateDb,
+    private readonly db: McxDb,
     private readonly serveHandlers: ServeHandlers,
     private readonly serveInstances: Map<string, ServeInstanceInfo>,
     private readonly getWsPortInfo: (() => { actual: number | null; expected: number }) | null,

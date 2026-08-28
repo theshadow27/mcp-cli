@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, _restoreOptions, options } from "@mcp-cli/core";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 
 /** The unassigned mail partition — what every pre-#3038 mail test was implicitly using. */
 const D0 = NO_DOMAIN_ID;
@@ -34,7 +34,7 @@ function cleanup(path: string): void {
   }
 }
 
-describe("StateDb", () => {
+describe("McxDb", () => {
   const paths: string[] = [];
 
   afterEach(() => {
@@ -42,10 +42,10 @@ describe("StateDb", () => {
     paths.length = 0;
   });
 
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDb();
     paths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   describe("tool cache", () => {
@@ -1246,7 +1246,7 @@ describe("StateDb", () => {
   // #3038. Each of these fails against the pre-#3038 methods, which took no domainId
   // and predicated on none: every read below would have returned the other domain's row.
   describe("mail domain partitioning", () => {
-    function twoDomains(db: StateDb): { alpha: number; beta: number } {
+    function twoDomains(db: McxDb): { alpha: number; beta: number } {
       const root = mkdtempSync(join(tmpdir(), "mcx-mail-domains-"));
       mkdirSync(join(root, "alpha"), { recursive: true });
       mkdirSync(join(root, "beta"), { recursive: true });
@@ -1370,8 +1370,8 @@ describe("StateDb", () => {
       );
       raw.close();
 
-      // Now open via StateDb which runs migrations
-      const db = new StateDb(p);
+      // Now open via McxDb which runs migrations
+      const db = new McxDb(p);
 
       // Old data should be accessible via the new table
       const session = db.getSession("old-sess-1");
@@ -2018,13 +2018,13 @@ describe("StateDb", () => {
       paths.push(p);
 
       // Leave the database exactly as a pre-#3038 binary would: v7, with the old index.
-      const db1 = new StateDb(p);
+      const db1 = new McxDb(p);
       db1.getDatabase().exec("DROP INDEX IF EXISTS idx_mail_domain_recipient");
       db1.getDatabase().exec("CREATE INDEX IF NOT EXISTS idx_mail_recipient ON mail(recipient, read, created_at)");
       db1.getDatabase().run("UPDATE schema_versions SET version = 7 WHERE name = 'state'");
       db1.close();
 
-      const db2 = new StateDb(p);
+      const db2 = new McxDb(p);
       const names = db2
         .getDatabase()
         .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mail'")
@@ -2047,7 +2047,7 @@ describe("StateDb", () => {
       seed.close();
 
       expect(() => {
-        const db = new StateDb(p);
+        const db = new McxDb(p);
         db.close();
       }).not.toThrow();
     });
@@ -2055,10 +2055,10 @@ describe("StateDb", () => {
     test("re-opening migrated DB is idempotent", () => {
       const p = tmpDb();
       paths.push(p);
-      const db1 = new StateDb(p);
+      const db1 = new McxDb(p);
       db1.close();
 
-      const db2 = new StateDb(p);
+      const db2 = new McxDb(p);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
@@ -2080,7 +2080,7 @@ describe("StateDb", () => {
       );
       raw.close();
 
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
@@ -2120,7 +2120,7 @@ describe("StateDb", () => {
         raw.close();
 
         // First open: legacy detection stamps at v2, then v3 runs and canonicalizes.
-        const db = new StateDb(p);
+        const db = new McxDb(p);
         // Row should now be accessible under the canonical (real) path.
         expect(db.getAliasState(canonical, "ns", "k", NO_DOMAIN_ID)).toBe("val");
         // Symlink path should no longer have a row.
@@ -2179,7 +2179,7 @@ describe("StateDb", () => {
         raw.close();
 
         // Open: v4 migration should canonicalize the repo_root.
-        const db = new StateDb(p);
+        const db = new McxDb(p);
         // biome-ignore lint/complexity/useLiteralKeys: access private field for test
         const row = db["db"]
           .query<{ repo_root: string }, [string]>("SELECT repo_root FROM agent_sessions WHERE session_id = ?")
@@ -2209,7 +2209,7 @@ describe("StateDb", () => {
       raw.exec("CREATE TABLE tool_cache (server_name TEXT PRIMARY KEY)");
       raw.close();
 
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const tables = db["db"]
         .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -2235,7 +2235,7 @@ describe("StateDb", () => {
       raw.exec("CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY)");
       raw.close();
 
-      expect(() => new StateDb(p)).toThrow();
+      expect(() => new McxDb(p)).toThrow();
     });
 
     test("data migrations run exactly once (not on every boot)", () => {
@@ -2243,11 +2243,11 @@ describe("StateDb", () => {
       paths.push(p);
 
       // Open fresh DB — migrations run v0→v4, schema_version lands at 4.
-      const db1 = new StateDb(p);
+      const db1 = new McxDb(p);
 
       // Downgrade schema_version to 1 and insert a trailing-slash row while the
       // DB is still open — accessing db1's raw handle avoids opening a second
-      // StateDb (which would re-run migrate() and reset version back to 4).
+      // McxDb (which would re-run migrate() and reset version back to 4).
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const raw = db1["db"];
       raw.run("UPDATE schema_versions SET version = 1 WHERE name = 'state'");
@@ -2258,13 +2258,13 @@ describe("StateDb", () => {
       db1.close();
 
       // Re-open — v2 runs because schema_version was 1; row should be canonicalized.
-      const db2 = new StateDb(p);
+      const db2 = new McxDb(p);
       expect(db2.getAliasState("/repo", "ns", "k", NO_DOMAIN_ID)).toBe("val");
       expect(db2.getAliasState("/repo/", "ns", "k", NO_DOMAIN_ID)).toBeUndefined();
       db2.close();
 
       // Re-open again — migrations do NOT re-run; canonical row persists unchanged.
-      const db3 = new StateDb(p);
+      const db3 = new McxDb(p);
       expect(db3.getAliasState("/repo", "ns", "k", NO_DOMAIN_ID)).toBe("val");
       db3.close();
     });
@@ -2355,7 +2355,7 @@ describe("StateDb", () => {
       `);
       raw.close();
 
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const cols = (db["db"].prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).map(
         (r) => r.name,
@@ -2384,7 +2384,7 @@ describe("StateDb", () => {
       `);
       raw.close();
 
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const cols = (db["db"].prepare("PRAGMA table_info(agent_sessions)").all() as Array<{ name: string }>).map(
         (r) => r.name,
@@ -2517,7 +2517,7 @@ describe("StateDb", () => {
       `);
       raw.close();
 
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       // Migration should have run and migrated last_poll_ts → repo_poll_ts for sentinel row
       expect(db.getLastRepoPollTs()).toBe("2026-04-27T22:37:26.000Z");
       db.close();
@@ -2527,12 +2527,12 @@ describe("StateDb", () => {
   test("database persists across instances", () => {
     const p = tmpDb();
     paths.push(p);
-    const db1 = new StateDb(p);
+    const db1 = new McxDb(p);
     db1.setState("hello", "world");
     db1.cacheTools("srv", [{ name: "t", server: "srv", description: "d", inputSchema: {} }]);
     db1.close();
 
-    const db2 = new StateDb(p);
+    const db2 = new McxDb(p);
     expect(db2.getState("hello")).toBe("world");
     expect(db2.getCachedTools("srv")).toHaveLength(1);
     db2.close();
@@ -2542,7 +2542,7 @@ describe("StateDb", () => {
     test("schema_versions row exists after fresh migration", () => {
       const p = tmpDb();
       paths.push(p);
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       const row = db
         .getDatabase()
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
@@ -2555,20 +2555,20 @@ describe("StateDb", () => {
     test("INSERT OR IGNORE: constructor does not crash when schema_versions row is pre-seeded (concurrent race simulation)", () => {
       const p = tmpDb();
       paths.push(p);
-      // Simulate the winner process: seed schema_versions before StateDb opens.
+      // Simulate the winner process: seed schema_versions before McxDb opens.
       const seed = new Database(p, { create: true });
       seed.exec("PRAGMA journal_mode = WAL");
       seed.exec("CREATE TABLE IF NOT EXISTS schema_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL)");
       seed.exec("INSERT INTO schema_versions (name, version) VALUES ('state', 4)");
       seed.close();
-      // The second process (this StateDb call) must not throw a UNIQUE constraint error.
-      expect(() => new StateDb(p)).not.toThrow();
+      // The second process (this McxDb call) must not throw a UNIQUE constraint error.
+      expect(() => new McxDb(p)).not.toThrow();
     });
 
     test("setSchemaVersion UPSERT: version is bumped correctly across multiple migrations", () => {
       const p = tmpDb();
       paths.push(p);
-      const db = new StateDb(p);
+      const db = new McxDb(p);
       const rawVersion = () =>
         db
           .getDatabase()

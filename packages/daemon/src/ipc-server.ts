@@ -33,11 +33,11 @@ import {
 } from "@mcp-cli/core";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
-import type { AutomationDispatcher } from "./automation-dispatcher";
+import type { AutomationRegistry } from "./automation-bootstrap";
 import { getDaemonLogLines } from "./daemon-log";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
-import { type DomainResolver, createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
+import { type DomainResolver, createDomainResolver, createMcxDbDomainSource } from "./domain-resolver";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
@@ -111,7 +111,7 @@ export class IpcServer {
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
-    private db: StateDb,
+    private db: McxDb,
     aliasServer: AliasServer | null,
     opts: {
       daemonId: string;
@@ -124,16 +124,17 @@ export class IpcServer {
       getWsPortInfo?: () => { actual: number | null; expected: number };
       drainTimeoutMs?: number;
       getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
-      resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
+      resolveIssuePr?: (number: number, domainId: number) => Promise<{ prNumber: number | null }>;
       loadManifest?: (repoRoot: string) => Manifest | null;
       eventBus?: EventBus;
       eventLog?: EventLog;
       onAliasChanged?: (name: string) => void;
-      automationDispatcher?: AutomationDispatcher;
+      /** Every project's automation dispatcher; the caller's repoRoot picks one (#3192). */
+      automation?: AutomationRegistry;
       /**
        * The daemon's domain resolver (#3040). Shared with the EventBus rather than
        * built here so there is one memo to invalidate when the `domains` table changes,
-       * not one per subsystem. Defaults to a resolver over this server's own StateDb.
+       * not one per subsystem. Defaults to a resolver over this server's own McxDb.
        */
       domains?: DomainResolver;
     },
@@ -168,12 +169,12 @@ export class IpcServer {
       resolveIssuePr: opts.resolveIssuePr ?? null,
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
-      automationDispatcher: opts.automationDispatcher ?? null,
-      // The bare-StateDb fallback must supply the session lookup too. It used to compile
+      automation: opts.automation ?? null,
+      // The bare-McxDb fallback must supply the session lookup too. It used to compile
       // against `this.db` alone because the source member was optional — yielding a
       // resolver whose session path was silently dead (#3040 review). Latent, since the
       // eventBus branch wins in production, but latent is how the R1 split-brain shipped.
-      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createStateDbDomainSource(this.db)),
+      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createMcxDbDomainSource(this.db)),
     });
     this.db.pruneExpiredAliases();
   }
@@ -421,10 +422,10 @@ export class IpcServer {
     aliasServer: AliasServer | null;
     workItemDb: WorkItemDb;
     eventBus: EventBus | null;
-    resolveIssuePr: ((n: number) => Promise<{ prNumber: number | null }>) | null;
+    resolveIssuePr: ((n: number, domainId: number) => Promise<{ prNumber: number | null }>) | null;
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
-    automationDispatcher: AutomationDispatcher | null;
+    automation: AutomationRegistry | null;
     domains: DomainResolver;
   }): void {
     const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
@@ -441,7 +442,7 @@ export class IpcServer {
     serveHandlers.register(this.handlers);
     new BudgetHandlers(this.db).register(this.handlers);
     new EventHandlers(deps.eventBus).register(this.handlers);
-    new AutomationHandlers(deps.automationDispatcher).register(this.handlers);
+    new AutomationHandlers(deps.automation).register(this.handlers);
     new TelemetryHandlers(this.db).register(this.handlers);
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);

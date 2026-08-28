@@ -8,7 +8,7 @@
  * > boundary requires an explicit `user@domain`.
  *
  * Every mail path routes through {@link resolveCallerDomain} and {@link resolveDelivery};
- * every `StateDb` mail method takes `domainId` as a **required first parameter**, so a
+ * every `McxDb` mail method takes `domainId` as a **required first parameter**, so a
  * call site that has not thought about the partition does not typecheck. This module is
  * the "function, not prose" half of that — `docs/domains.md` describes the rule, but the
  * rule is enforced here.
@@ -43,14 +43,19 @@
  * predicate, or falls back to a *named* domain the caller did not ask for — a mail
  * system that degrades to "show everything" on an unresolved domain is worse than one
  * that refuses, because the failure is invisible to both parties.
+ *
+ * All of them are coded `INVALID_PARAMS` via the shared `invalidParamsError` — including,
+ * since #3246, the ones raised *inside* `db.resolveDomain` by the path validators in
+ * `core/src/domain.ts`. A caller that passed `cwd: "."` used to get `INTERNAL_ERROR`,
+ * indistinguishable from a daemon fault, for input only it could fix.
  */
 
 import {
   type Domain,
-  IPC_ERROR,
   NO_DOMAIN_ID,
   UNASSIGNED_DOMAIN_NAME,
   formatMailAddress,
+  invalidParamsError,
   isUnassignedDomainName,
   parseMailAddress,
 } from "@mcp-cli/core";
@@ -65,7 +70,7 @@ export interface MailDomain {
 /** The unassigned partition, as a fully addressable domain. */
 export const UNASSIGNED_MAIL_DOMAIN: MailDomain = { id: NO_DOMAIN_ID, name: UNASSIGNED_DOMAIN_NAME };
 
-/** The slice of `StateDb` mail resolution needs. Narrow on purpose — this unit-tests without a daemon. */
+/** The slice of `McxDb` mail resolution needs. Narrow on purpose — this unit-tests without a daemon. */
 export interface MailDomainDb {
   getDomainByName(name: string): Domain | null;
   resolveDomain(path: string): Domain | null;
@@ -79,16 +84,12 @@ export interface MailScope {
   domain?: string;
 }
 
-function invalidParams(message: string): Error {
-  return Object.assign(new Error(message), { code: IPC_ERROR.INVALID_PARAMS });
-}
-
 function toMailDomain(domain: Domain): MailDomain {
   return { id: domain.id, name: domain.name };
 }
 
 function hostBoundError(domain: Domain): Error {
-  return invalidParams(
+  return invalidParamsError(
     `domain ${JSON.stringify(domain.name)} is host-bound (${domain.host}) — cross-host mail routing is not implemented`,
   );
 }
@@ -132,7 +133,7 @@ export function resolveCallerDomain(db: MailDomainDb, scope: MailScope): MailDom
   if (explicit) {
     const found = lookupDomainByName(db, explicit);
     if (!found) {
-      throw invalidParams(
+      throw invalidParamsError(
         `unknown domain ${JSON.stringify(explicit)} — register it with \`mcx domain add\`, or use "${UNASSIGNED_DOMAIN_NAME}" for the unassigned partition`,
       );
     }
@@ -141,7 +142,7 @@ export function resolveCallerDomain(db: MailDomainDb, scope: MailScope): MailDom
 
   const cwd = scope.cwd?.trim();
   if (!cwd) {
-    throw invalidParams("mail requires a domain scope: pass the caller's cwd, or name one with -d <domain>");
+    throw invalidParamsError("mail requires a domain scope: pass the caller's cwd, or name one with -d <domain>");
   }
 
   const resolved = db.resolveDomain(cwd);
@@ -186,7 +187,7 @@ export interface MailDelivery {
  *
  * Note there is deliberately **no** "sender has no return address" branch any more. Every
  * partition is named, partition 0 included, so a return address always exists. The
- * previous revision had such a guard and it was **unreachable against a real `StateDb`**:
+ * previous revision had such a guard and it was **unreachable against a real `McxDb`**:
  * reaching it required an unassigned caller while `domains` was non-empty, and the old
  * carve-out made that state impossible. Only a hand-written fake could produce it, so
  * mutation-testing it against a fake-based spec proved the fake was wired to the guard,
@@ -200,7 +201,7 @@ export function resolveDelivery(
 ): MailDelivery {
   const sender = parseMailAddress(senderRaw);
   if (sender.domain !== null && sender.domain !== caller.name) {
-    throw invalidParams(
+    throw invalidParamsError(
       `cannot send as ${JSON.stringify(senderRaw)} from domain ${JSON.stringify(caller.name)} — a sender may only be qualified with its own domain`,
     );
   }
@@ -212,7 +213,7 @@ export function resolveDelivery(
 
   const target = lookupDomainByName(db, recipient.domain);
   if (!target) {
-    throw invalidParams(
+    throw invalidParamsError(
       `unknown domain ${JSON.stringify(recipient.domain)} in recipient ${JSON.stringify(recipientRaw)} — register it with \`mcx domain add\` (see \`mcx domain ls\`)`,
     );
   }

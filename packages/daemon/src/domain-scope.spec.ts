@@ -15,7 +15,7 @@ function domain(id: number, name: string, path: string): Domain {
   return { id, name, host: null, path, createdAt: "2026-08-22T00:00:00.000Z" };
 }
 
-/** Stand-in for StateDb: the real one canonicalizes and throws on a relative path. */
+/** Stand-in for McxDb: the real one canonicalizes and throws on a relative path. */
 function resolver(domains: Domain[]): DomainResolver {
   return {
     resolveDomain(path: string): Domain | null {

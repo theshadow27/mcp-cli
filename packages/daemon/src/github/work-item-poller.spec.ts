@@ -270,6 +270,151 @@ describe("WorkItemPoller", () => {
     expect(poller.repo).toEqual(TEST_REPO);
   });
 
+  describe("per-domain repos (#3192)", () => {
+    /** A resolver that maps each domain to a distinct repo, recording what was asked for. */
+    function reposFor(map: Record<number, RepoInfo>) {
+      const asked: number[] = [];
+      return {
+        asked,
+        repos: {
+          repoFor: async (domainId: number) => {
+            asked.push(domainId);
+            return map[domainId] ?? null;
+          },
+          cached: (domainId: number) => map[domainId] ?? null,
+          lastErrorFor: () => null,
+        },
+      };
+    }
+
+    test("each domain's PR numbers are fetched against that domain's repo", async () => {
+      // The defect: one repo for the whole daemon meant project A's PR #7 was looked up in
+      // project B's repo, and whatever PR #7 is over there got reconciled onto A's row.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:7", prNumber: 7 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:7", prNumber: 7 });
+
+      const alpha: RepoInfo = { owner: "acme", repo: "alpha" };
+      const beta: RepoInfo = { owner: "acme", repo: "beta" };
+      const { repos, asked } = reposFor({ 1: alpha, 2: beta });
+      const fetches: Array<{ repo: RepoInfo; prNumbers: readonly number[] }> = [];
+
+      const poller = new WorkItemPoller({
+        db,
+        logger: SILENT_LOGGER,
+        repos,
+        fetchPRs: async (repo, prNumbers) => {
+          fetches.push({ repo, prNumbers: [...prNumbers] });
+          return [];
+        },
+      });
+
+      await poller.poll();
+
+      expect(asked.sort()).toEqual([1, 2]);
+      expect(fetches).toHaveLength(2);
+      expect(fetches.map((f) => f.repo)).toEqual([alpha, beta]);
+      expect(fetches.every((f) => f.prNumbers.length === 1 && f.prNumbers[0] === 7)).toBe(true);
+    });
+
+    test("a domain whose repo will not resolve is skipped, not fatal to the others", async () => {
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2 });
+
+      const beta: RepoInfo = { owner: "acme", repo: "beta" };
+      const fetched: number[] = [];
+      const poller = new WorkItemPoller({
+        db,
+        logger: SILENT_LOGGER,
+        repos: {
+          repoFor: async (domainId: number) => (domainId === 2 ? beta : null),
+          cached: () => null,
+          lastErrorFor: () => "no git remote",
+        },
+        fetchPRs: async (_repo, prNumbers) => {
+          fetched.push(...prNumbers);
+          return [];
+        },
+      });
+
+      await poller.poll();
+
+      expect(fetched).toEqual([2]);
+      // The unresolved domain is reported, not swallowed — but the poll still counted.
+      expect(poller.lastError).toBe("no git remote");
+      expect(poller.pollCount).toBe(1);
+    });
+
+    test("two unresolvable domains are each named, not collapsed to one reason (#3397 review)", async () => {
+      // A single scalar reported whichever domain the loop touched last, so "no git remote"
+      // named no project and the other failure vanished.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2 });
+
+      const poller = new WorkItemPoller({
+        db,
+        logger: SILENT_LOGGER,
+        repos: {
+          repoFor: async () => null,
+          cached: () => null,
+          lastErrorFor: (domainId: number) => (domainId === 1 ? "no git remote" : "not a github repo"),
+        },
+        fetchPRs: async () => [],
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toBe("domain 1: no git remote; domain 2: not a github repo");
+    });
+
+    test("`repo` is null once a cycle spans several domains (#3397 review)", async () => {
+      // "The repo" is not a question a multi-project daemon has an answer to; naming
+      // whichever domain the loop visited last is a diagnostic that lies.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2 });
+
+      const { repos } = reposFor({ 1: { owner: "acme", repo: "alpha" }, 2: { owner: "acme", repo: "beta" } });
+      const poller = new WorkItemPoller({ db, logger: SILENT_LOGGER, repos, fetchPRs: async () => [] });
+
+      await poller.poll();
+
+      expect(poller.repo).toBeNull();
+    });
+
+    test("cascade head is computed per repo, not across every domain's PRs", async () => {
+      // A BEHIND, auto-merge-armed PR in another repo is not this repo's cascade head.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1, mergeStateStatus: "CLEAN" });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2, mergeStateStatus: "CLEAN" });
+
+      const events: WorkItemEvent[] = [];
+      const poller = new WorkItemPoller({
+        db,
+        logger: SILENT_LOGGER,
+        repos: {
+          repoFor: async (domainId: number) => ({ owner: "acme", repo: `r${domainId}` }),
+          cached: () => null,
+          lastErrorFor: () => null,
+        },
+        fetchPRs: async (repo) =>
+          repo.repo === "r1"
+            ? [makePRStatus({ number: 1, mergeStateStatus: "BEHIND", autoMergeEnabled: true })]
+            : [makePRStatus({ number: 2, mergeStateStatus: "BEHIND", autoMergeEnabled: true })],
+        onEvent: (e) => events.push(e),
+      });
+
+      await poller.poll();
+
+      const cascades = events.filter((e) => e.type === "pr:merge_state_changed");
+      expect(cascades).toHaveLength(2);
+      // Each PR is the head of its own repo's cascade — never the other repo's number.
+      expect(cascades.map((e) => (e as { prNumber: number; cascadeHead: number | null }).cascadeHead)).toEqual([1, 2]);
+    });
+  });
+
   test("start and stop lifecycle", () => {
     const poller = new WorkItemPoller({
       db,

@@ -227,6 +227,10 @@ registerHelp("claude auth", {
     "or copied into ~/.mcp-cli/auth-profiles/backups/ when ownership cannot be proven —",
     "so a token Claude refreshed in place is never lost. It also drops the cached",
     "policy-limits.json so org policy does not leak across identities.",
+    "",
+    "oauth profiles also snapshot 5h/7d quota at save, at load write-back, and whenever",
+    "the daemon usage poller succeeds (active profile only). `auth ls` reads that snapshot",
+    "locally — the 5H/7D/AS OF columns are not live.",
   ],
   usage: [
     "mcx claude auth save <profile> [--json]",
@@ -243,7 +247,7 @@ registerHelp("claude auth", {
   examples: [
     "mcx claude auth save work           # capture the identity that is logged in right now",
     "mcx claude auth load personal       # switch to another saved identity",
-    "mcx claude auth ls --json | jq '.[] | {name, expiresAt}'",
+    "mcx claude auth ls --json | jq '.[] | {name, expiresAt, quota}'",
   ],
 });
 

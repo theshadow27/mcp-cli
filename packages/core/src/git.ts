@@ -178,6 +178,24 @@ export function clearFindGitRootCache(): void {
 }
 
 /**
+ * Whether a probe result may be memoized.
+ *
+ * `root` and `not-a-repo` are facts about `cwd` and stay true for the life of the
+ * process. `git-unavailable` is **not** — it is a fact about the *machine* at one
+ * instant (a `git rev-parse` that timed out under CPU starvation, a spawn that was
+ * killed). Caching it froze a five-second load spike into a wrong answer for the whole
+ * process lifetime, which in a daemon means "until restart": the automation dispatcher
+ * read phase state from the `NO_REPO_ROOT` bucket forever after one bad probe (#3378).
+ *
+ * The cost of not caching it is that a genuinely git-less environment re-spawns on every
+ * call. Callers on hot paths must throttle their own retries rather than lean on this
+ * cache to do it (see the automation state root in `daemon/src/index.ts`).
+ */
+function isCacheableRootResult(r: GitRootResult): boolean {
+  return r.kind !== "git-unavailable";
+}
+
+/**
  * Pure core of {@link findGitRootResult} — no caching, injectable `spawn` so
  * the timeout / spawn-failure / not-a-repo branches can be unit-tested without
  * a real git. See {@link findGitRoot} for the resolution semantics.
@@ -246,15 +264,20 @@ export function computeGitRootResult(cwd: string, spawn: GitSpawnFn = spawnCaptu
 /**
  * Like {@link findGitRoot} but returns a {@link GitRootResult} that
  * distinguishes "not a repo" from "git unavailable" (timeout / spawn failure).
- * Cached process-locally by cwd. Prefer this in blocking hook paths so a
- * degraded-git result can be surfaced as a warning rather than a misleading
- * hard failure (#2862).
+ * Cached process-locally by cwd — except `git-unavailable`, which is never
+ * cached (see {@link isCacheableRootResult}). Prefer this in blocking hook
+ * paths so a degraded-git result can be surfaced as a warning rather than a
+ * misleading hard failure (#2862).
+ *
+ * `spawn` is the same test-only seam {@link computeGitRootResult} takes, lifted here so
+ * the *caching* decision can be exercised without a real degraded git. Production callers
+ * pass nothing.
  */
-export function findGitRootResult(cwd: string = process.cwd()): GitRootResult {
+export function findGitRootResult(cwd: string = process.cwd(), spawn: GitSpawnFn = spawnCaptureSync): GitRootResult {
   const cached = gitRootCache.get(cwd);
   if (cached) return cached;
-  const result = computeGitRootResult(cwd);
-  gitRootCache.set(cwd, result);
+  const result = computeGitRootResult(cwd, spawn);
+  if (isCacheableRootResult(result)) gitRootCache.set(cwd, result);
   return result;
 }
 
@@ -308,14 +331,20 @@ export function computeWorktreeRootResult(cwd: string, spawn: GitSpawnFn = spawn
 /**
  * Like {@link findWorktreeRoot} but returns a {@link GitRootResult} that
  * distinguishes "not a repo" from "git unavailable" (timeout / spawn failure).
- * Cached process-locally by cwd. `mcx phase check` uses this so a degraded-git
- * result becomes a warning rather than a misleading `no .mcx.lock` (#2862).
+ * Cached process-locally by cwd — except `git-unavailable`, which is never
+ * cached (see {@link isCacheableRootResult}). `mcx phase check` uses this so a
+ * degraded-git result becomes a warning rather than a misleading `no .mcx.lock`
+ * (#2862).
  */
-export function findWorktreeRootResult(cwd: string = process.cwd()): GitRootResult {
+export function findWorktreeRootResult(
+  cwd: string = process.cwd(),
+  spawn: GitSpawnFn = spawnCaptureSync,
+): GitRootResult {
   const cached = worktreeRootCache.get(cwd);
   if (cached) return cached;
-  const result = computeWorktreeRootResult(cwd);
-  worktreeRootCache.set(cwd, result);
+  const result = computeWorktreeRootResult(cwd, spawn);
+  // Same rule as findGitRootResult — see isCacheableRootResult.
+  if (isCacheableRootResult(result)) worktreeRootCache.set(cwd, result);
   return result;
 }
 

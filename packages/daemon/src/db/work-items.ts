@@ -205,7 +205,7 @@ export class WorkItemDb {
   /**
    * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
    *
-   * Why not PRAGMA user_version: it's database-wide. StateDb and WorkItemDb share
+   * Why not PRAGMA user_version: it's database-wide. McxDb and WorkItemDb share
    * the same SQLite connection, so a second consumer adding its own v2 migration
    * would read user_version=2 already and silently skip. schema_versions keys by
    * consumer name, so each migrates independently.
@@ -474,6 +474,32 @@ export class WorkItemDb {
  * would reintroduce the ambiguity #3034 removed. Callers that can only act on one must say
  * which, in the open.
  */
+/**
+ * Pick one row when a ring-0 lookup legitimately matched several domains.
+ *
+ * A PR/branch/issue number is unique **per domain**, so a cross-domain lookup can return
+ * more than one row. Callers whose interface is single-valued take the first — but say so,
+ * because a silently-chosen row is the ambiguity #3034 removed from the schema creeping back
+ * in at the consumer. A domain-scoped handle ({@link WorkItemDb.forDomain}) never needs this:
+ * inside one partition the key is unique, which is why per-project dispatch (#3192) removes
+ * the choice rather than making it better.
+ */
+export function firstOf<T extends { domainId: number }>(
+  matches: T[],
+  label: string,
+  warn: (msg: string) => void,
+): T | null {
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    warn(
+      `[mcpd] ${label} matches ${matches.length} work items across domains (${matches
+        .map((m) => m.domainId)
+        .join(", ")}); acting on domain ${matches[0].domainId}.`,
+    );
+  }
+  return matches[0];
+}
+
 export class CrossDomainWorkItems {
   private db: Database;
   private owner: WorkItemDb;
@@ -907,7 +933,7 @@ export class DomainWorkItems {
    *
    * `domain_id` is written here because it is written *everywhere* on this handle — the
    * column had no writer at all when the domain partitioning landed (#3034 round 2), so
-   * every transition row said `domain_id = 0` and `StateDb.countDomainDependents` reported
+   * every transition row said `domain_id = 0` and `McxDb.countDomainDependents` reported
    * zero transitions for a domain that had hundreds, making `mcx domain rm` willing to
    * orphan them. That was a forgotten argument in one INSERT; on a domain-bound handle
    * there is no argument to forget.

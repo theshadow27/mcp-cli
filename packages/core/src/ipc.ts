@@ -11,6 +11,7 @@ import type { AliasType, MonitorAliasMetadata } from "./alias-bundle-types";
 import type { Domain } from "./domain";
 import { MONITOR_CATEGORIES } from "./monitor-event";
 import type { PlanProtocolCapability } from "./plan";
+import { NO_REPO_ROOT, isValidStateRoot } from "./state-root";
 import type { SpanEvent } from "./trace";
 import type { WorkItem } from "./work-item";
 
@@ -512,6 +513,25 @@ export const DeleteNoteParamsSchema = z.object({
 
 // -- Work item schemas --
 
+/**
+ * Why the work-item methods take a `domain` name and the alias-state ones do not (#3036).
+ *
+ * These four are reached only over IPC, by `mcx` on behalf of someone who typed a command —
+ * so `-d phoenix` is a scoping choice the operator made, and the daemon honouring it is the
+ * whole point. Same shape as the mail scope above (`hasMailScope`), which is the precedent.
+ *
+ * `aliasState*` deliberately has no such field. Those are reachable from `ctx.state` inside a
+ * phase script, where a wire-level `domain` would be a client-supplied partition key: any
+ * script could read another project's state by naming it. There the domain is derived from the
+ * caller's `repoRoot`, which makes that unrepresentable rather than merely discouraged — see
+ * the note above the `aliasState*` handlers in `packages/daemon/src/handlers/work-item.ts`.
+ *
+ * `cwd` remains the default for all of them: absent a `domain`, the caller's directory is
+ * resolved through the domains table, and a directory outside every domain resolves to the
+ * unassigned partition. The CLI refuses to *reach* that fallback silently — see
+ * `packages/command/src/domain-guard.ts`.
+ */
+
 export const TrackWorkItemParamsSchema = z
   .object({
     /** Issue or PR number to track. */
@@ -528,6 +548,8 @@ export const TrackWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`mcx track -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
     /** CSV of per-item automation overrides (e.g. "merge=false,bind=true"). Each entry must be name=true or name=false. */
     automationOverrides: z
       .string()
@@ -567,6 +589,8 @@ export const UntrackWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`mcx untrack -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
   })
   .refine((p) => p.number != null || p.branch != null, {
     message: "Either number or branch is required",
@@ -586,6 +610,8 @@ export const ListWorkItemsParamsSchema = z.object({
    * which is where every pre-domain row lives.
    */
   cwd: z.string().optional(),
+  /** An explicit domain name (`mcx tracked -d <domain>`). Wins over `cwd`; see the note above these schemas. */
+  domain: z.string().optional(),
 });
 
 export const GetWorkItemParamsSchema = z
@@ -599,6 +625,8 @@ export const GetWorkItemParamsSchema = z
      * which is where every pre-domain row lives.
      */
     cwd: z.string().optional(),
+    /** An explicit domain name (`-d <domain>`). Wins over `cwd`; see the note above these schemas. */
+    domain: z.string().optional(),
   })
   .refine((p) => p.id != null || p.number != null || p.branch != null, {
     message: "One of id, number, or branch is required",
@@ -607,10 +635,16 @@ export const GetWorkItemParamsSchema = z
 // -- Alias state schemas --
 
 const AliasStateScope = z.object({
+  // Absolute path OR the NO_REPO_ROOT sentinel. #1917 added an `isAbsolute` refine here to
+  // stop a relative root being silently resolved against the daemon's cwd, and in doing so
+  // rejected the one root `ctx.state` uses when the caller is not in a git repo — so every
+  // `ctx.state.get/set` from outside a repo has thrown a ZodError since. The sentinel is
+  // not a relative path: it is a distinct, deliberately non-path-shaped partition that
+  // `alias-executor.ts` and `alias-runner.ts` have always derived (#3209 review).
   repoRoot: z
     .string()
     .min(1)
-    .refine((v) => isAbsolute(v), { message: "repoRoot must be an absolute path" }),
+    .refine(isValidStateRoot, { message: `repoRoot must be an absolute path or the "${NO_REPO_ROOT}" sentinel` }),
   namespace: z.string().min(1),
 });
 
@@ -1120,18 +1154,10 @@ export interface IpcMethodResult {
 
 // -- Error codes --
 
-export const IPC_ERROR = {
-  PARSE_ERROR: -32700,
-  INVALID_REQUEST: -32600,
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  SERVER_NOT_FOUND: -1001,
-  TOOL_NOT_FOUND: -1002,
-  CONNECTION_FAILED: -1003,
-  AUTH_REQUIRED: -1004,
-  TIMEOUT: -1005,
-} as const;
+// Defined in `ipc-error.ts` and re-exported here so that the pure validators in
+// `domain.ts` — which `ipc.ts` imports from — can reach the codes without an import
+// cycle. Every `import { IPC_ERROR } from "@mcp-cli/core"` resolves through this line.
+export { IPC_ERROR, invalidParamsError } from "./ipc-error";
 
 // -- Helpers --
 

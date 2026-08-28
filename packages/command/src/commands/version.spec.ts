@@ -10,7 +10,7 @@ function mockDaemonStatus(overrides?: Partial<DaemonStatus>): DaemonStatus {
     protocolVersion: "a3f2b1c9d0e1",
     daemonVersion: "0.1.0-20260308",
     servers: [],
-    dbPath: "/tmp/state.db",
+    dbPath: "/tmp/mcx.db",
     usageStats: [],
     ...overrides,
   };

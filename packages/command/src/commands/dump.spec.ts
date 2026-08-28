@@ -27,7 +27,7 @@ const fakeDaemonStatus: DaemonStatus = {
       source: "user",
     },
   ],
-  dbPath: "/tmp/test/state.db",
+  dbPath: "/tmp/test/mcx.db",
   usageStats: [],
 };
 

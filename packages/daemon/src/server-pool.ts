@@ -45,7 +45,7 @@ import {
   isStdioConfig,
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { metrics } from "./metrics";
 import { getProcessStartTime } from "./process-identity";
 import { killPid } from "./process-util";
@@ -105,7 +105,7 @@ export class ServerPool {
   private reconnecting = new Map<string, Promise<void>>();
   private pendingServers = new Map<string, Promise<void>>();
   private config: ResolvedConfig;
-  private db: StateDb | null;
+  private db: McxDb | null;
   private stderrBuffer = new StderrRingBuffer();
   /** Per-server tool-call limiters, keyed by name and invalidated when the spec string changes. */
   private rateLimiters = new Map<string, { source: string; limiter: RateLimiter | null; error?: Error }>();
@@ -115,7 +115,7 @@ export class ServerPool {
   /** Set to true by closeAll() to prevent re-registration during shutdown. */
   private stopped = false;
 
-  constructor(config: ResolvedConfig, db?: StateDb, connectFn?: ConnectFn, logger?: Logger, connectTimeoutMs?: number) {
+  constructor(config: ResolvedConfig, db?: McxDb, connectFn?: ConnectFn, logger?: Logger, connectTimeoutMs?: number) {
     this.config = config;
     this.db = db ?? null;
     this.connectFn = connectFn ?? defaultConnect;
@@ -889,8 +889,8 @@ export class ServerPool {
     return undefined;
   }
 
-  /** Get the StateDb instance */
-  getDb(): StateDb | null {
+  /** Get the McxDb instance */
+  getDb(): McxDb | null {
     return this.db;
   }
 

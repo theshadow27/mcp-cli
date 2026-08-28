@@ -22,8 +22,15 @@ import {
 import { consoleLogger } from "@mcp-cli/core";
 import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import type { CrossDomainWorkItems } from "../db/work-items";
+import {
+  DomainRepoResolver,
+  type DomainRepos,
+  groupByDomain,
+  repoDetectBackoffMs,
+  skippedDomainsError,
+} from "../domain-repos";
 import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
@@ -37,16 +44,10 @@ const RATE_LIMIT_INTERVAL_MS = 300_000;
 const RATE_LIMIT_WARN_THRESHOLD = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
 
-// Repo detection retry backoff (#3243) — same reasoning and schedule as
-// WorkItemPoller's identical pattern in work-item-poller.ts: never give up
-// permanently, back off with a cap instead.
-const REPO_DETECT_BACKOFF_BASE_MS = 30_000;
-const REPO_DETECT_BACKOFF_MAX_MS = 15 * 60_000;
-
-/** Capped exponential backoff delay for the Nth consecutive repo-detect failure (N ≥ 1). */
-export function repoDetectBackoffMs(failureCount: number): number {
-  return Math.min(REPO_DETECT_BACKOFF_BASE_MS * 2 ** (failureCount - 1), REPO_DETECT_BACKOFF_MAX_MS);
-}
+// Repo detection retry backoff (#3243) now lives in `domain-repos.ts`, shared with
+// WorkItemPoller — it was a verbatim second copy of the same never-give-up policy, and
+// repo detection became per-domain in #3192. Re-exported here for this poller's callers.
+export { repoDetectBackoffMs };
 
 // ── Types ──
 
@@ -116,12 +117,19 @@ export interface CopilotPollerOptions {
    * A daemon-internal poller has no domain of its own to be scoped to.
    */
   workItemDb: CrossDomainWorkItems;
-  stateDb: StateDb;
+  mcxDb: McxDb;
   logger?: Logger;
   intervalMs?: number;
   fetchRepoComments?: (repo: RepoInfo, since: string | null, token: string) => Promise<FetchCommentsResult>;
   fetchReviews?: (repo: RepoInfo, prNumber: number, token: string) => Promise<FetchReviewsResult>;
   fetchIssueComments?: (repo: RepoInfo, number: number, token: string) => Promise<FetchIssueCommentsResult>;
+  /**
+   * Resolves the GitHub repo for a work item's domain (#3192). See
+   * `WorkItemPollerOptions.repos` — same reasoning, same failure if it is one repo for the
+   * whole daemon. Defaults to a resolver over {@link CopilotPollerOptions.detectRepo}.
+   */
+  repos?: DomainRepos;
+  /** Injected for testing, and the cwd-based fallback when `repos` is absent. */
   detectRepo?: (cwd?: string) => Promise<RepoInfo>;
   getToken?: () => Promise<string>;
   onEvent?: (event: MonitorEventInput) => void;
@@ -133,38 +141,47 @@ export interface CopilotPollerOptions {
 
 export class CopilotPoller {
   private workItemDb: CrossDomainWorkItems;
-  private stateDb: StateDb;
+  private mcxDb: McxDb;
   private logger: Logger;
   private fixedInterval: number | null;
   private currentIntervalMs: number;
   private timer: Timer | null = null;
+  /** The one repo this cycle polled, or null — diagnostics only. See the `repo` getter. */
   private _repo: RepoInfo | null = null;
   private _lastError: string | null = null;
   private _pollCount = 0;
   private polling = false;
   private stopped = false;
-  private repoDetectFailures = 0;
-  /** Epoch ms (per `nowFn`) before which repo detection is skipped — capped backoff, never permanent. */
-  private nextRepoDetectAttemptMs = 0;
   private rateLimitBackoff = false;
   private fetchRepoCommentsFn: NonNullable<CopilotPollerOptions["fetchRepoComments"]>;
   private fetchReviewsFn: NonNullable<CopilotPollerOptions["fetchReviews"]>;
   private fetchIssueCommentsFn: NonNullable<CopilotPollerOptions["fetchIssueComments"]>;
-  private detectRepoFn: NonNullable<CopilotPollerOptions["detectRepo"]>;
+  private repos: DomainRepos;
   private getTokenFn: NonNullable<CopilotPollerOptions["getToken"]>;
   private onEvent: (event: MonitorEventInput) => void;
   private nowFn: () => number;
 
   constructor(opts: CopilotPollerOptions) {
     this.workItemDb = opts.workItemDb;
-    this.stateDb = opts.stateDb;
+    this.mcxDb = opts.mcxDb;
     this.logger = opts.logger ?? consoleLogger;
     this.fixedInterval = opts.intervalMs ?? null;
     this.currentIntervalMs = this.fixedInterval ?? IDLE_INTERVAL_MS;
     this.fetchRepoCommentsFn = opts.fetchRepoComments ?? fetchRepoInlineComments;
     this.fetchReviewsFn = opts.fetchReviews ?? fetchPRReviews;
     this.fetchIssueCommentsFn = opts.fetchIssueComments ?? fetchIssueEndpointComments;
-    this.detectRepoFn = opts.detectRepo ?? detectRepo;
+    this.nowFn = opts.now ?? (() => Date.now());
+    this.repos =
+      opts.repos ??
+      new DomainRepoResolver({
+        // Single-project fallback: every domain resolves to the same cwd-detected repo,
+        // which is exactly the pre-#3192 behaviour.
+        rootFor: () => null,
+        detectRepo: opts.detectRepo ?? detectRepo,
+        logger: this.logger,
+        now: this.nowFn,
+        label: "CopilotPoller repo detection",
+      });
     this.getTokenFn = opts.getToken ?? getGhToken;
     // Domain is stamped by EventBus.publish from the `repoRoot` the caller attaches to
     // each event (see index.ts), not here — see #3040 review R3. A per-poller `domain`
@@ -172,7 +189,6 @@ export class CopilotPoller {
     // derivation of the same field EventBus already owns, so it was removed rather than
     // kept alongside the repoRoot path.
     this.onEvent = opts.onEvent ?? ((): void => {});
-    this.nowFn = opts.now ?? (() => Date.now());
   }
 
   get lastError(): string | null {
@@ -183,6 +199,11 @@ export class CopilotPoller {
     return this._pollCount;
   }
 
+  /**
+   * The repo the last poll cycle used, when there was exactly one. Diagnostic only — see
+   * `WorkItemPoller.repo`; a daemon serving several domains resolves one repo per domain and
+   * this reads null rather than naming whichever one the loop visited last (#3397 review).
+   */
   get repo(): RepoInfo | null {
     return this._repo;
   }
@@ -221,31 +242,6 @@ export class CopilotPoller {
     if (this.polling || this.stopped) return;
     this.polling = true;
     try {
-      // Capped exponential backoff on failure, retried forever — never gives up
-      // permanently (#3243). See WorkItemPoller.poll() for the identical reasoning.
-      if (!this._repo) {
-        const now = this.nowFn();
-        if (now < this.nextRepoDetectAttemptMs) {
-          this._pollCount++;
-          return;
-        }
-        try {
-          this._repo = await this.detectRepoFn();
-          this.repoDetectFailures = 0;
-        } catch (err) {
-          this.repoDetectFailures++;
-          const msg = err instanceof Error ? err.message : String(err);
-          const delayMs = repoDetectBackoffMs(this.repoDetectFailures);
-          this.nextRepoDetectAttemptMs = now + delayMs;
-          this.logger.warn(
-            `[mcpd] CopilotPoller repo detection failed (attempt ${this.repoDetectFailures}): ${msg} — retrying in ${Math.round(delayMs / 1000)}s`,
-          );
-          this._lastError = msg;
-          this._pollCount++;
-          return;
-        }
-      }
-
       const allItems = this.workItemDb.listWorkItems();
       const tracked = allItems.filter(
         (item) =>
@@ -260,9 +256,9 @@ export class CopilotPoller {
           item.prNumber !== null &&
           (item.prState === "merged" || item.prState === "closed" || item.phase === "done")
         ) {
-          this.stateDb.deleteCopilotCommentState(item.prNumber);
+          this.mcxDb.deleteCopilotCommentState(item.prNumber);
         } else if (item.prNumber === null && item.issueNumber !== null && item.phase === "done") {
-          this.stateDb.deleteCopilotCommentState(item.issueNumber);
+          this.mcxDb.deleteCopilotCommentState(item.issueNumber);
         }
       }
 
@@ -283,9 +279,10 @@ export class CopilotPoller {
         return;
       }
 
-      const repo = this._repo;
       let anyRateLimitLow = false;
       let anyAuthError: string | null = null;
+      const skippedDomains: number[] = [];
+      const polledRepos = new Map<number, RepoInfo>();
       const failedItemIds = new Set<string>();
       const fetchErrorMessages: string[] = [];
       const totalItems = tracked.length + trackedIssues.length;
@@ -299,43 +296,70 @@ export class CopilotPoller {
         }
       };
 
-      // Batch-fetch all inline review comments in one repo-scoped call (#1738)
-      let inlineByPr = new Map<number, PRComment[]>();
-      let repoPollTs: string | null = null;
-      if (tracked.length > 0) {
-        const since = this.stateDb.getLastRepoPollTs();
-        // `since=` is inclusive (>=updated_at); record pre-fetch ts so no comments fall through the gap
-        const preFetchTs = new Date().toISOString();
-        try {
-          const result = await this.fetchRepoCommentsFn(repo, since, token);
-          inlineByPr = groupCommentsByPr(result.comments);
-          if (result.rateLimitLow) {
-            anyRateLimitLow = true;
-            this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+      // One pass per domain, each against its own repo (#3192). Comment endpoints are
+      // repo-scoped and PR/issue numbers are unique per repo, not per daemon, so a single
+      // repo for the whole daemon fetched project A's numbers out of project B's repo.
+      const prsByDomain = groupByDomain(tracked);
+      const issuesByDomain = groupByDomain(trackedIssues);
+      for (const domainId of new Set([...prsByDomain.keys(), ...issuesByDomain.keys()])) {
+        if (this.stopped) return;
+        const repo = await this.repos.repoFor(domainId);
+        if (!repo) {
+          // Backing off or unresolvable — skip this domain, keep polling the others. Its
+          // reason is read per domain at the end, not from a scalar another domain may have
+          // cleared by succeeding.
+          skippedDomains.push(domainId);
+          continue;
+        }
+        polledRepos.set(domainId, repo);
+        const domainPrs = prsByDomain.get(domainId) ?? [];
+        const domainIssues = issuesByDomain.get(domainId) ?? [];
+
+        // Batch-fetch all inline review comments in one repo-scoped call (#1738)
+        let inlineByPr = new Map<number, PRComment[]>();
+        let repoPollTs: string | null = null;
+        if (domainPrs.length > 0) {
+          // The cursor is per domain because the fetch it paces is per repo: one shared
+          // cursor let a domain that was skipped this cycle (repo backoff) have its window
+          // advanced by a domain that was not, silently dropping the comments in between.
+          // Seeded from the pre-#3192 global cursor so the first poll after upgrade
+          // resumes from where the daemon left off instead of paginating a repo's entire
+          // comment history.
+          const since = this.mcxDb.getLastRepoPollTs(domainId) ?? this.mcxDb.getLastRepoPollTs();
+          // `since=` is inclusive (>=updated_at); record pre-fetch ts so no comments fall through the gap
+          const preFetchTs = new Date().toISOString();
+          try {
+            const result = await this.fetchRepoCommentsFn(repo, since, token);
+            inlineByPr = groupCommentsByPr(result.comments);
+            if (result.rateLimitLow) {
+              anyRateLimitLow = true;
+              this.logger.warn(`[mcpd] CopilotPoller: GitHub rate limit low (${result.rateLimitRemaining} remaining)`);
+            }
+            repoPollTs = preFetchTs;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`[mcpd] CopilotPoller failed to fetch repo comments: ${msg}`);
+            if (msg.includes("rate limit")) anyRateLimitLow = true;
+            else if (msg.includes("auth/scope") || msg.includes("auth failed")) anyAuthError = msg;
           }
-          repoPollTs = preFetchTs;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`[mcpd] CopilotPoller failed to fetch repo comments: ${msg}`);
-          if (msg.includes("rate limit")) anyRateLimitLow = true;
-          else if (msg.includes("auth/scope") || msg.includes("auth failed")) anyAuthError = msg;
+        }
+
+        for (const item of domainPrs) {
+          if (this.stopped) return;
+          this.processInlineComments(item, inlineByPr.get(item.prNumber as number) ?? []);
+          if (this.stopped) return;
+          collectResult(await this.pollReviews(repo, item, token), item.id);
+          if (this.stopped) return;
+          collectResult(await this.pollPRComments(repo, item, token), item.id);
+        }
+        if (repoPollTs) this.mcxDb.updateLastRepoPollTs(repoPollTs, domainId);
+        for (const item of domainIssues) {
+          if (this.stopped) return;
+          collectResult(await this.pollIssueComments(repo, item, token), item.id);
         }
       }
-
-      for (const item of tracked) {
-        if (this.stopped) return;
-        this.processInlineComments(item, inlineByPr.get(item.prNumber as number) ?? []);
-        if (this.stopped) return;
-        collectResult(await this.pollReviews(repo, item, token), item.id);
-        if (this.stopped) return;
-        collectResult(await this.pollPRComments(repo, item, token), item.id);
-      }
-      if (repoPollTs) this.stateDb.updateLastRepoPollTs(repoPollTs);
-      for (const item of trackedIssues) {
-        if (this.stopped) return;
-        collectResult(await this.pollIssueComments(repo, item, token), item.id);
-      }
       this.rateLimitBackoff = anyRateLimitLow;
+      this._repo = polledRepos.size === 1 ? [...polledRepos.values()][0] : null;
 
       if (anyAuthError) {
         this._lastError = anyAuthError;
@@ -343,7 +367,7 @@ export class CopilotPoller {
         const unique = [...new Set(fetchErrorMessages)];
         this._lastError = `${failedItemIds.size}/${totalItems} items failed: ${unique.join("; ")}`;
       } else {
-        this._lastError = null;
+        this._lastError = skippedDomainsError(this.repos, skippedDomains);
       }
       this._pollCount++;
       this.adjustInterval([...tracked, ...trackedIssues]);
@@ -361,14 +385,14 @@ export class CopilotPoller {
     const prNumber = item.prNumber as number;
     const comments = allComments.filter((c) => c.in_reply_to_id == null);
 
-    const seenIds = new Set(this.stateDb.getSeenCommentIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
     if (newComments.length === 0) {
       if (currentIds.length > 0) {
         const mergedSeenIds = [...new Set([...seenIds, ...currentIds])];
-        this.stateDb.updateSeenCommentIds(prNumber, mergedSeenIds);
+        this.mcxDb.updateSeenCommentIds(prNumber, mergedSeenIds);
       }
       return;
     }
@@ -405,7 +429,7 @@ export class CopilotPoller {
     }
 
     const unionIds = [...new Set([...seenIds, ...currentIds])];
-    this.stateDb.updateSeenCommentIds(prNumber, unionIds);
+    this.mcxDb.updateSeenCommentIds(prNumber, unionIds);
   }
 
   private async pollReviews(repo: RepoInfo, item: WorkItem, token: string): Promise<PollItemResult> {
@@ -429,7 +453,7 @@ export class CopilotPoller {
     const reviews = result.reviews;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenReviewIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenReviewIds(prNumber));
     const currentIds = reviews.map((r) => r.id);
     const newReviews = reviews.filter((r) => !seenIds.has(r.id));
 
@@ -475,7 +499,7 @@ export class CopilotPoller {
     }
     if (stickyCandidate) {
       const bodyHash = hashBody(stickyCandidate.body);
-      const lastHash = this.stateDb.getStickyBodyHash(prNumber);
+      const lastHash = this.mcxDb.getStickyBodyHash(prNumber);
       if (seenIds.has(stickyCandidate.id) && lastHash !== null && lastHash !== bodyHash) {
         this.onEvent({
           src: "daemon.copilot-poller",
@@ -488,12 +512,12 @@ export class CopilotPoller {
           bodyHash,
         });
       }
-      this.stateDb.updateStickyBodyHash(prNumber, bodyHash);
+      this.mcxDb.updateStickyBodyHash(prNumber, bodyHash);
     }
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenReviewIds(prNumber, unionIds);
+      this.mcxDb.updateSeenReviewIds(prNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }
@@ -519,7 +543,7 @@ export class CopilotPoller {
     const comments = result.comments;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenPRCommentIds(prNumber));
+    const seenIds = new Set(this.mcxDb.getSeenPRCommentIds(prNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
@@ -537,7 +561,7 @@ export class CopilotPoller {
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenPRCommentIds(prNumber, unionIds);
+      this.mcxDb.updateSeenPRCommentIds(prNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }
@@ -563,7 +587,7 @@ export class CopilotPoller {
     const comments = result.comments;
     if (this.stopped) return { isRateLimit: result.rateLimitLow };
 
-    const seenIds = new Set(this.stateDb.getSeenIssueCommentIds(issueNumber));
+    const seenIds = new Set(this.mcxDb.getSeenIssueCommentIds(issueNumber));
     const currentIds = comments.map((c) => c.id);
     const newComments = comments.filter((c) => !seenIds.has(c.id));
 
@@ -580,7 +604,7 @@ export class CopilotPoller {
 
     if (currentIds.length > 0) {
       const unionIds = [...new Set([...seenIds, ...currentIds])];
-      this.stateDb.updateSeenIssueCommentIds(issueNumber, unionIds);
+      this.mcxDb.updateSeenIssueCommentIds(issueNumber, unionIds);
     }
     return { isRateLimit: result.rateLimitLow };
   }

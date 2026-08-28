@@ -18,15 +18,18 @@
  *    a tool cannot ask for a second domain's rows because it has no way to name one.
  */
 
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { Logger, Manifest, ToolInfo, WorkItem, WorkItemPatch, WorkItemPhase } from "@mcp-cli/core";
 import {
   NO_DOMAIN_ID,
+  NO_REPO_ROOT,
   WORK_ITEMS_SERVER_NAME,
   canTransition,
   consoleLogger,
   isReservedPhaseStateKey,
   isStandardPhase,
+  isValidStateRoot,
+  normalizeStateRoot,
   resolveRealpath,
   workItemStateNamespace,
 } from "@mcp-cli/core";
@@ -39,7 +42,7 @@ import type { DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { type DomainScope, domainScopeFromMeta } from "./domain-scope";
 
 /**
- * Narrow interface for alias_state operations — avoids coupling to full StateDb.
+ * Narrow interface for alias_state operations — avoids coupling to full McxDb.
  *
  * `alias_state` carries a `domain_id` column, and by the time this PR rebased onto
  * #3040's `PhaseStateBinding` (below), both writers of the `phase_state_*` /
@@ -57,10 +60,10 @@ export interface PhaseStateStore {
 /**
  * A phase-state store bundled with the resolver that partitions it (#3040 review R1).
  *
- * The two travel together as one option rather than as `stateDb?` plus an optional
+ * The two travel together as one option rather than as `mcxDb?` plus an optional
  * `domainIdFor?` because that is the difference between a bug the compiler catches and
  * a bug that cannot be written. This interface previously declared three-parameter
- * signatures while `StateDb` had a defaulted fourth; StateDb therefore still satisfied
+ * signatures while `McxDb` had a defaulted fourth; McxDb therefore still satisfied
  * it structurally, and `_work_items` phase_state_* wrote domain 0 while `ctx.state`
  * wrote a real domain — same repo_root, same namespace, different rows. Nothing failed;
  * tsc was silent. Requiring the partition key on the interface makes the mismatch a
@@ -121,13 +124,24 @@ function resolvePhaseStateTarget(
   a: Record<string, unknown>,
   opts: { requireKey: boolean },
 ): { repoRoot: string; key: string; ns: string; domainId: number } | { error: ToolError } {
-  if (!phaseState) return toolError("Phase state not available (no stateDb configured)");
+  if (!phaseState) return toolError("Phase state not available (no mcxDb configured)");
 
   const workItemId = String(a.workItemId ?? "");
   const rawRepoRoot = String(a.repoRoot ?? "").trim();
-  if (rawRepoRoot && !isAbsolute(rawRepoRoot)) return toolError("repoRoot must be an absolute path");
+  // `NO_REPO_ROOT` is a legal root here, not a malformed one. It is the key `ctx.state`
+  // and `ctx.globalState` already use for every caller outside a git repo — or one whose
+  // git probe could not be answered — so a `phase_state_*` call arriving with it is
+  // addressing the same bucket a phase script reads, and rejecting it split the two apart.
+  // It did so at the worst possible moment: `mcx phase advance` writes the spawn's
+  // sessionId here *after* the session exists, and an error costs `exit(1)` with a
+  // recovery command that embeds the same rejected root, so it fails identically (#3209
+  // review). Relative paths are still rejected — `resolve()` would key them to the
+  // *daemon's* cwd, which is never what the caller meant.
+  if (rawRepoRoot && !isValidStateRoot(rawRepoRoot)) {
+    return toolError(`repoRoot must be an absolute path or the "${NO_REPO_ROOT}" sentinel`);
+  }
 
-  const repoRoot = rawRepoRoot ? resolveRealpath(resolve(rawRepoRoot)) : "";
+  const repoRoot = rawRepoRoot ? normalizeStateRoot(rawRepoRoot) : "";
   const key = String(a.key ?? "");
   if (!workItemId || !repoRoot || (opts.requireKey && !key)) {
     return toolError(
@@ -347,7 +361,7 @@ export class WorkItemsServer {
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
 
   /** Resolves a PR number to its head branch name. Injected for testability. */
-  private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
+  private resolveBranchFromPr: ((prNumber: number, domainId: number) => Promise<string | null>) | null;
 
   /** Optional store for phase-scoped state (alias_state table), with its domain resolver. */
   private phaseState: PhaseStateBinding | null;
@@ -359,7 +373,7 @@ export class WorkItemsServer {
     opts?: {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
-      resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
+      resolveBranchFromPr?: (prNumber: number, domainId: number) => Promise<string | null>;
       phaseState?: PhaseStateBinding;
       logger?: Logger;
     },
@@ -815,7 +829,7 @@ export class WorkItemsServer {
     if (!existing || existing.branch != null) return false;
     let resolved: string | null = null;
     try {
-      resolved = await this.resolveBranchFromPr(prNumber);
+      resolved = await this.resolveBranchFromPr(prNumber, scoped.domainId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] Failed to resolve branch for PR #${prNumber}: ${msg}`);

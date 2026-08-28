@@ -25,7 +25,7 @@ import {
   type WorkerServerDescriptor,
 } from "./abstract-worker-server";
 import { CLAUDE_TOOLS } from "./claude-session/tools";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 import { getProcessStartTime as defaultGetProcessStartTime, findDeadPids, isOurProcess } from "./process-identity";
 
@@ -89,7 +89,7 @@ export class ClaudeServer extends AbstractWorkerServer {
   }
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,
@@ -124,18 +124,20 @@ export class ClaudeServer extends AbstractWorkerServer {
   };
 
   /**
-   * @param domain Name of the domain the emitting poller watches, or null when the daemon's
-   *   cwd is outside every registered domain. Stamped on the monitor event so a consumer
-   *   watching several projects can tell whose PR #7 this is (#3037).
+   * The event carries the work item's identity (`workItemId` / `prNumber`) and nothing
+   * about which domain owns it: the domain is resolved from that identity downstream, by
+   * the one stamper every poller-facing producer routes through (`event-domain.ts`), and
+   * the NAME is the event bus's to state (#3352). This used to take the domain *name* as a
+   * parameter — which `EventBus.stampDomain` neither read nor preserved, so the correct
+   * answer was computed here and overwritten one call later.
    */
-  forwardWorkItemEvent(event: WorkItemEvent, domain?: string | null): void {
+  forwardWorkItemEvent(event: WorkItemEvent): void {
     const mapped = ClaudeServer.WORK_ITEM_EVENT_MAP[event.type];
     if (mapped && this.onMonitorEvent) {
       const input: MonitorEventInput = {
         src: "daemon.work-item-poller",
         event: mapped,
         category: "work_item",
-        ...(domain ? { domain } : {}),
       };
       if ("prNumber" in event) input.prNumber = event.prNumber;
       if ("branch" in event) input.branch = event.branch;

@@ -13,7 +13,7 @@ import {
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MockServer, buildMockToolCache, isWorkerEvent } from "./mock-server";
 
 setDefaultTimeout(10_000);
@@ -100,7 +100,7 @@ describe("MOCK_SERVER_NAME", () => {
 
 describe("MockServer", () => {
   let server: MockServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -112,7 +112,7 @@ describe("MockServer", () => {
   // ── Shared server for read-only integration tests ──
   describe("read-only (shared worker)", () => {
     let sharedServer: MockServer;
-    let sharedDb: StateDb;
+    let sharedDb: McxDb;
     let sharedClient: Awaited<ReturnType<MockServer["start"]>>["client"];
     let sharedOpts: ReturnType<typeof testOptions>;
     let initialized = false;
@@ -120,7 +120,7 @@ describe("MockServer", () => {
     async function ensureServer(): Promise<void> {
       if (!initialized) {
         sharedOpts = testOptions();
-        sharedDb = new StateDb(sharedOpts.DB_PATH);
+        sharedDb = new McxDb(sharedOpts.DB_PATH);
         sharedServer = new MockServer(sharedDb, undefined, undefined, silentLogger);
         const { client: c } = await sharedServer.start();
         sharedClient = c;
@@ -183,7 +183,7 @@ describe("MockServer", () => {
   // handleWorkerEvent tests
   test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -200,7 +200,7 @@ describe("MockServer", () => {
 
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -213,7 +213,7 @@ describe("MockServer", () => {
 
   test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -227,7 +227,7 @@ describe("MockServer", () => {
 
   test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     expect(server.hasActiveSessions()).toBe(false);
@@ -235,7 +235,7 @@ describe("MockServer", () => {
 
   test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -250,7 +250,7 @@ describe("MockServer", () => {
 
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -266,7 +266,7 @@ describe("MockServer", () => {
 
   test("stop() ends sessions in DB", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -285,7 +285,7 @@ describe("MockServer", () => {
 
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -295,7 +295,7 @@ describe("MockServer", () => {
 
   test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     let activityCount = 0;
@@ -325,7 +325,7 @@ describe("MockServer", () => {
 
   test("pruneDeadSessions prunes sessions after TTL expires", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -350,7 +350,7 @@ describe("MockServer", () => {
 
 describe("MockServer protocol version negotiation", () => {
   let server: MockServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -385,7 +385,7 @@ describe("MockServer protocol version negotiation", () => {
 
   test("accepts ready with matching supported_protocol_version", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(
       db,
       undefined,
@@ -400,7 +400,7 @@ describe("MockServer protocol version negotiation", () => {
 
   test("accepts ready without supported_protocol_version (backwards-compatible)", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, instantClient, silentLogger, 2_000, fakeWorkerFactory({}));
 
     await expect(server.start()).resolves.toBeDefined();
@@ -408,7 +408,7 @@ describe("MockServer protocol version negotiation", () => {
 
   test("rejects ready with mismatched supported_protocol_version", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const mismatchedVersion = AGENT_PROTOCOL_VERSION + 1;
     server = new MockServer(
       db,
@@ -436,7 +436,7 @@ describe("MockServer protocol version negotiation", () => {
 
 describe("Mock script DSL (extended entries)", () => {
   let server: MockServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
   let client: Awaited<ReturnType<MockServer["start"]>>["client"];
   let opts: ReturnType<typeof testOptions>;
   let scriptDir: string;
@@ -445,7 +445,7 @@ describe("Mock script DSL (extended entries)", () => {
     opts = testOptions();
     scriptDir = join(opts.dir, "scripts");
     mkdirSync(scriptDir, { recursive: true });
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MockServer(db, undefined, undefined, silentLogger);
     const { client: c } = await server.start();
     client = c;
@@ -725,7 +725,7 @@ describe("Mock script DSL (extended entries)", () => {
 describe("MockServer NDJSON recording", () => {
   const recDir = join(tmpdir(), `rec-test-${process.pid}`);
   let server: MockServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
   let recorder: NdjsonRecorder | undefined;
 
   afterEach(async () => {
@@ -740,7 +740,7 @@ describe("MockServer NDJSON recording", () => {
 
   test("records init → ready → MCP initialize → tool call sequence", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const recPath = join(recDir, "trace.ndjson");
     recorder = new NdjsonRecorder(recPath);
 

@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import { StateDb } from "../db/state";
+import { McxDb } from "../db/state";
 import { metrics } from "../metrics";
 import { OAuthCallbackTimeoutError } from "./callback-server";
 import type { CallbackServer } from "./callback-server";
@@ -40,10 +40,10 @@ const SERVER_URL = "https://api.example.com";
 describe("runOAuthFlowWithDcrRetry", () => {
   const dbPaths: string[] = [];
 
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDb();
     dbPaths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   afterEach(() => {
@@ -541,10 +541,10 @@ describe("runOAuthFlowWithDcrRetry", () => {
 describe("per-server auth concurrency guard", () => {
   const dbPaths: string[] = [];
 
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDb();
     dbPaths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   afterEach(() => {
@@ -664,15 +664,15 @@ describe("per-server auth concurrency guard", () => {
   });
 });
 
-// -- StateDb.deleteClientInfo --
+// -- McxDb.deleteClientInfo --
 
-describe("StateDb.deleteClientInfo", () => {
+describe("McxDb.deleteClientInfo", () => {
   const dbPaths: string[] = [];
 
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDb();
     dbPaths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   afterEach(() => {

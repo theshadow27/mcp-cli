@@ -207,6 +207,27 @@ happy path was tested; the absent-field path (the one that hit production) had
 no coverage. The `no-db-ipc-cast` rule (#2622) bans the bare-cast half of this
 bug class; this test pattern is the other half.
 
+## Domain-scoped lookups: assert the resolved row, not that something fired
+
+Anything that resolves a work item from an event — automation dispatch, the
+GitHub pollers, phase scripts — resolves it *within a partition*. "It ran" and
+"it ran against the right row" are different claims, and only the second one is
+worth a test.
+
+- Seed a work item in a domain **other** than the one under test (including
+  `NO_DOMAIN_ID`, which is where every row on an un-migrated box still lives),
+  not just the happy-path one.
+- Assert the resolved id (`getAuditLog()[0].workItemId`, the patched row, the
+  fetched PR numbers) — never `fired.length > 0`.
+
+Motivating incident (#3397 review): a sole automation dispatcher on a registered
+domain accepted events that resolved to no domain, but its work-item lookups
+were scoped to its own partition and structurally could not see the rows those
+events were about. The existing test published such an event and asserted only
+that the module fired — which it did, with no work item at all — so a silent
+no-op (and, on a PR-number collision, a `bye-and-untrack` against the wrong row)
+passed a green suite.
+
 ## Summary
 
 Every `Bun.sleep` or `setTimeout` in a test is a potential flake. If you must sleep, it should be inside a retry/poll loop with a deadline — never as "wait and hope". The two acceptable standalone sleeps are: short backoff between retry attempts, and negative assertions (verifying something does NOT happen).

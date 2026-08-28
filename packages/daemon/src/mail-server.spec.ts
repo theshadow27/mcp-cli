@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { MAIL_SENT, MAIL_SERVER_NAME, type MonitorEvent } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { MailServer, buildMailToolCache } from "./mail-server";
 
@@ -40,7 +40,7 @@ describe("buildMailToolCache", () => {
 
 describe("MailServer", () => {
   let server: MailServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -51,7 +51,7 @@ describe("MailServer", () => {
 
   test("start() connects and listTools returns 4 mail tools", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -67,7 +67,7 @@ describe("MailServer", () => {
 
   test("_mail_send inserts a message and returns its id", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -85,7 +85,7 @@ describe("MailServer", () => {
 
   test("_mail_read returns sent messages", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -112,7 +112,7 @@ describe("MailServer", () => {
 
   test("_mail_wait returns immediately if message is available", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -136,7 +136,7 @@ describe("MailServer", () => {
 
   test("_mail_wait returns null on timeout when no message", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -153,7 +153,7 @@ describe("MailServer", () => {
 
   test("_mail_reply sends a reply to original sender", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -189,7 +189,7 @@ describe("MailServer", () => {
 
   test("_mail_reply returns error for nonexistent message", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -206,7 +206,7 @@ describe("MailServer", () => {
 
   test("_mail_send returns error when sender is missing", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -224,7 +224,7 @@ describe("MailServer", () => {
   // five call sites. Each of these fails against the pre-#3038 tools.
   test("every _mail_* tool refuses an unscoped call rather than guessing a partition", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
     const { client } = await server.start();
 
@@ -243,7 +243,7 @@ describe("MailServer", () => {
 
   test("_mail_read and _mail_wait never see another domain's mail", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const alphaDir = join(opts.MCP_CLI_DIR, "alpha");
     const betaDir = join(opts.MCP_CLI_DIR, "beta");
     mkdirSync(alphaDir, { recursive: true });
@@ -275,7 +275,7 @@ describe("MailServer", () => {
 
   test("_mail_send to an unknown domain errors at send time", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
     const { client } = await server.start();
 
@@ -290,7 +290,7 @@ describe("MailServer", () => {
 
   test("unknown tool returns error", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const { client } = await server.start();
@@ -303,7 +303,7 @@ describe("MailServer", () => {
 
   test("_mail_send publishes monitor event when EventBus is set", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const bus = new EventBus();
     server = new MailServer(db, bus);
 
@@ -324,7 +324,7 @@ describe("MailServer", () => {
 
   test("_mail_reply publishes monitor event when EventBus is set", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     const bus = new EventBus();
     server = new MailServer(db, bus);
 
@@ -355,7 +355,7 @@ describe("MailServer", () => {
 
   test("_mail_send does not throw when no EventBus is set", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db); // no EventBus
 
     const { client } = await server.start();
@@ -368,7 +368,7 @@ describe("MailServer", () => {
 
   test("setEventBus wires events after construction", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new MailServer(db);
 
     const bus = new EventBus();
