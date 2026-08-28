@@ -28,10 +28,14 @@ mouth, and four defects (#3366 #3393 #3357 #3245) are what would make an
 unattended tick lie. Serial chain #3274 → #3272 → #3398 on `daemon/src/index.ts`
 — foundation must be MERGED, not merely open.
 
-**Dogfood hazard, close before #3274 merges:** `d2:#3333` is tracked at
-`phase: impl` with no PR and #3333 is genuinely open. The reconciler's first tick
-would spawn impl on unplanned work. Untrack it (by ISSUE number only — #3240) at
-run pre-flight, along with the 13 stale `phase: done` items from sprints 80–81.
+**Tracker reconciled at planning — `mcx tracked` is EMPTY.** All 14 rows from
+sprints 80–81 were cleared: 13 at `phase: done` (each verified PR MERGED + issue
+CLOSED) and `d2:#3333` (open but not loop-aligned; held no branch or PR).
+Sprint 82 starts from a clean slate, which is the precondition for #3274 ticking
+unattended — a tracked row becomes a standing instruction to spawn its phase.
+The standing rule is now `plan.md` Step 0b (PR #3414): at every plan, each
+tracked row is untracked as finished, written into the plan as a carried item,
+or untracked with a reason. Wind-down no longer sweeps unfinished work.
 
 Planning-time meta fixes landed as PR #3412: triage now treats assigned scrutiny
 as a floor it may raise but never lower (#3384), and run.md's low-risk anecdote
