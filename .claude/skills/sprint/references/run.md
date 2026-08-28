@@ -47,13 +47,11 @@ Copilot, widening the surface). After ~2 such rounds, STOP dispatching
 repairs and launch a **simplification pass** instead: a fresh session
 with a "step back and simplify the whole change to the
 minimal correct design that preserves functionality; read the open threads
-as input but rethink, don't patch" prompt. Sprint 62
-#2271 churned 4 rounds (auth regression → 7 threads → rebase → 5 more)
-because the helper took `unknown` then `as`-cast it, laundering the type so
-every field access was a fresh unguarded landmine; one simplify pass
-(replace the cast with real runtime validation) collapsed the entire
-edge-case class and it passed first try. Distinguish from flaky-CI churn
-(same finding recurring → `gh run rerun` + flaky-label flip, not simplify).
+as input but rethink, don't patch" prompt. A cascade of new findings usually
+means one upstream defect is manufacturing them; removing it collapses the
+whole class at once, where micro-repairs never converge. Distinguish from
+flaky-CI churn (same finding recurring → `gh run rerun` + flaky-label flip,
+not simplify). [#2271]
 
 ## Input
 
@@ -115,9 +113,7 @@ against the predicted files of every already-batched AND in-flight issue.
 On overlap: add a `blockedBy` edge on the in-flight issue's Task (the
 amendment launches only after the earlier PR merges) and update the plan's
 hot-shared-files section in the same amendment commit. Never launch an
-amendment straight into the current batch without this check — sprint 73's
-#2754 amendment collided with in-flight #2719 on
-`scripts/_runner/ci-steps.ts` exactly this way.
+amendment straight into the current batch without this check. [#2768]
 
 ### Task list setup — one Task per issue, NOT per batch
 
@@ -569,10 +565,9 @@ session that wrote a commit does not get to be the gate that passes it. A
 reviewer's ✅ on its own repair is not a valid approval, however small the
 edit looked. Route every repair commit to a session that didn't write it:
 QA (already a fresh session) owns pass/fail for normal-scrutiny items; a
-fresh `phase=review` pass precedes QA for high-scrutiny ones. PR #2609's
-SIGTERM-immortality (#2586) was written into a self-approved repair commit
-by the session that flagged the original issue, 60s apart — writing eyes
-and approving eyes were one context, and the introduced defect shipped.
+fresh `phase=review` pass precedes QA for high-scrutiny ones. Writing eyes
+and approving eyes in one context do not catch the defect the writing
+introduced, however small the edit looked. [#2586/PR #2609]
 
 **Label closure after self-repair — no PR merges carrying `review:changes`.**
 The self-repairing reviewer leaves `review:changes` unflipped (correct — it
@@ -636,11 +631,9 @@ mergedAt != null` before marking the work item done.
 ### Flaky / CI-instability issues — nerd-snipe gate before impl
 
 `label:flaky` already routes to opus via `impl.ts:45`. That is **not
-enough** on its own — sprint 47's deterministic post-#1835 coverage
-crash got opus, opus produced a CI-retry workaround, and the same retro
-acknowledged the workaround "hits on every sprint PR." The pattern:
-opus implements a fix-shaped patch around the symptom because nobody
-made it find the root cause first.
+enough** on its own: a capable model handed a symptom still produces a
+fix-shaped patch around the symptom, because nothing made it find the root
+cause first. The model tier is not the gate — the root-cause gate is. [#1835]
 
 **The full rule (load-bearing) is in
 [`references/investigations.md`](investigations.md).** Read it before
@@ -649,8 +642,7 @@ short version:
 
 1. Spawn the nerd-snipe via **`mcx claude spawn` with the persona
    inlined** in the prompt (NOT `Agent({subagent_type: "nerd-snipe"})` —
-   that creates a sub-context the orchestrator can't observe; sprint 52
-   was bitten by exactly this on #1980 and #1987, see #2009).
+   that creates a sub-context the orchestrator can't observe — see #2009).
 2. Worker posts findings as a GitHub issue comment (timeline + bisect +
    mechanism + concrete fix plan).
 3. **Hard gate** — no root cause + concrete fix → `needs-attention`,
@@ -696,17 +688,12 @@ pipeline. The orchestrator may only do it after **both**:
    not understand the failure, and the override is not available — route
    to flake-patrol or repair instead.
 
-Why this exists (sprint 69, PR #2609): QA returned `qa:fail` with the
-exact bug's name in the report — "Exit code 143 (SIGTERM)" on a test
-called "registerShutdownHandlers SIGTERM" — and the orchestrator overrode
-it to `qa:pass` reasoning "check-no-claude is non-required; the hang is
-the known bun-wedge flake," **without ever reading `isolation.ts`**. The
-merged commit made every consumer SIGTERM-immortal, wedged CI for two
-sprints, melted the box twice, and cost a multi-day forensic recovery
-(see `.claude/diary/20260530.70.md`, Post-Mortem Addendum). Reading the
-one file the QA report named would have stopped it. The mechanism-naming
-requirement is the test: "non-required check" and "known flake" both
-fail it, and both were the actual rationalizations used.
+Why the mechanism requirement is the test: the two phrases that most
+often stand in for a mechanism — "non-required check" and "known flake" —
+are exactly the ones that let a correctly-failing QA verdict be overridden.
+A `qa:fail` report that names a file is an instruction to read that file;
+overriding without reading it is how a named bug ships. [#2586/PR #2609,
+`.claude/diary/20260530.70.md`]
 
 This composes with the flake rule below: an override justified by "it's
 a flake" additionally requires flake-patrol's proof. There is no
@@ -822,8 +809,8 @@ when the window is about to reset. If `resetsAt` is <15 min away and the
 pending work is sonnet-sized (≲ $5 est. and won't consume >20% of a fresh
 quota), **fire for effect** — spawn it; either it finishes before reset or
 it's mostly pre-paid. Respect the freeze only when >30 min from reset.
-(Overly literal gating deferred #1597 a whole sprint when it would have
-merged cleanly with 7 min to spare.)
+(Literal gating this close to a reset costs a whole sprint of latency to
+save minutes of quota. [#1597])
 
 ## Gate admission — the lease is the baton
 
@@ -836,10 +823,9 @@ rules; ~20s) and pre-push runs `am-i-done --pre-push`.
 
 **The orchestrator does not hand out a baton.** Do not ask workers to request
 one, do not serialise pushes by messaging, do not end a turn to wait for a
-"go". Sprint 80 hand-ran exactly that protocol for a whole sprint; every
-round trip was latency the orchestrator inserted, and it stranded a finished
-item behind contention it had itself created. Workers commit and push when
-they are ready; the lease orders them.
+"go". A hand-run baton adds a round trip per push and creates the contention
+it claims to manage. Workers commit and push when they are ready; the lease
+orders them.
 
 The lease is per-repo, not per-host, so a neighbour fleet still contends.
 `uptime` is the honest load signal. Never fix load with a killer, reaper, or
@@ -936,11 +922,10 @@ unresolved follow-ups.
 ## Red Flags — stop signals, not speed bumps
 
 These are not bugs to patch around. Each one means the work or the diagnosis
-is fighting the system. Sprint 70 is the proof of the cost of absorbing them
-instead of stopping: a 3-line signal-handler bug (#2586) became a multi-day,
-multi-meltdown descent because every danger signal below was met with a
-mitigation — a watchdog, a concurrency cap, a timeout bump — instead of a
-halt. If any of these appears, do **not** patch around it.
+is fighting the system. Every mitigation applied to one of these signals — a
+watchdog, a concurrency cap, a timeout bump — hides the signal and adds a
+second failure to diagnose later; a 3-line bug becomes a multi-day descent
+that way. [#2586] If any of these appears, do **not** patch around it.
 
 - **Development or testing degrades the system** — load spike, CPU peg,
   memory blowup, the box going slow or needing a reboot. The change is the

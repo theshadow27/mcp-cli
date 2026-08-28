@@ -107,9 +107,22 @@ export async function runTriage(
           .map((l) => l.trim())
           .filter((l) => l.length > 0);
   const isFlaky = labels.includes("flaky");
-  const scrutiny = isFlaky ? "high" : raw.scrutiny;
-  const reasons =
-    isFlaky && raw.scrutiny !== "high" ? [...raw.reasons, "label:flaky forces high scrutiny"] : raw.reasons;
+
+  // Assigned scrutiny is a FLOOR, not a suggestion (#3384). `mcx track
+  // --scrutiny high` records an operator decision about consequence
+  // (security, isolation, auth, DB schema, spawn path); the metrics estimate
+  // measures churn. Triage may raise scrutiny above the floor, never lower it
+  // — a one-line change to a domain predicate is exactly the shape of a
+  // high-consequence, low-churn fix.
+  const assigned = await deps.stateGet<string>("scrutiny");
+  const assignedHigh = assigned === "high";
+
+  const scrutiny = isFlaky || assignedHigh ? "high" : raw.scrutiny;
+  const reasons = [...raw.reasons];
+  if (raw.scrutiny !== "high") {
+    if (isFlaky) reasons.push("label:flaky forces high scrutiny");
+    if (assignedHigh) reasons.push("assigned scrutiny=high is a floor; not lowered by metrics");
+  }
   const decision = scrutiny === "high" ? "review" : "qa";
 
   await deps.stateSet("triage_scrutiny", scrutiny);
