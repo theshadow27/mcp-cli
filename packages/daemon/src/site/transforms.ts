@@ -10,7 +10,14 @@
  *                   dropping headers whose vars were never captured
  *   - `fetchFilter` rewrite the final {url, method, headers, body} tuple
  *                   before it hits the proxy — e.g. OWA's x-owa-urlpostdata
- *   - `jq_output`   reshape the proxy's response body before returning
+ *   - `jq_output`   reshape the proxy's response body before returning, with
+ *                   the request `params` and captured `vars` available as the
+ *                   jq named args `$params` / `$vars`
+ *
+ * `jq_input` gets its extras in the jq *input* document (`{ params,
+ * body_default, vars }`); `jq_output` gets them as *named args* instead, so the
+ * input document stays the bare response body and every existing `jq_output`
+ * expression keeps working unchanged.
  *
  * The jq runner is injectable so tests don't need the external `jq` binary.
  */
@@ -20,12 +27,32 @@ import type { NamedCall } from "./catalog";
 import type { ProxyCallResult } from "./proxy";
 import type { ResolvedCall } from "./resolver";
 
-/** Injection point for the jq binary so tests don't require it. */
-export type JqRunner = (expression: string, input: string) => Promise<string>;
+/**
+ * Injection point for the jq binary so tests don't require it.
+ *
+ * `namedArgs` are bound as jq named arguments (`$name`), not merged into the
+ * input document — that keeps the input shape stable for existing expressions.
+ */
+export type JqRunner = (expression: string, input: string, namedArgs?: Record<string, unknown>) => Promise<string>;
+
+/**
+ * argv for one jq invocation. Named args are passed as `--argjson` so jq parses
+ * them as JSON values rather than strings, and `undefined` is normalized to
+ * `null` because `JSON.stringify(undefined)` is not valid jq input. Exported so
+ * the argv construction is testable without the jq binary.
+ */
+export function jqArgs(expression: string, namedArgs?: Record<string, unknown>): string[] {
+  const args = ["-c"];
+  for (const [name, value] of Object.entries(namedArgs ?? {})) {
+    args.push("--argjson", name, JSON.stringify(value ?? null));
+  }
+  args.push(expression);
+  return args;
+}
 
 /** Default runner: shells out to the external `jq` binary via spawnCapture. */
-export const bunJqRunner: JqRunner = async (expression, inputStr) => {
-  const result = await spawnCapture("jq", ["-c", expression], { input: inputStr });
+export const bunJqRunner: JqRunner = async (expression, inputStr, namedArgs) => {
+  const result = await spawnCapture("jq", jqArgs(expression, namedArgs), { input: inputStr });
   if (!result.ok) {
     if (result.exitCode === null) {
       throw new Error("failed to spawn jq (not found on PATH?)");
@@ -131,17 +158,39 @@ export function applyFetchFilter(call: NamedCall, resolved: ResolvedCall): Resol
 }
 
 /**
+ * Per-account and per-request context made available to `jq_output` as jq named
+ * args. Both are always bound, defaulting to `{}`, so an expression can say
+ * `$vars.me_mri` or `$params.threadId` without first testing that the key
+ * exists — an uncaptured var reads as `null`, not a jq error.
+ */
+export interface JqOutputContext {
+  /** Per-account values captured by `mcx site capture` (`$vars`). */
+  vars?: Record<string, string>;
+  /** The request params the call was invoked with (`$params`). */
+  params?: Record<string, unknown>;
+}
+
+/**
  * If the call declares `jq_output` and the proxy returned a non-null body,
  * reshape it. jq stdout that parses as JSON is returned as a value; otherwise
  * the trimmed text is returned verbatim.
+ *
+ * The jq input is the bare response body. The account's captured `vars` and the
+ * request `params` are bound as the named args `$vars` / `$params` instead, so a
+ * response transform can compute account-relative fields — e.g.
+ * `is_me: (.from.mri == $vars.me_mri)` — without changing the input shape.
  */
 export async function applyJqOutput(
   call: NamedCall,
   result: ProxyCallResult,
   jq: JqRunner = bunJqRunner,
+  ctx: JqOutputContext = {},
 ): Promise<ProxyCallResult> {
   if (!call.jq_output || result.body === undefined || result.body === null) return result;
-  const shaped = await jq(call.jq_output, JSON.stringify(result.body));
+  const shaped = await jq(call.jq_output, JSON.stringify(result.body), {
+    vars: ctx.vars ?? {},
+    params: ctx.params ?? {},
+  });
   let body: unknown;
   try {
     body = JSON.parse(shaped);

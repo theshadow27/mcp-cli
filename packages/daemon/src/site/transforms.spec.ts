@@ -9,7 +9,9 @@ import {
   applyJqInput,
   applyJqOutput,
   applyVarHeaders,
+  bunJqRunner,
   isSafeHeaderValue,
+  jqArgs,
 } from "./transforms";
 
 const NUL = String.fromCharCode(0);
@@ -33,9 +35,9 @@ const BASE_RESULT: ProxyCallResult = {
 };
 
 const recordingJq = (impl: (expr: string, input: string) => string) => {
-  const calls: Array<{ expr: string; input: string }> = [];
-  const runner: JqRunner = async (expr, input) => {
-    calls.push({ expr, input });
+  const calls: Array<{ expr: string; input: string; namedArgs?: Record<string, unknown> }> = [];
+  const runner: JqRunner = async (expr, input, namedArgs) => {
+    calls.push({ expr, input, namedArgs });
     return impl(expr, input);
   };
   return { runner, calls };
@@ -232,5 +234,96 @@ describe("applyJqOutput", () => {
     expect(out.status).toBe(201);
     expect(out.usedAud).toBe("a");
     expect(out.responseHeaders.etag).toBe("W/x");
+  });
+
+  test("binds captured vars and request params as jq named args", async () => {
+    const call: NamedCall = { ...BASE_CALL, jq_output: "{ is_me: (.from == $vars.me_id), t: $params.threadId }" };
+    const { runner, calls } = recordingJq(() => '{"is_me":true,"t":"T1"}');
+    const out = await applyJqOutput(call, { ...BASE_RESULT, body: { from: "U1" } }, runner, {
+      vars: { me_id: "U1" },
+      params: { threadId: "T1" },
+    });
+
+    expect(calls[0].namedArgs).toEqual({ vars: { me_id: "U1" }, params: { threadId: "T1" } });
+    // The input document stays the bare response body — extras arrive as named args only.
+    expect(calls[0].input).toBe(JSON.stringify({ from: "U1" }));
+    expect(out.body).toEqual({ is_me: true, t: "T1" });
+  });
+
+  test("binds $vars and $params as empty objects when no context is supplied", async () => {
+    const call: NamedCall = { ...BASE_CALL, jq_output: "{ me: $vars.me_id }" };
+    const { runner, calls } = recordingJq(() => '{"me":null}');
+    await applyJqOutput(call, { ...BASE_RESULT, body: { x: 1 } }, runner);
+
+    // `{}` rather than absent: `$vars.me_id` must read as null, not raise in jq.
+    expect(calls[0].namedArgs).toEqual({ vars: {}, params: {} });
+  });
+
+  test("binds empty objects when context is supplied with only one side set", async () => {
+    const call: NamedCall = { ...BASE_CALL, jq_output: "." };
+    const { runner, calls } = recordingJq(() => '{"x":1}');
+    await applyJqOutput(call, { ...BASE_RESULT, body: { x: 1 } }, runner, { vars: { a: "b" } });
+
+    expect(calls[0].namedArgs).toEqual({ vars: { a: "b" }, params: {} });
+  });
+});
+
+describe("jqArgs", () => {
+  test("passes only -c and the expression when there are no named args", () => {
+    expect(jqArgs(".foo")).toEqual(["-c", ".foo"]);
+    expect(jqArgs(".foo", {})).toEqual(["-c", ".foo"]);
+  });
+
+  test("passes each named arg as --argjson with a JSON-encoded value, expression last", () => {
+    expect(jqArgs("$vars.me", { vars: { me: "U1" }, params: {} })).toEqual([
+      "-c",
+      "--argjson",
+      "vars",
+      '{"me":"U1"}',
+      "--argjson",
+      "params",
+      "{}",
+      "$vars.me",
+    ]);
+  });
+
+  test("encodes undefined as null so jq gets valid JSON", () => {
+    expect(jqArgs(".", { vars: undefined })).toEqual(["-c", "--argjson", "vars", "null", "."]);
+  });
+});
+
+// End-to-end against the real binary: proves --argjson lands where jq expects it
+// and that an uncaptured var reads as null instead of erroring.
+describe.skipIf(!Bun.which("jq"))("applyJqOutput with the real jq binary", () => {
+  test("computes an account-relative field from $vars and $params", async () => {
+    const call: NamedCall = {
+      ...BASE_CALL,
+      jq_output: "{ messages: [.messages[] | { id, is_me: (.from == $vars.me_id) }], thread: $params.threadId }",
+    };
+    const body = {
+      messages: [
+        { id: "m1", from: "U1" },
+        { id: "m2", from: "U2" },
+      ],
+    };
+
+    const out = await applyJqOutput(call, { ...BASE_RESULT, body }, bunJqRunner, {
+      vars: { me_id: "U2" },
+      params: { threadId: "T1" },
+    });
+
+    expect(out.body).toEqual({
+      messages: [
+        { id: "m1", is_me: false },
+        { id: "m2", is_me: true },
+      ],
+      thread: "T1",
+    });
+  });
+
+  test("an uncaptured var is null rather than a jq error", async () => {
+    const call: NamedCall = { ...BASE_CALL, jq_output: "{ me: $vars.me_id, p: $params.threadId }" };
+    const out = await applyJqOutput(call, { ...BASE_RESULT, body: { x: 1 } }, bunJqRunner);
+    expect(out.body).toEqual({ me: null, p: null });
   });
 });
