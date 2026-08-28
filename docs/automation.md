@@ -140,8 +140,18 @@ Per-item overrides take precedence over module config and preset defaults.
 
 1. **Install:** `mcx phase install` resolves `automation.modules[*].source`,
    content-hashes them, and writes to `.mcx.lock`.
-2. **Daemon startup:** Daemon reads `.mcx.lock`, creates `AutomationDispatcher`,
-   registers event subscriptions on the EventBus.
+2. **Daemon startup:** For **each registered domain** (`mcx domain`), the daemon
+   reads that project's `.mcx.yaml` + `.mcx.lock` and creates one
+   `AutomationDispatcher`, registering event subscriptions on the EventBus.
+   A dispatcher only handles events belonging to its own domain, and its
+   work-item lookups read only that domain's partition. On a box with no domain
+   registered, the daemon's own working directory is used as the single project
+   root, and that lone dispatcher handles every event whatever its domain.
+   When exactly one project declares automation, its dispatcher also handles
+   events whose domain could not be resolved — and its work-item lookups widen
+   to match, reading its own partition plus rows carrying no domain (legacy
+   rows that predate domain assignment). With two or more, an unresolvable
+   event is dropped rather than fired against every project.
 3. **Event fires:** On matching event, dispatcher invokes module handler
    (30s timeout).
 4. **Audit:** Every dispatch records outcome in ring buffer and emits
@@ -165,9 +175,13 @@ To add automation to your project:
 1. Add `automation:` to `.mcx.yaml` (see Schema above)
 2. Create handler script(s) using `defineAutomation`
 3. Run `mcx phase install` to resolve and lock
-4. Start daemon — modules activate automatically
-5. Use `mcx automation list` to verify
-6. Set per-item overrides with `mcx track <n> --automation <csv>`
+4. Register the project as a domain (`mcx domain add <name> <path>`) if the box
+   serves more than one project — the daemon loads a manifest per domain, not
+   from wherever it happened to be started
+5. Start daemon — modules activate automatically
+6. Use `mcx automation list` to verify (run it from inside the project: the
+   caller's repo root is what selects that project's dispatcher)
+7. Set per-item overrides with `mcx track <n> --automation <csv>`
 
 ## Worked example: cleanup module (#2020)
 

@@ -25,7 +25,9 @@ export class WorkItemHandlers {
   constructor(
     private readonly workItemDb: WorkItemDb,
     private readonly db: StateDb,
-    private readonly resolveIssuePr: ((number: number) => Promise<{ prNumber: number | null }>) | null,
+    private readonly resolveIssuePr:
+      | ((number: number, domainId: number) => Promise<{ prNumber: number | null }>)
+      | null,
     private readonly loadManifestFn: ((repoRoot: string) => Manifest | null) | null,
     private readonly logger: Logger,
     private readonly domains: DomainResolver = NULL_DOMAIN_RESOLVER,
@@ -75,7 +77,9 @@ export class WorkItemHandlers {
 
   private resolveAndUpdateWorkItem(scoped: DomainWorkItems, itemId: string, issueNumber: number): void {
     if (!this.resolveIssuePr) return;
-    this.resolveIssuePr(issueNumber)
+    // The issue is resolved against the repo of the domain it is being tracked into, not
+    // against whichever repo the daemon happened to start in (#3192).
+    this.resolveIssuePr(issueNumber, scoped.domainId)
       .then((resolved) => {
         if (!resolved.prNumber) return;
 

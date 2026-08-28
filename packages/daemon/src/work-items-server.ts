@@ -361,7 +361,7 @@ export class WorkItemsServer {
   private loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
 
   /** Resolves a PR number to its head branch name. Injected for testability. */
-  private resolveBranchFromPr: ((prNumber: number) => Promise<string | null>) | null;
+  private resolveBranchFromPr: ((prNumber: number, domainId: number) => Promise<string | null>) | null;
 
   /** Optional store for phase-scoped state (alias_state table), with its domain resolver. */
   private phaseState: PhaseStateBinding | null;
@@ -373,7 +373,7 @@ export class WorkItemsServer {
     opts?: {
       onTrack?: () => void;
       loadManifest?: (repoRoot: string) => Manifest | null;
-      resolveBranchFromPr?: (prNumber: number) => Promise<string | null>;
+      resolveBranchFromPr?: (prNumber: number, domainId: number) => Promise<string | null>;
       phaseState?: PhaseStateBinding;
       logger?: Logger;
     },
@@ -829,7 +829,7 @@ export class WorkItemsServer {
     if (!existing || existing.branch != null) return false;
     let resolved: string | null = null;
     try {
-      resolved = await this.resolveBranchFromPr(prNumber);
+      resolved = await this.resolveBranchFromPr(prNumber, scoped.domainId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[mcpd] Failed to resolve branch for PR #${prNumber}: ${msg}`);

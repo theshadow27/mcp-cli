@@ -33,7 +33,7 @@ import {
 } from "@mcp-cli/core";
 import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
-import type { AutomationDispatcher } from "./automation-dispatcher";
+import type { AutomationRegistry } from "./automation-bootstrap";
 import { getDaemonLogLines } from "./daemon-log";
 import type { StateDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
@@ -124,12 +124,13 @@ export class IpcServer {
       getWsPortInfo?: () => { actual: number | null; expected: number };
       drainTimeoutMs?: number;
       getQuotaStatus?: () => IpcMethodResult["quotaStatus"];
-      resolveIssuePr?: (number: number) => Promise<{ prNumber: number | null }>;
+      resolveIssuePr?: (number: number, domainId: number) => Promise<{ prNumber: number | null }>;
       loadManifest?: (repoRoot: string) => Manifest | null;
       eventBus?: EventBus;
       eventLog?: EventLog;
       onAliasChanged?: (name: string) => void;
-      automationDispatcher?: AutomationDispatcher;
+      /** Every project's automation dispatcher; the caller's repoRoot picks one (#3192). */
+      automation?: AutomationRegistry;
       /**
        * The daemon's domain resolver (#3040). Shared with the EventBus rather than
        * built here so there is one memo to invalidate when the `domains` table changes,
@@ -168,7 +169,7 @@ export class IpcServer {
       resolveIssuePr: opts.resolveIssuePr ?? null,
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
-      automationDispatcher: opts.automationDispatcher ?? null,
+      automation: opts.automation ?? null,
       // The bare-StateDb fallback must supply the session lookup too. It used to compile
       // against `this.db` alone because the source member was optional — yielding a
       // resolver whose session path was silently dead (#3040 review). Latent, since the
@@ -421,10 +422,10 @@ export class IpcServer {
     aliasServer: AliasServer | null;
     workItemDb: WorkItemDb;
     eventBus: EventBus | null;
-    resolveIssuePr: ((n: number) => Promise<{ prNumber: number | null }>) | null;
+    resolveIssuePr: ((n: number, domainId: number) => Promise<{ prNumber: number | null }>) | null;
     loadManifestFn: ((repoRoot: string) => Manifest | null) | null;
     onAliasChanged: ((name: string) => void) | null;
-    automationDispatcher: AutomationDispatcher | null;
+    automation: AutomationRegistry | null;
     domains: DomainResolver;
   }): void {
     const serveHandlers = new ServeHandlers(this.serveInstances, this.logger);
@@ -441,7 +442,7 @@ export class IpcServer {
     serveHandlers.register(this.handlers);
     new BudgetHandlers(this.db).register(this.handlers);
     new EventHandlers(deps.eventBus).register(this.handlers);
-    new AutomationHandlers(deps.automationDispatcher).register(this.handlers);
+    new AutomationHandlers(deps.automation).register(this.handlers);
     new TelemetryHandlers(this.db).register(this.handlers);
     new ConfigHandlers(this.pool, this.config, this.onReloadConfig).register(this.handlers);
     new MailHandlers(this.db, deps.eventBus, () => this.draining).register(this.handlers);
