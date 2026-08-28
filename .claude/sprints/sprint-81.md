@@ -241,3 +241,56 @@ is the actual fix — bumping their timeouts would be the classic wrong move).
 `quota_status` was stale at pause time (`fetchedAt` 02:27Z, `lastError` 429, frozen
 utilization 71) — the authoritative signal was the session's own
 `You've hit your session limit · resets 6:20am (UTC)`. See `feedback_quota_status_staleness`.
+
+## Results — 10 / 10 shipped, v2.0.0 cut
+
+Ended 2026-08-28 08:06Z. Every planned issue merged; the release hold is discharged.
+
+| Issue | PR | Merge | Note |
+|---|---|---|---|
+| #3332 | #3370 | — | am-i-done deadline 300s → 600s, matching CI |
+| #3246 | #3373 | — | domain code-path rejections `INVALID_PARAMS` |
+| #3353 | #3383 | — | `pr-merged-to-done` advances only the event's domain |
+| #3351 | #3382 | — | shared-worktree guard race test accepts either branch |
+| #3265 | #3381 | — | pins `copyAtomic` rename-over-symlink behaviour |
+| #3209 | #3374 | `7db831f5` | one `workItemStateRoot` for every phase-state reader/writer |
+| #3352 | #3390 | `a51c1e16` | events stamped with the work item's domain, not the daemon's |
+| #3036 | #3391 | `09c147d0` | `-d <domain>` resolution across the CLI |
+| #3192 | #3397 | `c9362f4d` | automation + pollers resolve per domain, not from daemon cwd |
+| #3273 | #3408 | `b4148236` | `StateDb` → `McxDb` — the last naming trace of state.db |
+
+**Release criterion verified on main:** `git grep -w 'StateDb\|stateDb' -- 'packages/**/*.ts'`
+returns **0 files**. The surviving `state.db` string hits are all in `import-legacy.ts` /
+`constants.ts` — the one-shot importer deliberately naming the legacy file it migrates
+from. That importer ships in 2.0.0 as the upgrade path; deleting it is a later-2.x call.
+
+### What went wrong, and what it cost
+
+Two blockers were real and caught by adversarial review rather than CI:
+
+- **#3036** — six live-reproduced bypasses of the `-d` guard, all stemming from one shape:
+  the guard's verdict and the dispatched command's behaviour were separate code paths and
+  nothing tested them together. All 87 new tests called the guard directly; none spawned the
+  real CLI. Fixed by having `requireDomainScope` *return* the argv to dispatch with.
+- **#3192** — a sole dispatcher on a registered domain accepted events whose `domainId`
+  never resolved, then executed the module with `workItemId: undefined`: strictly worse than
+  the pre-PR global dispatcher, which read `acrossDomains()` and would have found the row.
+  Green CI missed it because the existing test never seeded a work item.
+
+**A ~17-hour orchestrator stall, self-inflicted.** After the harness killed both wakers
+(exit 144 — filed #3396), the monitor was re-armed with this filter:
+`select((.ts|fromdateiso8601? // 0)*1000 >= $start)`. `fromdateiso8601` cannot parse the
+fractional-second timestamps mcx emits; `?` swallowed the error, `// 0` yielded 0, and every
+event was discarded. The monitor ran healthily for 20.6h and wrote a **0-byte** output file.
+#3192's PR sat green and unreviewed the whole time, and its impl session drifted into an
+inter-session mail loop, burning $6 → $32. Lesson: a killed waker and an armed-but-silent
+waker are indistinguishable from the outside — the tell is output size, and nothing checks it.
+
+### Retro carry-forward
+
+- Stale `session_id` blocks `phase advance` — now seen at impl, repair, and qa across two
+  sprints. Worse: clearing the key makes impl *re-spawn* on an issue whose PR is already open
+  and green. Correct order is `work_items_update` to the target phase first, then advance.
+- `phase_state_delete` returns `deleted: false` for a key that was never there, rather than
+  erroring — silent no-op that masks a wrong key name.
+- QA continues to write `review:pass` (the #3179 vocabulary gap — no `review:repaired` state).
