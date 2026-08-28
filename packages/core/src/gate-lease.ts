@@ -2,13 +2,19 @@
  * Cooperative gate-run lease — host-global admission control for `am-i-done`.
  *
  * Problem (#2690): N `mcx claude` worker sessions each run `bun run am-i-done`
- * concurrently. Each `bun test --parallel` fans out ~cpu-count worker threads,
- * so N sessions × cpu-count threads oversubscribe the host and the OS starts
- * SIGTERM-ing Bun test workers mid-run — an instant mass kill across unrelated
- * spec files that reads like a flaky suite but is pure resource arithmetic.
+ * concurrently. `bun test --parallel` with no value fans out ~cpu-count worker
+ * threads, so N sessions × cpu-count threads oversubscribe the host and the OS
+ * starts SIGTERM-ing Bun test workers mid-run — an instant mass kill across
+ * unrelated spec files that reads like a flaky suite but is pure resource
+ * arithmetic.
  *
  * The fix is to QUEUE heavy test phases, never to cap/kill/reap workers (the
  * banned sprint 69/70 pattern, #2637).
+ *
+ * The fan-out is now pinned (`scripts/test-parallelism.ts`), so a single run no
+ * longer sizes itself to the whole host and the arithmetic is far less hostile.
+ * The lease is kept at one slot regardless: it still bounds runs that fail open
+ * past their admission budget, and anything invoking `bun test` outside the gate.
  *
  * ## Admission — what it does, and what it does not promise
  *
@@ -114,18 +120,25 @@ import { flockUnlock, tryFlockExclusive } from "./flock";
 /**
  * Concurrent gate runs allowed by default.
  *
- * #2690 asked for a core-derived count, `max(1, floor(cores/4))`. There is no
- * defensible derivation, because a gate run's fan-out is *already* sized to the
- * host: `bun test --parallel` starts ~cpu-count workers, so one run wants the
- * whole machine whatever the machine is. Measured on the 16-core reference host,
- * sampling CPU busy every second through a real `am-i-done` (#2949):
+ * #2690 asked for a core-derived count, `max(1, floor(cores/4))`. There was no
+ * defensible derivation at the time, because a gate run's fan-out was *already*
+ * sized to the host: bare `bun test --parallel` starts ~cpu-count workers, so
+ * one run wanted the whole machine whatever the machine was. Measured on the
+ * 16-core reference host, sampling CPU busy every second through a real
+ * `am-i-done` (#2949):
  *
  *     baseline (agent sessions only)   25-33%
  *     during test-parallel             44 → 88% peak, 76-83% sustained ~20s
  *
- * One fan-out therefore consumes ~75-85% of the box on top of a 25% baseline, so
- * a second concurrent fan-out does not fit at any core count a fan-out scales to.
+ * One fan-out therefore consumed ~75-85% of the box on top of a 25% baseline, so
+ * a second concurrent fan-out did not fit at any core count a fan-out scales to.
  * The issue's `cores/4` would have admitted *four*.
+ *
+ * The fan-out is now pinned to a fixed worker count (`scripts/test-parallelism.ts`),
+ * which weakens that argument — a pinned run leaves real headroom. The default
+ * stays 1 anyway, as a deliberate choice rather than a forced one: raising it is
+ * a one-env-var experiment (MCX_GATE_LEASE_SLOTS) that should be made against
+ * measurements of the pinned fan-out, not assumed from the arithmetic.
  *
  * So the default is 1, and the K > 1 machinery exists only for
  * MCX_GATE_LEASE_SLOTS. This is deliberately the same effective concurrency as
@@ -141,9 +154,9 @@ const MAX_SLOTS = 64;
  *
  * Chosen so that (a) a host loaded only by idle-ish agent sessions admits — the
  * reference host measured 25.6% busy while loadavg claimed 26.5 — and (b) a host
- * already running one gate fan-out does not. `bun test --parallel` saturates
- * most cores, so a run in progress reads well above this and the next decision
- * correctly waits for it. Expressed as a fraction, so a 1- or 2-core host gets a
+ * already running one gate fan-out does not. A gate fan-out drives its pinned
+ * worker count hot, so a run in progress reads above this on the reference host
+ * and the next decision correctly waits for it. Expressed as a fraction, so a 1- or 2-core host gets a
  * meaningful ceiling instead of the unsatisfiable `max(1, cores * 0.75)` the
  * loadavg version produced.
  */

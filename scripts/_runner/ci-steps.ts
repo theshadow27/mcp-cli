@@ -32,6 +32,7 @@ import { Glob } from "bun";
 import { RAN_FILES_RE } from "../bun-summary";
 import { ORPHAN_TOLERANT_TEST_FILES } from "../orphan-tolerant-tests";
 import { buildImportGraph } from "../rules/_engine/import-graph";
+import { PARALLEL_FLAG } from "../test-parallelism";
 import { filterByClosureCache, readFileCache, storeFileVerdicts, writeFileCache } from "./file-cache";
 import { spawnTracked } from "./process-tree";
 import type { Logger, ScriptFunction, StepResult } from "./types";
@@ -618,7 +619,7 @@ export function changedTestsStep(opts: ChangedTestsOpts): ScriptFunction {
         "test",
         "--no-orphans",
         `--changed=${base}`,
-        "--parallel",
+        PARALLEL_FLAG,
         "--path-ignore-patterns=packages/control/**",
         ...orphanIgnoreArgs,
         ...skipPatterns,

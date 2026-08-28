@@ -28,7 +28,7 @@
     "am-i-done": "bun scripts/am-i-done.ts",
     "doing-it-wrong": "bun scripts/doing-it-wrong.ts",
     "guards": "bun scripts/guards/run-guards.ts",
-    "test": "bun install && bun test --parallel --no-orphans --path-ignore-patterns='packages/control/**' --path-ignore-patterns='test/stress.spec.ts' && bun test --no-orphans packages/control && bun test test/stress.spec.ts",
+    "test": "bun install && bun test --parallel=4 --no-orphans --path-ignore-patterns='packages/control/**' --path-ignore-patterns='test/stress.spec.ts' && bun test --no-orphans packages/control && bun test test/stress.spec.ts",
     "test:phases": "cd .claude/phases && bun test --no-orphans",
     "test:hooks": "cd .git-hooks && bun test --no-orphans",
     "test:coverage": "bun scripts/check-coverage.ts",

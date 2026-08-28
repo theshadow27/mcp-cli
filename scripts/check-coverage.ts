@@ -139,6 +139,7 @@ import { ORPHAN_TOLERANT_TEST_FILES } from "./orphan-tolerant-tests";
 // staged-files still available for --ci mode if needed in the future
 import { logTestRun } from "./test-failure-log";
 import { detectTestNoise } from "./test-noise";
+import { PARALLEL_FLAG } from "./test-parallelism";
 import { findChangedFiles, findTestFiles, loadTimings, pruneStaleEntries, saveTimings } from "./test-timings";
 
 /** Run a single test file and return its wall-clock duration in ms */
@@ -311,7 +312,7 @@ if (skipRun2) {
     "bun",
     "test",
     "--no-orphans",
-    "--parallel",
+    PARALLEL_FLAG,
     "--timeout",
     "60000",
     "packages/daemon/src",
