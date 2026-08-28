@@ -3,7 +3,7 @@
   "engines": {
     "bun": ">=1.4.0"
   },
-  "version": "1.14.6",
+  "version": "2.0.0",
   "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
   "type": "module",
   "workspaces": ["packages/*", "agent-grid"],
