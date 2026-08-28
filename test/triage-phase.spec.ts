@@ -108,6 +108,53 @@ describe("runTriage — PR available", () => {
     }
   });
 
+  test("assigned scrutiny=high is a floor: metrics may not lower it (#3384)", async () => {
+    const stateWrites: Record<string, unknown> = {};
+    const result = await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        runEstimate: async () => ({ scrutiny: "low", reasons: ["small diff"] }),
+        stateGet: async <T>(key: string): Promise<T | undefined> =>
+          (key === "scrutiny" ? "high" : undefined) as T | undefined,
+        stateSet: async (key, value) => {
+          stateWrites[key] = value;
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      action: "goto",
+      target: "review",
+      scrutiny: "high",
+    });
+    expect(stateWrites.triage_scrutiny).toBe("high");
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.reason).toContain("floor");
+    }
+  });
+
+  test("assigned scrutiny=low does not lower a computed high (#3384)", async () => {
+    const result = await runTriage(
+      { labels: [] },
+      makeWork({ prNumber: 100 }),
+      makeDeps({
+        runEstimate: async () => ({ scrutiny: "high", reasons: ["large diff"] }),
+        stateGet: async <T>(key: string): Promise<T | undefined> =>
+          (key === "scrutiny" ? "low" : undefined) as T | undefined,
+      }),
+    );
+    expect(result).toMatchObject({
+      action: "goto",
+      target: "review",
+      scrutiny: "high",
+    });
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") {
+      expect(result.reason).not.toContain("floor");
+    }
+  });
+
   test("flaky label from state when input labels empty", async () => {
     const result = await runTriage(
       { labels: [] },
