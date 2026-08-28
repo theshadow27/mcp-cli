@@ -96,18 +96,28 @@ Per plan.md, **this analysis is re-run on every amendment** — a mid-sprint
 addition gets its predicted files diffed against all in-flight issues before it
 launches.
 
-## Run pre-flight (carried debt, do before batch 1)
+## Step 0b — tracker reconcile (done at planning, 2026-08-28)
 
-1. **13 work items sit at `phase: done`** from sprints 80–81 with merged PRs.
-   Untrack them **by issue number only** (#3240: `mcx untrack <pr>` resolves
-   by-PR first and deletes a different item than the number typed).
-2. **`d2:#3333` is stranded at `phase: impl` with no PR** and #3333 is genuinely
-   still open (PR #3346 said `refs`, not `fixes`). It is NOT in this sprint.
-   Once #3274 lands, a reconciler tick would re-spawn impl on it — untrack it, or
-   the ticker's first act is to start work nobody planned. This is the sprint's
-   own dogfood hazard and must be closed before #3274 merges.
-3. Branch `chore/3333-bun-140-pins` holds a partial attempt at #3333 — check it
-   before anyone re-implements that tail.
+`mcx tracked` held 14 rows from sprints 80–81. All 14 were reconciled before
+this plan was written; **the tracker is now empty**, so batch 1 starts against a
+clean slate and every row that appears during the sprint is one this plan put
+there.
+
+| Rows | Disposition |
+|------|-------------|
+| 13 at `phase: done` (#3213 #3013 #3104 #3180 #3042 #3110 #3264 #3210 #3140 #3260 #3247 #3254 #3344) | Untracked. Each verified individually: PR **MERGED** and issue **CLOSED**. Residue from two sprints of skipped wind-down sweeps. |
+| 1 at `phase: impl`, no PR (#3333) | Untracked and deferred — see Excluded. The row held no branch and no PR, so nothing was lost. |
+
+Untracked by **issue** number only (#3240: `mcx untrack <pr>` resolves by-PR
+first and deletes a different item than the number typed).
+
+This is the sprint's own dogfood: once #3274 ticks, a tracked row is a standing
+instruction to spawn its phase, so `d2:#3333` sitting at `impl` would have made
+the reconciler's first unattended act "start work nobody planned". The standing
+rule now lives in `plan.md` Step 0b (PR #3414), not in this file.
+
+**Also carried:** branch `chore/3333-bun-140-pins` holds a partial attempt at
+#3333 — check it before anyone re-implements that tail.
 
 ## Context
 
@@ -142,4 +152,4 @@ output file. Check output size before concluding nothing is happening.
 | 3385, 3377, 3331, 3334 | All four land in `work-items-server.ts` — a four-way file seam that would need its own serial chain. Off the critical path; batch them into one sprint later. |
 | 3369, 3288, 3203, 3230 | Real DX gaps, but the QoL budget is 2 and #3311/#3386 are the two that have actually cost sprint time. |
 | 3061 (pass 2) | Meta. The low-risk half applied at planning (PR #3412); the structural pass waits until a few sprints have run clean. |
-| 3333 | Carried from sprint 80. Not loop-aligned; see pre-flight note 2 — it needs untracking, not implementing, this sprint. |
+| 3333 | Carried from sprint 80, genuinely still open (PR #3346 said `refs`, not `fixes`). Not loop-aligned, and the sprint is full behind a serial chain. **Untracked** at Step 0b rather than left stranded; re-track when it is actually planned. Its remaining half — deleting the 1.3.x segfault-tolerance machinery — also gates #3335 and #3336, so all three want one sprint together. |
