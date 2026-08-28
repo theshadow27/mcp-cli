@@ -205,7 +205,7 @@ export class WorkItemDb {
   /**
    * Per-consumer versioned migration using a shared `schema_versions(name, version)` table.
    *
-   * Why not PRAGMA user_version: it's database-wide. StateDb and WorkItemDb share
+   * Why not PRAGMA user_version: it's database-wide. McxDb and WorkItemDb share
    * the same SQLite connection, so a second consumer adding its own v2 migration
    * would read user_version=2 already and silently skip. schema_versions keys by
    * consumer name, so each migrates independently.
@@ -933,7 +933,7 @@ export class DomainWorkItems {
    *
    * `domain_id` is written here because it is written *everywhere* on this handle — the
    * column had no writer at all when the domain partitioning landed (#3034 round 2), so
-   * every transition row said `domain_id = 0` and `StateDb.countDomainDependents` reported
+   * every transition row said `domain_id = 0` and `McxDb.countDomainDependents` reported
    * zero transitions for a domain that had hundreds, making `mcx domain rm` willing to
    * orphan them. That was a forgotten argument in one INSERT; on a domain-bound handle
    * there is no argument to forget.

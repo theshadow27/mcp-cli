@@ -20,7 +20,7 @@ import {
   NO_DOMAIN_ID,
 } from "@mcp-cli/core";
 import { IMPORT_MARKER_KEY, nonEmptyImportedTables } from "../db/import-legacy";
-import { StateDb } from "../db/state";
+import { McxDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
@@ -62,9 +62,9 @@ describe("DomainHandlers", () => {
     return dir;
   }
 
-  function setup(): { db: StateDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
+  function setup(): { db: McxDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     // The dependent tables live in other schema consumers; `rm` must count their rows.
     new WorkItemDb(db.database);
@@ -338,7 +338,7 @@ describe("DomainHandlers", () => {
 
   test("no legacy database: says so, does not claim a marker is set", async () => {
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     let clearCalls = 0;
     const handlers = new Map<IpcMethod, RequestHandler>();
@@ -362,7 +362,7 @@ describe("DomainHandlers", () => {
 
   test("marker set: names when, and points at --force", async () => {
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     let clearCalls = 0;
     const handlers = new Map<IpcMethod, RequestHandler>();
@@ -388,7 +388,7 @@ describe("DomainHandlers", () => {
     // Without --force, and the marker is already gone — which seal-or-nothing guarantees
     // after any failed import. The old code reported this as a refusal.
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     const handlers = new Map<IpcMethod, RequestHandler>();
     new DomainHandlers(
@@ -413,7 +413,7 @@ describe("DomainHandlers", () => {
     // that. Arming against a populated database is harmless: the marker stays clear, the
     // next start refuses to copy, and the import runs once mcx.db is out of the way.
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     new WorkItemDb(db.database);
     new EventLog(db.database);
@@ -447,7 +447,7 @@ describe("DomainHandlers", () => {
 
   test("--force against an empty target clears the marker and reports armed", async () => {
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     let clearCalls = 0;
     const handlers = new Map<IpcMethod, RequestHandler>();
@@ -470,7 +470,7 @@ describe("DomainHandlers", () => {
     // whose ONLY occupied table is monitor_events. `targetLooksEmpty()` reported EMPTY
     // here, which is what made the prescribed guard useless.
     const dir = workspace();
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open.push(db);
     new WorkItemDb(db.database);
     new EventLog(db.database);
@@ -501,10 +501,10 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     dirs2.length = 0;
   });
 
-  function setup2(): { db: StateDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
+  function setup2(): { db: McxDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
     const dir = mkdtempSync(join(tmpdir(), "mcx-domain-race-"));
     dirs2.push(dir);
-    const db = new StateDb(join(dir, "mcx.db"));
+    const db = new McxDb(join(dir, "mcx.db"));
     open2.push(db);
     new WorkItemDb(db.database);
     new EventLog(db.database);
@@ -563,7 +563,7 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
   test("the GENUINE race — found, then vanished before the delete — reports found:true", async () => {
     // `{found: true, removed: false, dependents: []}` had no handler coverage at all; it
     // existed only as a hand-built literal in the CLI harness. Driven here by deleting the
-    // row between the handler's lookup and its delete, via an injected StateDb whose
+    // row between the handler's lookup and its delete, via an injected McxDb whose
     // `deleteDomain` removes the row itself and reports that it changed nothing.
     const { db, handlers: _unused, dir } = setup2();
     await invoke(_unused, "domainAdd")({ name: "phoenix", path: srv(dir, "phoenix") }, ctx2);
@@ -611,8 +611,8 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
    * error discarded.
    */
   describe("only a refusal becomes a result (#3180)", () => {
-    function withFailingDelete(db: StateDb, err: Error): Map<IpcMethod, RequestHandler> {
-      const failing = Object.create(db) as StateDb;
+    function withFailingDelete(db: McxDb, err: Error): Map<IpcMethod, RequestHandler> {
+      const failing = Object.create(db) as McxDb;
       Object.defineProperty(failing, "deleteDomain", {
         value: () => {
           throw err;

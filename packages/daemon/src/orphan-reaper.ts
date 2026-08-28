@@ -12,7 +12,7 @@
 
 import type { Logger } from "@mcp-cli/core";
 import { consoleLogger } from "@mcp-cli/core";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { isOurProcess as defaultIsOurProcess } from "./process-identity";
 
 function isProcessAlive(pid: number): boolean {
@@ -41,7 +41,7 @@ interface ReaperDeps {
  *
  * Returns the count of sessions cleaned up.
  */
-export function reapOrphanedSessions(db: StateDb, logger: Logger = consoleLogger, deps?: ReaperDeps): number {
+export function reapOrphanedSessions(db: McxDb, logger: Logger = consoleLogger, deps?: ReaperDeps): number {
   const checkIsOurProcess = deps?.isOurProcess ?? defaultIsOurProcess;
   const activeSessions = db.listSessions(true); // active = ended_at IS NULL
   let cleaned = 0;

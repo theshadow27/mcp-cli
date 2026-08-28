@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capturingLogger, silentLogger } from "@mcp-cli/core";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { reapOrphanedSessions } from "./orphan-reaper";
 
 function tmpDb(): string {
@@ -30,10 +30,10 @@ describe("reapOrphanedSessions", () => {
     mock.restore();
   });
 
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDb();
     paths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   test("returns 0 when no active sessions", () => {

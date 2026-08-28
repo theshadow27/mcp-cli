@@ -31,7 +31,7 @@ import {
 } from "@mcp-cli/core";
 import { AutomationDispatcher } from "./automation-dispatcher";
 import { createAutomationStateRoot } from "./automation-state-root";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { type WorkItemDb, firstOf } from "./db/work-items";
 import type { DomainRoot } from "./domain-roots";
 import type { EventBus } from "./event-bus";
@@ -51,7 +51,7 @@ export interface AutomationBootstrapDeps {
   roots: readonly DomainRoot[];
   eventBus: EventBus;
   workItems: WorkItemDb;
-  stateDb: Pick<StateDb, "listAliasState">;
+  mcxDb: Pick<McxDb, "listAliasState">;
   /** Domain id for an `alias_state` root — the daemon's one path→domain resolver. */
   domainIdForPath: (repoRoot: string) => number;
   /** Ends one agent session (`claude_bye`, falling back to closing the DB row). */
@@ -195,7 +195,7 @@ export function startAutomationDispatchers(deps: AutomationBootstrapDeps): Autom
         // id straight off a DB row, never a caller-typed spelling, so
         // `workItemStateNamespace` is safe to use directly (#3037).
         const path = stateRoot();
-        return deps.stateDb.listAliasState(path, workItemStateNamespace(workItemId), deps.domainIdForPath(path));
+        return deps.mcxDb.listAliasState(path, workItemStateNamespace(workItemId), deps.domainIdForPath(path));
       },
       actionExecutor: {
         async byeAndUntrack(workItemId, sessionIds) {

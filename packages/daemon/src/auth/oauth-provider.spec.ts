@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { StateDb } from "../db/state";
+import { McxDb } from "../db/state";
 import type { KeychainTokens } from "./keychain";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
 
@@ -36,14 +36,14 @@ describe("McpOAuthProvider", () => {
   const paths: string[] = [];
   const mockReadKeychain = mock<(url: string) => Promise<KeychainTokens | null>>(() => Promise.resolve(null));
 
-  function createDb(): InstanceType<typeof StateDb> {
+  function createDb(): InstanceType<typeof McxDb> {
     const p = tmpDb();
     paths.push(p);
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   function createProvider(
-    db: InstanceType<typeof StateDb>,
+    db: InstanceType<typeof McxDb>,
     opts?: { clientId?: string; clientSecret?: string; callbackPort?: number; scope?: string },
   ): InstanceType<typeof McpOAuthProvider> {
     return new McpOAuthProvider("srv", "https://api.example.com", db, {

@@ -42,7 +42,7 @@ import type { DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { type DomainScope, domainScopeFromMeta } from "./domain-scope";
 
 /**
- * Narrow interface for alias_state operations — avoids coupling to full StateDb.
+ * Narrow interface for alias_state operations — avoids coupling to full McxDb.
  *
  * `alias_state` carries a `domain_id` column, and by the time this PR rebased onto
  * #3040's `PhaseStateBinding` (below), both writers of the `phase_state_*` /
@@ -60,10 +60,10 @@ export interface PhaseStateStore {
 /**
  * A phase-state store bundled with the resolver that partitions it (#3040 review R1).
  *
- * The two travel together as one option rather than as `stateDb?` plus an optional
+ * The two travel together as one option rather than as `mcxDb?` plus an optional
  * `domainIdFor?` because that is the difference between a bug the compiler catches and
  * a bug that cannot be written. This interface previously declared three-parameter
- * signatures while `StateDb` had a defaulted fourth; StateDb therefore still satisfied
+ * signatures while `McxDb` had a defaulted fourth; McxDb therefore still satisfied
  * it structurally, and `_work_items` phase_state_* wrote domain 0 while `ctx.state`
  * wrote a real domain — same repo_root, same namespace, different rows. Nothing failed;
  * tsc was silent. Requiring the partition key on the interface makes the mismatch a
@@ -124,7 +124,7 @@ function resolvePhaseStateTarget(
   a: Record<string, unknown>,
   opts: { requireKey: boolean },
 ): { repoRoot: string; key: string; ns: string; domainId: number } | { error: ToolError } {
-  if (!phaseState) return toolError("Phase state not available (no stateDb configured)");
+  if (!phaseState) return toolError("Phase state not available (no mcxDb configured)");
 
   const workItemId = String(a.workItemId ?? "");
   const rawRepoRoot = String(a.repoRoot ?? "").trim();

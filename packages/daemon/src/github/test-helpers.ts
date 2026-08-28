@@ -1,13 +1,13 @@
 import type { Database } from "bun:sqlite";
 
 /**
- * Minimal StateDb-compatible adapter backed by an in-memory SQLite database.
+ * Minimal McxDb-compatible adapter backed by an in-memory SQLite database.
  *
  * Partitioned by `domain_id` like the real table: the repo-poll cursor is per domain
  * because the fetch it paces is per repo (#3192), and a `pr_number`-only primary key made
  * two domains' cursors the same row.
  */
-export function createCopilotStateDb(db: Database) {
+export function createCopilotMcxDb(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS copilot_comment_state (
       domain_id              INTEGER NOT NULL DEFAULT 0,

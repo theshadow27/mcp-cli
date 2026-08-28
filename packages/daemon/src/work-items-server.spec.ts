@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, NO_REPO_ROOT, WORK_ITEMS_SERVER_NAME, workItemStateNamespace } from "@mcp-cli/core";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { type DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { DOMAIN_META_KEY } from "./domain-scope";
 import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
@@ -33,19 +33,19 @@ function createWorkItemDb(): { db: WorkItemDb; items: DomainWorkItems; raw: Data
   return { db, items: db.forDomain(NO_DOMAIN_ID), raw };
 }
 
-/** Create a real StateDb (temp file) and a WorkItemDb sharing its underlying database — matches production wiring. */
-function createRealStateDbs(): {
-  stateDb: StateDb;
+/** Create a real McxDb (temp file) and a WorkItemDb sharing its underlying database — matches production wiring. */
+function createRealMcxDbs(): {
+  mcxDb: McxDb;
   workItemDb: WorkItemDb;
   items: DomainWorkItems;
   raw: Database;
   dbPath: string;
 } {
   const dbPath = tmpDbPath();
-  const stateDb = new StateDb(dbPath);
-  const raw = stateDb.getDatabase();
+  const mcxDb = new McxDb(dbPath);
+  const raw = mcxDb.getDatabase();
   const workItemDb = new WorkItemDb(raw);
-  return { stateDb, workItemDb, items: workItemDb.forDomain(NO_DOMAIN_ID), raw, dbPath };
+  return { mcxDb, workItemDb, items: workItemDb.forDomain(NO_DOMAIN_ID), raw, dbPath };
 }
 
 describe("WORK_ITEMS_SERVER_NAME", () => {
@@ -1244,17 +1244,17 @@ describe("WorkItemsServer", () => {
 
 describe("phase_state tools", () => {
   let server: WorkItemsServer | undefined;
-  let stateDbInst: StateDb | undefined;
+  let mcxDbInst: McxDb | undefined;
   let dbPathToClean: string | undefined;
-  // rawWiDb tracks :memory: WorkItemDb instances used by no-stateDb tests
+  // rawWiDb tracks :memory: WorkItemDb instances used by no-mcxDb tests
   let rawWiDb: Database | undefined;
 
   afterEach(async () => {
     await server?.stop();
-    stateDbInst?.close();
+    mcxDbInst?.close();
     rawWiDb?.close();
     server = undefined;
-    stateDbInst = undefined;
+    mcxDbInst = undefined;
     rawWiDb = undefined;
     if (dbPathToClean) {
       cleanupDb(dbPathToClean);
@@ -1263,10 +1263,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_set and phase_state_get round-trip a value", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1289,10 +1289,10 @@ describe("phase_state tools", () => {
   });
 
   test("repoRoot is canonicalized — trailing slash and no slash resolve to same row", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 20 } });
@@ -1312,10 +1312,10 @@ describe("phase_state tools", () => {
   });
 
   test("repoRoot symlink is canonicalized — symlink and real path resolve to same row", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-"));
@@ -1345,10 +1345,10 @@ describe("phase_state tools", () => {
   });
 
   test("repoRoot symlink is canonicalized — real path and symlink resolve to same row (inverse)", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-inv-"));
@@ -1378,10 +1378,10 @@ describe("phase_state tools", () => {
   });
 
   test("empty repoRoot is rejected — does not fall back to process.cwd()", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 99 } });
@@ -1396,10 +1396,10 @@ describe("phase_state tools", () => {
   });
 
   test("namespace uses workitem:{id} — matches ctx.state in phase handlers", async () => {
-    const { stateDb, workItemDb, raw, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, raw, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 10 } });
@@ -1414,10 +1414,10 @@ describe("phase_state tools", () => {
   });
 
   test("parallel work items are isolated — no cross-contamination", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 1 } });
@@ -1446,10 +1446,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_get returns undefined for missing key", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 2 } });
@@ -1464,10 +1464,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_list returns all keys for the work item", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 3 } });
@@ -1493,10 +1493,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_delete removes a key", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 7 } });
@@ -1523,10 +1523,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_delete returns false for nonexistent key", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 8 } });
@@ -1541,10 +1541,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_get errors for nonexistent work item", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     const result = await client.callTool({
@@ -1556,7 +1556,7 @@ describe("phase_state tools", () => {
     expect(text).toContain("Work item not found");
   });
 
-  test("phase_state tools error when no stateDb configured", async () => {
+  test("phase_state tools error when no mcxDb configured", async () => {
     const { db, raw } = createWorkItemDb();
     rawWiDb = raw;
     server = new WorkItemsServer(db);
@@ -1576,10 +1576,10 @@ describe("phase_state tools", () => {
   });
 
   test("relative repoRoot is rejected — returns isError with clear message", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
@@ -1601,10 +1601,10 @@ describe("phase_state tools", () => {
   // meant exit(1) AFTER a live session had been paid for, with a printed recovery command
   // that embedded the same rejected root and therefore failed identically.
   test("NO_REPO_ROOT is accepted as a repoRoot and round-trips", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 101 } });
@@ -1627,10 +1627,10 @@ describe("phase_state tools", () => {
     // The write must be visible to a reader that goes through the alias-state path
     // (which stores the sentinel verbatim), otherwise the tool and `ctx.state` are two
     // stores wearing one name — the split #3209 exists to close (#3376).
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 102 } });
@@ -1639,15 +1639,15 @@ describe("phase_state tools", () => {
       arguments: { workItemId: "issue:102", repoRoot: NO_REPO_ROOT, key: "qa_session_id", value: "sess-xyz" },
     });
 
-    const direct = stateDb.listAliasState(NO_REPO_ROOT, workItemStateNamespace("issue:102"), NO_DOMAIN_ID);
+    const direct = mcxDb.listAliasState(NO_REPO_ROOT, workItemStateNamespace("issue:102"), NO_DOMAIN_ID);
     expect(direct).toEqual({ qa_session_id: "sess-xyz" });
   });
 
   test("phase_state_set rejects undefined value", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 6 } });
@@ -1661,11 +1661,11 @@ describe("phase_state tools", () => {
     expect(text).toContain("value is required");
   });
 
-  test("phase_state_set surfaces StateDb errors as isError response", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+  test("phase_state_set surfaces McxDb errors as isError response", async () => {
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 9 } });
@@ -1685,10 +1685,10 @@ describe("phase_state tools", () => {
   // so without this guard it could set review_spawned_at=1 to defeat the #2652
   // freshness guard, or zero a *_round counter to bypass loop caps.
   test("phase_state_set rejects forging the review_spawned_at freshness sentinel", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 100 } });
@@ -1709,10 +1709,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_set rejects every reserved sentinel pattern", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 101 } });
@@ -1728,10 +1728,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_set still allows the orchestrator's *_session_id writes", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 102 } });
@@ -1746,10 +1746,10 @@ describe("phase_state tools", () => {
   });
 
   test("phase_state_delete rejects deleting a reserved sentinel", async () => {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
     await client.callTool({ name: "work_items_track", arguments: { issueNumber: 103 } });
@@ -1984,15 +1984,15 @@ describe("WorkItemsServer — domain scoping", () => {
  */
 describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1)", () => {
   let server: WorkItemsServer | undefined;
-  let stateDbInst: StateDb | undefined;
+  let mcxDbInst: McxDb | undefined;
   let dbPathToClean: string | undefined;
 
   afterEach(async () => {
     await server?.stop();
-    stateDbInst?.close();
+    mcxDbInst?.close();
     if (dbPathToClean) cleanupDb(dbPathToClean);
     server = undefined;
-    stateDbInst = undefined;
+    mcxDbInst = undefined;
     dbPathToClean = undefined;
   });
 
@@ -2005,17 +2005,17 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
   }
 
   async function trackedInDomain() {
-    const { stateDb, workItemDb, dbPath } = createRealStateDbs();
-    stateDbInst = stateDb;
+    const { mcxDb, workItemDb, dbPath } = createRealMcxDbs();
+    mcxDbInst = mcxDb;
     dbPathToClean = dbPath;
-    server = new WorkItemsServer(workItemDb, { phaseState: { store: stateDb, domainIdFor: () => NO_DOMAIN_ID } });
+    server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
     const item = parse(
       await client.callTool({ name: "work_items_track", arguments: { issueNumber: 42 }, ...asDomain(1, "alpha") }),
     );
     // Premise of every assertion below: the stored id is NOT the spelling a caller types.
     expect(item.id).toBe("d1:issue:42");
-    return { client, stateDb, storedId: item.id as string };
+    return { client, mcxDb, storedId: item.id as string };
   }
 
   test("a write via the unscoped spelling is readable via the canonical one", async () => {
@@ -2037,7 +2037,7 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
   });
 
   test("both spellings address one namespace — the one the phase runner uses", async () => {
-    const { client, stateDb, storedId } = await trackedInDomain();
+    const { client, mcxDb, storedId } = await trackedInDomain();
 
     await client.callTool({
       name: "phase_state_set",
@@ -2054,9 +2054,9 @@ describe("WorkItemsServer — phase state is keyed by the canonical id (#3037 R1
     // and it is the namespace commands/phase.ts derives from the stored id.
     const runnerNamespace = workItemStateNamespace(storedId);
     expect(runnerNamespace).toBe("workitem:d1:issue:42");
-    expect(stateDb.listAliasState("/repo", runnerNamespace, NO_DOMAIN_ID)).toEqual({ typed: 1, canonical: 2 });
+    expect(mcxDb.listAliasState("/repo", runnerNamespace, NO_DOMAIN_ID)).toEqual({ typed: 1, canonical: 2 });
     // ...and nothing was written to the namespace the raw argument would have produced.
-    expect(stateDb.listAliasState("/repo", "workitem:issue:42", NO_DOMAIN_ID)).toEqual({});
+    expect(mcxDb.listAliasState("/repo", "workitem:issue:42", NO_DOMAIN_ID)).toEqual({});
   });
 
   test("list and delete agree with set on which namespace is real", async () => {

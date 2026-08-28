@@ -8,7 +8,7 @@ import {
   type DbUpsertSession,
   type WorkerServerDescriptor,
 } from "./abstract-worker-server";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 import type { WorkerClientTransport } from "./worker-transport";
 
@@ -86,7 +86,7 @@ const instantClient = () =>
 
 function makeServer<T extends StubWorkerServer>(
   Cls: new (
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: typeof silentLogger,
@@ -94,7 +94,7 @@ function makeServer<T extends StubWorkerServer>(
     metrics?: MetricsCollector,
     workerFactory?: (path: string) => Worker,
   ) => T,
-  db: StateDb,
+  db: McxDb,
   extraOpts?: { clientFactory?: () => Client; workerFactory?: (path: string) => Worker },
 ): T {
   return new Cls(
@@ -124,7 +124,7 @@ function internals(server: AbstractWorkerServer): Internals {
 
 describe("AbstractWorkerServer", () => {
   let server: StubWorkerServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -138,7 +138,7 @@ describe("AbstractWorkerServer", () => {
   describe("crash-restart cycle hook order", () => {
     test("fires hooks in order: onCrashDetected → captureOrphanedSessions → preCrashClearState → teardownWorkerExtra → onPostStart → onOrphanSessionEnd", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const spy = makeServer(SpyWorkerServer, db);
       server = spy;
 
@@ -174,7 +174,7 @@ describe("AbstractWorkerServer", () => {
   describe("onPostStart() throw safety", () => {
     test("cleans up worker/client/transport and rethrows when onPostStart throws", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
 
       class ThrowingPostStartServer extends StubWorkerServer {
         protected override onPostStart(): void {
@@ -194,7 +194,7 @@ describe("AbstractWorkerServer", () => {
 
     test("subsequent start() succeeds after onPostStart throw is fixed", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
 
       let shouldThrow = true;
 
@@ -220,7 +220,7 @@ describe("AbstractWorkerServer", () => {
   describe("processSessionUpsert throw safety", () => {
     test("does not add ghost entry to activeSessions when processSessionUpsert throws", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
 
       class ThrowingUpsertServer extends StubWorkerServer {
         protected override processSessionUpsert(_session: DbUpsertSession): DbUpsertSession {
@@ -244,7 +244,7 @@ describe("AbstractWorkerServer", () => {
 
     test("successfully adds session when processSessionUpsert returns normally", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = makeServer(StubWorkerServer, db);
 
       internals(server).handleWorkerEvent({
@@ -261,7 +261,7 @@ describe("AbstractWorkerServer", () => {
   describe("captureOrphanedSessions() null vs empty Set semantics", () => {
     test("returning null skips orphan cleanup — sessions are NOT ended by the orphan handler", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const spy = makeServer(SpyWorkerServer, db);
       server = spy;
       // Override to return null
@@ -287,7 +287,7 @@ describe("AbstractWorkerServer", () => {
 
     test("returning empty Set skips orphan cleanup — no sessions to iterate", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
 
       class EmptySetServer extends SpyWorkerServer {
         protected override captureOrphanedSessions(): Set<string> {
@@ -312,7 +312,7 @@ describe("AbstractWorkerServer", () => {
 
     test("returning Set with sessionIds ends those sessions after restart", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const spy = makeServer(SpyWorkerServer, db);
       server = spy;
       // Default captureOrphanedSessions returns a copy of activeSessions
@@ -357,7 +357,7 @@ describe("AbstractWorkerServer", () => {
 
     test("default branch in handleWorkerEvent does not throw for unrecognized types", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = makeServer(StubWorkerServer, db);
 
       // Cast to bypass isBaseWorkerEvent routing — call the private method directly
@@ -374,7 +374,7 @@ describe("AbstractWorkerServer", () => {
   describe("db:stderr capture", () => {
     test("persists child stderr lines keyed by session id", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = makeServer(StubWorkerServer, db);
 
       internals(server).handleWorkerEvent({
@@ -396,7 +396,7 @@ describe("AbstractWorkerServer", () => {
 
     test("db:disconnected log line surfaces the captured stderr tail", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const { logger, texts } = capturingLogger();
       const s = new StubWorkerServer(db, undefined, instantClient, logger, undefined, new MetricsCollector());
       server = s;
@@ -417,7 +417,7 @@ describe("AbstractWorkerServer", () => {
 
     test("db:disconnected surfaces the newest 5 stderr lines (tail, not head), in order (#2769)", () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const { logger, texts } = capturingLogger();
       const s = new StubWorkerServer(db, undefined, instantClient, logger, undefined, new MetricsCollector());
       server = s;
@@ -447,7 +447,7 @@ describe("AbstractWorkerServer", () => {
   describe("protocol version negotiation", () => {
     test("buildInitMessage includes protocol_version", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = makeServer(StubWorkerServer, db);
 
       await server.start();
@@ -464,7 +464,7 @@ describe("AbstractWorkerServer", () => {
 
     test("accepts ready with matching supported_protocol_version", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const factory = () => {
         const w = {
           postMessage: mock((_msg: unknown) => {
@@ -489,7 +489,7 @@ describe("AbstractWorkerServer", () => {
 
     test("accepts ready without supported_protocol_version (backwards-compatible)", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       // Default mockWorkerFactory sends { type: "ready" } with no version — must still work
       server = makeServer(StubWorkerServer, db);
 
@@ -498,7 +498,7 @@ describe("AbstractWorkerServer", () => {
 
     test("rejects ready with mismatched supported_protocol_version", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const mismatchedVersion = AGENT_PROTOCOL_VERSION + 1;
       const factory = () => {
         const w = {

@@ -246,7 +246,7 @@ async function domainRename(args: string[], deps: DomainDeps): Promise<void> {
 
 async function domainRm(args: string[], deps: DomainDeps): Promise<void> {
   const usage = "Usage: mcx domain rm <name> [--force]";
-  // `--cascade` is the StateDb-level name for the same thing; accepted so the option a
+  // `--cascade` is the McxDb-level name for the same thing; accepted so the option a
   // reader finds in the daemon's docstring works on the command line too.
   const parsed = parseFlags(args, { force: { type: "boolean" }, cascade: { type: "boolean" } });
   if (gateFlags(parsed, usage, deps) === "help") return;

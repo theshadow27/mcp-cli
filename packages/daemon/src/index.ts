@@ -79,13 +79,13 @@ import { configHash, loadConfig } from "./config/loader";
 import { ConfigWatcher } from "./config/watcher";
 import { closeDaemonLogFile, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 import { adoptUnassignedDomains } from "./db/adopt-domains";
-import { importLegacyState } from "./db/import-legacy";
-import { StateDb } from "./db/state";
+import { importLegacyState, recoveryInstructions } from "./db/import-legacy";
+import { McxDb } from "./db/state";
 import { WorkItemDb, firstOf } from "./db/work-items";
 import { DerivedEventPublisher, migrateDerivedCursor } from "./derived-events";
 import { DEFAULT_RULES } from "./derived-rules";
 import { DomainRepoResolver } from "./domain-repos";
-import { createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
+import { createDomainResolver, createMcxDbDomainSource } from "./domain-resolver";
 import { resolveDomainRoots } from "./domain-roots";
 import { resolveDomainScope } from "./domain-scope";
 import { DomainSupervisor } from "./domain-supervisor";
@@ -191,7 +191,7 @@ function defaultGitOps(): PruneGitOps {
  * Returns the number of repos where the key was removed.
  */
 export function sweepCoreBare(
-  db: StateDb,
+  db: McxDb,
   logger: Logger = consoleLogger,
   gitOps: PruneGitOps = defaultGitOps(),
 ): number {
@@ -226,7 +226,7 @@ export function sweepCoreBare(
 
 /** Remove worktrees from ended sessions that are clean and have no active session. */
 export function pruneOrphanedWorktrees(
-  db: StateDb,
+  db: McxDb,
   logger: Logger = consoleLogger,
   gitOps: PruneGitOps = defaultGitOps(),
 ): void {
@@ -370,7 +370,7 @@ export interface DaemonHandle {
   /** Resolves when shutdown completes. Useful for tests that need to await cleanup. */
   readonly shutdownComplete: Promise<void>;
   readonly isShuttingDown: boolean;
-  readonly db: StateDb;
+  readonly db: McxDb;
   readonly pool: ServerPool;
   readonly ipcServer: IpcServer;
   readonly watcher: ConfigWatcher;
@@ -494,7 +494,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     writeFileSync(options.PID_PATH, JSON.stringify(pidData));
   }
 
-  // Preflight: verify SQLite >= 3.38 BEFORE opening StateDb — the constructor
+  // Preflight: verify SQLite >= 3.38 BEFORE opening McxDb — the constructor
   // runs migrations whose DEFAULT (unixepoch()) expressions would throw first
   // on macOS 12 Monterey (SQLite 3.37.0), swallowing the friendly error. See #2092.
   {
@@ -509,7 +509,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
 
   // Open SQLite database
-  const db = new StateDb(options.DB_PATH);
+  const db = new McxDb(options.DB_PATH);
   logger.info(`[mcpd] Database: ${options.DB_PATH}`);
 
   // One-shot best-effort import from the pre-domain state.db (#3034). Runs before
@@ -526,7 +526,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   const importResult = importLegacyState({ db: db.getDatabase(), log: (msg) => logger.warn(msg) });
   if (importResult.ran && !importResult.sealed) {
     logger.warn(
-      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will retry on the next start`,
+      `[mcpd] legacy import did not complete (${importResult.failedTables.length} table(s) failed) — it will NOT automatically retry; ${recoveryInstructions()}`,
     );
   } else if (!importResult.ran) {
     logger.debug(`[mcpd] legacy import declined: ${importResult.reason}`);
@@ -566,7 +566,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   // because `importScopesAsDomains` creates domains before the `agent_sessions` copy so
   // `createDomain`'s own adopt hook could not catch those rows. That mechanism is
   // invented: `importScopesAsDomains` writes with a raw prepared INSERT on the attached
-  // target and never calls `StateDb.createDomain`, so the hook was never in play. The
+  // target and never calls `McxDb.createDomain`, so the hook was never in play. The
   // conclusion was right for the simpler reason above.)
   //
   // Best-effort, like the import directly above: it is idempotent and self-heals on the
@@ -878,7 +878,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
   // One shared factory, not a hand-copy: the IPC server's fallback and the specs use the
   // same source, so the candidate order cannot drift between them (#3169 review R7).
-  const domainResolver = createDomainResolver(createStateDbDomainSource(db));
+  const domainResolver = createDomainResolver(createMcxDbDomainSource(db));
   const mailEventBus = new EventBus(eventLog, Date.now, domainResolver);
   mailServer.setEventBus(mailEventBus);
 
@@ -959,7 +959,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     roots: domainRoots,
     eventBus: mailEventBus,
     workItems: new WorkItemDb(db.getDatabase()),
-    stateDb: db,
+    mcxDb: db,
     domainIdForPath: (repoRoot) => domainResolver.idForPath(repoRoot),
     endSession: async (sessionId, reason) => {
       try {
@@ -1378,7 +1378,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
 
           copilotPoller = new CopilotPoller({
             workItemDb,
-            stateDb: db,
+            mcxDb: db,
             logger,
             // Same per-domain repo map as WorkItemPoller above (#3192).
             repos: domainRepos,

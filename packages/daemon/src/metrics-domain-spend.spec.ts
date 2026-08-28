@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { SPEND_SOURCE_DAEMON, UNASSIGNED_DOMAIN, queryDomainSpend } from "./metrics-domain-spend";
 
 const dbPaths: string[] = [];
@@ -31,12 +31,12 @@ afterEach(() => {
 /**
  * `upsertSession` never sets `domain_id` (that's the pre-existing gap tracked in #3039 —
  * agent_sessions was missed when domain scoping landed). Seed rows the way a fixed writer
- * eventually will, via the raw connection `StateDb` already exposes for exactly this
+ * eventually will, via the raw connection `McxDb` already exposes for exactly this
  * ("modules that share this connection"), so this rollup is tested against realistic data
  * shapes rather than only the current (always-0) write path.
  */
 function seedSession(
-  db: StateDb,
+  db: McxDb,
   opts: { sessionId: string; domainId: number; model: string | null; cost: number; tokens: number; spawnedAt?: string },
 ): void {
   db.upsertSession({ sessionId: opts.sessionId, model: opts.model ?? undefined });
@@ -52,9 +52,9 @@ function seedSession(
 }
 
 describe("queryDomainSpend", () => {
-  function createDb(): StateDb {
+  function createDb(): McxDb {
     const p = tmpDbPath();
-    return new StateDb(p);
+    return new McxDb(p);
   }
 
   test("rolls up totals per domain, matching the sum of that domain's sessions", () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { OPENCODE_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 import { OpenCodeServer, buildOpenCodeToolCache, isOpenCodeWorkerEvent } from "./opencode-server";
 import { OPENCODE_TOOLS } from "./opencode-session/tools";
@@ -99,7 +99,7 @@ describe("OPENCODE_SERVER_NAME", () => {
 
 describe("OpenCodeServer", () => {
   let server: OpenCodeServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -110,7 +110,7 @@ describe("OpenCodeServer", () => {
 
   test("start() connects and listTools returns opencode tools", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
@@ -133,7 +133,7 @@ describe("OpenCodeServer", () => {
 
   test("opencode_session_list returns empty array initially", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
@@ -146,7 +146,7 @@ describe("OpenCodeServer", () => {
 
   test("opencode_session_status returns error for unknown session", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     const { client } = await server.start();
@@ -162,7 +162,7 @@ describe("OpenCodeServer", () => {
 
   test("worker db:upsert event persists session to SQLite", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -181,7 +181,7 @@ describe("OpenCodeServer", () => {
 
   test("worker db:state event updates session state", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -196,7 +196,7 @@ describe("OpenCodeServer", () => {
 
   test("worker db:cost event updates cost and tokens", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -212,7 +212,7 @@ describe("OpenCodeServer", () => {
 
   test("worker db:end event marks session as ended", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -228,7 +228,7 @@ describe("OpenCodeServer", () => {
 
   test("hasActiveSessions() returns false initially", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -238,7 +238,7 @@ describe("OpenCodeServer", () => {
 
   test("hasActiveSessions() returns true after db:upsert, false after db:end", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -255,7 +255,7 @@ describe("OpenCodeServer", () => {
 
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -271,7 +271,7 @@ describe("OpenCodeServer", () => {
 
   test("stop() ends sessions in DB", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -295,7 +295,7 @@ describe("OpenCodeServer", () => {
 
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -305,7 +305,7 @@ describe("OpenCodeServer", () => {
 
   test("onActivity is called on db:upsert, db:state, and db:cost events", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -337,7 +337,7 @@ describe("OpenCodeServer", () => {
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -357,7 +357,7 @@ describe("OpenCodeServer", () => {
 
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -383,7 +383,7 @@ describe("OpenCodeServer", () => {
 
   test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -405,7 +405,7 @@ describe("OpenCodeServer", () => {
 
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -437,7 +437,7 @@ describe("OpenCodeServer", () => {
 
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -461,7 +461,7 @@ describe("OpenCodeServer", () => {
 
   test("pruneDeadSessions prunes sessions after TTL expires", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -485,7 +485,7 @@ describe("OpenCodeServer", () => {
 
   test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -519,7 +519,7 @@ describe("OpenCodeServer", () => {
 
   test("db:cost event also refreshes sessionAddedAt", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new OpenCodeServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -540,7 +540,7 @@ describe("OpenCodeServer", () => {
 
   test("start() terminates worker and nulls state if client.connect() throws", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const fakeClient = {
       connect: async () => {
@@ -588,7 +588,7 @@ function mockWorkerFactory() {
 
 describe("OpenCodeServer connect timeout metric", () => {
   let server: OpenCodeServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -599,7 +599,7 @@ describe("OpenCodeServer connect timeout metric", () => {
 
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const neverConnect = {
       connect: () => new Promise<void>(() => {}),
@@ -616,7 +616,7 @@ describe("OpenCodeServer connect timeout metric", () => {
 
   test("does not increment counter on successful connect", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const instantConnect = {
       connect: async () => {},

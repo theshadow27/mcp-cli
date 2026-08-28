@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { TRACING_SERVER_NAME } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { TracingServer, buildTracingToolCache } from "./tracing-server";
 
 describe("buildTracingToolCache", () => {
@@ -23,7 +23,7 @@ describe("buildTracingToolCache", () => {
 
 describe("TracingServer", () => {
   let server: TracingServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -33,7 +33,7 @@ describe("TracingServer", () => {
   });
 
   function insertSpan(
-    stateDb: StateDb,
+    mcxDb: McxDb,
     overrides?: Partial<{
       traceId: string;
       spanId: string;
@@ -61,7 +61,7 @@ describe("TracingServer", () => {
       attributes: overrides?.attributes ?? {},
       events: overrides?.events ?? [],
     };
-    stateDb.recordSpan(span, overrides?.daemonId);
+    mcxDb.recordSpan(span, overrides?.daemonId);
   }
 
   function parseResult(
@@ -73,7 +73,7 @@ describe("TracingServer", () => {
 
   test("start() connects and listTools returns 3 tools", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new TracingServer(db);
 
     const { client } = await server.start();
@@ -85,7 +85,7 @@ describe("TracingServer", () => {
 
   test("double start throws", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new TracingServer(db);
     await server.start();
     await expect(server.start()).rejects.toThrow("TracingServer already started");
@@ -93,7 +93,7 @@ describe("TracingServer", () => {
 
   test("can restart after stop", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new TracingServer(db);
     await server.start();
     await server.stop();
@@ -103,7 +103,7 @@ describe("TracingServer", () => {
 
   test("unknown tool returns error", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new TracingServer(db);
     const { client } = await server.start();
     const result = await client.callTool({ name: "nonexistent", arguments: {} });
@@ -113,7 +113,7 @@ describe("TracingServer", () => {
   describe("query_traces", () => {
     test("returns empty when no spans", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = new TracingServer(db);
       const { client } = await server.start();
 
@@ -123,7 +123,7 @@ describe("TracingServer", () => {
 
     test("does not include count field", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "span1".padEnd(16, "0") });
 
       server = new TracingServer(db);
@@ -135,7 +135,7 @@ describe("TracingServer", () => {
 
     test("does not include exportedAt in spans", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "span1".padEnd(16, "0") });
 
       server = new TracingServer(db);
@@ -148,7 +148,7 @@ describe("TracingServer", () => {
 
     test("returns all spans with no filters", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "span1".padEnd(16, "0") });
       insertSpan(db, { spanId: "span2".padEnd(16, "0") });
 
@@ -161,7 +161,7 @@ describe("TracingServer", () => {
 
     test("filters by daemon_id", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), daemonId: "daemon-1" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), daemonId: "daemon-2" });
 
@@ -176,7 +176,7 @@ describe("TracingServer", () => {
 
     test("filters by trace_id", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const traceA = "a".repeat(32);
       const traceB = "b".repeat(32);
       insertSpan(db, { traceId: traceA, spanId: "s1".padEnd(16, "0") });
@@ -193,7 +193,7 @@ describe("TracingServer", () => {
 
     test("filters by status", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), status: "OK" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), status: "ERROR" });
 
@@ -208,7 +208,7 @@ describe("TracingServer", () => {
 
     test("filters by time range", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), startTimeMs: 1000 });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), startTimeMs: 2000 });
       insertSpan(db, { spanId: "s3".padEnd(16, "0"), startTimeMs: 3000 });
@@ -226,7 +226,7 @@ describe("TracingServer", () => {
 
     test("respects limit", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       for (let i = 0; i < 5; i++) {
         insertSpan(db, { spanId: `s${i}`.padEnd(16, "0"), startTimeMs: 1000 + i });
       }
@@ -240,7 +240,7 @@ describe("TracingServer", () => {
 
     test("clamps limit to valid range", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       for (let i = 0; i < 5; i++) {
         insertSpan(db, { spanId: `s${i}`.padEnd(16, "0"), startTimeMs: 1000 + i });
       }
@@ -258,7 +258,7 @@ describe("TracingServer", () => {
 
     test("filters by server name substring", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), name: "tool_call:atlassian:search" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), name: "tool_call:github:list_prs" });
 
@@ -273,7 +273,7 @@ describe("TracingServer", () => {
 
     test("tool filter matches end of span name (after last colon)", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), name: "tool_call:atlassian:search" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), name: "tool_call:github:search" });
       insertSpan(db, { spanId: "s3".padEnd(16, "0"), name: "tool_call:github:list_prs" });
@@ -288,7 +288,7 @@ describe("TracingServer", () => {
 
     test("combined server and tool filter", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), name: "tool_call:atlassian:search" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), name: "tool_call:github:search" });
 
@@ -305,7 +305,7 @@ describe("TracingServer", () => {
 
     test("LIKE wildcards in filter values are escaped", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), name: "tool_call:a%b:search" });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), name: "tool_call:axb:search" });
 
@@ -321,7 +321,7 @@ describe("TracingServer", () => {
 
     test("after_id enables cursor pagination", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       for (let i = 0; i < 5; i++) {
         insertSpan(db, { spanId: `s${i}`.padEnd(16, "0"), startTimeMs: 1000 + i });
       }
@@ -353,7 +353,7 @@ describe("TracingServer", () => {
   describe("list_daemons", () => {
     test("returns empty when no spans", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = new TracingServer(db);
       const { client } = await server.start();
 
@@ -364,7 +364,7 @@ describe("TracingServer", () => {
 
     test("groups spans by daemon_id", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0"), daemonId: "daemon-1", startTimeMs: 1000 });
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), daemonId: "daemon-1", startTimeMs: 2000 });
       insertSpan(db, { spanId: "s3".padEnd(16, "0"), daemonId: "daemon-2", startTimeMs: 3000 });
@@ -384,7 +384,7 @@ describe("TracingServer", () => {
 
     test("excludes spans with null daemon_id", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       insertSpan(db, { spanId: "s1".padEnd(16, "0") }); // no daemonId
       insertSpan(db, { spanId: "s2".padEnd(16, "0"), daemonId: "daemon-1" });
 
@@ -399,7 +399,7 @@ describe("TracingServer", () => {
   describe("get_trace", () => {
     test("returns error for missing trace_id", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = new TracingServer(db);
       const { client } = await server.start();
 
@@ -409,7 +409,7 @@ describe("TracingServer", () => {
 
     test("returns empty for nonexistent trace", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       server = new TracingServer(db);
       const { client } = await server.start();
 
@@ -421,7 +421,7 @@ describe("TracingServer", () => {
 
     test("returns all spans for a trace ordered by start time ASC", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const traceId = "a".repeat(32);
       insertSpan(db, { traceId, spanId: "s1".padEnd(16, "0"), startTimeMs: 3000, name: "child_b" });
       insertSpan(db, { traceId, spanId: "s2".padEnd(16, "0"), startTimeMs: 1000, name: "root" });
@@ -444,7 +444,7 @@ describe("TracingServer", () => {
 
     test("includes attributes and events but not exportedAt", async () => {
       using opts = testOptions();
-      db = new StateDb(opts.DB_PATH);
+      db = new McxDb(opts.DB_PATH);
       const traceId = "c".repeat(32);
       insertSpan(db, {
         traceId,

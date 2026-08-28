@@ -69,7 +69,7 @@ export interface AgentSessionRow {
 export type ClaudeSessionRow = AgentSessionRow;
 
 /**
- * {@link StateDb.deleteDomain} refusing because the domain still owns rows.
+ * {@link McxDb.deleteDomain} refusing because the domain still owns rows.
  *
  * A **type**, not a message, because the caller has to distinguish this from a real
  * failure and prose is not a contract (`no-error-message-sniffing`). Before this class
@@ -130,7 +130,7 @@ function describeDomainRefusal(name: string, dependents: Array<{ table: string; 
 }
 
 /**
- * {@link StateDb.createDomain} or {@link StateDb.renameDomain} refusing because another
+ * {@link McxDb.createDomain} or {@link McxDb.renameDomain} refusing because another
  * domain already holds the name or the location.
  *
  * A **type**, not a message, for the same reason as {@link DomainHasDependentsError}: the
@@ -174,13 +174,13 @@ export class DomainConflictError extends Error {
  * name this domain" is a single question and two spellings of it would answer differently
  * the first time one of them was tweaked — the count would refuse over rows the rewrite
  * skipped, or the rewrite would touch rows the count never warned about. `?1` is the
- * domain name in both callers. See {@link StateDb.restampMailSenders} for why this is
+ * domain name in both callers. See {@link McxDb.restampMailSenders} for why this is
  * `substr` and not `LIKE`.
  */
 const SENDER_STAMPED_WITH =
   "length(sender) > length(?1) + 1 AND substr(sender, length(sender) - length(?1)) = '@' || ?1";
 
-export class StateDb {
+export class McxDb {
   private db: Database;
   private logInsertCount = new Map<string, number>();
   private mailOpCount = 0;
@@ -2060,7 +2060,7 @@ export class StateDb {
   // `domainId` is REQUIRED on all four, with no default (#3040 review R1). It was
   // optional, and that is precisely how the third column-present/writer-absent bug in
   // this arc hid: an optional parameter let `PhaseStateStore` — which declared only
-  // three — still be structurally satisfied by StateDb, so `_work_items`
+  // three — still be structurally satisfied by McxDb, so `_work_items`
   // phase_state_* silently wrote domain 0 while `ctx.state` wrote a real domain. Same
   // repo_root, same `workitem:<id>` namespace, different rows, and tsc said nothing.
   // A partition key a caller can omit is prose; one the compiler demands is a function.
@@ -2614,7 +2614,7 @@ export class StateDb {
         for (const { table } of dependents) {
           this.db.run(`DELETE FROM ${quoteSqlIdent(table)} WHERE domain_id = ?`, [domain.id]);
         }
-        void rehomed; // reported by `mcx domain rm` (#3035); StateDb has no logger by design
+        void rehomed; // reported by `mcx domain rm` (#3035); McxDb has no logger by design
         return this.db.run("DELETE FROM domains WHERE id = ?", [domain.id]).changes > 0;
       })
       .immediate();

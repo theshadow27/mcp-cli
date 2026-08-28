@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { ALIAS_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import { ALIAS_MCP_CWD_ARG, AliasServer, buildAliasToolCache, extractMagicCwd } from "./alias-server";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { ServerPool } from "./server-pool";
 import { makeConfig, makeMockTransport } from "./test-helpers";
 
@@ -204,7 +204,7 @@ describe("extractMagicCwd", () => {
 
 describe("AliasServer", () => {
   let server: AliasServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -214,7 +214,7 @@ describe("AliasServer", () => {
   });
 
   function setupAlias(opts: ReturnType<typeof testOptions>) {
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     mkdirSync(opts.ALIASES_DIR, { recursive: true });
     const scriptPath = join(opts.ALIASES_DIR, "greet.ts");
     writeFileSync(
@@ -281,7 +281,7 @@ describe("AliasServer", () => {
   });
 
   function setupThrowingAlias(opts: ReturnType<typeof testOptions>) {
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     mkdirSync(opts.ALIASES_DIR, { recursive: true });
     const scriptPath = join(opts.ALIASES_DIR, "boom.ts");
     writeFileSync(
@@ -337,7 +337,7 @@ describe("AliasServer", () => {
 
   test("start() with no aliases returns empty tool list", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AliasServer(db);
 
     const { client } = await server.start();
@@ -370,7 +370,7 @@ describe("AliasServer", () => {
 
   test("refresh() updates tool list after alias save", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new AliasServer(db);
 
     const { client } = await server.start();

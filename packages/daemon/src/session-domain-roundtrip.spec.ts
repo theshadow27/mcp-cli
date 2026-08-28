@@ -22,14 +22,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, silentLogger } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MockServer } from "./mock-server";
 import { applyDomainScope } from "./session-domain";
 
 setDefaultTimeout(15_000);
 
 describe("domain partition — round trip through a real worker", () => {
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
   let server: MockServer | undefined;
   let opts: ReturnType<typeof testOptions> | undefined;
   let client: Awaited<ReturnType<MockServer["start"]>>["client"];
@@ -45,7 +45,7 @@ describe("domain partition — round trip through a real worker", () => {
     mkdirSync(alpha, { recursive: true });
     mkdirSync(beta, { recursive: true });
 
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     alphaId = db.createDomain("alpha", alpha).id;
     betaId = db.createDomain("beta", beta).id;
 

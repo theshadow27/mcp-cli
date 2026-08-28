@@ -35,9 +35,9 @@ import { z } from "zod/v4";
 import type { AliasServer } from "./alias-server";
 import type { AutomationRegistry } from "./automation-bootstrap";
 import { getDaemonLogLines } from "./daemon-log";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
-import { type DomainResolver, createDomainResolver, createStateDbDomainSource } from "./domain-resolver";
+import { type DomainResolver, createDomainResolver, createMcxDbDomainSource } from "./domain-resolver";
 import type { EventBus } from "./event-bus";
 import type { EventLog } from "./event-log";
 import { EventStreamServer } from "./event-stream";
@@ -111,7 +111,7 @@ export class IpcServer {
   constructor(
     private pool: ServerPool,
     private config: ResolvedConfig,
-    private db: StateDb,
+    private db: McxDb,
     aliasServer: AliasServer | null,
     opts: {
       daemonId: string;
@@ -134,7 +134,7 @@ export class IpcServer {
       /**
        * The daemon's domain resolver (#3040). Shared with the EventBus rather than
        * built here so there is one memo to invalidate when the `domains` table changes,
-       * not one per subsystem. Defaults to a resolver over this server's own StateDb.
+       * not one per subsystem. Defaults to a resolver over this server's own McxDb.
        */
       domains?: DomainResolver;
     },
@@ -170,11 +170,11 @@ export class IpcServer {
       loadManifestFn: opts.loadManifest ?? ((r) => loadManifest(r)?.manifest ?? null),
       onAliasChanged: opts.onAliasChanged ?? null,
       automation: opts.automation ?? null,
-      // The bare-StateDb fallback must supply the session lookup too. It used to compile
+      // The bare-McxDb fallback must supply the session lookup too. It used to compile
       // against `this.db` alone because the source member was optional — yielding a
       // resolver whose session path was silently dead (#3040 review). Latent, since the
       // eventBus branch wins in production, but latent is how the R1 split-brain shipped.
-      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createStateDbDomainSource(this.db)),
+      domains: opts.domains ?? eventBus?.domainResolver ?? createDomainResolver(createMcxDbDomainSource(this.db)),
     });
     this.db.pruneExpiredAliases();
   }

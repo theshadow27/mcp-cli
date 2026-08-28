@@ -2,7 +2,7 @@
  * Virtual MCP server that exposes trace data as MCP tools.
  *
  * Uses an in-process MCP Server with InMemoryTransport (no Workers).
- * Read-only — queries spans table via StateDb API.
+ * Read-only — queries spans table via McxDb API.
  */
 
 import type { ToolInfo } from "@mcp-cli/core";
@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 
 /** Maximum serialized response size in bytes (5 MB). */
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -84,7 +84,7 @@ export class TracingServer {
   private serverTransport: Transport | null = null;
   private clientTransport: Transport | null = null;
 
-  constructor(private db: StateDb) {}
+  constructor(private db: McxDb) {}
 
   async start(): Promise<{ client: Client; transport: Transport; tools: Map<string, ToolInfo> }> {
     if (this.server) {

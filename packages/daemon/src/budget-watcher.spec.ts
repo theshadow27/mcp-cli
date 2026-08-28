@@ -13,7 +13,7 @@ import {
   SESSION_RESULT,
 } from "@mcp-cli/core";
 import { BudgetWatcher } from "./budget-watcher";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import type { QuotaPoller, QuotaStatus } from "./quota";
@@ -40,8 +40,8 @@ function cleanupDbs(): void {
   dbPaths.length = 0;
 }
 
-function makeDb(): StateDb {
-  return new StateDb(tmpDbPath());
+function makeDb(): McxDb {
+  return new McxDb(tmpDbPath());
 }
 
 interface FakeQuotaPoller {
@@ -426,7 +426,7 @@ describe("BudgetWatcher — dispose", () => {
 
 // ── Reconcile (daemon restart state restoration) ──
 
-function makeDbWithLog(): { db: StateDb; eventLog: EventLog } {
+function makeDbWithLog(): { db: McxDb; eventLog: EventLog } {
   const db = makeDb();
   const eventLog = new EventLog(db.database);
   return { db, eventLog };

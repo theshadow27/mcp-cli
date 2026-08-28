@@ -3,7 +3,7 @@ import type { Logger, NdjsonRecorder } from "@mcp-cli/core";
 import { AGENT_PROTOCOL_VERSION, ProtocolVersionMismatchError, consoleLogger, resolveRealpath } from "@mcp-cli/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { closeClientWithTimeout } from "./close-timeout";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import { type MetricsCollector, metrics as defaultMetrics } from "./metrics";
 import { setupRecording } from "./recording-hooks";
 import {
@@ -148,7 +148,7 @@ export abstract class AbstractWorkerServer {
   protected worker: Worker | null = null;
   protected transport: WorkerClientTransport | null = null;
   protected client: Client | null = null;
-  protected readonly db: StateDb;
+  protected readonly db: McxDb;
   protected readonly daemonId?: string;
   protected readonly clientFactory: () => Client;
   protected readonly workerFactory: (scriptPath: string) => Worker;
@@ -184,7 +184,7 @@ export abstract class AbstractWorkerServer {
   abstract get descriptor(): WorkerServerDescriptor;
 
   constructor(
-    db: StateDb,
+    db: McxDb,
     daemonId?: string,
     clientFactory?: () => Client,
     logger?: Logger,

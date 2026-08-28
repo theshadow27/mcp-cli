@@ -3,12 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IPC_ERROR, type IpcMethod, type MailMessage } from "@mcp-cli/core";
-import { StateDb } from "../db/state";
+import { McxDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { MailHandlers } from "./mail";
 
 /**
- * These run against a **real** `StateDb`, not a hand-rolled mock.
+ * These run against a **real** `McxDb`, not a hand-rolled mock.
  *
  * The partition being tested is enforced by SQL predicates and by the domains table's
  * resolution rule; a mock reimplements both, and a mock that reimplements them slightly
@@ -23,7 +23,7 @@ afterEach(() => {
 
 interface Fixture {
   map: Map<IpcMethod, RequestHandler>;
-  db: StateDb;
+  db: McxDb;
   /** cwd inside domain `alpha`. */
   alpha: string;
   /** cwd inside domain `beta`. */
@@ -35,7 +35,7 @@ interface Fixture {
 function fixture(opts: { domains?: boolean; isDraining?: () => boolean } = {}): Fixture {
   const root = mkdtempSync(join(tmpdir(), "mcx-mail-handlers-"));
   dirs.push(root);
-  const db = new StateDb(join(root, "mcx.db"));
+  const db = new McxDb(join(root, "mcx.db"));
 
   const alpha = join(root, "alpha");
   const beta = join(root, "beta");
@@ -304,7 +304,7 @@ describe("MailHandlers — failure directions", () => {
   });
 
   /**
-   * #3038 review finding #6, against a real `StateDb`. `remote` is bound to a host, so
+   * #3038 review finding #6, against a real `McxDb`. `remote` is bound to a host, so
    * its `path` names a directory on that machine, never one here — a message addressed
    * to it must not land in the LOCAL `mail` table where nobody on `boxen0010` reads it.
    */

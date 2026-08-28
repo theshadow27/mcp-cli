@@ -30,7 +30,7 @@
 import ts from "typescript-5";
 import type { CheckRule } from "./_engine/rule";
 
-/** StateDb methods that write the `domains` table. */
+/** McxDb methods that write the `domains` table. */
 const MUTATORS = new Set(["createDomain", "renameDomain", "deleteDomain"]);
 
 /** What counts as clearing the memo. */

@@ -20,12 +20,12 @@ import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
 import { EventLog } from "../event-log";
 import { importLegacyState } from "./import-legacy";
-import { StateDb } from "./state";
+import { McxDb } from "./state";
 import { WorkItemDb } from "./work-items";
 
 describe("adoption order (#3039)", () => {
   const dirs: string[] = [];
-  const dbs: StateDb[] = [];
+  const dbs: McxDb[] = [];
 
   afterEach(() => {
     for (const db of dbs.splice(0)) db.close();
@@ -63,7 +63,7 @@ describe("adoption order (#3039)", () => {
     legacy.run("INSERT INTO agent_sessions (session_id, cwd) VALUES (?, ?)", ["elsewhere", join(dir, "other")]);
     legacy.close();
 
-    const target = new StateDb(join(dir, "mcx.db"));
+    const target = new McxDb(join(dir, "mcx.db"));
     dbs.push(target);
     // index.ts constructs these two before calling importLegacyState so their tables
     // (monitor_events, work_items) exist for the domain-stamp step inside the same

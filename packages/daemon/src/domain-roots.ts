@@ -32,7 +32,7 @@ export interface DomainRoot {
 }
 
 export interface DomainRootsOptions {
-  /** Rows from `StateDb.listDomains()`. */
+  /** Rows from `McxDb.listDomains()`. */
   domains: readonly Domain[];
   /**
    * Daemon cwd, or the operator's explicit override. Used **only** when `domains` names no

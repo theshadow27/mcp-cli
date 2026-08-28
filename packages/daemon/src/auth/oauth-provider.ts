@@ -16,7 +16,7 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { StateDb } from "../db/state";
+import type { McxDb } from "../db/state";
 import { type KeychainTokens, readKeychainTokens } from "./keychain";
 
 /** Return the platform-appropriate command to open a URL in a browser. */
@@ -62,13 +62,13 @@ export interface OAuthProviderOpts {
 export class McpOAuthProvider implements OAuthClientProvider {
   private serverName: string;
   private serverUrl: string;
-  private db: StateDb;
+  private db: McxDb;
   private _redirectUrl: string | undefined;
   private keychainCache: KeychainTokens | null | undefined; // undefined = not loaded
   private opts: OAuthProviderOpts;
   private pendingClientInfo: OAuthClientInformationMixed | undefined;
 
-  constructor(serverName: string, serverUrl: string, db: StateDb, opts?: OAuthProviderOpts) {
+  constructor(serverName: string, serverUrl: string, db: McxDb, opts?: OAuthProviderOpts) {
     this.serverName = serverName;
     this.serverUrl = serverUrl;
     this.db = db;

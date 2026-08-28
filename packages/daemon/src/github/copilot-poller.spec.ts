@@ -25,7 +25,7 @@ import {
   repoDetectBackoffMs,
 } from "./copilot-poller";
 import type { RepoInfo } from "./graphql-client";
-import { createCopilotStateDb } from "./test-helpers";
+import { createCopilotMcxDb } from "./test-helpers";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 const TEST_REPO: RepoInfo = { owner: "test", repo: "repo" };
@@ -81,14 +81,14 @@ describe("CopilotPoller", () => {
   let workItemDb: CrossDomainWorkItems;
   /** Scoped handle used only to ARRANGE rows. */
   let seed: DomainWorkItems;
-  let stateDb: ReturnType<typeof createCopilotStateDb>;
+  let mcxDb: ReturnType<typeof createCopilotMcxDb>;
 
   beforeEach(() => {
     rawDb = new Database(":memory:");
     const wdb = new WorkItemDb(rawDb);
     workItemDb = wdb.acrossDomains();
     seed = wdb.forDomain(NO_DOMAIN_ID);
-    stateDb = createCopilotStateDb(rawDb);
+    mcxDb = createCopilotMcxDb(rawDb);
   });
 
   afterEach(() => {
@@ -99,7 +99,7 @@ describe("CopilotPoller", () => {
     const events: MonitorEventInput[] = [];
     const poller = new CopilotPoller({
       workItemDb,
-      stateDb: stateDb as unknown as CopilotPollerOptions["stateDb"] extends infer T ? T : never,
+      mcxDb: mcxDb as unknown as CopilotPollerOptions["mcxDb"] extends infer T ? T : never,
       logger: SILENT_LOGGER,
       detectRepo: async () => TEST_REPO,
       getToken: async () => "test-token",
@@ -151,7 +151,7 @@ describe("CopilotPoller", () => {
 
     test("partial-new: only emits diff after seen IDs populated", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenCommentIds(42, [1001]);
+      mcxDb.updateSeenCommentIds(42, [1001]);
 
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
@@ -172,7 +172,7 @@ describe("CopilotPoller", () => {
 
     test("no diff: all comments already seen yields no events", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenCommentIds(42, [1001, 1002]);
+      mcxDb.updateSeenCommentIds(42, [1001, 1002]);
 
       const { poller, events } = makePoller({
         fetchRepoComments: async () => okResult([makeComment({ id: 1001 }), makeComment({ id: 1002 })]),
@@ -242,7 +242,7 @@ describe("CopilotPoller", () => {
 
     test("persists full union of IDs to SQLite", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenCommentIds(42, [1001]);
+      mcxDb.updateSeenCommentIds(42, [1001]);
 
       const { poller } = makePoller({
         fetchRepoComments: async () =>
@@ -251,7 +251,7 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      const stored = stateDb.getSeenCommentIds(42);
+      const stored = mcxDb.getSeenCommentIds(42);
       expect(stored).toContain(1001);
       expect(stored).toContain(1002);
       expect(stored).toContain(1003);
@@ -425,7 +425,7 @@ describe("CopilotPoller", () => {
       };
       const poller = new CopilotPoller({
         workItemDb,
-        stateDb: stateDb as unknown as CopilotPollerOptions["stateDb"] extends infer T ? T : never,
+        mcxDb: mcxDb as unknown as CopilotPollerOptions["mcxDb"] extends infer T ? T : never,
         logger,
         detectRepo: async () => TEST_REPO,
         getToken: async () => "test-token",
@@ -612,7 +612,7 @@ describe("CopilotPoller", () => {
 
     test("all-reply comments yield no events", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenCommentIds(42, [1001]);
+      mcxDb.updateSeenCommentIds(42, [1001]);
       const { poller, events } = makePoller({
         fetchRepoComments: async () =>
           okResult([
@@ -748,15 +748,15 @@ describe("CopilotPoller", () => {
 
       await poller.poll();
 
-      expect(stateDb.getLastRepoPollTs(2)).not.toBeNull();
-      expect(stateDb.getLastRepoPollTs(1)).toBeNull();
+      expect(mcxDb.getLastRepoPollTs(2)).not.toBeNull();
+      expect(mcxDb.getLastRepoPollTs(1)).toBeNull();
     });
 
     test("a domain with no cursor of its own resumes from the pre-#3192 global cursor", async () => {
       // Otherwise the first poll after upgrade paginates a repo's entire comment history.
       const wdb = new WorkItemDb(rawDb);
       wdb.forDomain(1).createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateLastRepoPollTs("2026-08-01T00:00:00.000Z", NO_DOMAIN_ID);
+      mcxDb.updateLastRepoPollTs("2026-08-01T00:00:00.000Z", NO_DOMAIN_ID);
 
       const sinceSeen: Array<string | null> = [];
       const { poller } = makePoller({
@@ -942,7 +942,7 @@ describe("CopilotPoller", () => {
 
     test("already-seen reviews are not re-emitted", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenReviewIds(42, [5001]);
+      mcxDb.updateSeenReviewIds(42, [5001]);
       const { poller, events } = makePoller({
         fetchReviews: async () => okReviewResult([makeReview({ id: 5001, state: "APPROVED" })]),
       });
@@ -1080,7 +1080,7 @@ describe("CopilotPoller", () => {
 
     test("already-seen PR comments are not re-emitted", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "open" });
-      stateDb.updateSeenPRCommentIds(42, [7001]);
+      mcxDb.updateSeenPRCommentIds(42, [7001]);
       const { poller, events } = makePoller({
         fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 7001 })]),
       });
@@ -1154,7 +1154,7 @@ describe("CopilotPoller", () => {
 
     test("already-seen issue comments are not re-emitted", async () => {
       seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null });
-      stateDb.updateSeenIssueCommentIds(99, [8001]);
+      mcxDb.updateSeenIssueCommentIds(99, [8001]);
       const { poller, events } = makePoller({
         fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 8001 })]),
       });
@@ -1203,39 +1203,39 @@ describe("CopilotPoller", () => {
   describe("copilot state cleanup", () => {
     test("merged PR state row is deleted on next poll", async () => {
       seed.createWorkItem({ id: "wi:1", prNumber: 42, prState: "merged" });
-      stateDb.updateSeenCommentIds(42, [1001, 1002, 1003]);
-      stateDb.updateSeenReviewIds(42, [5001]);
+      mcxDb.updateSeenCommentIds(42, [1001, 1002, 1003]);
+      mcxDb.updateSeenReviewIds(42, [5001]);
 
       const { poller } = makePoller();
       await poller.poll();
 
-      expect(stateDb.getSeenCommentIds(42)).toEqual([]);
-      expect(stateDb.getSeenReviewIds(42)).toEqual([]);
+      expect(mcxDb.getSeenCommentIds(42)).toEqual([]);
+      expect(mcxDb.getSeenReviewIds(42)).toEqual([]);
     });
 
     test("closed PR state row is deleted on next poll", async () => {
       seed.createWorkItem({ id: "wi:2", prNumber: 55, prState: "closed" });
-      stateDb.updateSeenCommentIds(55, [2001]);
+      mcxDb.updateSeenCommentIds(55, [2001]);
 
       const { poller } = makePoller();
       await poller.poll();
 
-      expect(stateDb.getSeenCommentIds(55)).toEqual([]);
+      expect(mcxDb.getSeenCommentIds(55)).toEqual([]);
     });
 
     test("done-phase PR state row is deleted on next poll", async () => {
       seed.createWorkItem({ id: "wi:done-pr", prNumber: 88, prState: "open", phase: "done" });
-      stateDb.updateSeenCommentIds(88, [4001]);
+      mcxDb.updateSeenCommentIds(88, [4001]);
 
       const { poller } = makePoller();
       await poller.poll();
 
-      expect(stateDb.getSeenCommentIds(88)).toEqual([]);
+      expect(mcxDb.getSeenCommentIds(88)).toEqual([]);
     });
 
     test("open PR state is preserved (dedup still works)", async () => {
       seed.createWorkItem({ id: "wi:3", prNumber: 77, prState: "open" });
-      stateDb.updateSeenCommentIds(77, [3001]);
+      mcxDb.updateSeenCommentIds(77, [3001]);
 
       const { poller } = makePoller({
         fetchRepoComments: async () =>
@@ -1243,31 +1243,31 @@ describe("CopilotPoller", () => {
       });
       await poller.poll();
 
-      const stored = stateDb.getSeenCommentIds(77);
+      const stored = mcxDb.getSeenCommentIds(77);
       expect(stored).toContain(3001);
       expect(stored).toContain(3002);
     });
 
     test("done-phase issue state is deleted on next poll", async () => {
       seed.createWorkItem({ id: "#99", issueNumber: 99, prNumber: null, prState: null, phase: "done" });
-      stateDb.updateSeenIssueCommentIds(99, [8001, 8002]);
+      mcxDb.updateSeenIssueCommentIds(99, [8001, 8002]);
 
       const { poller } = makePoller();
       await poller.poll();
 
-      expect(stateDb.getSeenIssueCommentIds(99)).toEqual([]);
+      expect(mcxDb.getSeenIssueCommentIds(99)).toEqual([]);
     });
 
     test("active issue state is preserved", async () => {
       seed.createWorkItem({ id: "#50", issueNumber: 50, prNumber: null, prState: null, phase: "impl" });
-      stateDb.updateSeenIssueCommentIds(50, [9001]);
+      mcxDb.updateSeenIssueCommentIds(50, [9001]);
 
       const { poller } = makePoller({
         fetchIssueComments: async () => okIssueCommentResult([makeIssueComment({ id: 9001 })]),
       });
       await poller.poll();
 
-      expect(stateDb.getSeenIssueCommentIds(50)).toContain(9001);
+      expect(mcxDb.getSeenIssueCommentIds(50)).toContain(9001);
     });
   });
 });

@@ -3,7 +3,7 @@ import { CODEX_SERVER_NAME, silentLogger } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { testOptions } from "../../../test/test-options";
 import { CodexServer, buildCodexToolCache, isWorkerEvent } from "./codex-server";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 
 /** Minimal Worker stub that emits "ready" synchronously via postMessage. */
@@ -113,7 +113,7 @@ describe("CODEX_SERVER_NAME", () => {
 
 describe("CodexServer", () => {
   let server: CodexServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -125,7 +125,7 @@ describe("CodexServer", () => {
   // ── Shared server for read-only integration tests ──
   describe("read-only (shared worker)", () => {
     let sharedServer: CodexServer;
-    let sharedDb: StateDb;
+    let sharedDb: McxDb;
     let sharedClient: Awaited<ReturnType<CodexServer["start"]>>["client"];
     let sharedOpts: ReturnType<typeof testOptions>;
     let initialized = false;
@@ -133,7 +133,7 @@ describe("CodexServer", () => {
     async function ensureServer(): Promise<void> {
       if (!initialized) {
         sharedOpts = testOptions();
-        sharedDb = new StateDb(sharedOpts.DB_PATH);
+        sharedDb = new McxDb(sharedOpts.DB_PATH);
         sharedServer = new CodexServer(sharedDb, undefined, undefined, silentLogger);
         const { client: c } = await sharedServer.start();
         sharedClient = c;
@@ -196,7 +196,7 @@ describe("CodexServer", () => {
   // handleWorkerEvent tests don't need start() — they call the private method directly
   test("worker db:upsert event persists session to SQLite", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -213,7 +213,7 @@ describe("CodexServer", () => {
 
   test("worker db:state event updates session state", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -226,7 +226,7 @@ describe("CodexServer", () => {
 
   test("worker db:cost event updates cost and tokens", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -240,7 +240,7 @@ describe("CodexServer", () => {
 
   test("worker db:end event marks session as ended", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -254,7 +254,7 @@ describe("CodexServer", () => {
 
   test("hasActiveSessions() returns false initially", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     expect(server.hasActiveSessions()).toBe(false);
@@ -262,7 +262,7 @@ describe("CodexServer", () => {
 
   test("hasActiveSessions() returns true after db:upsert, false after db:end", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -277,7 +277,7 @@ describe("CodexServer", () => {
 
   test("stop() clears active sessions", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -293,7 +293,7 @@ describe("CodexServer", () => {
 
   test("stop() ends sessions in DB", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -317,7 +317,7 @@ describe("CodexServer", () => {
 
   test("start() throws if called while worker is already running", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     await server.start();
@@ -327,7 +327,7 @@ describe("CodexServer", () => {
 
   test("onActivity is called on db:upsert, db:state, and db:cost events", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     let activityCount = 0;
@@ -368,12 +368,12 @@ describe("CodexServer", () => {
       close: async () => {},
     }) as unknown as Client;
 
-  const makeMockServer = (stateDb: StateDb) =>
-    new CodexServer(stateDb, undefined, instantClient, silentLogger, undefined, undefined, mockWorkerFactory());
+  const makeMockServer = (mcxDb: McxDb) =>
+    new CodexServer(mcxDb, undefined, instantClient, silentLogger, undefined, undefined, mockWorkerFactory());
 
   test("handleWorkerCrash auto-restarts and fires onRestarted", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -396,7 +396,7 @@ describe("CodexServer", () => {
 
   test("handleWorkerCrash ends orphaned sessions after restart", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -422,7 +422,7 @@ describe("CodexServer", () => {
 
   test("handleWorkerCrash queues second crash during restart and retries", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -444,7 +444,7 @@ describe("CodexServer", () => {
 
   test("handleWorkerCrash gives up after too many crashes", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -476,7 +476,7 @@ describe("CodexServer", () => {
 
   test("stop() prevents auto-restart on subsequent crash", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = makeMockServer(db);
 
     await server.start();
@@ -500,7 +500,7 @@ describe("CodexServer", () => {
 
   test("pruneDeadSessions prunes sessions after TTL expires", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -522,7 +522,7 @@ describe("CodexServer", () => {
 
   test("db:state event refreshes sessionAddedAt so active sessions survive TTL prune", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -556,7 +556,7 @@ describe("CodexServer", () => {
 
   test("db:cost event also refreshes sessionAddedAt", () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     server = new CodexServer(db, undefined, undefined, silentLogger);
 
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
@@ -576,7 +576,7 @@ describe("CodexServer", () => {
 
   test("start() terminates worker and nulls state if client.connect() throws", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
 
     const fakeClient = {
       connect: async () => {
@@ -612,7 +612,7 @@ describe("CodexServer", () => {
 
 describe("CodexServer connect timeout metric", () => {
   let server: CodexServer | undefined;
-  let db: StateDb | undefined;
+  let db: McxDb | undefined;
 
   afterEach(async () => {
     await server?.stop();
@@ -623,7 +623,7 @@ describe("CodexServer connect timeout metric", () => {
 
   test("increments mcpd_connect_timeouts_total when handshake times out", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     // Mock client that never resolves connect() — forces the handshake timeout to fire
     const neverConnect = {
       connect: () => new Promise<void>(() => {}),
@@ -639,7 +639,7 @@ describe("CodexServer connect timeout metric", () => {
 
   test("does not increment timeout counter when connect resolves instantly", async () => {
     using opts = testOptions();
-    db = new StateDb(opts.DB_PATH);
+    db = new McxDb(opts.DB_PATH);
     // Stub — provides only connect/close. Do not use in tests that exercise tool calls.
     // Resolves connect() immediately so the timeout never fires (#975).
     const instantConnect = {

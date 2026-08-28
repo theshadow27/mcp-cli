@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { StateDb } from "./db/state";
+import type { McxDb } from "./db/state";
 import type { MetricsCollector } from "./metrics";
 import { type DomainSpendResult, queryDomainSpend } from "./metrics-domain-spend";
 import type { QuotaPoller } from "./quota";
@@ -90,12 +90,12 @@ export class MetricsServer {
   private clientTransport: Transport | null = null;
 
   private quotaPoller: QuotaPoller | null;
-  private db: StateDb | null;
+  private db: McxDb | null;
 
   constructor(
     private metrics: MetricsCollector,
     quotaPoller?: QuotaPoller | null,
-    db?: StateDb | null,
+    db?: McxDb | null,
   ) {
     this.quotaPoller = quotaPoller ?? null;
     this.db = db ?? null;
@@ -232,7 +232,7 @@ export class MetricsServer {
   } {
     if (!this.db) {
       return {
-        content: [{ type: "text", text: "get_domain_spend requires a StateDb; none was configured on this daemon" }],
+        content: [{ type: "text", text: "get_domain_spend requires a McxDb; none was configured on this daemon" }],
         isError: true,
       };
     }

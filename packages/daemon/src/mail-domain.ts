@@ -8,7 +8,7 @@
  * > boundary requires an explicit `user@domain`.
  *
  * Every mail path routes through {@link resolveCallerDomain} and {@link resolveDelivery};
- * every `StateDb` mail method takes `domainId` as a **required first parameter**, so a
+ * every `McxDb` mail method takes `domainId` as a **required first parameter**, so a
  * call site that has not thought about the partition does not typecheck. This module is
  * the "function, not prose" half of that — `docs/domains.md` describes the rule, but the
  * rule is enforced here.
@@ -70,7 +70,7 @@ export interface MailDomain {
 /** The unassigned partition, as a fully addressable domain. */
 export const UNASSIGNED_MAIL_DOMAIN: MailDomain = { id: NO_DOMAIN_ID, name: UNASSIGNED_DOMAIN_NAME };
 
-/** The slice of `StateDb` mail resolution needs. Narrow on purpose — this unit-tests without a daemon. */
+/** The slice of `McxDb` mail resolution needs. Narrow on purpose — this unit-tests without a daemon. */
 export interface MailDomainDb {
   getDomainByName(name: string): Domain | null;
   resolveDomain(path: string): Domain | null;
@@ -187,7 +187,7 @@ export interface MailDelivery {
  *
  * Note there is deliberately **no** "sender has no return address" branch any more. Every
  * partition is named, partition 0 included, so a return address always exists. The
- * previous revision had such a guard and it was **unreachable against a real `StateDb`**:
+ * previous revision had such a guard and it was **unreachable against a real `McxDb`**:
  * reaching it required an unassigned caller while `domains` was non-empty, and the old
  * carve-out made that state impossible. Only a hand-written fake could produce it, so
  * mutation-testing it against a fake-based spec proved the fake was wired to the guard,

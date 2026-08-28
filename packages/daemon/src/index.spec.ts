@@ -24,7 +24,7 @@ import { _restoreOptions } from "@mcp-cli/core";
 import { restoreEnv } from "../../../test/env";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
-import { StateDb } from "./db/state";
+import { McxDb } from "./db/state";
 import { WorkItemDb } from "./db/work-items";
 import type { DaemonHandle, PruneGitOps } from "./index";
 import { checkSqliteVersion, pruneOrphanedWorktrees, resolveHeadBranch, startDaemon, sweepCoreBare } from "./index";
@@ -106,7 +106,7 @@ describe("daemon index.ts", () => {
       expect(pidData.protocolVersion).toBe(PROTOCOL_VERSION);
     });
 
-    test("opens StateDb at configured path", () => {
+    test("opens McxDb at configured path", () => {
       // mcx.db, not state.db — the daemon never opens the legacy file (#3034).
       expect(existsSync(join(opts.dir, "mcx.db"))).toBe(true);
       expect(existsSync(join(opts.dir, "state.db"))).toBe(false);
@@ -615,7 +615,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("no-ops when there are no ended sessions", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       pruneOrphanedWorktrees(db, silentLogger, mockGitOps());
     } finally {
@@ -625,7 +625,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips sessions without worktree or cwd", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({ sessionId: "test-no-wt", pid: 12345, model: "sonnet", cwd: "/tmp/test" });
       db.endSession("test-no-wt");
@@ -637,7 +637,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips worktrees still used by active sessions", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "active-1",
@@ -675,7 +675,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("does not guard worktrees across different repos (fixes #573)", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       // Active session with worktree "feature-x" in repo A
       db.upsertSession({
@@ -705,7 +705,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips ended sessions whose worktree path does not exist", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-gone",
@@ -723,7 +723,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips dirty worktrees (uncommitted changes)", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-dirty",
@@ -756,7 +756,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("removes clean worktrees and deletes merged branches", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-clean",
@@ -795,7 +795,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips worktrees where git status fails (not a git repo)", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-bad-git",
@@ -827,7 +827,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("resolves hook-based worktree paths using repoRoot and .mcx-worktree.json", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       // Create .mcx-worktree.json for custom base path resolution
       const repoDir = join(opts.dir, "repo-hooks");
@@ -874,7 +874,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("falls back to cwd when repoRoot is not set (legacy sessions)", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-legacy",
@@ -907,7 +907,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("skips sessions ended more than 7 days ago", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "old-ended",
@@ -943,7 +943,7 @@ describe("pruneOrphanedWorktrees", () => {
 
   test("handles errors gracefully without crashing", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     db.close();
     // Should not throw — catches internally
     pruneOrphanedWorktrees(db, silentLogger, mockGitOps());
@@ -957,7 +957,7 @@ describe("pruneOrphanedWorktrees", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       // Two sessions in the same repo — simulates a batch wind-down
       for (const id of ["ended-1", "ended-2"]) {
@@ -1005,7 +1005,7 @@ describe("pruneOrphanedWorktrees", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({ sessionId: "e1", pid: 99999, model: "sonnet", cwd: repoDir, worktree: "wt-e1" });
       db.endSession("e1");
@@ -1056,7 +1056,7 @@ describe("sweepCoreBare (#1330)", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "active",
@@ -1098,7 +1098,7 @@ describe("sweepCoreBare (#1330)", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "active",
@@ -1128,7 +1128,7 @@ describe("sweepCoreBare (#1330)", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "active",
@@ -1166,7 +1166,7 @@ describe("sweepCoreBare (#1330)", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "legacy",
@@ -1200,7 +1200,7 @@ describe("sweepCoreBare (#1330)", () => {
 
   test("survives when db has no sessions", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       const healed = sweepCoreBare(db, silentLogger, mockGitOps());
       expect(healed).toBe(0);
@@ -1234,7 +1234,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({ sessionId: "s1", pid: 99999, model: "sonnet", cwd: repoDir, repoRoot: repoDir });
 
@@ -1264,7 +1264,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({ sessionId: "s2", pid: 99999, model: "sonnet", cwd: repoDir, repoRoot: repoDir });
 
@@ -1282,7 +1282,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-wt",
@@ -1324,7 +1324,7 @@ describe("mcpd_core_bare_healed_total counter", () => {
     mkdirSync(repoDir, { recursive: true });
     writeFileSync(join(repoDir, ".git"), "gitdir: /some/repo\n");
 
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       db.upsertSession({
         sessionId: "ended-bd",
@@ -1395,7 +1395,7 @@ describe("pruneOrphanedWorktrees integration", () => {
 
   test("removes a real clean worktree via git", () => {
     opts = testOptions();
-    const db = new StateDb(opts.DB_PATH);
+    const db = new McxDb(opts.DB_PATH);
     try {
       const cleanEnv = { ...process.env };
       for (const k of [

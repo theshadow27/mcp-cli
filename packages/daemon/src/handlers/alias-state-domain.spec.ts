@@ -1,7 +1,7 @@
 /**
  * `ctx.state` is domain-scoped end to end (#3040).
  *
- * Deliberately against a **real** `StateDb` and the **real** IPC handlers rather than the
+ * Deliberately against a **real** `McxDb` and the **real** IPC handlers rather than the
  * in-memory alias-state mock used elsewhere in this directory. The property under test is
  * that two projects sharing a `(namespace, key)` do not overwrite each other, and that
  * property lives in the table's PRIMARY KEY — a mock that stores things in a Map would
@@ -14,9 +14,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type IpcMethod, NO_DOMAIN_ID } from "@mcp-cli/core";
-import { StateDb } from "../db/state";
+import { McxDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
-import { createDomainResolver, createStateDbDomainSource } from "../domain-resolver";
+import { createDomainResolver, createMcxDbDomainSource } from "../domain-resolver";
 import type { RequestHandler } from "../handler-types";
 import { WorkItemsServer } from "../work-items-server";
 import { WorkItemHandlers } from "./work-item";
@@ -24,7 +24,7 @@ import { WorkItemHandlers } from "./work-item";
 const ctx = {} as never;
 
 const tempDirs: string[] = [];
-const openDbs: StateDb[] = [];
+const openDbs: McxDb[] = [];
 
 afterEach(() => {
   for (const db of openDbs) db.close();
@@ -54,7 +54,7 @@ const noopLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () 
 function setup() {
   const home = tempRoot();
   const dbPath = join(home, "mcx.db");
-  const db = new StateDb(dbPath);
+  const db = new McxDb(dbPath);
   openDbs.push(db);
 
   const phoenixPath = join(home, "phoenix");
@@ -72,7 +72,7 @@ function setup() {
     null,
     null,
     noopLogger as never,
-    createDomainResolver(createStateDbDomainSource(db)),
+    createDomainResolver(createMcxDbDomainSource(db)),
   ).register(map);
 
   return { db, map, phoenixPath, clrgPath, orphanPath, phoenix, clrg };
@@ -178,7 +178,7 @@ describe("alias_state is partitioned by domain", () => {
 describe("phase_state_* and ctx.state share one partition (#3040 review R1)", () => {
   /**
    * The bug this locks down: `PhaseStateStore` declared three-parameter signatures while
-   * `StateDb` had a defaulted fourth, so StateDb still satisfied the interface and
+   * `McxDb` had a defaulted fourth, so McxDb still satisfied the interface and
    * `_work_items` wrote domain 0 while the `ctx.state` IPC handlers resolved a real
    * domain. Same repo_root, same `workitem:<id>` namespace, different rows — a
    * split-brain the compiler was silent about.
@@ -191,7 +191,7 @@ describe("phase_state_* and ctx.state share one partition (#3040 review R1)", ()
     const server = new WorkItemsServer(new WorkItemDb(db.getDatabase()), {
       phaseState: {
         store: db,
-        domainIdFor: (repoRoot) => createDomainResolver(createStateDbDomainSource(db)).idForPath(repoRoot),
+        domainIdFor: (repoRoot) => createDomainResolver(createMcxDbDomainSource(db)).idForPath(repoRoot),
       },
     });
     const { client } = await server.start();
@@ -250,7 +250,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
    * asserted the conclusion ("given a path, the join works") and never the premise
    * ("a path is there").
    *
-   * So this builds the source the way `index.ts` does, over a real `StateDb`, against a
+   * So this builds the source the way `index.ts` does, over a real `McxDb`, against a
    * session created the way `mcx claude spawn` creates one. It fails against the
    * repo_root-only implementation.
    */
@@ -265,7 +265,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     expect(row?.repoRoot ?? null).toBeNull();
     expect(row?.cwd).toBe(phoenixPath);
 
-    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-spawned")).toBe(phoenix.id);
+    expect(createDomainResolver(createMcxDbDomainSource(db)).idForSession("s-spawned")).toBe(phoenix.id);
   });
 
   test("a nested cwd resolves by walking up, like `mcx domain which $PWD`", () => {
@@ -274,14 +274,14 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     mkdirSync(nested, { recursive: true });
     db.upsertSession({ sessionId: "s-nested", cwd: nested, state: "running" });
 
-    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-nested")).toBe(phoenix.id);
+    expect(createDomainResolver(createMcxDbDomainSource(db)).idForSession("s-nested")).toBe(phoenix.id);
   });
 
   test("repoRoot still wins when a session actually has one", () => {
     const { db, phoenixPath, clrgPath, phoenix } = setup();
     db.upsertSession({ sessionId: "s-both", cwd: clrgPath, repoRoot: phoenixPath, state: "running" });
 
-    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-both")).toBe(phoenix.id);
+    expect(createDomainResolver(createMcxDbDomainSource(db)).idForSession("s-both")).toBe(phoenix.id);
   });
 
   // #3169 review R7: `worktree` held a NAME, never a path, and sat mid-chain in a `??`
@@ -299,14 +299,14 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     expect(row?.worktree?.startsWith("/")).toBe(false);
     expect(row?.repoRoot ?? null).toBeNull();
 
-    expect(createDomainResolver(createStateDbDomainSource(db)).idForSession("s-wt")).toBe(phoenix.id);
+    expect(createDomainResolver(createMcxDbDomainSource(db)).idForSession("s-wt")).toBe(phoenix.id);
   });
 
   test("the production source offers only resolvable candidates — never the worktree name", () => {
     const { db, phoenixPath } = setup();
     db.upsertSession({ sessionId: "s-wt2", cwd: phoenixPath, worktree: "claude-mt3xvzkf", state: "running" });
 
-    const candidates = createStateDbDomainSource(db).getSessionPaths("s-wt2");
+    const candidates = createMcxDbDomainSource(db).getSessionPaths("s-wt2");
     expect(candidates).toEqual([phoenixPath]);
     expect(candidates).not.toContain("claude-mt3xvzkf");
   });
@@ -325,7 +325,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
     const { db, orphanPath } = setup();
     db.upsertSession({ sessionId: "s-orphan", cwd: orphanPath, state: "running" });
 
-    const resolver = createDomainResolver(createStateDbDomainSource(db));
+    const resolver = createDomainResolver(createMcxDbDomainSource(db));
     expect(resolver.idForSession("s-orphan")).toBe(NO_DOMAIN_ID);
     expect(resolver.idForSession("s-never-existed")).toBe(NO_DOMAIN_ID);
   });
@@ -333,7 +333,7 @@ describe("the daemon's real DomainSource resolves a spawn-shaped session (#3169 
   test("invalidateSession() picks up a session that was re-rooted after first observation", () => {
     const { db, phoenixPath, clrgPath, phoenix, clrg } = setup();
     db.upsertSession({ sessionId: "s-move", cwd: phoenixPath, state: "running" });
-    const resolver = createDomainResolver(createStateDbDomainSource(db));
+    const resolver = createDomainResolver(createMcxDbDomainSource(db));
     expect(resolver.idForSession("s-move")).toBe(phoenix.id);
 
     db.upsertSession({ sessionId: "s-move", repoRoot: clrgPath });

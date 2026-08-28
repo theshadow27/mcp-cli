@@ -30,7 +30,7 @@ import type { Domain } from "@mcp-cli/core";
 import { NO_DOMAIN_ID, getAllProviders, isDomainScoped } from "@mcp-cli/core";
 
 /**
- * The slice of `StateDb` this module needs. Narrow on purpose: domain scoping is
+ * The slice of `McxDb` this module needs. Narrow on purpose: domain scoping is
  * pure lookup, and a narrow port is what lets it be tested without a SQLite file.
  */
 export interface DomainLookup {

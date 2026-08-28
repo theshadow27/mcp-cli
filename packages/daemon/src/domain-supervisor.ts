@@ -41,7 +41,7 @@ import { type DomainLinkFactory, createWorkerDomainLink } from "./domain-link";
 import { DomainServer, type DomainServerOptions, type DomainWorkerState, RemoteDomainError } from "./domain-server";
 import type { RestartPolicy } from "./restart-policy";
 
-/** The domain rows the supervisor supervises. Narrower than `StateDb` so tests need no database. */
+/** The domain rows the supervisor supervises. Narrower than `McxDb` so tests need no database. */
 export interface DomainRegistry {
   getDomainById(id: number): Domain | null;
   getDomainByName(name: string): Domain | null;
