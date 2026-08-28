@@ -717,7 +717,7 @@ describe("CopilotPoller", () => {
         repos: {
           repoFor: async (domainId: number) => ({ owner: "acme", repo: `r${domainId}` }),
           cached: () => null,
-          lastError: null,
+          lastErrorFor: () => null,
         },
         fetchRepoComments: async (repo) => {
           fetchedRepos.push(repo.repo);
@@ -742,7 +742,7 @@ describe("CopilotPoller", () => {
           // Domain 1's repo will not resolve; domain 2's does.
           repoFor: async (domainId: number) => (domainId === 2 ? TEST_REPO : null),
           cached: () => null,
-          lastError: "no git remote",
+          lastErrorFor: () => "no git remote",
         },
       });
 
@@ -763,7 +763,7 @@ describe("CopilotPoller", () => {
         repos: {
           repoFor: async () => TEST_REPO,
           cached: () => null,
-          lastError: null,
+          lastErrorFor: () => null,
         },
         fetchRepoComments: async (_repo, since) => {
           sinceSeen.push(since);

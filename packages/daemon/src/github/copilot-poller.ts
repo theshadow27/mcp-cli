@@ -24,7 +24,13 @@ import type { WorkItem } from "@mcp-cli/core";
 import type { MonitorEventInput } from "@mcp-cli/core";
 import type { StateDb } from "../db/state";
 import type { CrossDomainWorkItems } from "../db/work-items";
-import { DomainRepoResolver, type DomainRepos, groupByDomain, repoDetectBackoffMs } from "../domain-repos";
+import {
+  DomainRepoResolver,
+  type DomainRepos,
+  groupByDomain,
+  repoDetectBackoffMs,
+  skippedDomainsError,
+} from "../domain-repos";
 import { safeSetTimeout } from "../safe-timers";
 import type { RepoInfo } from "./graphql-client";
 import { clearTokenCache, detectRepo, getGhToken } from "./graphql-client";
@@ -140,7 +146,7 @@ export class CopilotPoller {
   private fixedInterval: number | null;
   private currentIntervalMs: number;
   private timer: Timer | null = null;
-  /** Most recently resolved repo — diagnostics only; the authoritative map is `repos`. */
+  /** The one repo this cycle polled, or null — diagnostics only. See the `repo` getter. */
   private _repo: RepoInfo | null = null;
   private _lastError: string | null = null;
   private _pollCount = 0;
@@ -194,8 +200,9 @@ export class CopilotPoller {
   }
 
   /**
-   * The most recently resolved repo. Diagnostic only — see `WorkItemPoller.repo`; a daemon
-   * serving several domains resolves one repo per domain.
+   * The repo the last poll cycle used, when there was exactly one. Diagnostic only — see
+   * `WorkItemPoller.repo`; a daemon serving several domains resolves one repo per domain and
+   * this reads null rather than naming whichever one the loop visited last (#3397 review).
    */
   get repo(): RepoInfo | null {
     return this._repo;
@@ -274,7 +281,8 @@ export class CopilotPoller {
 
       let anyRateLimitLow = false;
       let anyAuthError: string | null = null;
-      let detectError: string | null = null;
+      const skippedDomains: number[] = [];
+      const polledRepos = new Map<number, RepoInfo>();
       const failedItemIds = new Set<string>();
       const fetchErrorMessages: string[] = [];
       const totalItems = tracked.length + trackedIssues.length;
@@ -297,11 +305,13 @@ export class CopilotPoller {
         if (this.stopped) return;
         const repo = await this.repos.repoFor(domainId);
         if (!repo) {
-          // Backing off or unresolvable — skip this domain, keep polling the others.
-          detectError = this.repos.lastError;
+          // Backing off or unresolvable — skip this domain, keep polling the others. Its
+          // reason is read per domain at the end, not from a scalar another domain may have
+          // cleared by succeeding.
+          skippedDomains.push(domainId);
           continue;
         }
-        this._repo = repo;
+        polledRepos.set(domainId, repo);
         const domainPrs = prsByDomain.get(domainId) ?? [];
         const domainIssues = issuesByDomain.get(domainId) ?? [];
 
@@ -349,6 +359,7 @@ export class CopilotPoller {
         }
       }
       this.rateLimitBackoff = anyRateLimitLow;
+      this._repo = polledRepos.size === 1 ? [...polledRepos.values()][0] : null;
 
       if (anyAuthError) {
         this._lastError = anyAuthError;
@@ -356,7 +367,7 @@ export class CopilotPoller {
         const unique = [...new Set(fetchErrorMessages)];
         this._lastError = `${failedItemIds.size}/${totalItems} items failed: ${unique.join("; ")}`;
       } else {
-        this._lastError = detectError;
+        this._lastError = skippedDomainsError(this.repos, skippedDomains);
       }
       this._pollCount++;
       this.adjustInterval([...tracked, ...trackedIssues]);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DomainRepoResolver, groupByDomain, repoDetectBackoffMs } from "./domain-repos";
+import { DomainRepoResolver, groupByDomain, repoDetectBackoffMs, skippedDomainsError } from "./domain-repos";
 import type { RepoInfo } from "./github/graphql-client";
 
 const SILENT_LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
@@ -91,7 +91,7 @@ describe("DomainRepoResolver", () => {
 
     expect(await resolver.repoFor(1)).toBeNull();
     expect(attempts).toBe(1);
-    expect(resolver.lastError).toBe("no git remote");
+    expect(resolver.lastErrorFor(1)).toBe("no git remote");
 
     // Inside the window: skipped, no new subprocess.
     expect(await resolver.repoFor(1)).toBeNull();
@@ -125,6 +125,47 @@ describe("DomainRepoResolver", () => {
     expect(await resolver.repoFor(2)).toEqual({ owner: "a", repo: "two" });
   });
 
+  test("one domain's success does not clear another's error (#3397 review)", async () => {
+    // With a single `_lastError` scalar, domain 2 resolving wiped the reason domain 1 was
+    // still failing with — and the poller then attached null, or the wrong project's
+    // message, to the domain it had just skipped.
+    const resolver = new DomainRepoResolver({
+      rootFor: (id) => `/projects/${id}`,
+      detectRepo: async (cwd) => {
+        if (cwd === "/projects/1") throw new Error("no git remote");
+        return { owner: "a", repo: "two" };
+      },
+      logger: SILENT_LOGGER,
+      now: () => 0,
+    });
+
+    await resolver.repoFor(1);
+    await resolver.repoFor(2);
+
+    expect(resolver.lastErrorFor(1)).toBe("no git remote");
+    expect(resolver.lastErrorFor(2)).toBeNull();
+  });
+
+  test("a domain skipped by backoff still reports why it was skipped", async () => {
+    // The backoff arm of `repoFor` returns null without attempting detection, so the reason
+    // has to survive from the failure that opened the window.
+    let attempts = 0;
+    const resolver = new DomainRepoResolver({
+      rootFor: () => "/projects/alpha",
+      detectRepo: async () => {
+        attempts++;
+        throw new Error("no git remote");
+      },
+      logger: SILENT_LOGGER,
+      now: () => 0,
+    });
+
+    await resolver.repoFor(1);
+    expect(await resolver.repoFor(1)).toBeNull();
+    expect(attempts).toBe(1); // the second call never attempted — pure backoff
+    expect(resolver.lastErrorFor(1)).toBe("no git remote");
+  });
+
   test("recovery clears the error and stops retrying", async () => {
     let now = 0;
     let failing = true;
@@ -142,7 +183,27 @@ describe("DomainRepoResolver", () => {
     failing = false;
     now += repoDetectBackoffMs(1);
     expect(await resolver.repoFor(1)).toEqual({ owner: "a", repo: "b" });
-    expect(resolver.lastError).toBeNull();
+    expect(resolver.lastErrorFor(1)).toBeNull();
+  });
+});
+
+describe("skippedDomainsError", () => {
+  const repos = { lastErrorFor: (id: number) => (id === 9 ? null : `domain ${id} broke`) };
+
+  test("no skipped domains is no error", () => {
+    expect(skippedDomainsError(repos, [])).toBeNull();
+  });
+
+  test("one skipped domain reports its bare reason — the single-project message", () => {
+    expect(skippedDomainsError(repos, [1])).toBe("domain 1 broke");
+  });
+
+  test("several are labelled, because a bare reason does not say whose repo", () => {
+    expect(skippedDomainsError(repos, [1, 2])).toBe("domain 1: domain 1 broke; domain 2: domain 2 broke");
+  });
+
+  test("a domain that never attempted detection still owes a reason", () => {
+    expect(skippedDomainsError(repos, [9])).toBe("repo not resolved");
   });
 });
 

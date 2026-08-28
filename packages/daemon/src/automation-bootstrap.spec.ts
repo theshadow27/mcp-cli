@@ -229,6 +229,55 @@ describe("startAutomationDispatchers", () => {
     expect(registry.all()[0].getAuditLog()[0]?.workItemId).toBe("d2:pr:7");
     registry.stop();
   });
+
+  describe("a sole registered dispatcher resolving an un-domained event (#3397 review)", () => {
+    /*
+     * The two halves have to agree. A sole dispatcher on a *registered* domain accepts
+     * un-domained events, so its lookups must be able to see the un-domained partition:
+     * scoped to its own domain alone it accepts an event it structurally cannot resolve,
+     * and either fires the module with no work item at all — worse than the pre-#3192
+     * global dispatcher, which read every domain and found the row — or, if the number
+     * collides inside its own domain, acts on the wrong row.
+     *
+     * This is the live state of this repo's own mcx.db: rows at `domain_id = 0` predating
+     * domain assignment, alongside one registered domain that owns the manifest.
+     */
+    beforeEach(() => {
+      manifests.add("/mcx-test/beta");
+      lockfiles.set("/mcx-test/beta", [locked()]);
+    });
+
+    /** Fire one un-domained `pr.merged` at a sole dispatcher for domain 2; report what it resolved. */
+    async function resolvedItemId(): Promise<string | undefined> {
+      const { registry, auditEvents } = bootstrapRecording([root({ id: 2, path: "/mcx-test/beta" })]);
+      bus.publish({ src: "test", event: "pr.merged", category: "work_item", domainId: NO_DOMAIN_ID, prNumber: 7 });
+      await pollUntil(() => auditEvents.length > 0);
+      const workItemId = registry.all()[0].getAuditLog()[0]?.workItemId;
+      registry.stop();
+      return workItemId;
+    }
+
+    test("finds the row in the un-domained partition rather than nothing", async () => {
+      workItems.forDomain(NO_DOMAIN_ID).createWorkItem({ id: "pr:7", prNumber: 7 });
+
+      expect(await resolvedItemId()).toBe("pr:7");
+    });
+
+    test("its own domain wins when both partitions hold that PR number", async () => {
+      workItems.forDomain(NO_DOMAIN_ID).createWorkItem({ id: "pr:7", prNumber: 7 });
+      workItems.forDomain(2).createWorkItem({ id: "pr:7", prNumber: 7 });
+
+      expect(await resolvedItemId()).toBe("d2:pr:7");
+    });
+
+    test("another registered domain's row stays invisible", async () => {
+      // The widening is own-domain + un-domained, not "every domain": a `bye-and-untrack`
+      // must never end sessions and delete a row of a project this dispatcher doesn't serve.
+      workItems.forDomain(3).createWorkItem({ id: "pr:7", prNumber: 7 });
+
+      expect(await resolvedItemId()).toBeUndefined();
+    });
+  });
 });
 
 describe("AutomationRegistry.forRoot", () => {
@@ -242,7 +291,7 @@ describe("AutomationRegistry.forRoot", () => {
 
   afterEach(() => sqlDb.close());
 
-  function build(roots: DomainRoot[]) {
+  function build(roots: DomainRoot[], hasManifest: (dir: string) => boolean = () => true) {
     return startAutomationDispatchers({
       roots,
       eventBus: new EventBus(),
@@ -251,7 +300,7 @@ describe("AutomationRegistry.forRoot", () => {
       domainIdForPath: () => NO_DOMAIN_ID,
       endSession: async () => {},
       logger: SILENT_LOGGER,
-      loadManifest: (dir) => manifestAt(dir),
+      loadManifest: (dir) => (hasManifest(dir) ? manifestAt(dir) : null),
       readFile: (path) =>
         path.endsWith(".mcx.lock")
           ? JSON.stringify({ version: 1, manifestHash: HASH, phases: [], automations: [locked()] })
@@ -277,6 +326,22 @@ describe("AutomationRegistry.forRoot", () => {
     const registry = build([root({ id: 1, path: "/mcx-test/alpha" })]);
     expect(registry.forRoot("/mcx-test/alpha/packages/core")?.domain).toBe(1);
     expect(registry.forRoot(undefined)?.domain).toBe(1);
+    registry.stop();
+  });
+
+  test("the sole-dispatcher fallback needs a sole *project*, not a sole manifest (#3397 review)", () => {
+    // Two projects, one of which declares automation: `dispatchers.length === 1` while the
+    // daemon plainly serves two. A caller standing in beta runs no automation and must be
+    // told so, not handed alpha's modules and audit log under beta's name.
+    const registry = build(
+      [root({ id: 1, path: "/mcx-test/alpha" }), root({ id: 2, path: "/mcx-test/beta" })],
+      (dir) => dir === "/mcx-test/alpha",
+    );
+
+    expect(registry.size).toBe(1);
+    expect(registry.forRoot("/mcx-test/alpha")?.domain).toBe(1);
+    expect(registry.forRoot("/mcx-test/beta")).toBeNull();
+    expect(registry.forRoot(undefined)).toBeNull();
     registry.stop();
   });
 });

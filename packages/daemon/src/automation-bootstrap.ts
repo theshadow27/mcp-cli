@@ -75,7 +75,15 @@ export interface AutomationBootstrapDeps {
  * dispatcher to return. With one per project it is what picks the right one.
  */
 export class AutomationRegistry {
-  constructor(private readonly dispatchers: readonly AutomationDispatcher[]) {}
+  /**
+   * @param dispatchers the running dispatchers — the roots that *declare* automation.
+   * @param rootCount how many project roots the daemon serves in total, automation or not.
+   *   Separate from `dispatchers.length` on purpose: see {@link forRoot}.
+   */
+  constructor(
+    private readonly dispatchers: readonly AutomationDispatcher[],
+    private readonly rootCount: number = dispatchers.length,
+  ) {}
 
   get size(): number {
     return this.dispatchers.length;
@@ -88,11 +96,16 @@ export class AutomationRegistry {
   /**
    * The dispatcher for `repoRoot`.
    *
-   * Falls back to the sole dispatcher when there is exactly one: a caller in a subdirectory,
+   * Falls back to the sole dispatcher on a **single-project box**: a caller in a subdirectory,
    * or one that passed a worktree path, still gets the answer it would have got before
-   * per-project dispatch, and a single-project box never has to be exact. With several,
-   * guessing would show one project's audit log under another's name, so an unmatched root
-   * gets null.
+   * per-project dispatch, and a box with one project never has to be exact. Otherwise an
+   * unmatched root gets null, because guessing would show one project's audit log under
+   * another's name.
+   *
+   * "Single-project" is `rootCount`, not `dispatchers.length` (#3397 review). A daemon serving
+   * three projects of which only one declares automation has one dispatcher and three roots —
+   * so a caller standing in either of the other two is a caller whose project runs no
+   * automation, and must be told that, not handed the one project's log.
    */
   forRoot(repoRoot: string | undefined): AutomationDispatcher | null {
     if (this.dispatchers.length === 0) return null;
@@ -100,7 +113,7 @@ export class AutomationRegistry {
       const match = this.dispatchers.find((d) => pathEq(d.root, repoRoot));
       if (match) return match;
     }
-    return this.dispatchers.length === 1 ? this.dispatchers[0] : null;
+    return this.rootCount === 1 && this.dispatchers.length === 1 ? this.dispatchers[0] : null;
   }
 
   stop(): void {
@@ -125,8 +138,13 @@ export function startAutomationDispatchers(deps: AutomationBootstrapDeps): Autom
     .map((root) => ({ root, loaded: loadAutomationFor(root, load, readFile, logger) }))
     .filter((entry): entry is { root: DomainRoot; loaded: LoadedAutomation } => entry.loaded !== null);
 
+  // A dispatcher may only *accept* un-domained events if its work-item lookups can *see* the
+  // un-domained partition — otherwise it takes an event it structurally cannot resolve. The
+  // same flag therefore drives both, and is passed to `workItemsFor` alongside the dispatcher.
+  const acceptUndomainedEvents = configured.length === 1;
+
   for (const { root, loaded } of configured) {
-    const items = workItemsFor(root, deps.workItems, logger);
+    const items = workItemsFor(root, deps.workItems, logger, acceptUndomainedEvents);
     // The `alias_state` key half, resolved lazily and from the *project* root.
     //
     // #3037 tried substituting a domain's registered path here and it was worse than the
@@ -150,7 +168,7 @@ export function startAutomationDispatchers(deps: AutomationBootstrapDeps): Autom
       // — a git-root remap of one is not a remap of the other (#3209 review / #3378).
       repoRoot: root.path,
       domainId: root.fallback ? null : root.id,
-      acceptUndomainedEvents: configured.length === 1,
+      acceptUndomainedEvents,
       ...(deps.executeModule ? { executeModule: deps.executeModule } : {}),
       getWorkItemOverrides: (workItemId) => items.get(workItemId)?.automationOverrides ?? undefined,
       resolveWorkItemId: (prNumber) => items.byPr(prNumber)?.id,
@@ -217,7 +235,7 @@ export function startAutomationDispatchers(deps: AutomationBootstrapDeps): Autom
       `[mcpd] No automation configured (${deps.roots.length} project root(s) checked) — no dispatcher started`,
     );
   }
-  return new AutomationRegistry(dispatchers);
+  return new AutomationRegistry(dispatchers, deps.roots.length);
 }
 
 interface LoadedAutomation {
@@ -275,13 +293,32 @@ function loadAutomationFor(
  * The partition a dispatcher's work-item lookups read.
  *
  * A registered domain reads **its own** partition: a PR/branch/issue number is unique per
- * domain, so scoping is what makes the lookup single-valued instead of ambiguous. The cwd
- * fallback has no domain to be scoped to, so it keeps the ring-0 cross-domain read and
- * disambiguates with `firstOf` — the pre-#3192 behaviour, for the box where nothing is
- * registered.
+ * domain, so scoping is what makes the lookup single-valued instead of ambiguous.
+ *
+ * Two cases legitimately read wider than one domain, and they are exactly the two cases where
+ * the dispatcher also *accepts* events that resolved to no domain — the alignment is the point
+ * (#3397 review). A dispatcher that accepts an un-domained event but cannot look one up finds
+ * nothing (a silent no-op, strictly worse than the pre-#3192 global dispatcher) or, worse,
+ * finds a same-numbered row of its own and acts on it:
+ *
+ * - **The cwd fallback** has no domain to be scoped to at all, so it keeps the ring-0
+ *   cross-domain read and disambiguates with `firstOf` — the pre-#3192 behaviour, for the box
+ *   where nothing is registered.
+ * - **A sole registered dispatcher** reads its own partition *unioned with* the un-domained
+ *   one, because that is the set of rows an un-domained event can honestly be about on a box
+ *   with one project: its own, plus rows that predate domain assignment (`domain_id = 0`).
+ *   Its own domain wins a tie, and `firstOf` warns; another *registered* domain's rows stay
+ *   invisible to it, as they are to any scoped dispatcher.
  */
-function workItemsFor(root: DomainRoot, db: WorkItemDb, logger: Logger): DispatcherWorkItems {
-  if (!root.fallback && root.id !== NO_DOMAIN_ID) {
+function workItemsFor(
+  root: DomainRoot,
+  db: WorkItemDb,
+  logger: Logger,
+  acceptsUndomainedEvents: boolean,
+): DispatcherWorkItems {
+  const registered = !root.fallback && root.id !== NO_DOMAIN_ID;
+
+  if (registered && !acceptsUndomainedEvents) {
     const scoped = db.forDomain(root.id);
     return {
       get: (id) => scoped.getWorkItem(id),
@@ -297,17 +334,38 @@ function workItemsFor(root: DomainRoot, db: WorkItemDb, logger: Logger): Dispatc
     };
   }
 
+  // null = the fallback's "every domain"; a number = "my domain, plus the un-domained rows".
+  const ownDomainId = registered ? root.id : null;
   const cross = db.acrossDomains();
+
+  const visible = (item: Pick<WorkItem, "domainId">): boolean =>
+    ownDomainId === null || item.domainId === ownDomainId || item.domainId === NO_DOMAIN_ID;
+
+  const rank = (item: Pick<WorkItem, "domainId">): number => (item.domainId === ownDomainId ? 0 : 1);
+
+  /** Visible matches, this dispatcher's own domain first; `firstOf` warns if several remain. */
+  const pick = (matches: WorkItem[], label: string): WorkItem | null => {
+    const inScope = matches.filter(visible);
+    const ordered = ownDomainId === null ? inScope : inScope.sort((a, b) => rank(a) - rank(b));
+    return firstOf(ordered, label, logger.warn);
+  };
+
   const writeRow = (id: string, apply: (item: WorkItem) => void): void => {
     const item = cross.getWorkItem(id);
-    if (!item) return;
+    if (!item || !visible(item)) return;
     apply(item);
   };
   return {
-    get: (id) => cross.getWorkItem(id),
-    byPr: (prNumber) => firstOf(cross.findByPr(prNumber), `PR #${prNumber}`, logger.warn),
-    byBranch: (branch) => firstOf(cross.findByBranch(branch), `branch ${branch}`, logger.warn),
-    byIssue: (issueNumber) => firstOf(cross.findByIssue(issueNumber), `issue #${issueNumber}`, logger.warn),
+    // `id` is the global primary key, so this is unambiguous — but still gated on visibility,
+    // because a scoped dispatcher must not act on an id belonging to another project just
+    // because an event carried one (`resolveWorkItemIdFromEvent` takes `event.workItemId` raw).
+    get: (id) => {
+      const item = cross.getWorkItem(id);
+      return item && visible(item) ? item : null;
+    },
+    byPr: (prNumber) => pick(cross.findByPr(prNumber), `PR #${prNumber}`),
+    byBranch: (branch) => pick(cross.findByBranch(branch), `branch ${branch}`),
+    byIssue: (issueNumber) => pick(cross.findByIssue(issueNumber), `issue #${issueNumber}`),
     update: (id, patch) => {
       // Write into the row's OWN partition, not a partition the daemon guessed.
       writeRow(id, (item) => cross.forRow(item).updateWorkItem(id, patch));

@@ -282,7 +282,7 @@ describe("WorkItemPoller", () => {
             return map[domainId] ?? null;
           },
           cached: (domainId: number) => map[domainId] ?? null,
-          lastError: null,
+          lastErrorFor: () => null,
         },
       };
     }
@@ -330,7 +330,7 @@ describe("WorkItemPoller", () => {
         repos: {
           repoFor: async (domainId: number) => (domainId === 2 ? beta : null),
           cached: () => null,
-          lastError: "no git remote",
+          lastErrorFor: () => "no git remote",
         },
         fetchPRs: async (_repo, prNumbers) => {
           fetched.push(...prNumbers);
@@ -346,6 +346,44 @@ describe("WorkItemPoller", () => {
       expect(poller.pollCount).toBe(1);
     });
 
+    test("two unresolvable domains are each named, not collapsed to one reason (#3397 review)", async () => {
+      // A single scalar reported whichever domain the loop touched last, so "no git remote"
+      // named no project and the other failure vanished.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2 });
+
+      const poller = new WorkItemPoller({
+        db,
+        logger: SILENT_LOGGER,
+        repos: {
+          repoFor: async () => null,
+          cached: () => null,
+          lastErrorFor: (domainId: number) => (domainId === 1 ? "no git remote" : "not a github repo"),
+        },
+        fetchPRs: async () => [],
+      });
+
+      await poller.poll();
+
+      expect(poller.lastError).toBe("domain 1: no git remote; domain 2: not a github repo");
+    });
+
+    test("`repo` is null once a cycle spans several domains (#3397 review)", async () => {
+      // "The repo" is not a question a multi-project daemon has an answer to; naming
+      // whichever domain the loop visited last is a diagnostic that lies.
+      const wdb = new WorkItemDb(sqlDb);
+      wdb.forDomain(1).createWorkItem({ id: "pr:1", prNumber: 1 });
+      wdb.forDomain(2).createWorkItem({ id: "pr:2", prNumber: 2 });
+
+      const { repos } = reposFor({ 1: { owner: "acme", repo: "alpha" }, 2: { owner: "acme", repo: "beta" } });
+      const poller = new WorkItemPoller({ db, logger: SILENT_LOGGER, repos, fetchPRs: async () => [] });
+
+      await poller.poll();
+
+      expect(poller.repo).toBeNull();
+    });
+
     test("cascade head is computed per repo, not across every domain's PRs", async () => {
       // A BEHIND, auto-merge-armed PR in another repo is not this repo's cascade head.
       const wdb = new WorkItemDb(sqlDb);
@@ -359,7 +397,7 @@ describe("WorkItemPoller", () => {
         repos: {
           repoFor: async (domainId: number) => ({ owner: "acme", repo: `r${domainId}` }),
           cached: () => null,
-          lastError: null,
+          lastErrorFor: () => null,
         },
         fetchPRs: async (repo) =>
           repo.repo === "r1"

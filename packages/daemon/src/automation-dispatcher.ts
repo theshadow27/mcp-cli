@@ -89,6 +89,11 @@ export class AutomationDispatcher {
      * reading of an un-domained event. With two or more, the same event would fan out to
      * every project and fire every module twice, so it is dropped instead — a missed
      * automation is recoverable, a duplicate `bye-and-untrack` is not.
+     *
+     * Setting this obliges the caller to widen the work-item lookups it injects to match:
+     * accepting an event whose row the injected lookups structurally cannot see either fires
+     * a module with no item at all, or resolves a same-numbered row of the wrong domain. See
+     * `workItemsFor` in `automation-bootstrap.ts` (#3397 review).
      */
     acceptUndomainedEvents?: boolean;
     getWorkItemOverrides?: (workItemId: string) => string | undefined;

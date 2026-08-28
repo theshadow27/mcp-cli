@@ -13,7 +13,13 @@ import type { Logger, WorkItemEvent } from "@mcp-cli/core";
 import { computeSrcChurn, consoleLogger } from "@mcp-cli/core";
 import type { CiStatus, PrState, ReviewStatus, WorkItem, WorkItemPatch } from "@mcp-cli/core";
 import { type CrossDomainWorkItems, ciRunStateKey, parseCiRunStateKey } from "../db/work-items";
-import { DomainRepoResolver, type DomainRepos, groupByDomain, repoDetectBackoffMs } from "../domain-repos";
+import {
+  DomainRepoResolver,
+  type DomainRepos,
+  groupByDomain,
+  repoDetectBackoffMs,
+  skippedDomainsError,
+} from "../domain-repos";
 import { safeSetTimeout } from "../safe-timers";
 import { type MergeStatePR, computeCascadeHead } from "./cascade-head";
 import { type CiEvent, type CiRunState, computeCiTransitions } from "./ci-events";
@@ -78,7 +84,7 @@ export class WorkItemPoller {
   private fixedInterval: number | null;
   private currentIntervalMs: number;
   private timer: Timer | null = null;
-  /** Most recently resolved repo — diagnostics only; the authoritative map is `repos`. */
+  /** The one repo this cycle polled, or null — diagnostics only. See the `repo` getter. */
   private _repo: RepoInfo | null = null;
   private _lastError: string | null = null;
   private _pollCount = 0;
@@ -129,11 +135,12 @@ export class WorkItemPoller {
   }
 
   /**
-   * The most recently resolved repo.
+   * The repo the last poll cycle used, when there was exactly one.
    *
-   * Diagnostic only, and singular only because a single-project daemon has one. A daemon
-   * serving several domains resolves one repo per domain — ask {@link DomainRepos} for a
-   * specific one rather than reading this.
+   * Diagnostic only, and singular only because a single-project daemon has one. Null once a
+   * cycle spans several domains, rather than whichever domain the loop happened to visit last
+   * (#3397 review) — "the repo" is not a question a multi-project daemon has an answer to.
+   * Ask {@link DomainRepos.cached} for a specific domain's repo instead.
    */
   get repo(): RepoInfo | null {
     return this._repo;
@@ -204,17 +211,19 @@ export class WorkItemPoller {
       // One fetch per domain, against that domain's own repo (#3192). A PR number is unique
       // per repo, not per daemon, so a single cross-domain fetch would look project A's
       // PR #7 up in project B's repo and reconcile whatever came back onto A's row.
-      let detectError: string | null = null;
+      const skippedDomains: number[] = [];
+      const polledRepos = new Map<number, RepoInfo>();
       for (const [domainId, items] of groupByDomain(tracked)) {
         if (this.stopped) return;
         const repo = await this.repos.repoFor(domainId);
         if (!repo) {
           // Backing off or unresolvable: skip this domain for this cycle. One project with
-          // no git remote must not stop the others from being polled.
-          detectError = this.repos.lastError;
+          // no git remote must not stop the others from being polled. Its reason is read
+          // per domain at the end, not from a scalar another domain may have cleared.
+          skippedDomains.push(domainId);
           continue;
         }
-        this._repo = repo;
+        polledRepos.set(domainId, repo);
 
         // Safe: we filtered for prNumber !== null above
         const prNumbers = items.map((item) => item.prNumber as number);
@@ -271,7 +280,8 @@ export class WorkItemPoller {
         }
       }
 
-      this._lastError = detectError;
+      this._repo = polledRepos.size === 1 ? [...polledRepos.values()][0] : null;
+      this._lastError = skippedDomainsError(this.repos, skippedDomains);
       this._pollCount++;
       this.adjustInterval(hasActive);
     } catch (err) {

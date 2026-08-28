@@ -37,8 +37,16 @@ export interface DomainRepos {
   repoFor(domainId: number): Promise<RepoInfo | null>;
   /** The already-resolved repo for `domainId`, or null. Never does I/O. */
   cached(domainId: number): RepoInfo | null;
-  /** Most recent detection failure, or null when the last attempt for every domain succeeded. */
-  readonly lastError: string | null;
+  /**
+   * Why `repoFor(domainId)` last failed, or null if that domain is resolving fine.
+   *
+   * Per domain, not a single most-recent scalar (#3397 review): with one, project B's
+   * successful detection cleared the error project A was still failing with, and a domain
+   * that returned null from *backoff* — without attempting detection at all — reported
+   * whichever other domain had most recently touched the field. Sticky until this domain
+   * succeeds, so the backoff window keeps reporting the reason it is backing off.
+   */
+  lastErrorFor(domainId: number): string | null;
 }
 
 export interface DomainRepoResolverOptions {
@@ -75,6 +83,25 @@ export function groupByDomain<T extends { domainId: number }>(rows: readonly T[]
   return groups;
 }
 
+/**
+ * The diagnostic for the domains a poll cycle had to skip, or null when it skipped none.
+ *
+ * A single skipped domain reports its bare reason — the message a single-project box has
+ * always shown. Several are labelled by domain, because "no git remote" does not say *whose*
+ * remote once a daemon serves more than one project (#3397 review).
+ */
+export function skippedDomainsError(
+  repos: Pick<DomainRepos, "lastErrorFor">,
+  skipped: readonly number[],
+): string | null {
+  if (skipped.length === 0) return null;
+  // A domain skipped by backoff has an error; one whose `repoFor` returned null without ever
+  // failing (an unresolvable root) does not, and still owes the operator a reason.
+  const reason = (domainId: number): string => repos.lastErrorFor(domainId) ?? "repo not resolved";
+  if (skipped.length === 1) return reason(skipped[0]);
+  return skipped.map((domainId) => `domain ${domainId}: ${reason(domainId)}`).join("; ");
+}
+
 /** Per-domain repo detection with capped, never-permanent backoff. */
 export class DomainRepoResolver implements DomainRepos {
   private readonly repos = new Map<number, RepoInfo>();
@@ -86,7 +113,8 @@ export class DomainRepoResolver implements DomainRepos {
   private readonly logger: Logger;
   private readonly now: () => number;
   private readonly label: string;
-  private _lastError: string | null = null;
+  /** Last failure per domain, cleared on that domain's next success. See `lastErrorFor`. */
+  private readonly errors = new Map<number, string>();
 
   constructor(private readonly opts: DomainRepoResolverOptions) {
     this.logger = opts.logger ?? consoleLogger;
@@ -94,8 +122,8 @@ export class DomainRepoResolver implements DomainRepos {
     this.label = opts.label ?? "Repo detection";
   }
 
-  get lastError(): string | null {
-    return this._lastError;
+  lastErrorFor(domainId: number): string | null {
+    return this.errors.get(domainId) ?? null;
   }
 
   cached(domainId: number): RepoInfo | null {
@@ -124,7 +152,7 @@ export class DomainRepoResolver implements DomainRepos {
       this.repos.set(domainId, repo);
       this.failures.delete(domainId);
       this.nextAttemptMs.delete(domainId);
-      this._lastError = null;
+      this.errors.delete(domainId);
       return repo;
     } catch (err) {
       const count = (this.failures.get(domainId) ?? 0) + 1;
@@ -132,7 +160,7 @@ export class DomainRepoResolver implements DomainRepos {
       const msg = err instanceof Error ? err.message : String(err);
       const delayMs = repoDetectBackoffMs(count);
       this.nextAttemptMs.set(domainId, this.now() + delayMs);
-      this._lastError = msg;
+      this.errors.set(domainId, msg);
       this.logger.warn(
         `[mcpd] ${this.label} failed for domain ${domainId} (cwd=${root ?? "process cwd"}, attempt ${count}): ${msg} — retrying in ${Math.round(delayMs / 1000)}s`,
       );

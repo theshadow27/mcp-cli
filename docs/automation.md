@@ -146,7 +146,12 @@ Per-item overrides take precedence over module config and preset defaults.
    A dispatcher only handles events belonging to its own domain, and its
    work-item lookups read only that domain's partition. On a box with no domain
    registered, the daemon's own working directory is used as the single project
-   root, and that lone dispatcher also handles events with no resolvable domain.
+   root, and that lone dispatcher handles every event whatever its domain.
+   When exactly one project declares automation, its dispatcher also handles
+   events whose domain could not be resolved — and its work-item lookups widen
+   to match, reading its own partition plus rows carrying no domain (legacy
+   rows that predate domain assignment). With two or more, an unresolvable
+   event is dropped rather than fired against every project.
 3. **Event fires:** On matching event, dispatcher invokes module handler
    (30s timeout).
 4. **Audit:** Every dispatch records outcome in ring buffer and emits
