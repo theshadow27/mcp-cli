@@ -34,6 +34,7 @@ Usage:
   mcx site remove <name>                  Remove a user-configured site
 
   mcx site calls <site>                   List named calls in a site's catalog
+  mcx site threads <site>                  List named threads + post policy (threads.yaml)
   mcx site describe <site> <call>         Show a call's definition
   mcx site call <site> <call> [--k v ...] Invoke a named call
   mcx site add-call <site> <name> --url <u> [--method M] [...]
@@ -169,6 +170,13 @@ export async function cmdSite(args: string[], depsOverride?: Partial<SiteDeps>):
       const site = subArgs[0];
       if (!site) return fail(deps, "usage: mcx site calls <site>");
       emit(deps, await callSiteTool(deps, "site_calls", { site }), json);
+      return;
+    }
+
+    case "threads": {
+      const site = subArgs[0];
+      if (!site) return fail(deps, "usage: mcx site threads <site>");
+      emit(deps, await callSiteTool(deps, "site_threads", { site }), json);
       return;
     }
 

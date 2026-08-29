@@ -70,6 +70,7 @@ import { cmdUpdate } from "./commands/update";
 import { cmdUpgrade } from "./commands/upgrade";
 import { cmdVersion } from "./commands/version";
 import { cmdVfs } from "./commands/vfs";
+import { cmdWatch } from "./commands/watch";
 import {
   ShutdownRefusedError,
   _formatReloadRefusal,
@@ -360,6 +361,10 @@ async function main(): Promise<void> {
 
       case "monitor":
         await cmdMonitor(cleanArgs.slice(1));
+        break;
+
+      case "watch":
+        await cmdWatch(cleanArgs.slice(1));
         break;
 
       case "logs":
@@ -1057,6 +1062,7 @@ Utility:
   mcx automation <subcommand>          Introspect automation modules
   mcx gc [--dry-run]                  Prune merged branches + stale worktrees
   mcx monitor [flags]                 Stream unified daemon events (--json for NDJSON)
+  mcx watch <site> <thread>...        Stream a site's message events, filtered to named threads
   mcx logs <server> [-f]              View server stderr
   mcx mail <subcommand>               Inter-session messaging
   mcx memory audit [--json]           Haiku-driven memory staleness + contradiction check

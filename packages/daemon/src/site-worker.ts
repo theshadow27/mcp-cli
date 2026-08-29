@@ -65,8 +65,17 @@ import { siteBrowserProfileDir, siteCapturesDir, sitePath, siteVarsPath } from "
 import { type ProxyCallResult, cookieProxyCall, proxyCall } from "./site/proxy";
 import { resolve as resolveCall } from "./site/resolver";
 import { Sniffer } from "./site/sniffer";
+import {
+  deniedWriteThread,
+  listThreads,
+  loadThreads,
+  resolveThreadId,
+  resolveThreadParams,
+  watchedThreadIds,
+} from "./site/threads";
 import { SITE_TOOLS, SITE_TOOL_NAMES } from "./site/tools";
 import { applyFetchFilter, applyJqInput, applyJqOutput, applyVarHeaders, bunJqRunner } from "./site/transforms";
+import { TrouterManager, backfillThread } from "./site/trouter-live";
 import { createIsControlMessage } from "./worker-control-message";
 import { WorkerServerTransport } from "./worker-transport";
 
@@ -97,6 +106,7 @@ let transport: WorkerServerTransport | null = null;
 
 const vault = new CredentialVault();
 const sniffer = new Sniffer(vault);
+const trouterManager = new TrouterManager(vault);
 
 // ── Helpers for siteSpecFor ──
 
@@ -254,6 +264,18 @@ async function handleCall(args: Record<string, unknown>): Promise<ToolResult> {
 
   const params = (args.params as Record<string, unknown>) ?? {};
   const rawBody = args.body as string | undefined;
+
+  // Named-thread resolution + post policy. A name used in any thread param
+  // resolves to its id, and a write (POST/PUT/PATCH/DELETE) against a
+  // `post: "deny"` thread is refused here — passing the raw id cannot bypass it.
+  const threads = loadThreads(site.name);
+  resolveThreadParams(threads, params);
+  const denied = deniedWriteThread(threads, params, call.method);
+  if (denied) {
+    return error(
+      `Thread '${denied}' is marked post: "deny" in ${site.name}/threads.yaml; refusing ${call.method} '${callName}'.`,
+    );
+  }
 
   const vars = loadVars(site.name);
 
@@ -434,6 +456,54 @@ function handleCredentials(args: Record<string, unknown>): ToolResult {
   });
 }
 
+function handleThreads(args: Record<string, unknown>): ToolResult {
+  const site = requireSite(args.site as string);
+  const threads = loadThreads(site.name);
+  return ok({ site: site.name, threads: listThreads(threads) });
+}
+
+async function handleWatchStart(args: Record<string, unknown>): Promise<ToolResult> {
+  const site = requireSite(args.site as string);
+  const threads = Array.isArray(args.threads) ? (args.threads as string[]) : [];
+  const dryRun = args.dryRun === true;
+  const declared = loadThreads(site.name);
+  if (dryRun) {
+    return ok({
+      site: site.name,
+      dryRun: true,
+      requestedThreads: threads,
+      watchTrueThreads: watchedThreadIds(declared),
+      note: "dry-run: no socket opened, no registrar POST performed",
+    });
+  }
+  const status = await trouterManager.ensure(site.name, threads);
+  return ok(status);
+}
+
+async function handleWatchStop(args: Record<string, unknown>): Promise<ToolResult> {
+  const site = requireSite(args.site as string);
+  await trouterManager.stop(site.name);
+  return ok({ site: site.name, stopped: true });
+}
+
+function handleWatchStatus(args: Record<string, unknown>): ToolResult {
+  const site = typeof args.site === "string" ? requireSite(args.site).name : undefined;
+  return ok({ watchers: trouterManager.status(site) });
+}
+
+async function handleBackfill(args: Record<string, unknown>): Promise<ToolResult> {
+  const site = requireSite(args.site as string);
+  const threads = Array.isArray(args.threads) ? (args.threads as string[]) : [];
+  const since = typeof args.since === "string" ? args.since : "1";
+  const threadMap = loadThreads(site.name);
+  const records = [];
+  for (const nameOrId of threads) {
+    const id = resolveThreadId(threadMap, nameOrId);
+    records.push(...(await backfillThread(vault, site.name, id, since)));
+  }
+  return ok({ site: site.name, records });
+}
+
 async function dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   if (!SITE_TOOL_NAMES.has(name)) return error(`Unknown tool: ${name}`);
   try {
@@ -472,6 +542,16 @@ async function dispatch(name: string, args: Record<string, unknown>): Promise<To
         return await handleColdStart(args);
       case "site_credentials":
         return handleCredentials(args);
+      case "site_threads":
+        return handleThreads(args);
+      case "site_watch_start":
+        return await handleWatchStart(args);
+      case "site_watch_stop":
+        return await handleWatchStop(args);
+      case "site_watch_status":
+        return handleWatchStatus(args);
+      case "site_backfill":
+        return await handleBackfill(args);
       default:
         return error(`Unhandled tool: ${name}`);
     }
@@ -503,6 +583,11 @@ async function startServer(): Promise<void> {
 
   transport = new WorkerServerTransport(self);
   await mcpServer.connect(transport);
+
+  // Auto-start Trouter watchers for any site whose threads.yaml has watch:true
+  // entries. No-op unless a user has declared watched threads (and set the pool
+  // host for the live check), so the shared daemon does nothing by default.
+  void trouterManager.bootAutoStart(listSites().map((s) => s.name));
 
   const transportHandler = self.onmessage;
   self.onmessage = async (event: MessageEvent): Promise<void> => {

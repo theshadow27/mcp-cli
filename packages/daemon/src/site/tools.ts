@@ -278,6 +278,70 @@ export const SITE_TOOLS: SiteToolDef[] = [
       required: ["site"],
     },
   },
+  {
+    name: "site_threads",
+    description:
+      "List the named threads declared in the site's threads.yaml — name, id, post policy " +
+      '(allow/deny), notes and watch flag. `post: "deny"` threads refuse writes at the tool layer.',
+    inputSchema: {
+      type: "object",
+      properties: { site: { type: "string", description: "Site name" } },
+      required: ["site"],
+    },
+  },
+  {
+    name: "site_watch_start",
+    description:
+      "Ensure the Trouter push-stream watcher is running for a site, and add threads to its " +
+      "gap-fill set. Events are published on the daemon event bus as `site.message`. " +
+      "With dryRun: true, validates config and reports the plan without opening a socket or " +
+      "registering an endpoint (the one live check is run by a human).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "Site name" },
+        threads: {
+          type: "array",
+          items: { type: "string" },
+          description: "Resolved thread ids to gap-fill on reconnect",
+        },
+        dryRun: { type: "boolean", description: "Validate + plan only; do not open a socket or register" },
+      },
+      required: ["site"],
+    },
+  },
+  {
+    name: "site_watch_stop",
+    description: "Stop the Trouter watcher for a site and deregister its push endpoint.",
+    inputSchema: {
+      type: "object",
+      properties: { site: { type: "string", description: "Site name" } },
+      required: ["site"],
+    },
+  },
+  {
+    name: "site_watch_status",
+    description: "Report the Trouter watcher state (per site).",
+    inputSchema: {
+      type: "object",
+      properties: { site: { type: "string", description: "Site name (optional; omit for all)" } },
+    },
+  },
+  {
+    name: "site_backfill",
+    description:
+      "REST backfill of normalised message records for one or more threads from an epoch-ms " +
+      "`since` cursor (inclusive), via the site's get_messages call. Used by `mcx watch --since`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        site: { type: "string" },
+        threads: { type: "array", items: { type: "string" }, description: "Resolved thread ids" },
+        since: { type: "string", description: "Epoch-ms lower bound (inclusive); use '1' for the beginning" },
+      },
+      required: ["site", "threads", "since"],
+    },
+  },
 ];
 
 /** Set of valid tool names — used by the worker to reject unknown tool calls fast. */

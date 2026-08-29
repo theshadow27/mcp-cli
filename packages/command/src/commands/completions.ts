@@ -45,6 +45,7 @@ export const SUBCOMMANDS = [
   "run",
   "logs",
   "monitor",
+  "watch",
   "typegen",
   "restart",
   "reconnect",

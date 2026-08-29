@@ -61,7 +61,8 @@ packages/
 - **Config**: reads Claude Code's `~/.claude.json` + `.mcp.json` natively
 - **Transports**: stdio (command+args), HTTP (StreamableHTTP), SSE
 - **Auth**: macOS Keychain reader (Claude Code tokens) → SQLite → env vars
-- **Event bus**: unified per-daemon stream (`event-bus.ts`, `event-stream.ts`) fan-outs server / session / work-item / PR / CI / cost / quota events. Consumed by `mcx monitor`, phase scripts via `ctx.waitForEvent`, and automation modules. Payloads come pre-enriched by the producers so consumers don't need a hydration loop.
+- **Event bus**: unified per-daemon stream (`event-bus.ts`, `event-stream.ts`) fan-outs server / session / work-item / PR / CI / cost / quota / `site.message` events. Consumed by `mcx monitor`, `mcx watch`, phase scripts via `ctx.waitForEvent`, and automation modules. Payloads come pre-enriched by the producers so consumers don't need a hydration loop.
+- **Site watch (`mcx watch`)**: a single filterable push stream of a web app's message events (Teams). A Trouter WebSocket worker (socket.io 0.9, hand-rolled codec) lives in the `_site` worker, normalises events to `site.message` on the bus, dedups + gap-fills via a per-thread `version` cursor in mcx.db, and enforces `threads.yaml` post policy (`post: "deny"`) at the tool layer. See `docs/watch.md`.
 - **Work items**: `work_items` SQLite table — every tracked issue/PR has a row with phase, branch, PR number, scrutiny, session bindings, round counters. Phase scripts read/write via `_work_items` MCP tools and `ctx.state`. `phase.changed` is emitted on every transition.
 - **Agent sessions**: daemon hosts Claude / Codex / ACP / OpenCode / Copilot / Gemini / Mock sessions as workers. WS protocol for Claude; subprocess wrappers for the others. Unified session-state machine; `mcx claude` and `mcx agent <provider>` share the same surface. The daemon↔worker protocol is formally specified in [`docs/agent-protocol.md`](docs/agent-protocol.md).
 - **Aliases**: TypeScript scripts in `~/.mcp-cli/aliases/`, executed via Bun virtual module `"mcp-cli"`. Metadata in SQLite `aliases` table. Two modes:
@@ -205,7 +206,8 @@ packages/command/src/
                   config, config-file, dump, export, gc, get, git-remote-helper,
                   import, install, logs, mail, mail-wait, memory, monitor, note,
                   phase, pr, registry-cmd, remove, run, scope, serve, serve-kill,
-                  session-display, site, spans, spawn-args, telemetry, track
+                  session-display, site, spans, spawn-args, telemetry, track,
+                  watch
                   (track/tracked/untrack), tty, typegen, update, upgrade,
                   version, vfs, worktree-commands
   jq/             jq filtering support
