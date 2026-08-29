@@ -1993,13 +1993,13 @@ describe("McxDb", () => {
   });
 
   describe("migrations", () => {
-    test("fresh DB sets schema version to 9", () => {
+    test("fresh DB sets schema version to 10", () => {
       const db = createDb();
       // biome-ignore lint/complexity/useLiteralKeys: access private field for test
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(9);
+      expect(version).toBe(10);
       db.close();
     });
 
@@ -2063,7 +2063,7 @@ describe("McxDb", () => {
       const version = db2["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(9);
+      expect(version).toBe(10);
       db2.close();
     });
 
@@ -2085,7 +2085,7 @@ describe("McxDb", () => {
       const version = db["db"]
         .query<{ version: number }, [string]>("SELECT version FROM schema_versions WHERE name = ?")
         .get("state")?.version;
-      expect(version).toBe(9);
+      expect(version).toBe(10);
       db.close();
     });
 
@@ -2295,6 +2295,7 @@ describe("McxDb", () => {
         "schema_versions",
         "server_logs",
         "session_metrics",
+        "site_watch_cursor",
         "spans",
         "tool_cache",
         "usage_stats",

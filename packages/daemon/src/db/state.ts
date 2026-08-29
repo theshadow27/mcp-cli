@@ -528,6 +528,25 @@ export class McxDb {
       }
       version = 9;
     }
+
+    if (version < 10) {
+      this.db.transaction(() => {
+        // Per-thread last-seen `version` cursor for the Trouter watch stream
+        // (`mcx watch`). One row per (site, thread); the value is the epoch-ms
+        // `version` high-water mark used for dedup and REST gap-fill on reconnect.
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS site_watch_cursor (
+            site         TEXT NOT NULL,
+            thread       TEXT NOT NULL,
+            last_version TEXT NOT NULL,
+            updated_at   INTEGER DEFAULT (unixepoch()),
+            PRIMARY KEY (site, thread)
+          )
+        `);
+        this.setSchemaVersion(CONSUMER, 10);
+      })();
+      version = 10;
+    }
   }
 
   /**
@@ -1026,6 +1045,26 @@ export class McxDb {
     this.db.run(
       "INSERT INTO daemon_state (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
       [key, value],
+    );
+  }
+
+  // -- Site watch cursor (mcx watch) --
+
+  /** Last-seen `version` high-water mark for one watched thread, or null if unseen. */
+  getSiteWatchCursor(site: string, thread: string): string | null {
+    const row = this.db
+      .query<{ last_version: string }, [string, string]>(
+        "SELECT last_version FROM site_watch_cursor WHERE site = ? AND thread = ?",
+      )
+      .get(site, thread);
+    return row?.last_version ?? null;
+  }
+
+  setSiteWatchCursor(site: string, thread: string, lastVersion: string): void {
+    this.db.run(
+      "INSERT INTO site_watch_cursor (site, thread, last_version, updated_at) VALUES (?, ?, ?, unixepoch()) " +
+        "ON CONFLICT(site, thread) DO UPDATE SET last_version = excluded.last_version, updated_at = excluded.updated_at",
+      [site, thread, lastVersion],
     );
   }
 

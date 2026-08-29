@@ -526,3 +526,39 @@ describe("enrichMonitorEvent", () => {
     }
   });
 });
+
+describe("site.message", () => {
+  const base = {
+    event: "site.message",
+    category: "site" as const,
+    site: "teams",
+    threadName: "general",
+    thread: "19:aaa@thread.v2",
+    id: "1",
+    version: "1",
+    at: "2026-08-28T10:00:00.000Z",
+    kind: "new",
+    from: "Someone",
+    text: "hello there",
+  };
+
+  test("formats site, thread name, kind, sender and preview", () => {
+    const line = formatMonitorEvent(event({ ...base, is_me: false, mentions_me: false }));
+    expect(line).toContain("teams");
+    expect(line).toContain("general");
+    expect(line).toContain("new");
+    expect(line).toContain("hello there");
+  });
+
+  test("a mention of me is actionable", () => {
+    expect(severityForMonitorEvent(event({ ...base, is_me: false, mentions_me: true }))).toBe("actionable");
+  });
+
+  test("our own message is info", () => {
+    expect(severityForMonitorEvent(event({ ...base, is_me: true, mentions_me: false }))).toBe("info");
+  });
+
+  test("other-people chatter is notable", () => {
+    expect(severityForMonitorEvent(event({ ...base, is_me: false, mentions_me: false }))).toBe("notable");
+  });
+});

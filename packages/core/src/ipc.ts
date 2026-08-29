@@ -69,6 +69,8 @@ export type IpcMethod =
   | "getBudgetConfig"
   | "setBudgetConfig"
   | "publishEvent"
+  | "siteWatchCursorGet"
+  | "siteWatchCursorSet"
   | "listAutomation"
   | "getAutomationLog"
   | "getAgentSession"
@@ -687,6 +689,27 @@ export interface PublishEventResult {
   seq: number;
 }
 
+// -- Site watch cursor schemas (mcx watch) --
+
+export const SiteWatchCursorGetParamsSchema = z.object({
+  site: z.string().min(1),
+  thread: z.string().min(1),
+});
+
+export const SiteWatchCursorSetParamsSchema = z.object({
+  site: z.string().min(1),
+  thread: z.string().min(1),
+  lastVersion: z.string().min(1),
+});
+
+export interface SiteWatchCursorGetResult {
+  lastVersion: string | null;
+}
+
+export interface SiteWatchCursorSetResult {
+  ok: true;
+}
+
 // -- Automation schemas (#2018) --
 
 export const ListAutomationParamsSchema = z.object({
@@ -1139,6 +1162,8 @@ export interface IpcMethodResult {
   getBudgetConfig: BudgetConfig;
   setBudgetConfig: { ok: true };
   publishEvent: PublishEventResult;
+  siteWatchCursorGet: SiteWatchCursorGetResult;
+  siteWatchCursorSet: SiteWatchCursorSetResult;
   listAutomation: ListAutomationResult;
   getAutomationLog: GetAutomationLogResult;
   getAgentSession: GetAgentSessionResult;

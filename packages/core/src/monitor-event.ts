@@ -55,6 +55,7 @@ export const MONITOR_CATEGORIES = [
   "quota",
   "automation",
   "vfs",
+  "site",
 ] as const;
 
 export type MonitorCategory = (typeof MONITOR_CATEGORIES)[number];
@@ -244,6 +245,33 @@ export interface VfsProgressFields {
   items?: number;
   /** Failure reason. `vfs.failed` only. */
   error?: string;
+}
+
+// ── Site watch event names (mcx watch — Trouter push stream) ──
+
+/**
+ * A normalised message-flow event from a watched site (Teams today). The flat
+ * envelope carries {@link SiteMessageFields}; the `kind` field discriminates
+ * new / edited / deleted / reaction / thread. Consumers filter by `site` +
+ * `thread`; `mcx watch` filters client-side by the requested thread set.
+ */
+export const SITE_MESSAGE = "site.message" as const;
+
+/** Flat payload fields carried by a {@link SITE_MESSAGE} event. */
+export interface SiteMessageFields {
+  site: string;
+  thread: string;
+  threadName?: string;
+  id: string;
+  version: string;
+  at: string;
+  from?: string;
+  from_id?: string;
+  is_me: boolean;
+  mentions_me: boolean;
+  kind: "new" | "edited" | "deleted" | "reaction" | "thread";
+  text: string;
+  reply_to?: string;
 }
 
 // ── Alias supervisor event names (#1924) ──
@@ -691,6 +719,17 @@ const FORMATTERS: Partial<Record<string, Formatter>> = {
 
   [VFS_FAILED]: (e) => join(vfsTarget(e), vfsCount(e), typeof e.error === "string" ? e.error : "failed"),
 
+  [SITE_MESSAGE]: (e) => {
+    const site = typeof e.site === "string" ? e.site : "";
+    const thread =
+      typeof e.threadName === "string" ? e.threadName : typeof e.thread === "string" ? cap(e.thread, 24) : "";
+    const kind = typeof e.kind === "string" ? e.kind : "";
+    const who = typeof e.from === "string" ? e.from : typeof e.from_id === "string" ? cap(e.from_id, 20) : "";
+    const flags = [e.is_me ? "me" : "", e.mentions_me ? "@me" : ""].filter(Boolean).join(",");
+    const preview = typeof e.text === "string" && e.text ? `"${cap(e.text, 50)}"` : "";
+    return join(site, thread, kind, who, flags, preview);
+  },
+
   [HEARTBEAT]: (e) => `seq:${e.seq}`,
 };
 
@@ -827,6 +866,9 @@ const SEVERITY_OVERRIDES: Partial<Record<string, (e: MonitorEventBase) => Monito
   // A rejected tokens file silently costs every spawn its GitHub access, so it
   // is actionable; a routine `scoped`/`inherited` decision is a record, not news.
   [SESSION_GH_CREDENTIALS]: (e) => (typeof e.problem === "string" ? "actionable" : "info"),
+  // A message that @-mentions us is a call to action; our own messages and the
+  // rest of the firehose are chatter.
+  [SITE_MESSAGE]: (e) => (e.mentions_me === true ? "actionable" : e.is_me === true ? "info" : "notable"),
 };
 
 /** Classify an event's actionability. Unmapped event types are `info`. */
