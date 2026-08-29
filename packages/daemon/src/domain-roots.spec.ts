@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type Domain, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { type Domain, NO_DOMAIN_ID, resolveRealpath } from "@mcp-cli/core";
 import { FALLBACK_ROOT_NAME, domainRootIndex, resolveDomainRoots } from "./domain-roots";
 
 function domain(over: Partial<Domain> & { id: number; name: string; path: string }): Domain {
@@ -14,8 +14,8 @@ describe("resolveDomainRoots", () => {
     });
 
     expect(roots.map((r) => [r.id, r.name, r.path])).toEqual([
-      [1, "mcp-cli", "/usr"],
-      [2, "phoenix", "/tmp"],
+      [1, "mcp-cli", resolveRealpath("/usr")],
+      [2, "phoenix", resolveRealpath("/tmp")],
     ]);
     expect(roots.every((r) => r.fallback)).toBe(false);
   });
@@ -27,10 +27,12 @@ describe("resolveDomainRoots", () => {
       domains: [domain({ id: 1, name: "mcp-cli", path: "/usr" })],
       fallbackRoot: "/etc",
     });
-    expect(withDomain.map((r) => r.path)).toEqual(["/usr"]);
+    expect(withDomain.map((r) => r.path)).toEqual([resolveRealpath("/usr")]);
 
     const bare = resolveDomainRoots({ domains: [], fallbackRoot: "/etc" });
-    expect(bare).toEqual([{ id: NO_DOMAIN_ID, name: FALLBACK_ROOT_NAME, path: "/etc", fallback: true }]);
+    expect(bare).toEqual([
+      { id: NO_DOMAIN_ID, name: FALLBACK_ROOT_NAME, path: resolveRealpath("/etc"), fallback: true },
+    ]);
   });
 
   test("no domains and no fallback yields no roots at all", () => {
