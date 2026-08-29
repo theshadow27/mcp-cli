@@ -13,6 +13,20 @@
     "match": ["api/chatsvc", "ng\\.msg\\.teams", "asyncgw\\.teams", "api/csa", "api/mt"],
     "skip": ["imgo", "profilepicturev2", "mergedProfilePicturev2"]
   },
+  "captureVars": [
+    {
+      "name": "updatesSyncToken",
+      "description": "x-ms-synctoken for api/csa users/me/updates. The value the real client sends rolls forward with the wall clock, so a hardcoded token freezes the sync window; the response hands back the next one at .metadata.syncToken. A firehose capture corpus buries an updates response fast — the sidebar refresh is minutes apart while the corpus grows continuously — so this typically needs `mcx site capture teams --limit 2000` or deeper. While uncaptured, applyVarHeaders drops the header rather than sending an unresolved ${…}.",
+      "urlMatch": "users/me/updates",
+      "jq": ".responseBody | objects | .metadata | objects | .syncToken | strings"
+    },
+    {
+      "name": "me_mri",
+      "description": "Own Teams MRI, '8:orgid:' + AAD object id. Bound as $vars.me_mri so response transforms can compute is_me / mentions_me, and used as the default subject for user_fetch. Read from the x-ms-object-id request header when present, else from the Bearer JWT's oid claim (base64url re-padded before @base64d) — the JWT rides nearly every api/chatsvc|csa|mt request, the header only a handful.",
+      "urlMatch": "api/(chatsvc|csa|mt)",
+      "jq": "(.requestHeaders[\"x-ms-object-id\"] // \"\" | strings) as $hdr\n| (if ($hdr | length) == 36 then $hdr else\n     (.requestHeaders.authorization // \"\" | strings | sub(\"^[Bb]earer +\";\"\") | split(\".\") | (.[1] // \"\")\n      | select(length > 0)\n      | (. | gsub(\"-\";\"+\") | gsub(\"_\";\"/\")) as $b\n      | ($b + ((\"=\" * ((4 - ($b | length % 4)) % 4)) // \"\"))\n      | @base64d | fromjson | .oid | strings)\n   end)\n| select(length == 36) | \"8:orgid:\" + ."
+    }
+  ],
   "wiggle": "wiggle.js",
   "seed": "teams"
 }
