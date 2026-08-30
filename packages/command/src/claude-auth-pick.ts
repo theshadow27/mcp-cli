@@ -66,8 +66,18 @@ export function planSize(summary: ProfileSummary): number | null {
   return null;
 }
 
+/**
+ * Can this profile be run on right now?
+ *
+ * An expired or expiring *access* token is only fatal without a refresh token:
+ * Claude Code mints a fresh access token from the refresh token on startup. Treating
+ * expiry alone as disqualifying is what closed the #3423 deadlock — after one token
+ * lifetime every profile failed both `isEligible` and `mustLeave`, so `load --auto`
+ * answered "wait" forever while every account still had quota.
+ */
 function oauthUsable(profile: ProfileSummary, now: Date, leadMs: number): boolean {
   if (profile.kind !== "oauth") return false;
+  if (profile.hasRefreshToken) return true;
   if (profile.expired === true) return false;
   if (!profile.expiresAt) return true;
   const expires = Date.parse(profile.expiresAt);
@@ -76,6 +86,10 @@ function oauthUsable(profile: ProfileSummary, now: Date, leadMs: number): boolea
 }
 
 function isEligible(profile: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
+  // A profile with no stored credentials cannot be loaded — `loadProfile` moves the
+  // pointer and leaves `.credentials.json` untouched, so mcx would believe it runs as
+  // one identity while Claude runs as another (#3425). Never recommend one.
+  if (!profile.hasCredentials) return false;
   if (!oauthUsable(profile, now, opts.oauthLeadMs)) return false;
   const five = windowRemaining(profile.quota?.fiveHour, now);
   const seven = windowRemaining(profile.quota?.sevenDay, now);
@@ -83,12 +97,21 @@ function isEligible(profile: ProfileSummary, now: Date, opts: AuthPickOptions): 
   return five >= opts.epsilon5 && seven >= opts.epsilon7;
 }
 
+/**
+ * Must CURRENT be left?
+ *
+ * `null` (never fetched, utilization absent, snapshot older than its own reset) means
+ * *unknown*, and unknown is not healthy. `isEligible` has always disqualified null;
+ * treating it as "fine" here was the asymmetry that let a fully exhausted account whose
+ * snapshot went slightly stale read as healthy and never be left (#3427).
+ */
 function mustLeave(current: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
   if (!oauthUsable(current, now, opts.oauthLeadMs)) return true;
   const five = windowRemaining(current.quota?.fiveHour, now);
   const seven = windowRemaining(current.quota?.sevenDay, now);
-  if (five != null && five < opts.epsilon5) return true;
-  if (seven != null && seven < opts.epsilon7) return true;
+  if (five == null || seven == null) return true;
+  if (five < opts.epsilon5) return true;
+  if (seven < opts.epsilon7) return true;
   return false;
 }
 
@@ -102,8 +125,9 @@ function resetAtMs(profile: ProfileSummary): number {
 function isHarvest(profile: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
   const five = windowRemaining(profile.quota?.fiveHour, now);
   if (five == null || five <= opts.harvestRemaining) return false;
-  const inMs = resetAtMs(profile) - now.getTime();
-  return inMs > 0 && inMs < opts.harvestWindowMs;
+  // No `inMs > 0` term: `windowRemaining` already returned null for a reset in the
+  // past, and an absent/unparsable one makes `resetAtMs` +Infinity.
+  return resetAtMs(profile) - now.getTime() < opts.harvestWindowMs;
 }
 
 function compareEligible(a: ProfileSummary, b: ProfileSummary, now: Date): number {
@@ -146,18 +170,11 @@ export function pickRecommended(
     return { profile: current.name, action: "stay", reason: "current is healthy" };
   }
 
-  if (eligible.length === 0) {
-    return {
-      profile: current?.name ?? null,
-      action: "wait",
-      reason: "no eligible profile; wait for a 5h reset",
-    };
-  }
+  // `wait` names nobody: a `recommended: true` next to "wait for a 5h reset" is a
+  // contract an automation reading the JSON cannot use (#3428).
+  if (eligible.length === 0) return { profile: null, action: "wait", reason: waitWhy(pool, current, now, opts) };
 
   const winner = [...eligible].sort((a, b) => compareEligible(a, b, now))[0];
-  if (current && winner.name === current.name) {
-    return { profile: winner.name, action: "stay", reason: "current is the best eligible" };
-  }
   return {
     profile: winner.name,
     action: "load",
@@ -165,6 +182,30 @@ export function pickRecommended(
       ? `leave ${current.name}: ${leaveWhy(current, now, opts)}; pick ${winner.name}`
       : `pick ${winner.name}`,
   };
+}
+
+/**
+ * Why nothing is eligible. "wait for a 5h reset" blames quota, and a responder who
+ * believes it waits forever when the real cause is token bookkeeping (#3423).
+ */
+function waitWhy(
+  pool: readonly ProfileSummary[],
+  current: ProfileSummary | null,
+  now: Date,
+  opts: AuthPickOptions,
+): string {
+  if (pool.every((p) => !p.hasCredentials)) {
+    return "no profile has stored credentials — run `mcx claude auth save <name>`";
+  }
+  if (pool.every((p) => !oauthUsable(p, now, opts.oauthLeadMs))) {
+    return "every stored token is expired — run `mcx claude auth save` on a logged-in identity";
+  }
+  const five = current ? windowRemaining(current.quota?.fiveHour, now) : null;
+  const seven = current ? windowRemaining(current.quota?.sevenDay, now) : null;
+  if (current && (five == null || seven == null)) {
+    return "quota is unknown for every profile — run `mcx claude auth ls --fetch-all`";
+  }
+  return "no eligible profile; wait for a 5h reset";
 }
 
 function leaveWhy(current: ProfileSummary, now: Date, opts: AuthPickOptions): string {
@@ -177,6 +218,7 @@ function leaveWhy(current: ProfileSummary, now: Date, opts: AuthPickOptions): st
   if (five != null && five < opts.epsilon5) return `5h remaining ${five.toFixed(1)}%`;
   const seven = windowRemaining(current.quota?.sevenDay, now);
   if (seven != null && seven < opts.epsilon7) return `7d remaining ${seven.toFixed(1)}%`;
+  if (five == null || seven == null) return "quota unknown (stale or never fetched)";
   return "must leave";
 }
 

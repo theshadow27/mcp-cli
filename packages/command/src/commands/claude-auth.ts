@@ -4,8 +4,11 @@
  * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
  * `ls --fetch-all` does the same, one profile at a time, for every stored
  * access token that is still valid. Expired tokens are skipped (they need a
- * load). 429s back off and abort the rest of the fleet. `ls` marks the
- * sticky recommended identity with `>`; `load --auto` switches to it.
+ * load). 429s back off, a throttled profile does not stop the walk, and the whole
+ * sweep is bounded by a wall-clock budget. Both stamp only onto the profile that
+ * provably owns the credentials the numbers were measured with, and copy a token
+ * Claude refreshed in place back onto it. `ls` marks the sticky recommended
+ * identity with `>` (never on a `wait`); `load --auto` switches to it.
  *
  * All three subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
@@ -22,12 +25,14 @@ import {
   type QuotaFetcher,
   type SleepFn,
   assertPlatformSupported,
+  attributedLiveProfile,
   defaultAuthPaths,
   fetchUnexpiredProfileQuotas,
   listProfiles,
   loadProfile,
   readActivePointer,
   readLiveState,
+  refreshProfileCredentialsFromLive,
   saveProfile,
   snapshotQuotaFromCredentials,
   snapshotQuotaFromCredentialsRetrying,
@@ -323,6 +328,14 @@ async function loadNamed(
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
 }
 
+/** One "kept the older number" line per degraded bucket, so a silent hole is visible. */
+function reportKeptBuckets(d: AuthCliDeps, name: string, keptBuckets: string[]): void {
+  if (keptBuckets.length === 0) return;
+  d.printInfo(
+    `warning: profile "${name}": usage response omitted ${keptBuckets.join(", ")} — kept the previous value(s)`,
+  );
+}
+
 async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
   const live = readLiveState(envDeps.paths, now);
   const snap = await snapshotQuotaFromCredentialsRetrying(live.credentials, now, envDeps.fetchQuota, {
@@ -331,23 +344,44 @@ async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Pro
   if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
   else if (!snap.quota) d.printInfo("warning: could not snapshot quota: no access token in live credentials");
   const quota = snap.quota;
-  if (quota) {
-    // Skip the operation lock when there is no pointer so `--fetch` on an
-    // empty store does not create `auth-profiles/` just to no-op.
-    const stamped = readActivePointer(envDeps.paths)
-      ? withOperationLock(envDeps.paths, () => stampActiveProfileQuota(envDeps.paths, quota))
-      : false;
-    if (!stamped) d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+  if (!quota) return;
+  // Skip the operation lock when there is no pointer so `--fetch` on an
+  // empty store does not create `auth-profiles/` just to no-op.
+  if (!readActivePointer(envDeps.paths)) {
+    d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+    return;
   }
+  // Attribution, the stamp and the token write-back all happen inside one lock, on
+  // state re-read there: a concurrent `load` between the fetch and the stamp would
+  // otherwise file these numbers against the profile that just became active.
+  const result = withOperationLock(envDeps.paths, () => {
+    const locked = readLiveState(envDeps.paths, now);
+    const owner = attributedLiveProfile(envDeps.paths, locked);
+    const stamp = stampActiveProfileQuota(envDeps.paths, quota, locked);
+    // Keep the owning profile's stored token in step with the one Claude refreshed
+    // in place; without it the stored copy ages out after ~8h and the profile reads
+    // as expired forever (#3423).
+    refreshProfileCredentialsFromLive(envDeps.paths, locked, now);
+    return { stamp, owner };
+  });
+  if (!result.stamp.stamped) {
+    d.printInfo(
+      result.owner === null
+        ? "warning: fetched quota but the live credentials do not provably belong to any profile — not recorded"
+        : "warning: fetched quota but no active oauth profile to record it on",
+    );
+    return;
+  }
+  reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
 }
 
 async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
   const live = readLiveState(envDeps.paths, now);
-  const { fetched, warnings, skippedExpired, skippedRateLimited } = await fetchUnexpiredProfileQuotas(
+  const { fetched, warnings, skippedExpired, skippedRateLimited, skippedBudget } = await fetchUnexpiredProfileQuotas(
     envDeps.paths,
     now,
     envDeps.fetchQuota,
-    { liveCredentials: live.credentials, sleep: envDeps.sleep },
+    { live, sleep: envDeps.sleep },
   );
   for (const warning of warnings) d.printInfo(`warning: profile "${warning.name}": ${warning.message}`);
   if (skippedExpired.length > 0) {
@@ -356,10 +390,22 @@ async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date
   if (skippedRateLimited.length > 0) {
     d.printInfo(`rate-limited; kept previous snapshots for: ${skippedRateLimited.join(", ")}`);
   }
-  if (fetched.length === 0) return;
-  withOperationLock(envDeps.paths, () => {
-    for (const row of fetched) stampProfileQuota(envDeps.paths, row.name, row.quota);
+  if (skippedBudget.length > 0) {
+    d.printInfo(`out of time budget; kept previous snapshots for: ${skippedBudget.join(", ")}`);
+  }
+  // Nothing to write and nowhere to write it: do not take the lock, which would
+  // create `auth-profiles/` on an empty store just to no-op.
+  if (fetched.length === 0 && !readActivePointer(envDeps.paths)) return;
+  const kept = withOperationLock(envDeps.paths, () => {
+    const rows: Array<{ name: string; keptBuckets: string[] }> = [];
+    for (const row of fetched) {
+      const stamp = stampProfileQuota(envDeps.paths, row.name, row.quota);
+      if (stamp.keptBuckets.length > 0) rows.push({ name: row.name, keptBuckets: stamp.keptBuckets });
+    }
+    refreshProfileCredentialsFromLive(envDeps.paths, readLiveState(envDeps.paths, now), now);
+    return rows;
   });
+  for (const row of kept) reportKeptBuckets(d, row.name, row.keptBuckets);
 }
 
 async function runLs(
@@ -377,10 +423,14 @@ async function runLs(
 
   const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
   const pick = pickRecommended(summaries, now);
+  // `pick.profile` is null on a `wait` verdict — the picker's contract. Stamping
+  // `recommended: true` on a row it just refused to run on handed
+  // `jq 'select(.recommended)'` the exhausted account (#3428).
+  const recommendedName = pick.profile;
   const listed = summaries.map((s) => ({
     ...s,
-    recommended: pick.profile === s.name,
-    recommendReason: pick.profile === s.name ? pick.reason : undefined,
+    recommended: recommendedName === s.name,
+    recommendReason: recommendedName === s.name ? pick.reason : undefined,
   }));
 
   // A hand-edited profile must never hide the healthy ones — report it, keep going.
@@ -397,8 +447,8 @@ async function runLs(
   }
 
   for (const line of formatProfileTable(listed)) d.log(line);
-  if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
-  else if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
+  if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
+  else if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
 }
 
 /** Render the `ls` table. Exported for tests — must never contain token material. */

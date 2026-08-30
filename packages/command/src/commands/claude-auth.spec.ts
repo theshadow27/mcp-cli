@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { QuotaStatus } from "@mcp-cli/core";
+import { QuotaRateLimitError, type QuotaStatus } from "@mcp-cli/core";
 import type { AuthPaths } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
@@ -537,7 +537,7 @@ describe("mcx claude auth ls", () => {
     expect(h.out.join("\n")).not.toContain("tok-personal");
   });
 
-  test("--fetch-all retries 429s then stamps; a hot endpoint skips the rest", async () => {
+  test("--fetch-all retries a 429'd profile, then still gives the rest one attempt", async () => {
     using h = harness();
     await claudeAuth(["save", "work"], h.deps, h.envDeps);
     writeFileSync(
@@ -561,7 +561,7 @@ describe("mcx claude auth ls", () => {
     h.envDeps.fetchQuota = async (token) => {
       calls++;
       if (token.accessToken === "tok-personal") {
-        throw new Error("Quota API returned 429: rate_limit_error");
+        throw new QuotaRateLimitError("Quota API returned 429: rate_limit_error");
       }
       return { ...SAMPLE_QUOTA, fiveHour: { utilization: 3, resetsAt: "2026-08-18T21:00:00.000Z" } };
     };
@@ -569,15 +569,16 @@ describe("mcx claude auth ls", () => {
     h.info.length = 0;
     await claudeAuth(["ls", "--fetch-all", "--json"], h.deps, h.envDeps);
 
-    expect(calls).toBe(3);
+    // 3 attempts for personal, then exactly 1 for work — never zero (#3426).
+    expect(calls).toBe(4);
     expect(sleeps).toEqual([1_000, 2_000]);
-    expect(h.info.join(" ")).toContain("rate-limited; kept previous snapshots for: personal, work");
+    expect(h.info.join(" ")).toContain("rate-limited; kept previous snapshots for: personal");
     const rows = JSON.parse(h.out.join("\n")) as Array<{
       name: string;
       quota: { fiveHour: { utilization: number } };
     }>;
     expect(rows.find((r) => r.name === "personal")?.quota.fiveHour.utilization).toBe(42);
-    expect(rows.find((r) => r.name === "work")?.quota.fiveHour.utilization).toBe(42);
+    expect(rows.find((r) => r.name === "work")?.quota.fiveHour.utilization).toBe(3);
   });
 
   test("--fetch retries a 429 and then stamps", async () => {
@@ -587,7 +588,7 @@ describe("mcx claude auth ls", () => {
     h.envDeps.sleep = async () => {};
     h.envDeps.fetchQuota = async () => {
       calls++;
-      if (calls === 1) throw new Error("Quota API returned 429: rate_limit_error");
+      if (calls === 1) throw new QuotaRateLimitError("Quota API returned 429: rate_limit_error");
       return { ...SAMPLE_QUOTA, fiveHour: { utilization: 5, resetsAt: "2026-08-18T21:00:00.000Z" } };
     };
     h.out.length = 0;
@@ -707,6 +708,189 @@ describe("mcx claude auth load --auto", () => {
   });
 });
 
+describe("mcx claude auth ls — recommendation contract", () => {
+  /** A lone profile burned down to `remaining`% of its 5h window. */
+  async function exhausted(h: Harness, remaining: number): Promise<void> {
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const path = join(h.paths.profilesDir, "work.json");
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    raw.quota.fiveHour.utilization = 100 - remaining;
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    h.out.length = 0;
+    h.info.length = 0;
+  }
+
+  test("a wait verdict never marks a row recommended in JSON", async () => {
+    using h = harness();
+    await exhausted(h, 5);
+    await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
+    const rows = JSON.parse(h.out.join("\n")) as Array<{
+      name: string;
+      recommended: boolean;
+      recommendReason?: string;
+    }>;
+    expect(rows.map((r) => r.recommended)).toEqual([false]);
+    expect(rows[0]?.recommendReason).toBeUndefined();
+  });
+
+  test("a wait verdict prints the (none) footer, not a > on the exhausted row", async () => {
+    using h = harness();
+    await exhausted(h, 5);
+    await claudeAuth(["ls"], h.deps, h.envDeps);
+    const text = h.out.join("\n");
+    expect(text).toContain("> (none)");
+    expect(text).toContain("*  work");
+    expect(text).not.toContain("*> work");
+  });
+});
+
+describe("mcx claude auth ls — stamps are attributed (#3424)", () => {
+  test("--fetch refuses to record a stranger's numbers on the pointed-at profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    // The user ran `claude /login` behind mcx's back.
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({ claudeAiOauth: { accessToken: "tok-ROGUE", refreshToken: "rt", expiresAt: EXPIRES_AT } }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-z", oauthAccount: { emailAddress: "z@evil.com", accountUuid: "uuid-z" } }),
+    );
+
+    const seen: string[] = [];
+    h.envDeps.fetchQuota = async (token) => {
+      seen.push(token.accessToken);
+      return { ...SAMPLE_QUOTA, fiveHour: { utilization: 99, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+
+    expect(seen).toEqual(["tok-ROGUE"]);
+    expect(h.info.join(" ")).toContain("do not provably belong to any profile");
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).quota.fiveHour.utilization).toBe(
+      42,
+    );
+  });
+
+  test("--fetch-all queries the profile's own token instead of overlaying a stranger's", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({ claudeAiOauth: { accessToken: "tok-ROGUE", refreshToken: "rt", expiresAt: EXPIRES_AT } }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-z", oauthAccount: { emailAddress: "z@evil.com", accountUuid: "uuid-z" } }),
+    );
+
+    const seen: string[] = [];
+    h.envDeps.fetchQuota = async (token) => {
+      seen.push(token.accessToken);
+      return SAMPLE_QUOTA;
+    };
+    await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    expect(seen).toEqual([ACCESS_TOKEN]);
+    expect(seen).not.toContain("tok-ROGUE");
+  });
+});
+
+describe("mcx claude auth ls --fetch — token write-back (#3423)", () => {
+  test("a refreshed live token is copied back onto the owning profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    const stored = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(stored.credentials).toEqual(rotated);
+  });
+
+  test("--fetch-all copies the refreshed live token back onto the owning profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+
+    await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).credentials).toEqual(rotated);
+  });
+
+  test("--fetch-all on an empty store does not create the profile directory", async () => {
+    using h = harness();
+    await claudeAuth(["ls", "--fetch-all", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n"))).toEqual([]);
+    expect(existsSync(h.paths.profilesDir)).toBe(false);
+  });
+
+  test("--fetch-all keeps the stored expiry moving so the auto loop survives past one token lifetime", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    // Ten hourly cron ticks; Claude rotates the token in place each hour.
+    for (let hour = 1; hour <= 20; hour++) {
+      const tick = new Date(NOW.getTime() + hour * 3_600_000);
+      h.envDeps.now = () => tick;
+      writeFileSync(
+        h.paths.credentialsPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: `sk-ant-oat01-ROT-${hour}`,
+            refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+            expiresAt: tick.getTime() + 8 * 3_600_000,
+            scopes: ["user:inference"],
+            subscriptionType: "max",
+          },
+        }),
+      );
+      h.envDeps.fetchQuota = async () => ({
+        ...SAMPLE_QUOTA,
+        fiveHour: { utilization: 5, resetsAt: new Date(tick.getTime() + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 5, resetsAt: new Date(tick.getTime() + 5 * 86_400_000).toISOString() },
+      });
+      await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    }
+
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto", "--json"], h.deps, h.envDeps);
+    // Before the write-back this said `action: "wait"` — "no eligible profile; wait
+    // for a 5h reset" — from t+8h onward, forever, at 95% remaining.
+    expect(JSON.parse(h.out.join("\n"))).toMatchObject({ action: "stay", name: "work" });
+  });
+});
+
+describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
+  test("a 200 that omits the 5h bucket keeps the previous number and says so", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.envDeps.fetchQuota = async () => ({ ...SAMPLE_QUOTA, fiveHour: null });
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+
+    expect(h.info.join(" ")).toContain("omitted fiveHour");
+    expect(JSON.parse(h.out.join("\n"))[0].quota.fiveHour.utilization).toBe(42);
+  });
+});
+
 describe("formatProfileTable", () => {
   test("marks expired tokens and unknown policy without leaking secrets", () => {
     const lines = formatProfileTable([
@@ -720,6 +904,7 @@ describe("formatProfileTable", () => {
         rateLimitTier: null,
         expiresAt: "2020-01-01T00:00:00.000Z",
         expired: true,
+        hasRefreshToken: false,
         apiKeyEnvVar: null,
         allowRemoteControl: null,
         hasCredentials: true,
@@ -756,6 +941,7 @@ describe("formatProfileTable", () => {
         rateLimitTier: null,
         expiresAt: null,
         expired: null,
+        hasRefreshToken: false,
         apiKeyEnvVar: null,
         allowRemoteControl: true,
         hasCredentials: true,
