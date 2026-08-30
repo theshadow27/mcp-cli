@@ -1,25 +1,90 @@
-# `mcx watch` — a single-stream, filterable site event feed
+# `mcx watch` — one filterable stream: site messages joined with GitHub PR/CI
 
-`mcx watch` gives you one push-based stream of a web app's message events
-(Microsoft Teams today), filtered to the threads you care about, as NDJSON.
+`mcx watch` gives you one push-based stream, as NDJSON, that interleaves a web
+app's message events (Microsoft Teams today) with a GitHub PR's `pr.*` /
+`checks.*` / `ci.*` events — one envelope, one cursor, so a consumer sees "PR
+state + CI + Teams chatter for one work item" without running N watchers.
 
 ```
-mcx watch <site> <name|id>... [--since <iso|ms>] [--ndjson] [--until <glob>] [--dry-run]
+mcx watch <source>... [--since <iso|ms>] [--ndjson] [--until <glob>] [--dry-run]
 ```
+
+A `<source>` is one of:
+
+- **a site source**: a `<site>` followed by its `<name|id>...` threads
+  (`teams general devs`). The first non-`gh:` positional is the site; the rest
+  are its thread names/ids.
+- **a PR source**: `gh:pr#<n>` (the `gh:pr:<n>` spelling is also accepted) →
+  watch PR #`<n>`'s `pr.*` / `checks.*` / `ci.*` events.
 
 ```bash
-mcx watch teams general devs            # human-readable on a TTY, NDJSON when piped
+mcx watch teams general devs            # site-only: human on a TTY, NDJSON when piped
 mcx watch teams general --ndjson        # one JSON line per event
-mcx watch teams general --since 2026-08-28T09:00:00Z   # REST backfill, then live
-mcx watch teams general --until site.message --max-events 5
+mcx watch teams general gh:pr#123       # interleave a thread's messages with PR #123's events
+mcx watch gh:pr#123 gh:pr#124           # PR-only: no Trouter watcher is started
+mcx watch teams general --since 2026-08-28T09:00:00Z   # REST backfill (site only), then live
+mcx watch gh:pr#123 --until ci.finished --max-events 5
 mcx watch teams general --dry-run       # validate + plan; no socket, no registrar POST
 mcx site threads teams                  # list named threads + post policy
 ```
 
-Events arrive on the daemon's unified event bus as `site.message` and are
-filtered client-side by the requested threads, so `mcx watch` reuses the exact
-same stream machinery (`openEventStream` + the `event-filter` glob grammar) as
-`mcx monitor`.
+`mcx watch teams general` and `mcx watch teams general devs --ndjson` behave
+exactly as before — the source grammar is purely additive.
+
+## The source-token join
+
+Events arrive on the daemon's unified event bus already in the flat
+`MonitorEvent` envelope: `site.message` from the `_site` worker, and `pr.*` /
+`checks.*` / `ci.*` from the work-item poller. `mcx watch` is a pure consumer of
+both — it starts no producer.
+
+**One envelope, one stream.** Every event — Teams message or PR/CI — is the same
+`MonitorEvent` and is printed through the same path (human one-liner on a TTY,
+NDJSON otherwise). Site events keep their `threadName` enrichment; PR/CI events
+render through their existing `formatMonitorEvent` formatters.
+
+**The OR union.** The server-side stream filter is AND-combined and cannot
+express "(`site.message` on these threads) OR (PR events for #123)". So `mcx
+watch` subscribes broadly — a `type` glob union over `site.message` +
+`pr.*,checks.*,ci.*` for exactly the source kinds present — and then applies a
+**client-side predicate that passes an event matching ANY source**: one matcher
+per source (the site source keeps the thread-set filter; each PR source is a
+`createEventMatcher({ type: [pr.*,checks.*,ci.*], pr: n })`), OR-combined. This
+reuses the same `event-filter` matcher machinery as `mcx monitor`.
+
+## The tracked-PR precondition
+
+**`gh:pr#N` only yields events while PR #N is tracked.** The work-item poller
+polls only tracked items (`work-item-poller.ts` filters `prNumber !== null`), so
+an untracked PR produces no `pr.*` / `checks.*` / `ci.*` events at all. On
+startup `mcx watch` checks each requested PR against the tracked set (the same
+`listWorkItems` query `mcx tracked` uses) and prints a warning to stderr for any
+that is not:
+
+```
+warning: PR #123 is not tracked; no PR events will stream until 'mcx track 123' is run
+```
+
+`mcx watch` **never auto-tracks.** `mcx track <prNumber>` / `mcx untrack
+<prNumber>` have an asymmetric-resolution hazard (#3240) — tracking a PR number
+can create a junk duplicate, and untrack-by-PR can delete a real work item — so
+watch only warns and leaves tracking to you.
+
+## Terminators and `--since`
+
+`--until <glob>`, `--max-events <n>`, `--timeout <secs>`, and `--dry-run` work
+across all source kinds. `--dry-run` reports the resolved plan — the site watcher
+plan (when a site source is present) and each PR source with its tracked/untracked
+status — without opening the live socket, starting the Trouter watcher, or
+hitting the network.
+
+**`--since` backfill applies to site sources only.** PR sources have no backfill
+path (the poller has no resumable REST offset for arbitrary history). A `--since`
+on a PR-only watch is not an error — it prints a one-line note and proceeds
+straight to the live stream.
+
+`az:pipeline` sources are **not yet supported** — they need an Azure Pipelines
+event producer on the bus first, tracked separately.
 
 ## Architecture
 
@@ -166,8 +231,8 @@ validated out of band. To run the single manual smoke check, a human sets
 and runs `mcx watch teams <thread>` (without `--dry-run`) against a live,
 authenticated Teams session.
 
-## Not yet: multi-source join
+## Multi-source join: status
 
-The `site.message` envelope is deliberately shaped so a future `mcx watch`
-could join it with `gh:pr …` / `az:pipeline …` events under one NDJSON stream —
-the bus already emits PR/CI events. Tracked as a follow-up.
+The `gh:pr#<n>` join is implemented (see "The source-token join" above). The
+`az:pipeline …` half is **not yet** wired — it needs an Azure Pipelines event
+producer on the bus first, and is tracked separately.
