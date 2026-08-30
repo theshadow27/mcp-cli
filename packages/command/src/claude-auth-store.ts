@@ -115,6 +115,8 @@ export interface ProfileSummary {
   account: string | null;
   organization: string | null;
   subscriptionType: string | null;
+  /** `claudeAiOauth.rateLimitTier` (e.g. `default_claude_max_20x`), or null. */
+  rateLimitTier: string | null;
   /** Access-token expiry as ISO, or null when unknown. */
   expiresAt: string | null;
   expired: boolean | null;
@@ -1348,6 +1350,7 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
   const root = credentialsRoot(profile);
   const expiresAtMs = typeof root?.expiresAt === "number" ? root.expiresAt : null;
   const subscription = typeof root?.subscriptionType === "string" ? root.subscriptionType : null;
+  const rateLimitTier = typeof root?.rateLimitTier === "string" ? root.rateLimitTier : null;
 
   return {
     name: profile.name,
@@ -1356,6 +1359,7 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
     account: oauthField(profile, "emailAddress") ?? oauthField(profile, "accountUuid"),
     organization: oauthField(profile, "organizationName"),
     subscriptionType: subscription,
+    rateLimitTier,
     expiresAt: expiresAtMs === null ? null : new Date(expiresAtMs).toISOString(),
     expired: expiresAtMs === null ? null : expiresAtMs <= now.getTime(),
     apiKeyEnvVar: profile.apiKeyEnvVar ?? null,

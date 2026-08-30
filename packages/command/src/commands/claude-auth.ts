@@ -4,7 +4,8 @@
  * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
  * `ls --fetch-all` does the same, one profile at a time, for every stored
  * access token that is still valid. Expired tokens are skipped (they need a
- * load). 429s back off and abort the rest of the fleet.
+ * load). 429s back off and abort the rest of the fleet. `ls` marks the
+ * sticky recommended identity with `>`; `load --auto` switches to it.
  *
  * All three subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
@@ -13,6 +14,7 @@
  */
 
 import { fetchQuotaUsage } from "@mcp-cli/core";
+import { type AuthPick, pickRecommended } from "../claude-auth-pick";
 import {
   type AuthPaths,
   AuthProfileError,
@@ -118,6 +120,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
     oauth: { type: "boolean" },
     fetch: { type: "boolean" },
     "fetch-all": { type: "boolean" },
+    auto: { type: "boolean" },
     "api-key-env": { type: "string" },
   });
   if (parsed.errors.length > 0) {
@@ -137,7 +140,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
           envDeps,
         );
       case "load":
-        return await runLoad(parsed.positionals, json, d, envDeps);
+        return await runLoad(parsed.positionals, { json, auto: parsed.flags.auto === true }, d, envDeps);
       case "ls":
         return await runLs(
           json,
@@ -228,10 +231,46 @@ async function runSave(
   if (result.becameActive) d.log(`  active profile is now "${name}"`);
 }
 
-async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
+async function runLoad(
+  positionals: string[],
+  opts: { json: boolean; auto: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  if (opts.auto && positionals[0]) {
+    d.printError('Do not pass a profile name with --auto. Use "mcx claude auth load --auto" or "load <profile>".');
+    return d.exit(EXIT_ERROR);
+  }
+  const now = envDeps.now();
+  if (opts.auto) {
+    const { profiles } = listProfiles(envDeps.paths, now);
+    const pick = pickRecommended(profiles, now);
+    if (pick.action !== "load" || !pick.profile) {
+      if (opts.json) {
+        d.log(JSON.stringify({ ok: true, action: pick.action, name: pick.profile, reason: pick.reason }, null, 2));
+      } else {
+        d.log(
+          pick.action === "stay"
+            ? `Already on recommended profile "${pick.profile}" (${pick.reason})`
+            : `Not switching: ${pick.reason}`,
+        );
+      }
+      return;
+    }
+    return loadNamed(pick.profile, { json: opts.json, pick }, d, envDeps, now);
+  }
   const name = requireName(positionals, "mcx claude auth load <profile>", d);
   validateProfileName(name);
-  const now = envDeps.now();
+  return loadNamed(name, { json: opts.json }, d, envDeps, now);
+}
+
+async function loadNamed(
+  name: string,
+  opts: { json: boolean; pick?: AuthPick },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+  now: Date,
+): Promise<void> {
   // Fetch before any lock so a slow usage call does not hold ~/.claude.json.
   const live = readLiveState(envDeps.paths, now);
   const snap = await snapshotQuotaFromCredentials(live.credentials, now, envDeps.fetchQuota);
@@ -248,13 +287,14 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
 
   for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
 
-  if (json) {
+  if (opts.json) {
     d.log(
       JSON.stringify(
         {
           ok: true,
           action: "load",
           ...result,
+          reason: opts.pick?.reason,
           warnings: snap.warning ? [snap.warning, ...result.warnings] : result.warnings,
           credentialsPath: envDeps.paths.credentialsPath,
           claudeConfigPath: envDeps.paths.claudeConfigPath,
@@ -266,6 +306,7 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
     return;
   }
 
+  if (opts.pick) d.log(`auto: ${opts.pick.reason}`);
   d.log(`Loaded auth profile "${name}" (${result.kind})`);
   if (result.wroteBack) {
     d.log(
@@ -335,12 +376,18 @@ async function runLs(
   }
 
   const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
+  const pick = pickRecommended(summaries, now);
+  const listed = summaries.map((s) => ({
+    ...s,
+    recommended: pick.profile === s.name,
+    recommendReason: pick.profile === s.name ? pick.reason : undefined,
+  }));
 
   // A hand-edited profile must never hide the healthy ones — report it, keep going.
   for (const problem of problems) d.printInfo(`warning: profile "${problem.name}" is unreadable: ${problem.message}`);
 
   if (json) {
-    d.log(JSON.stringify(summaries, null, 2));
+    d.log(JSON.stringify(listed, null, 2));
     return;
   }
 
@@ -349,13 +396,15 @@ async function runLs(
     return;
   }
 
-  for (const line of formatProfileTable(summaries)) d.log(line);
+  for (const line of formatProfileTable(listed)) d.log(line);
+  if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
+  else if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
 }
 
 /** Render the `ls` table. Exported for tests — must never contain token material. */
-export function formatProfileTable(summaries: ProfileSummary[]): string[] {
+export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>): string[] {
   const rows = summaries.map((s) => ({
-    marker: s.active ? "*" : " ",
+    marker: `${s.active ? "*" : " "}${s.recommended ? ">" : " "}`,
     name: s.name,
     kind: s.kind,
     account: s.kind === "api-key" ? `$${s.apiKeyEnvVar ?? "ANTHROPIC_API_KEY"}` : (s.account ?? "-"),
@@ -381,7 +430,7 @@ export function formatProfileTable(summaries: ProfileSummary[]): string[] {
   const asOfW = width((r) => r.asOf, "AS OF");
 
   const lines = [
-    `  ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
+    `   ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
   ];
   for (const r of rows) {
     lines.push(

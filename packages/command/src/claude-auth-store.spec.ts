@@ -945,6 +945,7 @@ describe("summarizeProfile / listProfiles", () => {
       account: "a@example.com",
       organization: "Acme",
       subscriptionType: "max",
+      rateLimitTier: "default_claude_max_20x",
       allowRemoteControl: false,
       hasCredentials: true,
     });

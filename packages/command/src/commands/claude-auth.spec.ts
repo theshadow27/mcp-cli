@@ -328,7 +328,7 @@ describe("mcx claude auth ls", () => {
     expect(text).toContain("$MY_KEY");
     expect(text).toContain("2026-08-19 03:14");
     expect(text).toContain("yes"); // remote control allowed per the policy fixture
-    expect(text).toContain("* work"); // active marker
+    expect(text).toContain("*> work"); // active and recommended
     expect(text).toContain("42%");
     expect(text).toContain("2026-08-18 20:00");
     expect(text).toContain("8%");
@@ -351,6 +351,7 @@ describe("mcx claude auth ls", () => {
       account: "a@example.com",
       allowRemoteControl: true,
       expired: false,
+      recommended: true,
       quota: {
         capturedAt: NOW.toISOString(),
         fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
@@ -426,7 +427,7 @@ describe("mcx claude auth ls", () => {
     h.out.length = 0;
     await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
     const text = h.out.join("\n");
-    expect(text).toContain("* work");
+    expect(text).toContain("*> work");
     expect(text).toContain("7.5%");
     expect(text).toContain("2026-08-18 21:30");
     expect(text).not.toContain("42%");
@@ -459,7 +460,7 @@ describe("mcx claude auth ls", () => {
     await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
     expect(calls).toBe(0);
     expect(h.info.join(" ")).toContain("no access token in live credentials");
-    expect(h.out.join("\n")).toContain("* work");
+    expect(h.out.join("\n")).toContain("*> work");
   });
 
   test("--fetch with no profiles fetches then warns it has nowhere to record", async () => {
@@ -619,6 +620,91 @@ describe("mcx claude auth ls", () => {
     await claudeAuth(["ls", "--fetch-all", "--fetch"], h.deps, h.envDeps);
     expect(calls).toBe(2);
   });
+
+  test("marks a different profile with > when current 5h remaining is under epsilon", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_10x",
+        },
+      }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const workPath = join(h.paths.profilesDir, "work.json");
+    const work = JSON.parse(readFileSync(workPath, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    work.quota.fiveHour.utilization = 95;
+    writeFileSync(workPath, `${JSON.stringify(work, null, 2)}\n`);
+    // personal is active after the second save; make work active so we must leave it.
+    await claudeAuth(["load", "work"], h.deps, h.envDeps);
+
+    h.out.length = 0;
+    await claudeAuth(["ls"], h.deps, h.envDeps);
+    const text = h.out.join("\n");
+    expect(text).toContain("*  work");
+    expect(text).toContain(" > personal");
+    expect(text).toContain("leave work");
+  });
+});
+
+describe("mcx claude auth load --auto", () => {
+  test("stays when current is already recommended", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto", "--json"], h.deps, h.envDeps);
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload).toMatchObject({ ok: true, action: "stay", name: "work" });
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "active.json"), "utf-8")).profile).toBe("work");
+  });
+
+  test("loads the recommended profile when current is dying", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_10x",
+        },
+      }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const workPath = join(h.paths.profilesDir, "work.json");
+    const work = JSON.parse(readFileSync(workPath, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    work.quota.fiveHour.utilization = 95;
+    writeFileSync(workPath, `${JSON.stringify(work, null, 2)}\n`);
+    await claudeAuth(["load", "work"], h.deps, h.envDeps);
+
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto"], h.deps, h.envDeps);
+    expect(h.out.join("\n")).toContain('Loaded auth profile "personal"');
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "active.json"), "utf-8")).profile).toBe("personal");
+  });
+
+  test("refuses a profile name together with --auto", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["load", "work", "--auto"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Do not pass a profile name with --auto");
+  });
 });
 
 describe("formatProfileTable", () => {
@@ -631,6 +717,7 @@ describe("formatProfileTable", () => {
         account: "old@example.com",
         organization: null,
         subscriptionType: "pro",
+        rateLimitTier: null,
         expiresAt: "2020-01-01T00:00:00.000Z",
         expired: true,
         apiKeyEnvVar: null,
@@ -666,6 +753,7 @@ describe("formatProfileTable", () => {
         account: null,
         organization: null,
         subscriptionType: null,
+        rateLimitTier: null,
         expiresAt: null,
         expired: null,
         apiKeyEnvVar: null,
@@ -675,7 +763,7 @@ describe("formatProfileTable", () => {
         quota: null,
       },
     ]);
-    expect(lines[1]).toContain("* bare");
+    expect(lines[1]).toContain("*  bare");
     expect(lines[1]).toContain("-");
   });
 });
