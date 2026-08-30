@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { fetchQuotaUsage, parseUsageResponse, toStoredQuota } from "./quota";
+import {
+  QuotaRateLimitError,
+  fetchQuotaUsage,
+  parseRetryAfterHeader,
+  parseUsageResponse,
+  toStoredQuota,
+} from "./quota";
 
 const SAMPLE_RESPONSE = {
   five_hour: { utilization: 42, resets_at: "2026-04-08T20:00:01Z" },
@@ -117,7 +123,41 @@ describe("fetchQuotaUsage", () => {
       throw new Error("expected fetchQuotaUsage to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(QuotaRateLimitError);
       expect((err as Error).message).toBe("Quota API returned 401: auth error");
     }
+  });
+
+  test("throws QuotaRateLimitError on 429 and honours Retry-After seconds", async () => {
+    try {
+      await fetchQuotaUsage(
+        { accessToken: "x" },
+        {
+          now: () => 0,
+          fetch: async () => new Response("rate_limit_error", { status: 429, headers: { "Retry-After": "7" } }),
+        },
+      );
+      throw new Error("expected fetchQuotaUsage to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(QuotaRateLimitError);
+      expect((err as QuotaRateLimitError).retryAfterMs).toBe(7_000);
+      expect((err as Error).message).toContain("429");
+    }
+  });
+});
+
+describe("parseRetryAfterHeader", () => {
+  test("parses delta-seconds and caps the wait", () => {
+    expect(parseRetryAfterHeader("2")).toBe(2_000);
+    expect(parseRetryAfterHeader("0")).toBe(0);
+    expect(parseRetryAfterHeader("9999")).toBe(60_000);
+    expect(parseRetryAfterHeader(null)).toBeNull();
+    expect(parseRetryAfterHeader("nope")).toBeNull();
+  });
+
+  test("parses HTTP-date relative to now", () => {
+    expect(parseRetryAfterHeader("Wed, 21 Oct 2015 07:28:05 GMT", Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"))).toBe(
+      5_000,
+    );
   });
 });

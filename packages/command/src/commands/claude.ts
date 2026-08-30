@@ -2494,7 +2494,7 @@ Usage:
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
   mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)
-  mcx claude auth ls [--json]              List saved auth profiles (Linux only)
+  mcx claude auth ls [--json] [--fetch|--fetch-all]  List saved auth profiles (Linux only)
   mcx claude auth save <profile>           Snapshot the active Claude identity into a profile
   mcx claude auth load <profile>           Switch the active Claude identity to a profile
 

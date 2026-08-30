@@ -51,11 +51,16 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  QUOTA_RATE_LIMIT_BACKOFF_MS,
+  QUOTA_RATE_LIMIT_MAX_ATTEMPTS,
+  QUOTA_RATE_LIMIT_MAX_BACKOFF_MS,
   type QuotaStatus,
   type StoredQuota,
   fetchQuotaUsage,
   flockUnlock,
+  isQuotaRateLimitError,
   options,
+  quotaRetryAfterMs,
   toStoredQuota,
   tryFlockExclusive,
 } from "@mcp-cli/core";
@@ -454,6 +459,31 @@ export function readActivePointer(paths: AuthPaths): ActivePointer | null {
 
 export function readActiveProfileName(paths: AuthPaths): string | null {
   return readActivePointer(paths)?.name ?? null;
+}
+
+/**
+ * Write `quota` onto a named oauth profile.
+ *
+ * Returns false when the profile is missing or api-key. Does not create the store.
+ */
+export function stampProfileQuota(paths: AuthPaths, name: string, quota: StoredQuota): boolean {
+  const profile = readProfile(paths, name);
+  if (!profile || profile.kind === "api-key") return false;
+  writeProfile(paths, { ...profile, quota });
+  return true;
+}
+
+/**
+ * Write `quota` onto the currently-active oauth profile.
+ *
+ * Returns false when there is nothing to stamp (no pointer, in-flight switch,
+ * missing profile, api-key active). Does not create the store. Caller holds
+ * the operation lock when racing with save/load matters.
+ */
+export function stampActiveProfileQuota(paths: AuthPaths, quota: StoredQuota): boolean {
+  const pointer = readActivePointer(paths);
+  if (!pointer || pointer.pending) return false;
+  return stampProfileQuota(paths, pointer.name, quota);
 }
 
 interface PointerWrite {
@@ -1139,6 +1169,120 @@ export function accessTokenFromCredentials(credentials: Record<string, unknown> 
   return typeof token === "string" && token.length > 0 ? token : null;
 }
 
+/** Access-token expiry vs `now`. Null when the blob has no numeric `expiresAt`. */
+export function isOauthTokenExpired(
+  credentials: Record<string, unknown> | null | undefined,
+  now: Date,
+): boolean | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  const expiresAt = (root as Record<string, unknown>).expiresAt;
+  if (typeof expiresAt !== "number") return null;
+  return expiresAt <= now.getTime();
+}
+
+export interface UnexpiredQuotaFetch {
+  name: string;
+  quota: StoredQuota;
+}
+
+export interface UnexpiredQuotaWarning {
+  name: string;
+  message: string;
+}
+
+export type SleepFn = (ms: number) => Promise<void>;
+
+export interface FetchUnexpiredQuotaOpts {
+  liveCredentials?: Record<string, unknown> | null;
+  /** Injected by tests so 429 backoff does not wait on the clock. */
+  sleep?: SleepFn;
+  maxAttempts?: number;
+}
+
+/**
+ * Hit the usage API for every oauth profile whose stored access token is not
+ * expired. Fetches run **one at a time** — the usage endpoint 429s a parallel
+ * burst immediately. On 429, wait Retry-After (or exponential backoff) and
+ * retry that profile; if retries exhaust, skip the rest of the fleet rather
+ * than keep hammering. Does not switch identities and does not stamp.
+ *
+ * `liveCredentials` overlay the active profile when the live token is still
+ * valid, so a Claude-refreshed CURRENT is measured even if the stored copy
+ * has gone stale/expired.
+ */
+export async function fetchUnexpiredProfileQuotas(
+  paths: AuthPaths,
+  now: Date,
+  fetchQuota: QuotaFetcher,
+  opts: FetchUnexpiredQuotaOpts = {},
+): Promise<{
+  fetched: UnexpiredQuotaFetch[];
+  warnings: UnexpiredQuotaWarning[];
+  skippedExpired: string[];
+  skippedRateLimited: string[];
+}> {
+  const targets: { name: string; credentials: Record<string, unknown> }[] = [];
+  const skippedExpired: string[] = [];
+  const liveCredentials = opts.liveCredentials;
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const maxAttempts = opts.maxAttempts ?? QUOTA_RATE_LIMIT_MAX_ATTEMPTS;
+
+  for (const name of listProfileNames(paths)) {
+    let profile: ClaudeAuthProfile | null;
+    try {
+      profile = readProfile(paths, name);
+    } catch {
+      continue;
+    }
+    if (!profile || profile.kind !== "oauth" || !profile.credentials) continue;
+    if (!accessTokenFromCredentials(profile.credentials)) continue;
+    if (isOauthTokenExpired(profile.credentials, now) === true) {
+      skippedExpired.push(name);
+      continue;
+    }
+    targets.push({ name, credentials: profile.credentials });
+  }
+
+  const active = readActiveProfileName(paths);
+  if (
+    liveCredentials &&
+    active &&
+    accessTokenFromCredentials(liveCredentials) &&
+    isOauthTokenExpired(liveCredentials, now) !== true
+  ) {
+    const overlay = { name: active, credentials: liveCredentials };
+    const idx = targets.findIndex((t) => t.name === active);
+    if (idx >= 0) targets[idx] = overlay;
+    else targets.push(overlay);
+    const skipIdx = skippedExpired.indexOf(active);
+    if (skipIdx >= 0) skippedExpired.splice(skipIdx, 1);
+  }
+
+  const fetched: UnexpiredQuotaFetch[] = [];
+  const warnings: UnexpiredQuotaWarning[] = [];
+  const skippedRateLimited: string[] = [];
+  let abortRest = false;
+
+  for (const target of targets) {
+    if (abortRest) {
+      skippedRateLimited.push(target.name);
+      continue;
+    }
+    const row = await snapshotQuotaFromCredentialsRetrying(target.credentials, now, fetchQuota, {
+      sleep,
+      maxAttempts,
+    });
+    if (row.quota) fetched.push({ name: target.name, quota: row.quota });
+    if (row.warning) warnings.push({ name: target.name, message: row.warning });
+    if (row.rateLimited) {
+      skippedRateLimited.push(target.name);
+      abortRest = true;
+    }
+  }
+  return { fetched, warnings, skippedExpired, skippedRateLimited };
+}
+
 /**
  * Best-effort usage snapshot. Network happens here, outside any lock. A failure
  * returns a warning and no quota — callers keep the previous snapshot.
@@ -1157,6 +1301,43 @@ export async function snapshotQuotaFromCredentials(
     const msg = err instanceof Error ? err.message : String(err);
     return { warning: `could not snapshot quota: ${msg}` };
   }
+}
+
+/**
+ * Like snapshotQuotaFromCredentials, but retries 429s with Retry-After /
+ * exponential backoff instead of treating them as a hard miss. Non-429
+ * failures still return a warning on the first try. `sleep` is injected so
+ * tests do not wait on the clock.
+ */
+export async function snapshotQuotaFromCredentialsRetrying(
+  credentials: Record<string, unknown> | null | undefined,
+  now: Date,
+  fetchQuota: QuotaFetcher,
+  opts: { sleep?: SleepFn; maxAttempts?: number } = {},
+): Promise<{ quota?: StoredQuota; warning?: string; rateLimited?: boolean }> {
+  const accessToken = accessTokenFromCredentials(credentials);
+  if (!accessToken) return {};
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const maxAttempts = opts.maxAttempts ?? QUOTA_RATE_LIMIT_MAX_ATTEMPTS;
+  let backoff = QUOTA_RATE_LIMIT_BACKOFF_MS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const status = await fetchQuota({ accessToken });
+      return { quota: toStoredQuota(status, now.toISOString()) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isQuotaRateLimitError(err) || attempt === maxAttempts) {
+        return isQuotaRateLimitError(err)
+          ? { warning: `rate-limited: ${msg}`, rateLimited: true }
+          : { warning: `could not snapshot quota: ${msg}` };
+      }
+      const wait = quotaRetryAfterMs(err) ?? backoff;
+      await sleep(wait);
+      backoff = Math.min(backoff * 2, QUOTA_RATE_LIMIT_MAX_BACKOFF_MS);
+    }
+  }
+  return { warning: "rate-limited", rateLimited: true };
 }
 
 /**

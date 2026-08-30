@@ -230,7 +230,11 @@ registerHelp("claude auth", {
     "",
     "oauth profiles also snapshot 5h/7d quota at save, at load write-back, and whenever",
     "the daemon usage poller succeeds (active profile only). `auth ls` reads that snapshot",
-    "locally — the 5H/7D/AS OF columns are not live.",
+    "locally — the 5H/7D/AS OF columns are not live unless you pass `--fetch` (the",
+    "currently selected identity) or `--fetch-all` (every profile whose access token",
+    "is still valid, one at a time). Expired tokens are skipped: they only refresh on",
+    "`load`. 429s back off (Retry-After / exponential) and abort the rest of the",
+    "fleet rather than keep hammering. Neither flag switches the live identity.",
   ],
   usage: [
     "mcx claude auth save <profile> [--json]",
@@ -238,9 +242,13 @@ registerHelp("claude auth", {
     "mcx claude auth save <profile> --oauth",
     "mcx claude auth load <profile> [--json]",
     "mcx claude auth ls [--json]",
+    "mcx claude auth ls --fetch [--json]",
+    "mcx claude auth ls --fetch-all [--json]",
   ],
   options: [
     ["--json", "Structured JSON on stdout instead of human text"],
+    ["--fetch", "Re-query the usage API for the selected identity and stamp it onto the active profile"],
+    ["--fetch-all", "Re-query every unexpired profile one at a time (429s back off; remaining profiles skipped)"],
     ["--api-key-env <VAR>", "Save an api-key profile bound to this env var name (value never stored)"],
     ["--oauth", "Capture the claude.ai OAuth identity even when ANTHROPIC_API_KEY is exported"],
   ],
@@ -248,6 +256,8 @@ registerHelp("claude auth", {
     "mcx claude auth save work           # capture the identity that is logged in right now",
     "mcx claude auth load personal       # switch to another saved identity",
     "mcx claude auth ls --json | jq '.[] | {name, expiresAt, quota}'",
+    "mcx claude auth ls --fetch          # refresh 5H/7D/AS OF for the * row",
+    "mcx claude auth ls --fetch-all      # same for every unexpired profile",
   ],
 });
 

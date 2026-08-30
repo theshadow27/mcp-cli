@@ -1,7 +1,8 @@
 /**
  * Claude OAuth usage endpoint — shared request/response shape plus the plain fetch.
  *
- * The daemon poller and `mcx claude auth save/load` both call this. Types live here
+ * The daemon poller and `mcx claude auth save/load` / `ls --fetch` / `ls --fetch-all`
+ * all call this. Types live here
  * so command does not depend on @mcp-cli/daemon (the fetch takes only `{accessToken}`).
  */
 
@@ -10,6 +11,52 @@ import type { QuotaExtraUsage, QuotaUsageBucket } from "./ipc";
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER = "oauth-2025-04-20";
 export const QUOTA_REQUEST_TIMEOUT_MS = 5_000;
+/** Attempts per profile on 429 (the usage endpoint throttles hard). */
+export const QUOTA_RATE_LIMIT_MAX_ATTEMPTS = 3;
+/** Initial backoff when Retry-After is missing. Doubles each retry. */
+export const QUOTA_RATE_LIMIT_BACKOFF_MS = 1_000;
+export const QUOTA_RATE_LIMIT_MAX_BACKOFF_MS = 16_000;
+/** Cap on Retry-After so `ls --fetch-all` cannot hang for minutes. */
+export const QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60_000;
+
+/** 429 / Anthropic rate_limit_error from the OAuth usage endpoint. */
+export class QuotaRateLimitError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number | null = null,
+  ) {
+    super(message);
+    this.name = "QuotaRateLimitError";
+  }
+}
+
+/** True for QuotaRateLimitError or a generic error whose message looks like a 429. */
+export function isQuotaRateLimitError(err: unknown): boolean {
+  if (err instanceof QuotaRateLimitError) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("429") || msg.includes("rate_limit_error") || /rate[- ]?limit/i.test(msg);
+}
+
+export function quotaRetryAfterMs(err: unknown): number | null {
+  return err instanceof QuotaRateLimitError ? err.retryAfterMs : null;
+}
+
+/**
+ * Parse a Retry-After header (delta-seconds or HTTP-date). Returns milliseconds,
+ * capped at QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS. Null when missing or unusable.
+ */
+export function parseRetryAfterHeader(header: string | null | undefined, nowMs: number = Date.now()): number | null {
+  if (header == null) return null;
+  const trimmed = header.trim();
+  if (!trimmed) return null;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
+  }
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  return Math.min(Math.max(0, date - nowMs), QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
+}
 
 /** Parsed quota status from the usage endpoint. */
 export interface QuotaStatus {
@@ -125,7 +172,14 @@ export async function fetchQuotaUsage(token: { accessToken: string }, deps?: Fet
       (text) => text,
       () => "",
     );
-    throw new Error(`Quota API returned ${resp.status}: ${body}`);
+    const message = `Quota API returned ${resp.status}: ${body}`;
+    if (resp.status === 429 || body.includes("rate_limit_error")) {
+      throw new QuotaRateLimitError(
+        message,
+        parseRetryAfterHeader(resp.headers.get("retry-after"), deps?.now?.() ?? Date.now()),
+      );
+    }
+    throw new Error(message);
   }
 
   const raw: RawUsageResponse = (await resp.json()) as RawUsageResponse;

@@ -1,5 +1,10 @@
 /**
  * `mcx claude auth save|load|ls` — scriptable Claude identity switching (#3006).
+ * `ls --fetch` re-queries the usage API for the live identity and stamps the
+ * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
+ * `ls --fetch-all` does the same, one profile at a time, for every stored
+ * access token that is still valid. Expired tokens are skipped (they need a
+ * load). 429s back off and abort the rest of the fleet.
  *
  * All three subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
@@ -13,14 +18,21 @@ import {
   AuthProfileError,
   type ProfileSummary,
   type QuotaFetcher,
+  type SleepFn,
   assertPlatformSupported,
   defaultAuthPaths,
+  fetchUnexpiredProfileQuotas,
   listProfiles,
   loadProfile,
+  readActivePointer,
   readLiveState,
   saveProfile,
   snapshotQuotaFromCredentials,
+  snapshotQuotaFromCredentialsRetrying,
+  stampActiveProfileQuota,
+  stampProfileQuota,
   validateProfileName,
+  withOperationLock,
 } from "../claude-auth-store";
 import { parseFlags } from "../flags";
 
@@ -46,8 +58,10 @@ export interface AuthEnvDeps {
   env: Record<string, string | undefined>;
   platform: string;
   now: () => Date;
-  /** Injected by tests so save/load never hit the usage API. */
+  /** Injected by tests so save/load/`ls --fetch`/`ls --fetch-all` never hit the usage API. */
   fetchQuota: QuotaFetcher;
+  /** Injected by tests so 429 backoff does not wait on the clock. */
+  sleep: SleepFn;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -59,6 +73,7 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     platform: overrides?.platform ?? process.platform,
     now: overrides?.now ?? (() => new Date()),
     fetchQuota: overrides?.fetchQuota ?? fetchQuotaUsage,
+    sleep: overrides?.sleep ?? ((ms: number) => Bun.sleep(ms)),
   };
 }
 
@@ -101,6 +116,8 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
   const parsed = parseFlags(args.slice(1), {
     json: { type: "boolean" },
     oauth: { type: "boolean" },
+    fetch: { type: "boolean" },
+    "fetch-all": { type: "boolean" },
     "api-key-env": { type: "string" },
   });
   if (parsed.errors.length > 0) {
@@ -122,7 +139,12 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
       case "load":
         return await runLoad(parsed.positionals, json, d, envDeps);
       case "ls":
-        return await runLs(json, d, envDeps);
+        return await runLs(
+          json,
+          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true },
+          d,
+          envDeps,
+        );
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -260,8 +282,59 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
 }
 
-async function runLs(json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
-  const { profiles: summaries, problems } = listProfiles(envDeps.paths, envDeps.now());
+async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
+  const live = readLiveState(envDeps.paths, now);
+  const snap = await snapshotQuotaFromCredentialsRetrying(live.credentials, now, envDeps.fetchQuota, {
+    sleep: envDeps.sleep,
+  });
+  if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
+  else if (!snap.quota) d.printInfo("warning: could not snapshot quota: no access token in live credentials");
+  const quota = snap.quota;
+  if (quota) {
+    // Skip the operation lock when there is no pointer so `--fetch` on an
+    // empty store does not create `auth-profiles/` just to no-op.
+    const stamped = readActivePointer(envDeps.paths)
+      ? withOperationLock(envDeps.paths, () => stampActiveProfileQuota(envDeps.paths, quota))
+      : false;
+    if (!stamped) d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+  }
+}
+
+async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
+  const live = readLiveState(envDeps.paths, now);
+  const { fetched, warnings, skippedExpired, skippedRateLimited } = await fetchUnexpiredProfileQuotas(
+    envDeps.paths,
+    now,
+    envDeps.fetchQuota,
+    { liveCredentials: live.credentials, sleep: envDeps.sleep },
+  );
+  for (const warning of warnings) d.printInfo(`warning: profile "${warning.name}": ${warning.message}`);
+  if (skippedExpired.length > 0) {
+    d.printInfo(`skipped ${skippedExpired.length} expired profile(s): ${skippedExpired.join(", ")}`);
+  }
+  if (skippedRateLimited.length > 0) {
+    d.printInfo(`rate-limited; kept previous snapshots for: ${skippedRateLimited.join(", ")}`);
+  }
+  if (fetched.length === 0) return;
+  withOperationLock(envDeps.paths, () => {
+    for (const row of fetched) stampProfileQuota(envDeps.paths, row.name, row.quota);
+  });
+}
+
+async function runLs(
+  json: boolean,
+  opts: { fetch: boolean; fetchAll: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  const now = envDeps.now();
+  if (opts.fetchAll) {
+    await fetchAllUnexpired(d, envDeps, now);
+  } else if (opts.fetch) {
+    await fetchActive(d, envDeps, now);
+  }
+
+  const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
 
   // A hand-edited profile must never hide the healthy ones — report it, keep going.
   for (const problem of problems) d.printInfo(`warning: profile "${problem.name}" is unreadable: ${problem.message}`);

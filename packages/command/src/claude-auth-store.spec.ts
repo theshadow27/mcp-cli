@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
+import { QuotaRateLimitError, flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
   type AuthErrorCode,
@@ -25,6 +25,8 @@ import {
   type ClaudeAuthProfile,
   assertPlatformSupported,
   defaultAuthPaths,
+  fetchUnexpiredProfileQuotas,
+  isOauthTokenExpired,
   listProfiles,
   loadProfile,
   patchClaudeConfigIdentity,
@@ -33,6 +35,8 @@ import {
   readProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
+  stampActiveProfileQuota,
+  stampProfileQuota,
   summarizeProfile,
   withExclusiveLock,
   writeFileAtomic,
@@ -348,6 +352,224 @@ describe("loadProfile quota write-back", () => {
     expect(result.wroteBack).toBe("personal");
     expect(result.wroteBackChanged).toBe(false);
     expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+});
+
+describe("stampActiveProfileQuota", () => {
+  test("writes quota onto the active oauth profile without touching credentials or updatedAt", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const before = readProfile(fs, "work");
+    expect(before).not.toBeNull();
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA)).toBe(true);
+
+    const after = readProfile(fs, "work");
+    expect(after?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+    expect(after?.credentials).toEqual(before?.credentials);
+  });
+
+  test("returns false when there is no active pointer", () => {
+    using fs = sandbox();
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA)).toBe(false);
+    expect(existsSync(fs.profilesDir)).toBe(false);
+  });
+
+  test("returns false during an in-flight switch and leaves the profile untouched", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const pointerPath = join(fs.profilesDir, "active.json");
+    const pointer = JSON.parse(readFileSync(pointerPath, "utf-8"));
+    writeFileSync(pointerPath, JSON.stringify({ ...pointer, pending: "other" }));
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA)).toBe(false);
+    expect(readProfile(fs, "work")?.quota).toBeUndefined();
+  });
+
+  test("does not stamp an inactive profile", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }), {
+      mode: 0o600,
+    });
+    save(fs, "personal");
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA)).toBe(true);
+    expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "work")?.quota).toBeUndefined();
+  });
+
+  test("stampProfileQuota writes a named oauth profile that is not active", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    expect(stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA)).toBe(true);
+    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "personal")?.quota).toBeUndefined();
+  });
+});
+
+const LIVE_QUOTA_STATUS = {
+  fiveHour: { utilization: 55, resetsAt: "2026-08-18T21:00:00.000Z" },
+  sevenDay: { utilization: 12, resetsAt: "2026-08-25T04:00:00.000Z" },
+  sevenDaySonnet: null,
+  sevenDayOpus: null,
+  extraUsage: null,
+  fetchedAt: NOW.getTime(),
+};
+
+describe("fetchUnexpiredProfileQuotas", () => {
+  test("isOauthTokenExpired is true only after expiresAt", () => {
+    expect(isOauthTokenExpired(credentials(), NOW)).toBe(false);
+    expect(isOauthTokenExpired(credentials({ expiresAt: NOW.getTime() }), NOW)).toBe(true);
+    expect(isOauthTokenExpired(credentials({ expiresAt: NOW.getTime() - 1 }), NOW)).toBe(true);
+    expect(isOauthTokenExpired({}, NOW)).toBeNull();
+  });
+
+  test("fetches unexpired profiles and skips expired ones", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }), {
+      mode: 0o600,
+    });
+    save(fs, "personal");
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "tok-stale", expiresAt: NOW.getTime() - 1 })),
+      { mode: 0o600 },
+    );
+    save(fs, "stale");
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(fs, NOW, async (token) => {
+      seen.push(token.accessToken);
+      return LIVE_QUOTA_STATUS;
+    });
+
+    expect(seen.sort()).toEqual(["tok-personal", ACCESS_TOKEN].sort());
+    expect(seen).not.toContain("tok-stale");
+    expect(result.skippedExpired).toEqual(["stale"]);
+    expect(result.skippedRateLimited).toEqual([]);
+    expect(result.fetched.map((f) => f.name).sort()).toEqual(["personal", "work"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("overlays live credentials onto the active profile when the stored token is expired", async () => {
+    using fs = sandbox();
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "stored-dead", expiresAt: NOW.getTime() - 1 })),
+      { mode: 0o600 },
+    );
+    save(fs, "ozone");
+    const live = credentials({ accessToken: "live-fresh" });
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        seen.push(token.accessToken);
+        return LIVE_QUOTA_STATUS;
+      },
+      { liveCredentials: live },
+    );
+
+    expect(seen).toEqual(["live-fresh"]);
+    expect(result.skippedExpired).toEqual([]);
+    expect(result.fetched.map((f) => f.name)).toEqual(["ozone"]);
+  });
+
+  test("a failed fetch on one profile does not block the others", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    const result = await fetchUnexpiredProfileQuotas(fs, NOW, async (token) => {
+      if (token.accessToken === ACCESS_TOKEN) throw new Error("timeout");
+      return LIVE_QUOTA_STATUS;
+    });
+
+    expect(result.fetched.map((f) => f.name)).toEqual(["personal"]);
+    expect(result.warnings).toEqual([{ name: "work", message: "could not snapshot quota: timeout" }]);
+  });
+
+  test("retries 429s using Retry-After without waiting on the clock", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        calls++;
+        if (calls < 3) throw new QuotaRateLimitError("Quota API returned 429: slow down", 2_000);
+        return LIVE_QUOTA_STATUS;
+      },
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    );
+
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([2_000, 2_000]);
+    expect(result.fetched.map((f) => f.name)).toEqual(["work"]);
+    expect(result.skippedRateLimited).toEqual([]);
+  });
+
+  test("exponential backoff when Retry-After is missing", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+
+    const sleeps: number[] = [];
+    await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        throw new Error("Quota API returned 429: rate_limit_error");
+      },
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    );
+
+    expect(sleeps).toEqual([1_000, 2_000]);
+  });
+
+  test("gives up a 429'd profile and does not hammer the rest of the fleet", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        seen.push(token.accessToken);
+        throw new QuotaRateLimitError("Quota API returned 429: nope");
+      },
+      { sleep: async () => {} },
+    );
+
+    expect(seen).toEqual(["tok-personal", "tok-personal", "tok-personal"]);
+    expect(result.fetched).toEqual([]);
+    expect(result.skippedRateLimited).toEqual(["personal", "work"]);
+    expect(result.warnings[0]?.name).toBe("personal");
+    expect(result.warnings[0]?.message).toContain("rate-limited");
   });
 });
 
