@@ -16,8 +16,17 @@ export const QUOTA_RATE_LIMIT_MAX_ATTEMPTS = 3;
 /** Initial backoff when Retry-After is missing. Doubles each retry. */
 export const QUOTA_RATE_LIMIT_BACKOFF_MS = 1_000;
 export const QUOTA_RATE_LIMIT_MAX_BACKOFF_MS = 16_000;
-/** Cap on Retry-After so `ls --fetch-all` cannot hang for minutes. */
+/** Cap on a single Retry-After wait. Enforced again at the sleep site, not only here. */
 export const QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60_000;
+/**
+ * Total wall-clock budget for one `ls --fetch-all` sweep, sleeps included.
+ *
+ * The per-attempt Retry-After cap is not a budget: an intermittently-throttled
+ * fleet never exhausts any single profile's retries, so N profiles could
+ * accumulate N × attempts × 60s of sleep. This is the bound that actually keeps
+ * the sweep from hanging for minutes.
+ */
+export const QUOTA_FETCH_ALL_BUDGET_MS = 120_000;
 
 /** 429 / Anthropic rate_limit_error from the OAuth usage endpoint. */
 export class QuotaRateLimitError extends Error {
@@ -30,32 +39,46 @@ export class QuotaRateLimitError extends Error {
   }
 }
 
-/** True for QuotaRateLimitError or a generic error whose message looks like a 429. */
+/**
+ * True only for the typed error. `fetchQuotaUsage` already knows the HTTP status at
+ * the throw site, so message sniffing buys nothing and misreads a 500 whose
+ * `request_id` happens to contain "429", or a 400 that mentions "rate limit tier"
+ * in prose — a misclassification costs the whole `--fetch-all` sweep three
+ * pointless backoff sleeps and a fleet-wide skip.
+ */
 export function isQuotaRateLimitError(err: unknown): boolean {
-  if (err instanceof QuotaRateLimitError) return true;
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes("429") || msg.includes("rate_limit_error") || /rate[- ]?limit/i.test(msg);
+  return err instanceof QuotaRateLimitError;
 }
 
 export function quotaRetryAfterMs(err: unknown): number | null {
   return err instanceof QuotaRateLimitError ? err.retryAfterMs : null;
 }
 
+/** RFC 7231 delta-seconds: decimal digits only. `Number()` would also take "0x10" and "1e3". */
+const DELTA_SECONDS_RE = /^\d+$/;
+/** Every RFC 7231 HTTP-date form starts with a day name; nothing else may reach `Date.parse`. */
+const HTTP_DATE_START_RE = /^[A-Za-z]/;
+
 /**
  * Parse a Retry-After header (delta-seconds or HTTP-date). Returns milliseconds,
- * capped at QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS. Null when missing or unusable.
+ * capped at QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS. Null when missing or unusable —
+ * including a negative delta or a date already in the past, so the caller falls
+ * back to exponential backoff instead of retrying with no wait at all.
  */
 export function parseRetryAfterHeader(header: string | null | undefined, nowMs: number = Date.now()): number | null {
   if (header == null) return null;
   const trimmed = header.trim();
   if (!trimmed) return null;
-  const seconds = Number(trimmed);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1000, QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
+  if (DELTA_SECONDS_RE.test(trimmed)) {
+    return Math.min(Number(trimmed) * 1000, QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
   }
+  // `Date.parse("-5")` succeeds (year -5) and would otherwise mean "no backoff".
+  if (!HTTP_DATE_START_RE.test(trimmed)) return null;
   const date = Date.parse(trimmed);
   if (Number.isNaN(date)) return null;
-  return Math.min(Math.max(0, date - nowMs), QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
+  const delta = date - nowMs;
+  if (delta <= 0) return null;
+  return Math.min(delta, QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
 }
 
 /** Parsed quota status from the usage endpoint. */
@@ -173,7 +196,9 @@ export async function fetchQuotaUsage(token: { accessToken: string }, deps?: Fet
       () => "",
     );
     const message = `Quota API returned ${resp.status}: ${body}`;
-    if (resp.status === 429 || body.includes("rate_limit_error")) {
+    // Status only. Sniffing the body for "rate_limit_error" would promote a 500
+    // that merely quotes the string into a fleet-wide backoff.
+    if (resp.status === 429) {
       throw new QuotaRateLimitError(
         message,
         parseRetryAfterHeader(resp.headers.get("retry-after"), deps?.now?.() ?? Date.now()),
