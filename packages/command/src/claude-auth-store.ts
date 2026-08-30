@@ -51,11 +51,18 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  QUOTA_FETCH_ALL_BUDGET_MS,
+  QUOTA_RATE_LIMIT_BACKOFF_MS,
+  QUOTA_RATE_LIMIT_MAX_ATTEMPTS,
+  QUOTA_RATE_LIMIT_MAX_BACKOFF_MS,
+  QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS,
   type QuotaStatus,
   type StoredQuota,
   fetchQuotaUsage,
   flockUnlock,
+  isQuotaRateLimitError,
   options,
+  quotaRetryAfterMs,
   toStoredQuota,
   tryFlockExclusive,
 } from "@mcp-cli/core";
@@ -110,9 +117,17 @@ export interface ProfileSummary {
   account: string | null;
   organization: string | null;
   subscriptionType: string | null;
+  /** `claudeAiOauth.rateLimitTier` (e.g. `default_claude_max_20x`), or null. */
+  rateLimitTier: string | null;
   /** Access-token expiry as ISO, or null when unknown. */
   expiresAt: string | null;
   expired: boolean | null;
+  /**
+   * True when the stored blob carries a `refreshToken`. An expired *access* token is
+   * not a dead profile: Claude Code mints a new one from the refresh token the next
+   * time it starts, so such a profile is still a legal hop target (#3423).
+   */
+  hasRefreshToken: boolean;
   /** api-key profiles: the env var name the profile expects. */
   apiKeyEnvVar: string | null;
   allowRemoteControl: boolean | null;
@@ -454,6 +469,103 @@ export function readActivePointer(paths: AuthPaths): ActivePointer | null {
 
 export function readActiveProfileName(paths: AuthPaths): string | null {
   return readActivePointer(paths)?.name ?? null;
+}
+
+/** Outcome of a quota stamp, including any bucket carried over from the stored snapshot. */
+export interface StampQuotaResult {
+  stamped: boolean;
+  /** Buckets the incoming snapshot omitted, whose previous (older) value was preserved. */
+  keptBuckets: string[];
+}
+
+/**
+ * Merge an incoming snapshot over the stored one.
+ *
+ * A degraded-but-successful 200 (the usage API omitting a bucket) must not destroy
+ * a good number: keep the stored bucket and report it. `capturedAt` then falls back
+ * to the *older* of the two stamps, because a snapshot is only as fresh as its
+ * oldest constituent — the picker reads that field to decide whether to trust it.
+ */
+function mergeStoredQuota(
+  incoming: StoredQuota,
+  stored: StoredQuota | undefined,
+): { quota: StoredQuota; keptBuckets: string[] } {
+  if (!stored) return { quota: incoming, keptBuckets: [] };
+  const merged: StoredQuota = { ...incoming };
+  const keptBuckets: string[] = [];
+  const keep = <K extends "fiveHour" | "sevenDay" | "sevenDaySonnet" | "sevenDayOpus" | "extraUsage">(key: K): void => {
+    if (incoming[key] != null || stored[key] == null) return;
+    merged[key] = stored[key];
+    keptBuckets.push(key);
+  };
+  keep("fiveHour");
+  keep("sevenDay");
+  keep("sevenDaySonnet");
+  keep("sevenDayOpus");
+  keep("extraUsage");
+  if (keptBuckets.length > 0) {
+    const older = Date.parse(stored.capturedAt);
+    const fresh = Date.parse(merged.capturedAt);
+    if (!Number.isNaN(older) && (Number.isNaN(fresh) || older < fresh)) merged.capturedAt = stored.capturedAt;
+  }
+  return { quota: merged, keptBuckets };
+}
+
+/**
+ * Write `quota` onto a named oauth profile.
+ *
+ * Not stamped when the profile is missing or api-key. Does not create the store.
+ */
+export function stampProfileQuota(paths: AuthPaths, name: string, quota: StoredQuota): StampQuotaResult {
+  const profile = readProfile(paths, name);
+  if (!profile || profile.kind === "api-key") return { stamped: false, keptBuckets: [] };
+  const merged = mergeStoredQuota(quota, profile.quota);
+  writeProfile(paths, { ...profile, quota: merged.quota });
+  return { stamped: true, keptBuckets: merged.keptBuckets };
+}
+
+/**
+ * Write `quota` onto the profile that provably owns the credentials the numbers were
+ * measured with.
+ *
+ * The pointer alone is not evidence: it says what mcx *last wrote*, so after a
+ * `claude /login` behind mcx's back it names one account while the live token is
+ * another's, and stamping on it records a stranger's numbers under the wrong name.
+ * Attribution is the same evidence-based check `loadProfile` uses (invariant (a)).
+ * Nothing is stamped when ownership is unproven. Caller holds the operation lock.
+ */
+export function stampActiveProfileQuota(paths: AuthPaths, quota: StoredQuota, live: LiveState): StampQuotaResult {
+  const owner = attributeLiveCredentials(paths, live, readActivePointer(paths)).owner;
+  if (!owner) return { stamped: false, keptBuckets: [] };
+  return stampProfileQuota(paths, owner.name, quota);
+}
+
+/** Name of the profile that provably owns the live credential blob, or null. */
+export function attributedLiveProfile(paths: AuthPaths, live: LiveState): string | null {
+  return attributeLiveCredentials(paths, live, readActivePointer(paths)).owner?.name ?? null;
+}
+
+/**
+ * Copy the live credential blob back onto the profile that provably owns it.
+ *
+ * Claude Code refreshes the access token in `.credentials.json` in place. Without
+ * this the stored copy ages out after one token lifetime (~8h), `summarizeProfile`
+ * reports the profile as expired, and both `isEligible` and `mustLeave` reject it —
+ * a closed loop in which `load --auto` answers "wait" forever while every account
+ * still has quota (#3423). Returns the profile written, or null when ownership is
+ * unproven or the stored copy is already current. Caller holds the operation lock.
+ */
+export function refreshProfileCredentialsFromLive(paths: AuthPaths, live: LiveState, now: Date): string | null {
+  const owner = attributeLiveCredentials(paths, live, readActivePointer(paths)).owner;
+  if (!owner || !live.credentials) return null;
+  if (jsonEquals(live.credentials, owner.credentials) && jsonEquals(live.identity, owner.identity)) return null;
+  writeProfile(paths, {
+    ...owner,
+    credentials: live.credentials,
+    identity: live.identity,
+    updatedAt: now.toISOString(),
+  });
+  return owner.name;
 }
 
 interface PointerWrite {
@@ -1139,6 +1251,150 @@ export function accessTokenFromCredentials(credentials: Record<string, unknown> 
   return typeof token === "string" && token.length > 0 ? token : null;
 }
 
+/** Access-token expiry vs `now`. Null when the blob has no numeric `expiresAt`. */
+export function isOauthTokenExpired(
+  credentials: Record<string, unknown> | null | undefined,
+  now: Date,
+): boolean | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  const expiresAt = (root as Record<string, unknown>).expiresAt;
+  if (typeof expiresAt !== "number") return null;
+  return expiresAt <= now.getTime();
+}
+
+export interface UnexpiredQuotaFetch {
+  name: string;
+  quota: StoredQuota;
+}
+
+export interface UnexpiredQuotaWarning {
+  name: string;
+  message: string;
+}
+
+export type SleepFn = (ms: number) => Promise<void>;
+
+export interface FetchUnexpiredQuotaOpts {
+  /** Live credential state, used to overlay the profile that provably owns it. */
+  live?: LiveState | null;
+  /** Injected by tests so 429 backoff does not wait on the clock. */
+  sleep?: SleepFn;
+  maxAttempts?: number;
+  /** Total wall-clock budget for the whole sweep, sleeps included. */
+  budgetMs?: number;
+  /** Injected by tests alongside `sleep` so the budget is exercised without real time. */
+  clock?: () => number;
+}
+
+/**
+ * Hit the usage API for every oauth profile whose stored access token is not
+ * expired. Fetches run **one at a time** — the usage endpoint 429s a parallel
+ * burst immediately. On 429, wait Retry-After (or exponential backoff) and
+ * retry that profile; if retries exhaust, move on with retries disabled rather
+ * than keep hammering. Does not switch identities and does not stamp.
+ *
+ * `live` credentials overlay the profile that provably owns them when the live
+ * token is still valid, so a Claude-refreshed CURRENT is measured even if the
+ * stored copy has gone stale/expired.
+ *
+ * A 429 no longer aborts the fleet: the throttled profile is recorded and the rest
+ * of the sweep continues with a single attempt each. `budgetMs` bounds the whole
+ * walk, sleeps included, so an intermittently-throttled fleet cannot accumulate
+ * minutes of backoff (#3426).
+ */
+export async function fetchUnexpiredProfileQuotas(
+  paths: AuthPaths,
+  now: Date,
+  fetchQuota: QuotaFetcher,
+  opts: FetchUnexpiredQuotaOpts = {},
+): Promise<{
+  fetched: UnexpiredQuotaFetch[];
+  warnings: UnexpiredQuotaWarning[];
+  skippedExpired: string[];
+  skippedRateLimited: string[];
+  /** Profiles left unattempted because the sweep ran out of wall-clock budget. */
+  skippedBudget: string[];
+  /** Profile whose stored credentials the live blob overlaid, when ownership was proven. */
+  overlaidProfile: string | null;
+}> {
+  const targets: { name: string; credentials: Record<string, unknown> }[] = [];
+  const skippedExpired: string[] = [];
+  const live = opts.live;
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const maxAttempts = opts.maxAttempts ?? QUOTA_RATE_LIMIT_MAX_ATTEMPTS;
+  const clock = opts.clock ?? Date.now;
+  const deadline = clock() + (opts.budgetMs ?? QUOTA_FETCH_ALL_BUDGET_MS);
+
+  for (const name of listProfileNames(paths)) {
+    let profile: ClaudeAuthProfile | null;
+    try {
+      profile = readProfile(paths, name);
+    } catch {
+      continue;
+    }
+    if (!profile || profile.kind !== "oauth" || !profile.credentials) continue;
+    if (!accessTokenFromCredentials(profile.credentials)) continue;
+    if (isOauthTokenExpired(profile.credentials, now) === true) {
+      skippedExpired.push(name);
+      continue;
+    }
+    targets.push({ name, credentials: profile.credentials });
+  }
+
+  // The overlay goes on the profile that *provably* owns the live blob, never on
+  // whatever the pointer happens to name: after a `claude /login` behind mcx's back
+  // the pointer names one account and the live token is another's, and overlaying on
+  // the name alone both replaces the real target (so its own token is never queried)
+  // and files a stranger's numbers under it (#3424).
+  const owner = live ? (attributeLiveCredentials(paths, live, readActivePointer(paths)).owner?.name ?? null) : null;
+  let overlaidProfile: string | null = null;
+  if (
+    owner &&
+    live?.credentials &&
+    accessTokenFromCredentials(live.credentials) &&
+    isOauthTokenExpired(live.credentials, now) !== true
+  ) {
+    const overlay = { name: owner, credentials: live.credentials };
+    const idx = targets.findIndex((t) => t.name === owner);
+    if (idx >= 0) targets[idx] = overlay;
+    else targets.push(overlay);
+    const skipIdx = skippedExpired.indexOf(owner);
+    if (skipIdx >= 0) skippedExpired.splice(skipIdx, 1);
+    overlaidProfile = owner;
+  }
+
+  const fetched: UnexpiredQuotaFetch[] = [];
+  const warnings: UnexpiredQuotaWarning[] = [];
+  const skippedRateLimited: string[] = [];
+  const skippedBudget: string[] = [];
+  // A throttled profile no longer aborts the fleet — with a stable (sorted) walk order
+  // that starved every profile after the first one permanently. It degrades the rest of
+  // the sweep to a single attempt each instead: everyone still gets a turn, but a hot
+  // endpoint is not retried N times over.
+  let throttled = false;
+
+  for (const target of targets) {
+    if (clock() >= deadline) {
+      skippedBudget.push(target.name);
+      continue;
+    }
+    const row = await snapshotQuotaFromCredentialsRetrying(target.credentials, now, fetchQuota, {
+      sleep,
+      maxAttempts: throttled ? 1 : maxAttempts,
+      deadline,
+      clock,
+    });
+    if (row.quota) fetched.push({ name: target.name, quota: row.quota });
+    if (row.warning) warnings.push({ name: target.name, message: row.warning });
+    if (row.rateLimited) {
+      skippedRateLimited.push(target.name);
+      throttled = true;
+    }
+  }
+  return { fetched, warnings, skippedExpired, skippedRateLimited, skippedBudget, overlaidProfile };
+}
+
 /**
  * Best-effort usage snapshot. Network happens here, outside any lock. A failure
  * returns a warning and no quota — callers keep the previous snapshot.
@@ -1160,6 +1416,50 @@ export async function snapshotQuotaFromCredentials(
 }
 
 /**
+ * Like snapshotQuotaFromCredentials, but retries 429s with Retry-After /
+ * exponential backoff instead of treating them as a hard miss. Non-429
+ * failures still return a warning on the first try. `sleep` is injected so
+ * tests do not wait on the clock.
+ */
+export async function snapshotQuotaFromCredentialsRetrying(
+  credentials: Record<string, unknown> | null | undefined,
+  now: Date,
+  fetchQuota: QuotaFetcher,
+  opts: { sleep?: SleepFn; maxAttempts?: number; deadline?: number; clock?: () => number } = {},
+): Promise<{ quota?: StoredQuota; warning?: string; rateLimited?: boolean }> {
+  const accessToken = accessTokenFromCredentials(credentials);
+  if (!accessToken) return {};
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const maxAttempts = opts.maxAttempts ?? QUOTA_RATE_LIMIT_MAX_ATTEMPTS;
+  const clock = opts.clock ?? Date.now;
+  let backoff = QUOTA_RATE_LIMIT_BACKOFF_MS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const status = await fetchQuota({ accessToken });
+      return { quota: toStoredQuota(status, now.toISOString()) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isQuotaRateLimitError(err) || attempt === maxAttempts) {
+        return isQuotaRateLimitError(err)
+          ? { warning: `rate-limited: ${msg}`, rateLimited: true }
+          : { warning: `could not snapshot quota: ${msg}` };
+      }
+      // The cap belongs here, at the sleep, not only inside parseRetryAfterHeader:
+      // any other producer of a QuotaRateLimitError would otherwise be able to make
+      // this loop sleep for hours.
+      const wait = Math.min(quotaRetryAfterMs(err) ?? backoff, QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS);
+      if (opts.deadline !== undefined && clock() + wait >= opts.deadline) {
+        return { warning: `rate-limited: ${msg}`, rateLimited: true };
+      }
+      await sleep(wait);
+      backoff = Math.min(backoff * 2, QUOTA_RATE_LIMIT_MAX_BACKOFF_MS);
+    }
+  }
+  return { warning: "rate-limited", rateLimited: true };
+}
+
+/**
  * Non-secret projection of a profile. Never reads or returns token material —
  * only expiry, account, policy, and quota-snapshot metadata.
  */
@@ -1167,6 +1467,8 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
   const root = credentialsRoot(profile);
   const expiresAtMs = typeof root?.expiresAt === "number" ? root.expiresAt : null;
   const subscription = typeof root?.subscriptionType === "string" ? root.subscriptionType : null;
+  const rateLimitTier = typeof root?.rateLimitTier === "string" ? root.rateLimitTier : null;
+  const refreshToken = typeof root?.refreshToken === "string" ? root.refreshToken : "";
 
   return {
     name: profile.name,
@@ -1175,8 +1477,10 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
     account: oauthField(profile, "emailAddress") ?? oauthField(profile, "accountUuid"),
     organization: oauthField(profile, "organizationName"),
     subscriptionType: subscription,
+    rateLimitTier,
     expiresAt: expiresAtMs === null ? null : new Date(expiresAtMs).toISOString(),
     expired: expiresAtMs === null ? null : expiresAtMs <= now.getTime(),
+    hasRefreshToken: refreshToken.length > 0,
     apiKeyEnvVar: profile.apiKeyEnvVar ?? null,
     allowRemoteControl: profile.policy?.allowRemoteControl ?? null,
     hasCredentials: profile.credentials !== undefined,

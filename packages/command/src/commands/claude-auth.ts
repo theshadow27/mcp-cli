@@ -1,5 +1,14 @@
 /**
  * `mcx claude auth save|load|ls` — scriptable Claude identity switching (#3006).
+ * `ls --fetch` re-queries the usage API for the live identity and stamps the
+ * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
+ * `ls --fetch-all` does the same, one profile at a time, for every stored
+ * access token that is still valid. Expired tokens are skipped (they need a
+ * load). 429s back off, a throttled profile does not stop the walk, and the whole
+ * sweep is bounded by a wall-clock budget. Both stamp only onto the profile that
+ * provably owns the credentials the numbers were measured with, and copy a token
+ * Claude refreshed in place back onto it. `ls` marks the sticky recommended
+ * identity with `>` (never on a `wait`); `load --auto` switches to it.
  *
  * All three subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
@@ -8,19 +17,29 @@
  */
 
 import { fetchQuotaUsage } from "@mcp-cli/core";
+import { type AuthPick, pickRecommended } from "../claude-auth-pick";
 import {
   type AuthPaths,
   AuthProfileError,
   type ProfileSummary,
   type QuotaFetcher,
+  type SleepFn,
   assertPlatformSupported,
+  attributedLiveProfile,
   defaultAuthPaths,
+  fetchUnexpiredProfileQuotas,
   listProfiles,
   loadProfile,
+  readActivePointer,
   readLiveState,
+  refreshProfileCredentialsFromLive,
   saveProfile,
   snapshotQuotaFromCredentials,
+  snapshotQuotaFromCredentialsRetrying,
+  stampActiveProfileQuota,
+  stampProfileQuota,
   validateProfileName,
+  withOperationLock,
 } from "../claude-auth-store";
 import { parseFlags } from "../flags";
 
@@ -46,8 +65,10 @@ export interface AuthEnvDeps {
   env: Record<string, string | undefined>;
   platform: string;
   now: () => Date;
-  /** Injected by tests so save/load never hit the usage API. */
+  /** Injected by tests so save/load/`ls --fetch`/`ls --fetch-all` never hit the usage API. */
   fetchQuota: QuotaFetcher;
+  /** Injected by tests so 429 backoff does not wait on the clock. */
+  sleep: SleepFn;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -59,6 +80,7 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     platform: overrides?.platform ?? process.platform,
     now: overrides?.now ?? (() => new Date()),
     fetchQuota: overrides?.fetchQuota ?? fetchQuotaUsage,
+    sleep: overrides?.sleep ?? ((ms: number) => Bun.sleep(ms)),
   };
 }
 
@@ -101,6 +123,9 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
   const parsed = parseFlags(args.slice(1), {
     json: { type: "boolean" },
     oauth: { type: "boolean" },
+    fetch: { type: "boolean" },
+    "fetch-all": { type: "boolean" },
+    auto: { type: "boolean" },
     "api-key-env": { type: "string" },
   });
   if (parsed.errors.length > 0) {
@@ -120,9 +145,14 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
           envDeps,
         );
       case "load":
-        return await runLoad(parsed.positionals, json, d, envDeps);
+        return await runLoad(parsed.positionals, { json, auto: parsed.flags.auto === true }, d, envDeps);
       case "ls":
-        return await runLs(json, d, envDeps);
+        return await runLs(
+          json,
+          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true },
+          d,
+          envDeps,
+        );
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -206,10 +236,46 @@ async function runSave(
   if (result.becameActive) d.log(`  active profile is now "${name}"`);
 }
 
-async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
+async function runLoad(
+  positionals: string[],
+  opts: { json: boolean; auto: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  if (opts.auto && positionals[0]) {
+    d.printError('Do not pass a profile name with --auto. Use "mcx claude auth load --auto" or "load <profile>".');
+    return d.exit(EXIT_ERROR);
+  }
+  const now = envDeps.now();
+  if (opts.auto) {
+    const { profiles } = listProfiles(envDeps.paths, now);
+    const pick = pickRecommended(profiles, now);
+    if (pick.action !== "load" || !pick.profile) {
+      if (opts.json) {
+        d.log(JSON.stringify({ ok: true, action: pick.action, name: pick.profile, reason: pick.reason }, null, 2));
+      } else {
+        d.log(
+          pick.action === "stay"
+            ? `Already on recommended profile "${pick.profile}" (${pick.reason})`
+            : `Not switching: ${pick.reason}`,
+        );
+      }
+      return;
+    }
+    return loadNamed(pick.profile, { json: opts.json, pick }, d, envDeps, now);
+  }
   const name = requireName(positionals, "mcx claude auth load <profile>", d);
   validateProfileName(name);
-  const now = envDeps.now();
+  return loadNamed(name, { json: opts.json }, d, envDeps, now);
+}
+
+async function loadNamed(
+  name: string,
+  opts: { json: boolean; pick?: AuthPick },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+  now: Date,
+): Promise<void> {
   // Fetch before any lock so a slow usage call does not hold ~/.claude.json.
   const live = readLiveState(envDeps.paths, now);
   const snap = await snapshotQuotaFromCredentials(live.credentials, now, envDeps.fetchQuota);
@@ -226,13 +292,14 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
 
   for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
 
-  if (json) {
+  if (opts.json) {
     d.log(
       JSON.stringify(
         {
           ok: true,
           action: "load",
           ...result,
+          reason: opts.pick?.reason,
           warnings: snap.warning ? [snap.warning, ...result.warnings] : result.warnings,
           credentialsPath: envDeps.paths.credentialsPath,
           claudeConfigPath: envDeps.paths.claudeConfigPath,
@@ -244,6 +311,7 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
     return;
   }
 
+  if (opts.pick) d.log(`auto: ${opts.pick.reason}`);
   d.log(`Loaded auth profile "${name}" (${result.kind})`);
   if (result.wroteBack) {
     d.log(
@@ -260,14 +328,116 @@ async function runLoad(positionals: string[], json: boolean, d: AuthCliDeps, env
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
 }
 
-async function runLs(json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
-  const { profiles: summaries, problems } = listProfiles(envDeps.paths, envDeps.now());
+/** One "kept the older number" line per degraded bucket, so a silent hole is visible. */
+function reportKeptBuckets(d: AuthCliDeps, name: string, keptBuckets: string[]): void {
+  if (keptBuckets.length === 0) return;
+  d.printInfo(
+    `warning: profile "${name}": usage response omitted ${keptBuckets.join(", ")} — kept the previous value(s)`,
+  );
+}
+
+async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
+  const live = readLiveState(envDeps.paths, now);
+  const snap = await snapshotQuotaFromCredentialsRetrying(live.credentials, now, envDeps.fetchQuota, {
+    sleep: envDeps.sleep,
+  });
+  if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
+  else if (!snap.quota) d.printInfo("warning: could not snapshot quota: no access token in live credentials");
+  const quota = snap.quota;
+  if (!quota) return;
+  // Skip the operation lock when there is no pointer so `--fetch` on an
+  // empty store does not create `auth-profiles/` just to no-op.
+  if (!readActivePointer(envDeps.paths)) {
+    d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+    return;
+  }
+  // Attribution, the stamp and the token write-back all happen inside one lock, on
+  // state re-read there: a concurrent `load` between the fetch and the stamp would
+  // otherwise file these numbers against the profile that just became active.
+  const result = withOperationLock(envDeps.paths, () => {
+    const locked = readLiveState(envDeps.paths, now);
+    const owner = attributedLiveProfile(envDeps.paths, locked);
+    const stamp = stampActiveProfileQuota(envDeps.paths, quota, locked);
+    // Keep the owning profile's stored token in step with the one Claude refreshed
+    // in place; without it the stored copy ages out after ~8h and the profile reads
+    // as expired forever (#3423).
+    refreshProfileCredentialsFromLive(envDeps.paths, locked, now);
+    return { stamp, owner };
+  });
+  if (!result.stamp.stamped) {
+    d.printInfo(
+      result.owner === null
+        ? "warning: fetched quota but the live credentials do not provably belong to any profile — not recorded"
+        : "warning: fetched quota but no active oauth profile to record it on",
+    );
+    return;
+  }
+  reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
+}
+
+async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
+  const live = readLiveState(envDeps.paths, now);
+  const { fetched, warnings, skippedExpired, skippedRateLimited, skippedBudget } = await fetchUnexpiredProfileQuotas(
+    envDeps.paths,
+    now,
+    envDeps.fetchQuota,
+    { live, sleep: envDeps.sleep },
+  );
+  for (const warning of warnings) d.printInfo(`warning: profile "${warning.name}": ${warning.message}`);
+  if (skippedExpired.length > 0) {
+    d.printInfo(`skipped ${skippedExpired.length} expired profile(s): ${skippedExpired.join(", ")}`);
+  }
+  if (skippedRateLimited.length > 0) {
+    d.printInfo(`rate-limited; kept previous snapshots for: ${skippedRateLimited.join(", ")}`);
+  }
+  if (skippedBudget.length > 0) {
+    d.printInfo(`out of time budget; kept previous snapshots for: ${skippedBudget.join(", ")}`);
+  }
+  // Nothing to write and nowhere to write it: do not take the lock, which would
+  // create `auth-profiles/` on an empty store just to no-op.
+  if (fetched.length === 0 && !readActivePointer(envDeps.paths)) return;
+  const kept = withOperationLock(envDeps.paths, () => {
+    const rows: Array<{ name: string; keptBuckets: string[] }> = [];
+    for (const row of fetched) {
+      const stamp = stampProfileQuota(envDeps.paths, row.name, row.quota);
+      if (stamp.keptBuckets.length > 0) rows.push({ name: row.name, keptBuckets: stamp.keptBuckets });
+    }
+    refreshProfileCredentialsFromLive(envDeps.paths, readLiveState(envDeps.paths, now), now);
+    return rows;
+  });
+  for (const row of kept) reportKeptBuckets(d, row.name, row.keptBuckets);
+}
+
+async function runLs(
+  json: boolean,
+  opts: { fetch: boolean; fetchAll: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  const now = envDeps.now();
+  if (opts.fetchAll) {
+    await fetchAllUnexpired(d, envDeps, now);
+  } else if (opts.fetch) {
+    await fetchActive(d, envDeps, now);
+  }
+
+  const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
+  const pick = pickRecommended(summaries, now);
+  // `pick.profile` is null on a `wait` verdict — the picker's contract. Stamping
+  // `recommended: true` on a row it just refused to run on handed
+  // `jq 'select(.recommended)'` the exhausted account (#3428).
+  const recommendedName = pick.profile;
+  const listed = summaries.map((s) => ({
+    ...s,
+    recommended: recommendedName === s.name,
+    recommendReason: recommendedName === s.name ? pick.reason : undefined,
+  }));
 
   // A hand-edited profile must never hide the healthy ones — report it, keep going.
   for (const problem of problems) d.printInfo(`warning: profile "${problem.name}" is unreadable: ${problem.message}`);
 
   if (json) {
-    d.log(JSON.stringify(summaries, null, 2));
+    d.log(JSON.stringify(listed, null, 2));
     return;
   }
 
@@ -276,13 +446,15 @@ async function runLs(json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promi
     return;
   }
 
-  for (const line of formatProfileTable(summaries)) d.log(line);
+  for (const line of formatProfileTable(listed)) d.log(line);
+  if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
+  else if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
 }
 
 /** Render the `ls` table. Exported for tests — must never contain token material. */
-export function formatProfileTable(summaries: ProfileSummary[]): string[] {
+export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>): string[] {
   const rows = summaries.map((s) => ({
-    marker: s.active ? "*" : " ",
+    marker: `${s.active ? "*" : " "}${s.recommended ? ">" : " "}`,
     name: s.name,
     kind: s.kind,
     account: s.kind === "api-key" ? `$${s.apiKeyEnvVar ?? "ANTHROPIC_API_KEY"}` : (s.account ?? "-"),
@@ -308,7 +480,7 @@ export function formatProfileTable(summaries: ProfileSummary[]): string[] {
   const asOfW = width((r) => r.asOf, "AS OF");
 
   const lines = [
-    `  ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
+    `   ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
   ];
   for (const r of rows) {
     lines.push(

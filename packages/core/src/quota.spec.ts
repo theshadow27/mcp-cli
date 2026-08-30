@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { fetchQuotaUsage, parseUsageResponse, toStoredQuota } from "./quota";
+import {
+  QuotaRateLimitError,
+  fetchQuotaUsage,
+  isQuotaRateLimitError,
+  parseRetryAfterHeader,
+  parseUsageResponse,
+  toStoredQuota,
+} from "./quota";
 
 const SAMPLE_RESPONSE = {
   five_hour: { utilization: 42, resets_at: "2026-04-08T20:00:01Z" },
@@ -117,7 +124,95 @@ describe("fetchQuotaUsage", () => {
       throw new Error("expected fetchQuotaUsage to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(QuotaRateLimitError);
       expect((err as Error).message).toBe("Quota API returned 401: auth error");
     }
+  });
+
+  test("throws QuotaRateLimitError on 429 and honours Retry-After seconds", async () => {
+    try {
+      await fetchQuotaUsage(
+        { accessToken: "x" },
+        {
+          now: () => 0,
+          fetch: async () => new Response("rate_limit_error", { status: 429, headers: { "Retry-After": "7" } }),
+        },
+      );
+      throw new Error("expected fetchQuotaUsage to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(QuotaRateLimitError);
+      expect((err as QuotaRateLimitError).retryAfterMs).toBe(7_000);
+      expect((err as Error).message).toContain("429");
+    }
+  });
+});
+
+describe("parseRetryAfterHeader", () => {
+  test("parses delta-seconds and caps the wait", () => {
+    expect(parseRetryAfterHeader("2")).toBe(2_000);
+    expect(parseRetryAfterHeader("0")).toBe(0);
+    expect(parseRetryAfterHeader("9999")).toBe(60_000);
+    expect(parseRetryAfterHeader(null)).toBeNull();
+    expect(parseRetryAfterHeader("nope")).toBeNull();
+  });
+
+  test("parses HTTP-date relative to now", () => {
+    expect(parseRetryAfterHeader("Wed, 21 Oct 2015 07:28:05 GMT", Date.parse("Wed, 21 Oct 2015 07:28:00 GMT"))).toBe(
+      5_000,
+    );
+  });
+});
+
+describe("isQuotaRateLimitError", () => {
+  test("is true only for the typed error", () => {
+    expect(isQuotaRateLimitError(new QuotaRateLimitError("Quota API returned 429: slow down"))).toBe(true);
+    expect(isQuotaRateLimitError(new Error("boom"))).toBe(false);
+    expect(isQuotaRateLimitError("boom")).toBe(false);
+  });
+
+  test("does not promote a non-429 whose body merely contains the words", () => {
+    // Both of these once classified as rate limits, which silently zeroed
+    // `ls --fetch-all` for the whole fleet after three pointless backoff sleeps.
+    expect(isQuotaRateLimitError(new Error('Quota API returned 500: {"request_id":"req_011CS429qT"}'))).toBe(false);
+    expect(
+      isQuotaRateLimitError(new Error('Quota API returned 400: {"message":"your rate limit tier is not eligible"}')),
+    ).toBe(false);
+    expect(isQuotaRateLimitError(new Error("Quota API returned 503: rate_limit_error mentioned in prose"))).toBe(false);
+  });
+
+  test("a 500 quoting rate_limit_error is a plain Error, not a rate limit", async () => {
+    const err = await fetchQuotaUsage(
+      { accessToken: "x" },
+      { fetch: async () => new Response('{"type":"rate_limit_error"}', { status: 500 }) },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(QuotaRateLimitError);
+  });
+});
+
+describe("parseRetryAfterHeader rejects garbage", () => {
+  test("a negative delta means no Retry-After, not zero backoff", () => {
+    // Number("-5") once fell through to Date.parse("-5") (year -5), which parses,
+    // and yielded 0 — three rapid retries with no wait at all.
+    expect(parseRetryAfterHeader("-5")).toBeNull();
+  });
+
+  test("only decimal delta-seconds are accepted", () => {
+    expect(parseRetryAfterHeader("0x10")).toBeNull();
+    expect(parseRetryAfterHeader("1e3")).toBeNull();
+    expect(parseRetryAfterHeader("Infinity")).toBeNull();
+    expect(parseRetryAfterHeader("  12  ")).toBe(12_000);
+  });
+
+  test("an HTTP-date already in the past means no Retry-After", () => {
+    expect(
+      parseRetryAfterHeader("Wed, 21 Oct 2015 07:28:00 GMT", Date.parse("Wed, 21 Oct 2015 07:28:05 GMT")),
+    ).toBeNull();
+  });
+
+  test("an HTTP-date further out than the cap is capped", () => {
+    expect(parseRetryAfterHeader("Wed, 21 Oct 2015 08:28:05 GMT", Date.parse("Wed, 21 Oct 2015 07:28:05 GMT"))).toBe(
+      60_000,
+    );
   });
 });

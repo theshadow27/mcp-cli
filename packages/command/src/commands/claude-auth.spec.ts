@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { QuotaStatus } from "@mcp-cli/core";
+import { QuotaRateLimitError, type QuotaStatus } from "@mcp-cli/core";
 import type { AuthPaths } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
@@ -328,7 +328,7 @@ describe("mcx claude auth ls", () => {
     expect(text).toContain("$MY_KEY");
     expect(text).toContain("2026-08-19 03:14");
     expect(text).toContain("yes"); // remote control allowed per the policy fixture
-    expect(text).toContain("* work"); // active marker
+    expect(text).toContain("*> work"); // active and recommended
     expect(text).toContain("42%");
     expect(text).toContain("2026-08-18 20:00");
     expect(text).toContain("8%");
@@ -351,6 +351,7 @@ describe("mcx claude auth ls", () => {
       account: "a@example.com",
       allowRemoteControl: true,
       expired: false,
+      recommended: true,
       quota: {
         capturedAt: NOW.toISOString(),
         fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
@@ -365,6 +366,529 @@ describe("mcx claude auth ls", () => {
     await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
     expect(JSON.parse(h.out.join("\n"))).toEqual([]);
   });
+
+  test("plain ls does not hit the usage API", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    let calls = 0;
+    h.envDeps.fetchQuota = async () => {
+      calls++;
+      return SAMPLE_QUOTA;
+    };
+    h.out.length = 0;
+    await claudeAuth(["ls"], h.deps, h.envDeps);
+    expect(calls).toBe(0);
+    expect(h.out.join("\n")).toContain("42%");
+  });
+
+  test("--fetch refreshes the active profile's quota and leaves others untouched", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(h.paths.credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: "other" } }));
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+
+    h.envDeps.fetchQuota = async () => ({
+      ...SAMPLE_QUOTA,
+      fiveHour: { utilization: 91, resetsAt: "2026-08-18T21:00:00.000Z" },
+    });
+    h.out.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+
+    const rows = JSON.parse(h.out.join("\n")) as Array<{
+      name: string;
+      active: boolean;
+      quota: { fiveHour: { utilization: number } };
+    }>;
+    const personal = rows.find((r) => r.name === "personal");
+    const work = rows.find((r) => r.name === "work");
+    expect(personal?.active).toBe(true);
+    expect(personal?.quota.fiveHour.utilization).toBe(91);
+    expect(work?.quota.fiveHour.utilization).toBe(42);
+    expect(
+      JSON.parse(readFileSync(join(h.paths.profilesDir, "personal.json"), "utf-8")).quota.fiveHour.utilization,
+    ).toBe(91);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).quota.fiveHour.utilization).toBe(
+      42,
+    );
+    expect(h.out.join("\n")).not.toContain(ACCESS_TOKEN);
+  });
+
+  test("--fetch table shows the freshly captured 5H/AS OF for the selected row", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.envDeps.fetchQuota = async () => ({
+      ...SAMPLE_QUOTA,
+      fiveHour: { utilization: 7.5, resetsAt: "2026-08-18T21:30:00.000Z" },
+    });
+    h.out.length = 0;
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    const text = h.out.join("\n");
+    expect(text).toContain("*> work");
+    expect(text).toContain("7.5%");
+    expect(text).toContain("2026-08-18 21:30");
+    expect(text).not.toContain("42%");
+  });
+
+  test("--fetch warns and keeps listing when the usage API fails", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.envDeps.fetchQuota = async () => {
+      throw new Error("timeout");
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+    expect(h.info.join(" ")).toContain("could not snapshot quota: timeout");
+    expect(JSON.parse(h.out.join("\n"))[0].quota.fiveHour.utilization).toBe(42);
+  });
+
+  test("--fetch with no live token warns and does not call the usage API", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    rmSync(h.paths.credentialsPath);
+    let calls = 0;
+    h.envDeps.fetchQuota = async () => {
+      calls++;
+      return SAMPLE_QUOTA;
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    expect(calls).toBe(0);
+    expect(h.info.join(" ")).toContain("no access token in live credentials");
+    expect(h.out.join("\n")).toContain("*> work");
+  });
+
+  test("--fetch with no profiles fetches then warns it has nowhere to record", async () => {
+    using h = harness();
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+    expect(h.info.join(" ")).toContain("no active oauth profile to record it on");
+    expect(JSON.parse(h.out.join("\n"))).toEqual([]);
+    expect(existsSync(h.paths.profilesDir)).toBe(false);
+  });
+
+  test("--fetch on darwin does not trip the platform gate", async () => {
+    using h = harness({ platform: "darwin" });
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n"))).toEqual([]);
+  });
+
+  test("--fetch-all stamps every unexpired profile and skips expired, without switching", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-stale",
+          refreshToken: "rt",
+          expiresAt: NOW.getTime() - 1,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    await claudeAuth(["save", "stale"], h.deps, h.envDeps);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+
+    const seen: string[] = [];
+    h.envDeps.fetchQuota = async (token) => {
+      seen.push(token.accessToken);
+      const utilization = token.accessToken === ACCESS_TOKEN ? 11 : 22;
+      return { ...SAMPLE_QUOTA, fiveHour: { utilization, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch-all", "--json"], h.deps, h.envDeps);
+
+    expect(seen.sort()).toEqual(["tok-personal", ACCESS_TOKEN].sort());
+    expect(seen).not.toContain("tok-stale");
+    expect(h.info.join(" ")).toContain("skipped 1 expired profile(s): stale");
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+
+    const rows = JSON.parse(h.out.join("\n")) as Array<{
+      name: string;
+      quota: { fiveHour: { utilization: number } };
+    }>;
+    expect(rows.find((r) => r.name === "work")?.quota.fiveHour.utilization).toBe(11);
+    expect(rows.find((r) => r.name === "personal")?.quota.fiveHour.utilization).toBe(22);
+    expect(rows.find((r) => r.name === "stale")?.quota.fiveHour.utilization).toBe(42);
+    expect(h.out.join("\n")).not.toContain(ACCESS_TOKEN);
+    expect(h.out.join("\n")).not.toContain("tok-personal");
+  });
+
+  test("--fetch-all retries a 429'd profile, then still gives the rest one attempt", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+
+    let calls = 0;
+    const sleeps: number[] = [];
+    h.envDeps.sleep = async (ms) => {
+      sleeps.push(ms);
+    };
+    h.envDeps.fetchQuota = async (token) => {
+      calls++;
+      if (token.accessToken === "tok-personal") {
+        throw new QuotaRateLimitError("Quota API returned 429: rate_limit_error");
+      }
+      return { ...SAMPLE_QUOTA, fiveHour: { utilization: 3, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch-all", "--json"], h.deps, h.envDeps);
+
+    // 3 attempts for personal, then exactly 1 for work — never zero (#3426).
+    expect(calls).toBe(4);
+    expect(sleeps).toEqual([1_000, 2_000]);
+    expect(h.info.join(" ")).toContain("rate-limited; kept previous snapshots for: personal");
+    const rows = JSON.parse(h.out.join("\n")) as Array<{
+      name: string;
+      quota: { fiveHour: { utilization: number } };
+    }>;
+    expect(rows.find((r) => r.name === "personal")?.quota.fiveHour.utilization).toBe(42);
+    expect(rows.find((r) => r.name === "work")?.quota.fiveHour.utilization).toBe(3);
+  });
+
+  test("--fetch retries a 429 and then stamps", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    let calls = 0;
+    h.envDeps.sleep = async () => {};
+    h.envDeps.fetchQuota = async () => {
+      calls++;
+      if (calls === 1) throw new QuotaRateLimitError("Quota API returned 429: rate_limit_error");
+      return { ...SAMPLE_QUOTA, fiveHour: { utilization: 5, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    };
+    h.out.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+    expect(calls).toBe(2);
+    expect(JSON.parse(h.out.join("\n"))[0].quota.fiveHour.utilization).toBe(5);
+  });
+
+  test("--fetch-all with --fetch does not double-fetch the active profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+
+    let calls = 0;
+    h.envDeps.fetchQuota = async () => {
+      calls++;
+      return SAMPLE_QUOTA;
+    };
+    await claudeAuth(["ls", "--fetch-all", "--fetch"], h.deps, h.envDeps);
+    expect(calls).toBe(2);
+  });
+
+  test("marks a different profile with > when current 5h remaining is under epsilon", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_10x",
+        },
+      }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const workPath = join(h.paths.profilesDir, "work.json");
+    const work = JSON.parse(readFileSync(workPath, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    work.quota.fiveHour.utilization = 95;
+    writeFileSync(workPath, `${JSON.stringify(work, null, 2)}\n`);
+    // personal is active after the second save; make work active so we must leave it.
+    await claudeAuth(["load", "work"], h.deps, h.envDeps);
+
+    h.out.length = 0;
+    await claudeAuth(["ls"], h.deps, h.envDeps);
+    const text = h.out.join("\n");
+    expect(text).toContain("*  work");
+    expect(text).toContain(" > personal");
+    expect(text).toContain("leave work");
+  });
+});
+
+describe("mcx claude auth load --auto", () => {
+  test("stays when current is already recommended", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto", "--json"], h.deps, h.envDeps);
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload).toMatchObject({ ok: true, action: "stay", name: "work" });
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "active.json"), "utf-8")).profile).toBe("work");
+  });
+
+  test("loads the recommended profile when current is dying", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_10x",
+        },
+      }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@x.com" } }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const workPath = join(h.paths.profilesDir, "work.json");
+    const work = JSON.parse(readFileSync(workPath, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    work.quota.fiveHour.utilization = 95;
+    writeFileSync(workPath, `${JSON.stringify(work, null, 2)}\n`);
+    await claudeAuth(["load", "work"], h.deps, h.envDeps);
+
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto"], h.deps, h.envDeps);
+    expect(h.out.join("\n")).toContain('Loaded auth profile "personal"');
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "active.json"), "utf-8")).profile).toBe("personal");
+  });
+
+  test("refuses a profile name together with --auto", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["load", "work", "--auto"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Do not pass a profile name with --auto");
+  });
+});
+
+describe("mcx claude auth ls — recommendation contract", () => {
+  /** A lone profile burned down to `remaining`% of its 5h window. */
+  async function exhausted(h: Harness, remaining: number): Promise<void> {
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const path = join(h.paths.profilesDir, "work.json");
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as { quota: { fiveHour: { utilization: number } } };
+    raw.quota.fiveHour.utilization = 100 - remaining;
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    h.out.length = 0;
+    h.info.length = 0;
+  }
+
+  test("a wait verdict never marks a row recommended in JSON", async () => {
+    using h = harness();
+    await exhausted(h, 5);
+    await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
+    const rows = JSON.parse(h.out.join("\n")) as Array<{
+      name: string;
+      recommended: boolean;
+      recommendReason?: string;
+    }>;
+    expect(rows.map((r) => r.recommended)).toEqual([false]);
+    expect(rows[0]?.recommendReason).toBeUndefined();
+  });
+
+  test("a wait verdict prints the (none) footer, not a > on the exhausted row", async () => {
+    using h = harness();
+    await exhausted(h, 5);
+    await claudeAuth(["ls"], h.deps, h.envDeps);
+    const text = h.out.join("\n");
+    expect(text).toContain("> (none)");
+    expect(text).toContain("*  work");
+    expect(text).not.toContain("*> work");
+  });
+});
+
+describe("mcx claude auth ls — stamps are attributed (#3424)", () => {
+  test("--fetch refuses to record a stranger's numbers on the pointed-at profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    // The user ran `claude /login` behind mcx's back.
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({ claudeAiOauth: { accessToken: "tok-ROGUE", refreshToken: "rt", expiresAt: EXPIRES_AT } }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-z", oauthAccount: { emailAddress: "z@evil.com", accountUuid: "uuid-z" } }),
+    );
+
+    const seen: string[] = [];
+    h.envDeps.fetchQuota = async (token) => {
+      seen.push(token.accessToken);
+      return { ...SAMPLE_QUOTA, fiveHour: { utilization: 99, resetsAt: "2026-08-18T21:00:00.000Z" } };
+    };
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+
+    expect(seen).toEqual(["tok-ROGUE"]);
+    expect(h.info.join(" ")).toContain("do not provably belong to any profile");
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).quota.fiveHour.utilization).toBe(
+      42,
+    );
+  });
+
+  test("--fetch-all queries the profile's own token instead of overlaying a stranger's", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({ claudeAiOauth: { accessToken: "tok-ROGUE", refreshToken: "rt", expiresAt: EXPIRES_AT } }),
+    );
+    writeFileSync(
+      h.paths.claudeConfigPath,
+      JSON.stringify({ userID: "user-z", oauthAccount: { emailAddress: "z@evil.com", accountUuid: "uuid-z" } }),
+    );
+
+    const seen: string[] = [];
+    h.envDeps.fetchQuota = async (token) => {
+      seen.push(token.accessToken);
+      return SAMPLE_QUOTA;
+    };
+    await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    expect(seen).toEqual([ACCESS_TOKEN]);
+    expect(seen).not.toContain("tok-ROGUE");
+  });
+});
+
+describe("mcx claude auth ls --fetch — token write-back (#3423)", () => {
+  test("a refreshed live token is copied back onto the owning profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    const stored = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(stored.credentials).toEqual(rotated);
+  });
+
+  test("--fetch-all copies the refreshed live token back onto the owning profile", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+
+    await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).credentials).toEqual(rotated);
+  });
+
+  test("--fetch-all on an empty store does not create the profile directory", async () => {
+    using h = harness();
+    await claudeAuth(["ls", "--fetch-all", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n"))).toEqual([]);
+    expect(existsSync(h.paths.profilesDir)).toBe(false);
+  });
+
+  test("--fetch-all keeps the stored expiry moving so the auto loop survives past one token lifetime", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    // Ten hourly cron ticks; Claude rotates the token in place each hour.
+    for (let hour = 1; hour <= 20; hour++) {
+      const tick = new Date(NOW.getTime() + hour * 3_600_000);
+      h.envDeps.now = () => tick;
+      writeFileSync(
+        h.paths.credentialsPath,
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: `sk-ant-oat01-ROT-${hour}`,
+            refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+            expiresAt: tick.getTime() + 8 * 3_600_000,
+            scopes: ["user:inference"],
+            subscriptionType: "max",
+          },
+        }),
+      );
+      h.envDeps.fetchQuota = async () => ({
+        ...SAMPLE_QUOTA,
+        fiveHour: { utilization: 5, resetsAt: new Date(tick.getTime() + 3 * 3_600_000).toISOString() },
+        sevenDay: { utilization: 5, resetsAt: new Date(tick.getTime() + 5 * 86_400_000).toISOString() },
+      });
+      await claudeAuth(["ls", "--fetch-all"], h.deps, h.envDeps);
+    }
+
+    h.out.length = 0;
+    await claudeAuth(["load", "--auto", "--json"], h.deps, h.envDeps);
+    // Before the write-back this said `action: "wait"` — "no eligible profile; wait
+    // for a 5h reset" — from t+8h onward, forever, at 95% remaining.
+    expect(JSON.parse(h.out.join("\n"))).toMatchObject({ action: "stay", name: "work" });
+  });
+});
+
+describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
+  test("a 200 that omits the 5h bucket keeps the previous number and says so", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    h.envDeps.fetchQuota = async () => ({ ...SAMPLE_QUOTA, fiveHour: null });
+    h.out.length = 0;
+    h.info.length = 0;
+    await claudeAuth(["ls", "--fetch", "--json"], h.deps, h.envDeps);
+
+    expect(h.info.join(" ")).toContain("omitted fiveHour");
+    expect(JSON.parse(h.out.join("\n"))[0].quota.fiveHour.utilization).toBe(42);
+  });
 });
 
 describe("formatProfileTable", () => {
@@ -377,8 +901,10 @@ describe("formatProfileTable", () => {
         account: "old@example.com",
         organization: null,
         subscriptionType: "pro",
+        rateLimitTier: null,
         expiresAt: "2020-01-01T00:00:00.000Z",
         expired: true,
+        hasRefreshToken: false,
         apiKeyEnvVar: null,
         allowRemoteControl: null,
         hasCredentials: true,
@@ -412,8 +938,10 @@ describe("formatProfileTable", () => {
         account: null,
         organization: null,
         subscriptionType: null,
+        rateLimitTier: null,
         expiresAt: null,
         expired: null,
+        hasRefreshToken: false,
         apiKeyEnvVar: null,
         allowRemoteControl: true,
         hasCredentials: true,
@@ -421,7 +949,7 @@ describe("formatProfileTable", () => {
         quota: null,
       },
     ]);
-    expect(lines[1]).toContain("* bare");
+    expect(lines[1]).toContain("*  bare");
     expect(lines[1]).toContain("-");
   });
 });

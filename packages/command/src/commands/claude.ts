@@ -2465,7 +2465,8 @@ export async function getActiveSessionWorktrees(listTool: string, d: SharedSessi
 // ── Usage ──
 
 function printClaudeUsage(): void {
-  console.log(`mcx claude — manage Claude Code sessions
+  console.log(
+    `mcx claude — manage Claude Code sessions
 
 Usage:
   mcx claude spawn --task "description"    Start a new Claude session (returns immediately — do not background)
@@ -2494,9 +2495,10 @@ Usage:
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
   mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)
-  mcx claude auth ls [--json]              List saved auth profiles (Linux only)
+  mcx claude auth ls [--json] [--fetch|--fetch-all]  List saved auth profiles (Linux only)
   mcx claude auth save <profile>           Snapshot the active Claude identity into a profile
   mcx claude auth load <profile>           Switch the active Claude identity to a profile
+  mcx claude auth load --auto              Switch to the recommended > profile if needed
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude
@@ -2532,5 +2534,6 @@ Approve/Deny options:
   --request-id, -r <id>       Specific request ID (auto-detects latest if omitted)
   --message, -m <reason>      Denial reason (deny only)
 
-Session IDs support prefix matching (like git SHAs).`);
+Session IDs support prefix matching (like git SHAs).`,
+  );
 }

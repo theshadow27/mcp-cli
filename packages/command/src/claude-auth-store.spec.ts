@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
+import { QuotaRateLimitError, flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
 import { testOptions } from "../../../test/test-options";
 import {
   type AuthErrorCode,
@@ -25,14 +25,20 @@ import {
   type ClaudeAuthProfile,
   assertPlatformSupported,
   defaultAuthPaths,
+  fetchUnexpiredProfileQuotas,
+  isOauthTokenExpired,
   listProfiles,
   loadProfile,
   patchClaudeConfigIdentity,
   readActivePointer,
   readActiveProfileName,
+  readLiveState,
   readProfile,
+  refreshProfileCredentialsFromLive,
   saveProfile,
   snapshotQuotaFromCredentials,
+  stampActiveProfileQuota,
+  stampProfileQuota,
   summarizeProfile,
   withExclusiveLock,
   writeFileAtomic,
@@ -348,6 +354,477 @@ describe("loadProfile quota write-back", () => {
     expect(result.wroteBack).toBe("personal");
     expect(result.wroteBackChanged).toBe(false);
     expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+});
+
+describe("stampActiveProfileQuota", () => {
+  test("writes quota onto the active oauth profile without touching credentials or updatedAt", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const before = readProfile(fs, "work");
+    expect(before).not.toBeNull();
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
+
+    const after = readProfile(fs, "work");
+    expect(after?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+    expect(after?.credentials).toEqual(before?.credentials);
+  });
+
+  test("returns false when there is no active pointer", () => {
+    using fs = sandbox();
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: false });
+    expect(existsSync(fs.profilesDir)).toBe(false);
+  });
+
+  test("returns false during an in-flight switch and leaves the profile untouched", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const pointerPath = join(fs.profilesDir, "active.json");
+    const pointer = JSON.parse(readFileSync(pointerPath, "utf-8"));
+    writeFileSync(pointerPath, JSON.stringify({ ...pointer, pending: "other" }));
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({
+      stamped: false,
+    });
+    expect(readProfile(fs, "work")?.quota).toBeUndefined();
+  });
+
+  test("does not stamp an inactive profile", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }), {
+      mode: 0o600,
+    });
+    save(fs, "personal");
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
+    expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "work")?.quota).toBeUndefined();
+  });
+
+  test("stampProfileQuota writes a named oauth profile that is not active", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "other" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    expect(stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA)).toMatchObject({ stamped: true });
+    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "personal")?.quota).toBeUndefined();
+  });
+});
+
+const LIVE_QUOTA_STATUS = {
+  fiveHour: { utilization: 55, resetsAt: "2026-08-18T21:00:00.000Z" },
+  sevenDay: { utilization: 12, resetsAt: "2026-08-25T04:00:00.000Z" },
+  sevenDaySonnet: null,
+  sevenDayOpus: null,
+  extraUsage: null,
+  fetchedAt: NOW.getTime(),
+};
+
+describe("fetchUnexpiredProfileQuotas", () => {
+  test("isOauthTokenExpired is true only after expiresAt", () => {
+    expect(isOauthTokenExpired(credentials(), NOW)).toBe(false);
+    expect(isOauthTokenExpired(credentials({ expiresAt: NOW.getTime() }), NOW)).toBe(true);
+    expect(isOauthTokenExpired(credentials({ expiresAt: NOW.getTime() - 1 }), NOW)).toBe(true);
+    expect(isOauthTokenExpired({}, NOW)).toBeNull();
+  });
+
+  test("fetches unexpired profiles and skips expired ones", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@x.com") }), {
+      mode: 0o600,
+    });
+    save(fs, "personal");
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "tok-stale", expiresAt: NOW.getTime() - 1 })),
+      { mode: 0o600 },
+    );
+    save(fs, "stale");
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(fs, NOW, async (token) => {
+      seen.push(token.accessToken);
+      return LIVE_QUOTA_STATUS;
+    });
+
+    expect(seen.sort()).toEqual(["tok-personal", ACCESS_TOKEN].sort());
+    expect(seen).not.toContain("tok-stale");
+    expect(result.skippedExpired).toEqual(["stale"]);
+    expect(result.skippedRateLimited).toEqual([]);
+    expect(result.fetched.map((f) => f.name).sort()).toEqual(["personal", "work"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("overlays live credentials onto the owning profile when the stored token is expired", async () => {
+    using fs = sandbox();
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "stored-dead", expiresAt: NOW.getTime() - 1 })),
+      { mode: 0o600 },
+    );
+    save(fs, "ozone");
+    // Claude refreshed the token in place: same account, new blob.
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "live-fresh" })), { mode: 0o600 });
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        seen.push(token.accessToken);
+        return LIVE_QUOTA_STATUS;
+      },
+      { live: readLiveState(fs, NOW) },
+    );
+
+    expect(seen).toEqual(["live-fresh"]);
+    expect(result.skippedExpired).toEqual([]);
+    expect(result.overlaidProfile).toBe("ozone");
+    expect(result.fetched.map((f) => f.name)).toEqual(["ozone"]);
+  });
+
+  test("refuses to overlay when the live blob cannot be attributed to the pointer's profile", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    // A `claude /login` behind mcx's back: different account, different token.
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-ROGUE" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-z", oauthAccount: oauthAccount("z@evil.com") }), {
+      mode: 0o600,
+    });
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        seen.push(token.accessToken);
+        return LIVE_QUOTA_STATUS;
+      },
+      { live: readLiveState(fs, NOW) },
+    );
+
+    expect(seen).toEqual([ACCESS_TOKEN]);
+    expect(seen).not.toContain("tok-ROGUE");
+    expect(result.overlaidProfile).toBeNull();
+  });
+
+  test("a failed fetch on one profile does not block the others", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    const result = await fetchUnexpiredProfileQuotas(fs, NOW, async (token) => {
+      if (token.accessToken === ACCESS_TOKEN) throw new Error("timeout");
+      return LIVE_QUOTA_STATUS;
+    });
+
+    expect(result.fetched.map((f) => f.name)).toEqual(["personal"]);
+    expect(result.warnings).toEqual([{ name: "work", message: "could not snapshot quota: timeout" }]);
+  });
+
+  test("retries 429s using Retry-After without waiting on the clock", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        calls++;
+        if (calls < 3) throw new QuotaRateLimitError("Quota API returned 429: slow down", 2_000);
+        return LIVE_QUOTA_STATUS;
+      },
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    );
+
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([2_000, 2_000]);
+    expect(result.fetched.map((f) => f.name)).toEqual(["work"]);
+    expect(result.skippedRateLimited).toEqual([]);
+  });
+
+  test("exponential backoff when Retry-After is missing", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+
+    const sleeps: number[] = [];
+    await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        throw new QuotaRateLimitError("Quota API returned 429: rate_limit_error");
+      },
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    );
+
+    expect(sleeps).toEqual([1_000, 2_000]);
+  });
+
+  test("gives up a 429'd profile, then walks the rest with retries disabled", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    save(fs, "personal");
+
+    const seen: string[] = [];
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        seen.push(token.accessToken);
+        throw new QuotaRateLimitError("Quota API returned 429: nope");
+      },
+      { sleep: async () => {} },
+    );
+
+    // personal exhausts its three attempts; work still gets one (never zero — a
+    // stable walk order otherwise starves every profile after the first, forever).
+    expect(seen).toEqual(["tok-personal", "tok-personal", "tok-personal", ACCESS_TOKEN]);
+    expect(result.fetched).toEqual([]);
+    expect(result.skippedRateLimited).toEqual(["personal", "work"]);
+    expect(result.warnings[0]?.name).toBe("personal");
+    expect(result.warnings[0]?.message).toContain("rate-limited");
+  });
+});
+
+describe("quota stamps are attributed (#3424)", () => {
+  test("refuses to stamp when the live blob belongs to nobody we can prove", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    // `claude /login` behind mcx's back: the pointer still says "work".
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-ROGUE" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-z", oauthAccount: oauthAccount("z@evil.com") }), {
+      mode: 0o600,
+    });
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: false });
+    expect(readProfile(fs, "work")?.quota).toBeUndefined();
+  });
+
+  test("stamps when Claude refreshed the token in place (same account, new blob)", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "refreshed" })), { mode: 0o600 });
+
+    expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
+    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+
+  test("stampProfileQuota refuses an api-key profile", () => {
+    using fs = sandbox();
+    save(fs, "key", { MY_KEY: "sk-secret" }, "MY_KEY");
+    expect(stampProfileQuota(fs, "key", SAMPLE_STORED_QUOTA)).toMatchObject({ stamped: false });
+    expect(readProfile(fs, "key")?.quota).toBeUndefined();
+  });
+});
+
+describe("refreshProfileCredentialsFromLive (#3423)", () => {
+  test("writes the refreshed live blob back onto the owning profile", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const refreshed = credentials({ accessToken: "rotated", expiresAt: EXPIRES_AT + 8 * 3_600_000 });
+    writeFileSync(fs.credentialsPath, JSON.stringify(refreshed), { mode: 0o600 });
+
+    const later = new Date(NOW.getTime() + 60_000);
+    expect(refreshProfileCredentialsFromLive(fs, readLiveState(fs, later), later)).toBe("work");
+    expect(readProfile(fs, "work")?.credentials).toEqual(refreshed);
+  });
+
+  test("is a no-op when the stored copy already matches", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    expect(refreshProfileCredentialsFromLive(fs, readLiveState(fs, NOW), NOW)).toBeNull();
+  });
+
+  test("refuses to write back an unattributable blob", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const before = readProfile(fs, "work")?.credentials;
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-ROGUE" })), { mode: 0o600 });
+    writeFileSync(fs.claudeConfigPath, JSON.stringify({ userID: "user-z", oauthAccount: oauthAccount("z@evil.com") }), {
+      mode: 0o600,
+    });
+
+    expect(refreshProfileCredentialsFromLive(fs, readLiveState(fs, NOW), NOW)).toBeNull();
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("the stored token tracks the live one across more than one token lifetime", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    // Eight hourly ticks of the documented cron, Claude refreshing in place each time.
+    for (let hour = 1; hour <= 10; hour++) {
+      const tick = new Date(NOW.getTime() + hour * 3_600_000);
+      writeFileSync(
+        fs.credentialsPath,
+        JSON.stringify(credentials({ accessToken: `tok-${hour}`, expiresAt: tick.getTime() + 8 * 3_600_000 })),
+        { mode: 0o600 },
+      );
+      refreshProfileCredentialsFromLive(fs, readLiveState(fs, tick), tick);
+    }
+    const after = new Date(NOW.getTime() + 10 * 3_600_000);
+    const summary = summarizeProfile(readProfile(fs, "work") as ClaudeAuthProfile, "work", after);
+    expect(summary.expired).toBe(false);
+    expect(isOauthTokenExpired(readProfile(fs, "work")?.credentials, after)).toBe(false);
+  });
+});
+
+describe("stampProfileQuota bucket merge (#3427)", () => {
+  const degraded = {
+    capturedAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+    fiveHour: null,
+    sevenDay: { utilization: 30, resetsAt: "2026-08-25T04:00:00.000Z" },
+    sevenDaySonnet: null,
+    sevenDayOpus: null,
+    extraUsage: null,
+  };
+
+  test("a 200 that omits a bucket keeps the previous value and reports it", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
+
+    const result = stampProfileQuota(fs, "work", degraded);
+    expect(result.keptBuckets).toEqual(["fiveHour"]);
+    const after = readProfile(fs, "work")?.quota;
+    expect(after?.fiveHour).toEqual(SAMPLE_STORED_QUOTA.fiveHour);
+    expect(after?.sevenDay).toEqual(degraded.sevenDay);
+  });
+
+  test("a carried-over bucket drags capturedAt back to the older stamp", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
+    stampProfileQuota(fs, "work", degraded);
+    // Not the degraded response's own (newer) capturedAt: the snapshot is only as
+    // fresh as its oldest constituent, and the picker reads that to decide trust.
+    expect(readProfile(fs, "work")?.quota?.capturedAt).toBe(SAMPLE_STORED_QUOTA.capturedAt);
+  });
+
+  test("a complete response replaces everything and reports no kept buckets", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", degraded);
+    const result = stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
+    expect(result.keptBuckets).toEqual([]);
+    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+  });
+});
+
+describe("--fetch-all wall-clock budget (#3426)", () => {
+  test("the 60s cap is applied at the sleep, not only when parsing Retry-After", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const sleeps: number[] = [];
+    await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        throw new QuotaRateLimitError("Quota API returned 429: slow down", 3_600_000);
+      },
+      { sleep: async (ms) => void sleeps.push(ms), budgetMs: 10 * 60_000 },
+    );
+    expect(sleeps).toEqual([60_000, 60_000]);
+  });
+
+  test("an intermittently-429ing fleet cannot accumulate minutes of backoff", async () => {
+    using fs = sandbox();
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: `tok-${i}` })), { mode: 0o600 });
+      save(fs, `p${i}`);
+    }
+
+    let clockMs = 0;
+    const failures = new Map<string, number>();
+    const sleeps: number[] = [];
+    // Every profile 429s once and then succeeds: no profile ever exhausts its
+    // retries, so the documented "abort the rest" bail can never fire. Before the
+    // budget this drove 10 × 2 × 60s = 20 minutes of sleep and still exited 0.
+    await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async (token) => {
+        const seen = (failures.get(token.accessToken) ?? 0) + 1;
+        failures.set(token.accessToken, seen);
+        if (seen <= 1) throw new QuotaRateLimitError("Quota API returned 429: slow down", 60_000);
+        return LIVE_QUOTA_STATUS;
+      },
+      {
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clockMs += ms;
+        },
+        clock: () => clockMs,
+        budgetMs: 150_000,
+      },
+    );
+
+    // Never *past* the budget either: the last profile that would overshoot gives up
+    // instead of sleeping. Before the deadline this was 10 × 60s with exit 0.
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(150_000);
+    expect(sleeps.length).toBeLessThan(10);
+  });
+
+  test("profiles past the wall-clock budget are reported, not silently dropped", async () => {
+    using fs = sandbox();
+    for (let i = 0; i < 6; i++) {
+      writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: `tok-${i}` })), { mode: 0o600 });
+      save(fs, `p${i}`);
+    }
+
+    let clockMs = 0;
+    const result = await fetchUnexpiredProfileQuotas(
+      fs,
+      NOW,
+      async () => {
+        // Every request burns its full 5s timeout, as a wedged endpoint does.
+        clockMs += 5_000;
+        throw new Error("The operation timed out");
+      },
+      { sleep: async () => {}, clock: () => clockMs, budgetMs: 15_000 },
+    );
+
+    expect(result.skippedBudget.length).toBe(3);
+    expect(result.warnings.length).toBe(3);
+  });
+
+  test("a profile with no access token is skipped without a fetch", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const path = join(fs.profilesDir, "work.json");
+    const raw = JSON.parse(readFileSync(path, "utf-8"));
+    raw.credentials = { claudeAiOauth: { refreshToken: REFRESH_TOKEN, expiresAt: NOW.getTime() - 1 } };
+    writeFileSync(path, JSON.stringify(raw, null, 2));
+
+    let calls = 0;
+    const result = await fetchUnexpiredProfileQuotas(fs, NOW, async () => {
+      calls++;
+      return LIVE_QUOTA_STATUS;
+    });
+    expect(calls).toBe(0);
+    expect(result.fetched).toEqual([]);
+    // Skipped as "has nothing to query with", not reported as an expired token —
+    // it has no `expiresAt` at all, and "run a load to refresh it" is wrong advice.
+    expect(result.skippedExpired).toEqual([]);
   });
 });
 
@@ -723,6 +1200,7 @@ describe("summarizeProfile / listProfiles", () => {
       account: "a@example.com",
       organization: "Acme",
       subscriptionType: "max",
+      rateLimitTier: "default_claude_max_20x",
       allowRemoteControl: false,
       hasCredentials: true,
     });
