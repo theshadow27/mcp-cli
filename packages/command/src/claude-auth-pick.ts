@@ -12,14 +12,12 @@ import type { ProfileSummary } from "./claude-auth-store";
 
 export const DEFAULT_EPSILON5 = 8;
 export const DEFAULT_EPSILON7 = 12;
-export const DEFAULT_OAUTH_LEAD_MS = 30 * 60 * 1000;
 export const DEFAULT_HARVEST_REMAINING = 30;
 export const DEFAULT_HARVEST_WINDOW_MS = 45 * 60 * 1000;
 
 export interface AuthPickOptions {
   epsilon5: number;
   epsilon7: number;
-  oauthLeadMs: number;
   harvestRemaining: number;
   harvestWindowMs: number;
 }
@@ -27,7 +25,6 @@ export interface AuthPickOptions {
 export const DEFAULT_AUTH_PICK: AuthPickOptions = {
   epsilon5: DEFAULT_EPSILON5,
   epsilon7: DEFAULT_EPSILON7,
-  oauthLeadMs: DEFAULT_OAUTH_LEAD_MS,
   harvestRemaining: DEFAULT_HARVEST_REMAINING,
   harvestWindowMs: DEFAULT_HARVEST_WINDOW_MS,
 };
@@ -67,30 +64,22 @@ export function planSize(summary: ProfileSummary): number | null {
 }
 
 /**
- * Can this profile be run on right now?
+ * Can this profile be switched to?
  *
- * An expired or expiring *access* token is only fatal without a refresh token:
- * Claude Code mints a fresh access token from the refresh token on startup. Treating
- * expiry alone as disqualifying is what closed the #3423 deadlock — after one token
- * lifetime every profile failed both `isEligible` and `mustLeave`, so `load --auto`
- * answered "wait" forever while every account still had quota.
+ * Access-token expiry is not a hop gate: `load` writes the stored blob (refresh
+ * token included) into `.credentials.json` and Claude Code does the oauth
+ * exchange. `expired` on the ls row is a display of the stored access token's
+ * clock, not a verdict.
  */
-function oauthUsable(profile: ProfileSummary, now: Date, leadMs: number): boolean {
-  if (profile.kind !== "oauth") return false;
-  if (profile.hasRefreshToken) return true;
-  if (profile.expired === true) return false;
-  if (!profile.expiresAt) return true;
-  const expires = Date.parse(profile.expiresAt);
-  if (Number.isNaN(expires)) return true;
-  return expires - now.getTime() >= leadMs;
+function oauthUsable(profile: ProfileSummary): boolean {
+  return profile.kind === "oauth" && profile.hasCredentials;
 }
 
 function isEligible(profile: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
   // A profile with no stored credentials cannot be loaded — `loadProfile` moves the
   // pointer and leaves `.credentials.json` untouched, so mcx would believe it runs as
   // one identity while Claude runs as another (#3425). Never recommend one.
-  if (!profile.hasCredentials) return false;
-  if (!oauthUsable(profile, now, opts.oauthLeadMs)) return false;
+  if (!oauthUsable(profile)) return false;
   const five = windowRemaining(profile.quota?.fiveHour, now);
   const seven = windowRemaining(profile.quota?.sevenDay, now);
   if (five == null || seven == null) return false;
@@ -106,7 +95,7 @@ function isEligible(profile: ProfileSummary, now: Date, opts: AuthPickOptions): 
  * snapshot went slightly stale read as healthy and never be left (#3427).
  */
 function mustLeave(current: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
-  if (!oauthUsable(current, now, opts.oauthLeadMs)) return true;
+  if (!oauthUsable(current)) return true;
   const five = windowRemaining(current.quota?.fiveHour, now);
   const seven = windowRemaining(current.quota?.sevenDay, now);
   if (five == null || seven == null) return true;
@@ -172,7 +161,7 @@ export function pickRecommended(
 
   // `wait` names nobody: a `recommended: true` next to "wait for a 5h reset" is a
   // contract an automation reading the JSON cannot use (#3428).
-  if (eligible.length === 0) return { profile: null, action: "wait", reason: waitWhy(pool, current, now, opts) };
+  if (eligible.length === 0) return { profile: null, action: "wait", reason: waitWhy(pool, current, now) };
 
   const winner = [...eligible].sort((a, b) => compareEligible(a, b, now))[0];
   return {
@@ -188,17 +177,9 @@ export function pickRecommended(
  * Why nothing is eligible. "wait for a 5h reset" blames quota, and a responder who
  * believes it waits forever when the real cause is token bookkeeping (#3423).
  */
-function waitWhy(
-  pool: readonly ProfileSummary[],
-  current: ProfileSummary | null,
-  now: Date,
-  opts: AuthPickOptions,
-): string {
+function waitWhy(pool: readonly ProfileSummary[], current: ProfileSummary | null, now: Date): string {
   if (pool.every((p) => !p.hasCredentials)) {
     return "no profile has stored credentials — run `mcx claude auth save <name>`";
-  }
-  if (pool.every((p) => !oauthUsable(p, now, opts.oauthLeadMs))) {
-    return "every stored token is expired — run `mcx claude auth save` on a logged-in identity";
   }
   const five = current ? windowRemaining(current.quota?.fiveHour, now) : null;
   const seven = current ? windowRemaining(current.quota?.sevenDay, now) : null;
@@ -209,11 +190,6 @@ function waitWhy(
 }
 
 function leaveWhy(current: ProfileSummary, now: Date, opts: AuthPickOptions): string {
-  if (current.expired === true) return "oauth expired";
-  if (current.expiresAt) {
-    const expires = Date.parse(current.expiresAt);
-    if (!Number.isNaN(expires) && expires - now.getTime() < opts.oauthLeadMs) return "oauth expiring";
-  }
   const five = windowRemaining(current.quota?.fiveHour, now);
   if (five != null && five < opts.epsilon5) return `5h remaining ${five.toFixed(1)}%`;
   const seven = windowRemaining(current.quota?.sevenDay, now);
@@ -226,4 +202,43 @@ function formatReset(profile: ProfileSummary): string {
   const stamp = profile.quota?.fiveHour?.resetsAt;
   if (!stamp) return "soon";
   return stamp.replace("T", " ").slice(0, 16);
+}
+
+export const AUTH_LS_SORTS = ["7d-reset", "name"] as const;
+export type AuthLsSort = (typeof AUTH_LS_SORTS)[number];
+export const DEFAULT_AUTH_LS_SORT: AuthLsSort = "7d-reset";
+
+export function isAuthLsSort(value: string): value is AuthLsSort {
+  return (AUTH_LS_SORTS as readonly string[]).includes(value);
+}
+
+function sevenDayResetMs(profile: ProfileSummary): number {
+  const stamp = profile.quota?.sevenDay?.resetsAt;
+  if (!stamp) return Number.POSITIVE_INFINITY;
+  const ms = Date.parse(stamp);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+/**
+ * Default ls order: soonest 7d reset first, then least 7d remaining.
+ * Missing reset/remaining sort last; name is the last tie-break.
+ */
+export function compareProfilesForLs(a: ProfileSummary, b: ProfileSummary, now: Date, sort: AuthLsSort): number {
+  if (sort === "name") return a.name.localeCompare(b.name);
+  const reset = sevenDayResetMs(a) - sevenDayResetMs(b);
+  if (reset !== 0) return reset;
+  const remA = windowRemaining(a.quota?.sevenDay, now);
+  const remB = windowRemaining(b.quota?.sevenDay, now);
+  const va = remA == null ? Number.POSITIVE_INFINITY : remA;
+  const vb = remB == null ? Number.POSITIVE_INFINITY : remB;
+  if (va !== vb) return va - vb;
+  return a.name.localeCompare(b.name);
+}
+
+export function sortProfilesForLs(
+  profiles: readonly ProfileSummary[],
+  now: Date,
+  sort: AuthLsSort = DEFAULT_AUTH_LS_SORT,
+): ProfileSummary[] {
+  return [...profiles].sort((a, b) => compareProfilesForLs(a, b, now, sort));
 }

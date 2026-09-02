@@ -17,7 +17,14 @@
  */
 
 import { fetchQuotaUsage } from "@mcp-cli/core";
-import { type AuthPick, pickRecommended } from "../claude-auth-pick";
+import {
+  type AuthLsSort,
+  type AuthPick,
+  DEFAULT_AUTH_LS_SORT,
+  isAuthLsSort,
+  pickRecommended,
+  sortProfilesForLs,
+} from "../claude-auth-pick";
 import {
   type AuthPaths,
   AuthProfileError,
@@ -126,6 +133,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
     fetch: { type: "boolean" },
     "fetch-all": { type: "boolean" },
     auto: { type: "boolean" },
+    sort: { type: "string" },
     "api-key-env": { type: "string" },
   });
   if (parsed.errors.length > 0) {
@@ -146,13 +154,23 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
         );
       case "load":
         return await runLoad(parsed.positionals, { json, auto: parsed.flags.auto === true }, d, envDeps);
-      case "ls":
+      case "ls": {
+        const sortFlag = parsed.flags.sort;
+        let sort: AuthLsSort = DEFAULT_AUTH_LS_SORT;
+        if (typeof sortFlag === "string") {
+          if (!isAuthLsSort(sortFlag)) {
+            d.printError(`Unknown --sort "${sortFlag}". Use "7d-reset" (default) or "name".`);
+            return d.exit(EXIT_ERROR);
+          }
+          sort = sortFlag;
+        }
         return await runLs(
           json,
-          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true },
+          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true, sort },
           d,
           envDeps,
         );
+      }
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -344,27 +362,28 @@ async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Pro
   if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
   else if (!snap.quota) d.printInfo("warning: could not snapshot quota: no access token in live credentials");
   const quota = snap.quota;
-  if (!quota) return;
   // Skip the operation lock when there is no pointer so `--fetch` on an
   // empty store does not create `auth-profiles/` just to no-op.
   if (!readActivePointer(envDeps.paths)) {
-    d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+    if (quota) d.printInfo("warning: fetched quota but no active oauth profile to record it on");
     return;
   }
   // Attribution, the stamp and the token write-back all happen inside one lock, on
   // state re-read there: a concurrent `load` between the fetch and the stamp would
   // otherwise file these numbers against the profile that just became active.
+  // Write-back is independent of the usage call: Claude may have rotated the live
+  // token even when the usage API 401s/times out, and that rotation is what keeps
+  // EXPIRES from going stale.
   const result = withOperationLock(envDeps.paths, () => {
     const locked = readLiveState(envDeps.paths, now);
     const owner = attributedLiveProfile(envDeps.paths, locked);
-    const stamp = stampActiveProfileQuota(envDeps.paths, quota, locked);
-    // Keep the owning profile's stored token in step with the one Claude refreshed
-    // in place; without it the stored copy ages out after ~8h and the profile reads
-    // as expired forever (#3423).
+    const stamp = quota
+      ? stampActiveProfileQuota(envDeps.paths, quota, locked)
+      : { stamped: false, keptBuckets: [] as string[] };
     refreshProfileCredentialsFromLive(envDeps.paths, locked, now);
     return { stamp, owner };
   });
-  if (!result.stamp.stamped) {
+  if (quota && !result.stamp.stamped) {
     d.printInfo(
       result.owner === null
         ? "warning: fetched quota but the live credentials do not provably belong to any profile — not recorded"
@@ -372,7 +391,7 @@ async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Pro
     );
     return;
   }
-  reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
+  if (result.stamp.stamped) reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
 }
 
 async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
@@ -410,7 +429,7 @@ async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date
 
 async function runLs(
   json: boolean,
-  opts: { fetch: boolean; fetchAll: boolean },
+  opts: { fetch: boolean; fetchAll: boolean; sort: AuthLsSort },
   d: AuthCliDeps,
   envDeps: AuthEnvDeps,
 ): Promise<void> {
@@ -421,7 +440,8 @@ async function runLs(
     await fetchActive(d, envDeps, now);
   }
 
-  const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
+  const { profiles: unsorted, problems } = listProfiles(envDeps.paths, now);
+  const summaries = sortProfilesForLs(unsorted, now, opts.sort);
   const pick = pickRecommended(summaries, now);
   // `pick.profile` is null on a `wait` verdict — the picker's contract. Stamping
   // `recommended: true` on a row it just refused to run on handed

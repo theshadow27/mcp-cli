@@ -875,6 +875,69 @@ describe("mcx claude auth ls --fetch — token write-back (#3423)", () => {
     // for a 5h reset" — from t+8h onward, forever, at 95% remaining.
     expect(JSON.parse(h.out.join("\n"))).toMatchObject({ action: "stay", name: "work" });
   });
+
+  test("--fetch copies a rotated live token even when the usage API fails", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+    h.envDeps.fetchQuota = async () => {
+      throw new Error("timeout");
+    };
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).credentials).toEqual(rotated);
+  });
+});
+
+describe("mcx claude auth ls --sort", () => {
+  test("defaults to soonest 7d reset, then least remaining", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const patch7d = (name: string, resetsAt: string, utilization: number) => {
+      const path = join(h.paths.profilesDir, `${name}.json`);
+      const raw = JSON.parse(readFileSync(path, "utf-8")) as {
+        quota: { sevenDay: { resetsAt: string; utilization: number } };
+      };
+      raw.quota.sevenDay = { ...raw.quota.sevenDay, resetsAt, utilization };
+      writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    };
+    patch7d("work", "2026-09-01T00:00:00.000Z", 80);
+    patch7d("personal", "2026-09-05T00:00:00.000Z", 10);
+
+    h.out.length = 0;
+    await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n")).map((p: { name: string }) => p.name)).toEqual(["work", "personal"]);
+
+    h.out.length = 0;
+    await claudeAuth(["ls", "--sort", "name", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n")).map((p: { name: string }) => p.name)).toEqual(["personal", "work"]);
+  });
+
+  test("unknown --sort exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["ls", "--sort", "quota"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain('Unknown --sort "quota"');
+  });
 });
 
 describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
