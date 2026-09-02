@@ -120,9 +120,25 @@ export interface RawUsageResponse {
   } | null;
 }
 
+/**
+ * A usage bucket is only durable if it has a finite utilization *and* a
+ * parseable reset clock. `{ utilization: 0, resets_at: null }` is a placeholder
+ * the oauth usage endpoint sometimes returns for a freshly minted token — treating
+ * it as a real 0% window wipes the previous snapshot.
+ */
+export function isCompleteQuotaBucket(
+  bucket: { utilization?: unknown; resetsAt?: unknown } | null | undefined,
+): boolean {
+  if (!bucket) return false;
+  if (typeof bucket.utilization !== "number" || !Number.isFinite(bucket.utilization)) return false;
+  if (typeof bucket.resetsAt !== "string" || Number.isNaN(Date.parse(bucket.resetsAt))) return false;
+  return true;
+}
+
 function parseBucket(raw: { utilization: number; resets_at: string } | null | undefined): QuotaUsageBucket | null {
   if (!raw) return null;
-  return { utilization: raw.utilization, resetsAt: raw.resets_at };
+  const bucket = { utilization: raw.utilization, resetsAt: raw.resets_at };
+  return isCompleteQuotaBucket(bucket) ? bucket : null;
 }
 
 function parseExtraUsage(

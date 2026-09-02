@@ -57,6 +57,22 @@ describe("parseUsageResponse", () => {
     expect(result.sevenDay).toBeNull();
   });
 
+  test("drops a bucket with no parseable reset clock (fresh-token placeholder)", () => {
+    const result = parseUsageResponse({
+      five_hour: { utilization: 0, resets_at: null as unknown as string },
+      seven_day: { utilization: 0, resets_at: null as unknown as string },
+    });
+    expect(result.fiveHour).toBeNull();
+    expect(result.sevenDay).toBeNull();
+  });
+
+  test("keeps a real 0% window that has a reset clock", () => {
+    const result = parseUsageResponse({
+      five_hour: { utilization: 0, resets_at: "2026-09-02T07:00:00Z" },
+    });
+    expect(result.fiveHour).toEqual({ utilization: 0, resetsAt: "2026-09-02T07:00:00Z" });
+  });
+
   test("preserves null utilization in extra_usage (zero credits used)", () => {
     const result = parseUsageResponse({
       extra_usage: {

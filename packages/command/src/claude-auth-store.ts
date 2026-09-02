@@ -62,6 +62,7 @@ import {
   fetchQuotaUsage,
   flockUnlock,
   harvestClaudeOAuthConstants,
+  isCompleteQuotaBucket,
   isQuotaRateLimitError,
   options,
   quotaRetryAfterMs,
@@ -535,7 +536,12 @@ function mergeStoredQuota(
   const merged: StoredQuota = { ...incoming };
   const keptBuckets: string[] = [];
   const keep = <K extends "fiveHour" | "sevenDay" | "sevenDaySonnet" | "sevenDayOpus" | "extraUsage">(key: K): void => {
-    if (incoming[key] != null || stored[key] == null) return;
+    const incomingBucket = incoming[key];
+    // A placeholder `{ utilization: 0, resetsAt: null }` is not a real window —
+    // treat it like an omitted bucket so a freshly-minted token cannot wipe the
+    // previous snapshot. extraUsage has no reset clock; non-null is complete.
+    const incomingComplete = key === "extraUsage" ? incomingBucket != null : isCompleteQuotaBucket(incomingBucket);
+    if (incomingComplete || stored[key] == null) return;
     merged[key] = stored[key];
     keptBuckets.push(key);
   };

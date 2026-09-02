@@ -46,6 +46,10 @@ describe("windowRemaining", () => {
   test("a reset already in the past is 0 remaining, not the cached percent", () => {
     expect(windowRemaining({ utilization: 10, resetsAt: "2026-08-30T02:00:00.000Z" }, NOW)).toBe(0);
   });
+
+  test("a 0% placeholder with no reset clock is 0 remaining, not a full tank", () => {
+    expect(windowRemaining({ utilization: 0, resetsAt: null as unknown as string }, NOW)).toBe(0);
+  });
 });
 
 describe("formatRelativeFuture", () => {

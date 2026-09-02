@@ -727,6 +727,27 @@ describe("stampProfileQuota bucket merge (#3427)", () => {
     expect(after?.sevenDay).toEqual(degraded.sevenDay);
   });
 
+  test("a placeholder 0% window with no reset clock does not wipe the previous snapshot", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
+
+    const poison = {
+      capturedAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+      fiveHour: { utilization: 0, resetsAt: null as unknown as string },
+      sevenDay: { utilization: 0, resetsAt: null as unknown as string },
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+    };
+    const result = stampProfileQuota(fs, "work", poison);
+    expect(result.keptBuckets).toEqual(["fiveHour", "sevenDay"]);
+    const after = readProfile(fs, "work")?.quota;
+    expect(after?.fiveHour).toEqual(SAMPLE_STORED_QUOTA.fiveHour);
+    expect(after?.sevenDay).toEqual(SAMPLE_STORED_QUOTA.sevenDay);
+    expect(after?.capturedAt).toBe(SAMPLE_STORED_QUOTA.capturedAt);
+  });
+
   test("a carried-over bucket drags capturedAt back to the older stamp", () => {
     using fs = sandbox();
     save(fs, "work");

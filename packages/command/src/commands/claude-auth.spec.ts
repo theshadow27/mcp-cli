@@ -1043,6 +1043,41 @@ describe("formatProfileTable", () => {
     expect(text).toContain("2026-08-21 12:00 (3d)");
   });
 
+  test("a 0% bucket with no reset clock prints --, not 0%", () => {
+    const lines = formatProfileTable(
+      [
+        {
+          name: "gmu",
+          kind: "oauth",
+          active: false,
+          account: "jdilles@gmu.edu",
+          organization: null,
+          subscriptionType: "max",
+          rateLimitTier: null,
+          expiresAt: "2026-09-02T10:00:00.000Z",
+          expired: false,
+          hasRefreshToken: true,
+          apiKeyEnvVar: null,
+          allowRemoteControl: false,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 0, resetsAt: null as unknown as string },
+            sevenDay: { utilization: 0, resetsAt: null as unknown as string },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
+        },
+      ],
+      NOW,
+    );
+    const text = lines.join("\n");
+    expect(text).toContain("--");
+    expect(text).not.toContain("0%");
+  });
+
   test("falls back to a dash when the account is unknown", () => {
     const lines = formatProfileTable(
       [

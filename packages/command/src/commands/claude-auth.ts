@@ -562,8 +562,11 @@ function formatStamp(iso: string | null | undefined, now: Date, opts?: { relativ
   return rel ? `${stamp} (${rel})` : stamp;
 }
 
-/** `-` never fetched; `--` reset already passed (cached % is from the previous window). */
-function formatBucketPct(bucket: { utilization: number; resetsAt: string } | null | undefined, now: Date): string {
+/** `-` never fetched; `--` reset already passed or the bucket has no reset clock. */
+function formatBucketPct(
+  bucket: { utilization: number; resetsAt?: string | null } | null | undefined,
+  now: Date,
+): string {
   if (!bucket) return "-";
   if (windowResetPassed(bucket, now)) return "--";
   const n = bucket.utilization;

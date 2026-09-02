@@ -43,11 +43,16 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-/** True when this window's resetsAt is already in the past (cached % is from the previous window). */
-export function windowResetPassed(bucket: QuotaUsageBucket | null | undefined, now: Date): boolean {
-  if (!bucket?.resetsAt) return false;
+/**
+ * True when the cached percent must not be shown or ranked: no parseable reset
+ * clock (usage placeholder), or the clock is already in the past.
+ */
+export function windowResetPassed(bucket: { resetsAt?: string | null } | null | undefined, now: Date): boolean {
+  if (!bucket) return false;
+  if (typeof bucket.resetsAt !== "string") return true;
   const reset = Date.parse(bucket.resetsAt);
-  return !Number.isNaN(reset) && reset <= now.getTime();
+  if (Number.isNaN(reset)) return true;
+  return reset <= now.getTime();
 }
 
 /**
