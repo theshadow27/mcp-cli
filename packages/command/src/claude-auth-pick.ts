@@ -2,9 +2,10 @@
  * Sticky quota picker over `mcx claude auth ls` snapshots.
  *
  * Utilization in the usage API is percent *used*; remaining is 100 - used.
- * A window whose resetsAt is already in the past is unknown, not 0 — hop
- * targets need live-enough numbers. Ranking only runs when CURRENT must
- * leave, plus one harvest preemption for a dying 5h window.
+ * A window whose resetsAt is already in the past is 0 remaining (the cached
+ * percent is from the previous window) — hop targets need a fresh snapshot
+ * via `--fetch`/`--fetch-all`. Ranking only runs when CURRENT must leave,
+ * plus one harvest preemption for a dying 5h window.
  */
 
 import type { QuotaUsageBucket } from "@mcp-cli/core";
@@ -38,13 +39,42 @@ export interface AuthPick {
   reason: string;
 }
 
-/** Percent remaining in a usage window, or null when the snapshot cannot be trusted. */
+const MINUTE_MS = 60_000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+/** True when this window's resetsAt is already in the past (cached % is from the previous window). */
+export function windowResetPassed(bucket: QuotaUsageBucket | null | undefined, now: Date): boolean {
+  if (!bucket?.resetsAt) return false;
+  const reset = Date.parse(bucket.resetsAt);
+  return !Number.isNaN(reset) && reset <= now.getTime();
+}
+
+/**
+ * Compact relative duration for a future ISO timestamp: `3d`, `4h`, `15m`.
+ * Null when the stamp is missing, unparsable, or already in the past.
+ */
+export function formatRelativeFuture(iso: string, now: Date): string | null {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const ms = t - now.getTime();
+  if (ms <= 0) return null;
+  const days = Math.floor(ms / DAY_MS);
+  if (days >= 1) return `${days}d`;
+  const hours = Math.floor(ms / HOUR_MS);
+  if (hours >= 1) return `${hours}h`;
+  const minutes = Math.floor(ms / MINUTE_MS);
+  if (minutes >= 1) return `${minutes}m`;
+  return "<1m";
+}
+
+/**
+ * Percent remaining in a usage window, or null when the snapshot was never
+ * taken. A reset already in the past is 0 — the cached utilization is a lie.
+ */
 export function windowRemaining(bucket: QuotaUsageBucket | null | undefined, now: Date): number | null {
   if (!bucket || bucket.utilization == null) return null;
-  if (bucket.resetsAt) {
-    const reset = Date.parse(bucket.resetsAt);
-    if (!Number.isNaN(reset) && reset <= now.getTime()) return null;
-  }
+  if (windowResetPassed(bucket, now)) return 0;
   return 100 - bucket.utilization;
 }
 
@@ -89,10 +119,10 @@ function isEligible(profile: ProfileSummary, now: Date, opts: AuthPickOptions): 
 /**
  * Must CURRENT be left?
  *
- * `null` (never fetched, utilization absent, snapshot older than its own reset) means
- * *unknown*, and unknown is not healthy. `isEligible` has always disqualified null;
- * treating it as "fine" here was the asymmetry that let a fully exhausted account whose
- * snapshot went slightly stale read as healthy and never be left (#3427).
+ * `null` (never fetched, utilization absent) and `0` (snapshot older than its own
+ * reset) are both not healthy. `isEligible` disqualifies both; treating a stale
+ * window as "fine" let a fully exhausted account whose snapshot went slightly
+ * stale read as healthy and never be left (#3427).
  */
 function mustLeave(current: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
   if (!oauthUsable(current)) return true;
@@ -114,8 +144,9 @@ function resetAtMs(profile: ProfileSummary): number {
 function isHarvest(profile: ProfileSummary, now: Date, opts: AuthPickOptions): boolean {
   const five = windowRemaining(profile.quota?.fiveHour, now);
   if (five == null || five <= opts.harvestRemaining) return false;
-  // No `inMs > 0` term: `windowRemaining` already returned null for a reset in the
-  // past, and an absent/unparsable one makes `resetAtMs` +Infinity.
+  // No `inMs > 0` term: `windowRemaining` already returns 0 for a reset in the
+  // past (which fails the remaining floor), and an absent/unparsable one makes
+  // `resetAtMs` +Infinity.
   return resetAtMs(profile) - now.getTime() < opts.harvestWindowMs;
 }
 
@@ -153,7 +184,7 @@ export function pickRecommended(
       return {
         profile: harvest.name,
         action: "load",
-        reason: `harvest 5h window on ${harvest.name} (resets ${formatReset(harvest)})`,
+        reason: `harvest 5h window on ${harvest.name} (resets ${formatReset(harvest, now)})`,
       };
     }
     return { profile: current.name, action: "stay", reason: "current is healthy" };
@@ -198,10 +229,12 @@ function leaveWhy(current: ProfileSummary, now: Date, opts: AuthPickOptions): st
   return "must leave";
 }
 
-function formatReset(profile: ProfileSummary): string {
+function formatReset(profile: ProfileSummary, now: Date): string {
   const stamp = profile.quota?.fiveHour?.resetsAt;
   if (!stamp) return "soon";
-  return stamp.replace("T", " ").slice(0, 16);
+  const abs = stamp.replace("T", " ").slice(0, 16);
+  const rel = formatRelativeFuture(stamp, now);
+  return rel ? `${abs} (${rel})` : abs;
 }
 
 export const AUTH_LS_SORTS = ["7d-reset", "name"] as const;

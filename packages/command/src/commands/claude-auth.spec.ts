@@ -332,12 +332,13 @@ describe("mcx claude auth ls", () => {
     expect(text).toContain("NAME");
     expect(text).toContain("a@example.com");
     expect(text).toContain("$MY_KEY");
-    expect(text).toContain("2026-08-19 03:14");
+    expect(text).toContain("2026-08-19 03:14 (15h)");
     expect(text).toContain("yes"); // remote control allowed per the policy fixture
     expect(text).toContain("*> work"); // active and recommended
     expect(text).toContain("42%");
-    expect(text).toContain("2026-08-18 20:00");
+    expect(text).toContain("2026-08-18 20:00 (8h)");
     expect(text).toContain("8%");
+    expect(text).toContain("2026-08-25 04:00 (6d)");
     expect(text).toContain("AS OF");
     expect(text).not.toContain(ACCESS_TOKEN);
   });
@@ -962,62 +963,109 @@ describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
 
 describe("formatProfileTable", () => {
   test("marks expired tokens and unknown policy without leaking secrets", () => {
-    const lines = formatProfileTable([
-      {
-        name: "old",
-        kind: "oauth",
-        active: false,
-        account: "old@example.com",
-        organization: null,
-        subscriptionType: "pro",
-        rateLimitTier: null,
-        expiresAt: "2020-01-01T00:00:00.000Z",
-        expired: true,
-        hasRefreshToken: false,
-        apiKeyEnvVar: null,
-        allowRemoteControl: null,
-        hasCredentials: true,
-        updatedAt: NOW.toISOString(),
-        quota: {
-          capturedAt: "2020-01-01T00:00:00.000Z",
-          fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
-          sevenDay: { utilization: 10, resetsAt: "2020-01-07T00:00:00.000Z" },
-          sevenDaySonnet: null,
-          sevenDayOpus: null,
-          extraUsage: null,
+    const lines = formatProfileTable(
+      [
+        {
+          name: "old",
+          kind: "oauth",
+          active: false,
+          account: "old@example.com",
+          organization: null,
+          subscriptionType: "pro",
+          rateLimitTier: null,
+          expiresAt: "2020-01-01T00:00:00.000Z",
+          expired: true,
+          hasRefreshToken: false,
+          apiKeyEnvVar: null,
+          allowRemoteControl: null,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: "2020-01-01T00:00:00.000Z",
+            fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
+            sevenDay: { utilization: 10, resetsAt: "2020-01-07T00:00:00.000Z" },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
         },
-      },
-    ]);
+      ],
+      NOW,
+    );
 
     const text = lines.join("\n");
     expect(text).toContain("2020-01-01 00:00 (expired)");
     expect(text).toContain("unknown");
-    expect(text).toContain("97.5%");
+    expect(text).toContain("--");
+    expect(text).not.toContain("97.5%");
     expect(text).toContain("2020-01-01 05:00");
     expect(text).toContain("AS OF");
     expect(text).not.toContain("Token");
   });
 
+  test("future reset dates get a relative (3d)/(4h)/(15m) and past percents print --", () => {
+    const lines = formatProfileTable(
+      [
+        {
+          name: "work",
+          kind: "oauth",
+          active: true,
+          account: "a@example.com",
+          organization: null,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_20x",
+          expiresAt: "2026-08-19T03:14:00.000Z",
+          expired: false,
+          hasRefreshToken: true,
+          apiKeyEnvVar: null,
+          allowRemoteControl: true,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 99, resetsAt: "2026-08-18T11:00:00.000Z" },
+            sevenDay: { utilization: 8, resetsAt: "2026-08-21T12:00:00.000Z" },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
+        },
+      ],
+      NOW,
+    );
+    const text = lines.join("\n");
+    expect(text).toContain("2026-08-19 03:14 (15h)");
+    expect(text).toContain("--");
+    expect(text).not.toContain("99%");
+    expect(text).toContain("2026-08-18 11:00");
+    expect(text).not.toContain("2026-08-18 11:00 (");
+    expect(text).toContain("8%");
+    expect(text).toContain("2026-08-21 12:00 (3d)");
+  });
+
   test("falls back to a dash when the account is unknown", () => {
-    const lines = formatProfileTable([
-      {
-        name: "bare",
-        kind: "oauth",
-        active: true,
-        account: null,
-        organization: null,
-        subscriptionType: null,
-        rateLimitTier: null,
-        expiresAt: null,
-        expired: null,
-        hasRefreshToken: false,
-        apiKeyEnvVar: null,
-        allowRemoteControl: true,
-        hasCredentials: true,
-        updatedAt: NOW.toISOString(),
-        quota: null,
-      },
-    ]);
+    const lines = formatProfileTable(
+      [
+        {
+          name: "bare",
+          kind: "oauth",
+          active: true,
+          account: null,
+          organization: null,
+          subscriptionType: null,
+          rateLimitTier: null,
+          expiresAt: null,
+          expired: null,
+          hasRefreshToken: false,
+          apiKeyEnvVar: null,
+          allowRemoteControl: true,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: null,
+        },
+      ],
+      NOW,
+    );
     expect(lines[1]).toContain("*  bare");
     expect(lines[1]).toContain("-");
   });

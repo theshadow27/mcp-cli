@@ -24,9 +24,11 @@ import {
   type AuthLsSort,
   type AuthPick,
   DEFAULT_AUTH_LS_SORT,
+  formatRelativeFuture,
   isAuthLsSort,
   pickRecommended,
   sortProfilesForLs,
+  windowResetPassed,
 } from "../claude-auth-pick";
 import {
   type AuthPaths,
@@ -502,24 +504,24 @@ async function runLs(
     return;
   }
 
-  for (const line of formatProfileTable(listed)) d.log(line);
+  for (const line of formatProfileTable(listed, now)) d.log(line);
   if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
   else if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
 }
 
 /** Render the `ls` table. Exported for tests — must never contain token material. */
-export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>): string[] {
+export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>, now: Date): string[] {
   const rows = summaries.map((s) => ({
     marker: `${s.active ? "*" : " "}${s.recommended ? ">" : " "}`,
     name: s.name,
     kind: s.kind,
     account: s.kind === "api-key" ? `$${s.apiKeyEnvVar ?? "ANTHROPIC_API_KEY"}` : (s.account ?? "-"),
-    expires: formatExpiry(s),
-    fiveHour: formatPct(s.quota?.fiveHour?.utilization),
-    fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt),
-    sevenDay: formatPct(s.quota?.sevenDay?.utilization),
-    sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt),
-    asOf: formatStamp(s.quota?.capturedAt),
+    expires: formatExpiry(s, now),
+    fiveHour: formatBucketPct(s.quota?.fiveHour, now),
+    fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt, now),
+    sevenDay: formatBucketPct(s.quota?.sevenDay, now),
+    sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt, now),
+    asOf: formatStamp(s.quota?.capturedAt, now, { relative: false }),
     remote: s.allowRemoteControl === null ? "unknown" : s.allowRemoteControl ? "yes" : "no",
   }));
 
@@ -546,18 +548,24 @@ export function formatProfileTable(summaries: Array<ProfileSummary & { recommend
   return lines;
 }
 
-function formatExpiry(summary: ProfileSummary): string {
+function formatExpiry(summary: ProfileSummary, now: Date): string {
   if (summary.expiresAt === null) return "-";
-  const stamp = formatStamp(summary.expiresAt);
-  return summary.expired ? `${stamp} (expired)` : stamp;
+  if (summary.expired) return `${formatStamp(summary.expiresAt, now, { relative: false })} (expired)`;
+  return formatStamp(summary.expiresAt, now);
 }
 
-function formatStamp(iso: string | null | undefined): string {
+function formatStamp(iso: string | null | undefined, now: Date, opts?: { relative?: boolean }): string {
   if (!iso) return "-";
-  return iso.replace("T", " ").slice(0, 16);
+  const stamp = iso.replace("T", " ").slice(0, 16);
+  if (opts?.relative === false) return stamp;
+  const rel = formatRelativeFuture(iso, now);
+  return rel ? `${stamp} (${rel})` : stamp;
 }
 
-function formatPct(n: number | null | undefined): string {
-  if (n == null) return "-";
+/** `-` never fetched; `--` reset already passed (cached % is from the previous window). */
+function formatBucketPct(bucket: { utilization: number; resetsAt: string } | null | undefined, now: Date): string {
+  if (!bucket) return "-";
+  if (windowResetPassed(bucket, now)) return "--";
+  const n = bucket.utilization;
   return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
 }

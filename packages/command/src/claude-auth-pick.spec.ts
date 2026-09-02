@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { QuotaUsageBucket } from "@mcp-cli/core";
-import { pickRecommended, planSize, sortProfilesForLs, windowRemaining } from "./claude-auth-pick";
+import {
+  formatRelativeFuture,
+  pickRecommended,
+  planSize,
+  sortProfilesForLs,
+  windowRemaining,
+} from "./claude-auth-pick";
 import type { ProfileSummary } from "./claude-auth-store";
 
 const NOW = new Date("2026-08-30T02:33:00.000Z");
@@ -37,8 +43,30 @@ describe("windowRemaining", () => {
     expect(windowRemaining({ utilization: 92, resetsAt: "2026-08-30T07:00:00.000Z" }, NOW)).toBe(8);
   });
 
-  test("a reset already in the past makes the percent unknown", () => {
-    expect(windowRemaining({ utilization: 10, resetsAt: "2026-08-30T02:00:00.000Z" }, NOW)).toBeNull();
+  test("a reset already in the past is 0 remaining, not the cached percent", () => {
+    expect(windowRemaining({ utilization: 10, resetsAt: "2026-08-30T02:00:00.000Z" }, NOW)).toBe(0);
+  });
+});
+
+describe("formatRelativeFuture", () => {
+  test("picks days, hours, then minutes", () => {
+    expect(formatRelativeFuture("2026-09-02T02:33:00.000Z", NOW)).toBe("3d");
+    expect(formatRelativeFuture("2026-08-30T06:33:00.000Z", NOW)).toBe("4h");
+    expect(formatRelativeFuture("2026-08-30T02:48:00.000Z", NOW)).toBe("15m");
+  });
+
+  test("floors to the largest unit that fits", () => {
+    expect(formatRelativeFuture("2026-08-31T03:33:00.000Z", NOW)).toBe("1d");
+    expect(formatRelativeFuture("2026-08-30T03:32:00.000Z", NOW)).toBe("59m");
+  });
+
+  test("is null for past or unparsable stamps", () => {
+    expect(formatRelativeFuture("2026-08-30T02:00:00.000Z", NOW)).toBeNull();
+    expect(formatRelativeFuture("not-a-date", NOW)).toBeNull();
+  });
+
+  test("sub-minute future is <1m", () => {
+    expect(formatRelativeFuture("2026-08-30T02:33:30.000Z", NOW)).toBe("<1m");
   });
 });
 
