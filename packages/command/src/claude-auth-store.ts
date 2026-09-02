@@ -51,6 +51,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  type HarvestedClaudeOAuth,
   QUOTA_FETCH_ALL_BUDGET_MS,
   QUOTA_RATE_LIMIT_BACKOFF_MS,
   QUOTA_RATE_LIMIT_MAX_ATTEMPTS,
@@ -60,9 +61,11 @@ import {
   type StoredQuota,
   fetchQuotaUsage,
   flockUnlock,
+  harvestClaudeOAuthConstants,
   isQuotaRateLimitError,
   options,
   quotaRetryAfterMs,
+  resolveSourceClaudePath,
   toStoredQuota,
   tryFlockExclusive,
 } from "@mcp-cli/core";
@@ -198,6 +201,10 @@ export const AUTH_ERROR_CODES = [
   "config-locked",
   "config-unreadable",
   "io",
+  "refresh-live-owner",
+  "no-refresh-token",
+  "oauth-refresh-failed",
+  "harvest-failed",
 ] as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
@@ -395,6 +402,40 @@ export function withOperationLock<T>(paths: AuthPaths, fn: () => T, deadlineMs =
       Bun.sleepSync(LOCK_RETRY_MS);
     }
     return fn();
+  } finally {
+    if (held) flockUnlock(fd);
+    closeSync(fd);
+  }
+}
+
+const OAUTH_TOKEN_POST_TIMEOUT_MS = 30_000;
+const REFRESH_LOCK_DEADLINE_MS = OAUTH_TOKEN_POST_TIMEOUT_MS + 5_000;
+
+/**
+ * Same exclusive lock as `withOperationLock`, but the critical section may
+ * await (the oauth token POST is 30s). Other auth commands still fail after
+ * 2s rather than wait out the refresh.
+ */
+export async function withOperationLockAsync<T>(
+  paths: AuthPaths,
+  fn: () => Promise<T>,
+  deadlineMs = REFRESH_LOCK_DEADLINE_MS,
+): Promise<T> {
+  ensureProfilesDir(paths);
+  const lockPath = join(paths.profilesDir, OPERATION_LOCK_FILE);
+  const fd = io(`open ${lockPath}`, () => openSync(lockPath, "a+", FILE_MODE));
+  const deadline = Date.now() + deadlineMs;
+  let held = false;
+  try {
+    while (!held) {
+      held = tryFlockExclusive(fd);
+      if (held) break;
+      if (Date.now() >= deadline) {
+        throw new AuthProfileError("another mcx claude auth command is running — retry in a moment", "config-locked");
+      }
+      await Bun.sleep(LOCK_RETRY_MS);
+    }
+    return await fn();
   } finally {
     if (held) flockUnlock(fd);
     closeSync(fd);
@@ -1249,6 +1290,210 @@ export function accessTokenFromCredentials(credentials: Record<string, unknown> 
   if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
   const token = (root as Record<string, unknown>).accessToken;
   return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+/** Pull the refresh token out of a credentials blob. Never logs it. */
+export function refreshTokenFromCredentials(credentials: Record<string, unknown> | null | undefined): string | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  const token = (root as Record<string, unknown>).refreshToken;
+  return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+function scopesFromCredentials(credentials: Record<string, unknown> | null | undefined): string[] {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return [];
+  const raw = (root as Record<string, unknown>).scopes;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === "string" && s.length > 0);
+}
+
+export interface RefreshTokenRequest {
+  grant_type: "refresh_token";
+  refresh_token: string;
+  client_id: string;
+  scope: string;
+}
+
+export type OAuthTokenPoster = (
+  url: string,
+  body: RefreshTokenRequest,
+) => Promise<{ status: number; json: Record<string, unknown> }>;
+
+export interface RefreshStoredProfileOpts {
+  paths: AuthPaths;
+  name: string;
+  now: Date;
+  platform: string;
+  /** Called only after live-owner / missing-token guards pass — never on a refuse. */
+  harvest: () => HarvestedClaudeOAuth;
+  postToken: OAuthTokenPoster;
+}
+
+export interface RefreshStoredProfileResult {
+  name: string;
+  expiresAt: string;
+  scopes: string[];
+  scopeSource: "stored" | "harvested";
+  rotatedRefreshToken: boolean;
+}
+
+/** Read TOKEN_URL / CLIENT_ID / P3 from the installed claude binary. */
+export function harvestFromInstalledClaude(): HarvestedClaudeOAuth {
+  let path: string | null;
+  try {
+    path = resolveSourceClaudePath();
+  } catch (err) {
+    throw new AuthProfileError(
+      `Could not locate claude binary: ${err instanceof Error ? err.message : String(err)}`,
+      "harvest-failed",
+    );
+  }
+  if (!path) {
+    throw new AuthProfileError(
+      "Could not locate `claude` on PATH to harvest oauth constants. Install Claude Code or set MCX_CLAUDE_BINARY.",
+      "harvest-failed",
+    );
+  }
+  try {
+    return harvestClaudeOAuthConstants(readFileSync(path));
+  } catch (err) {
+    throw new AuthProfileError(
+      `Could not harvest oauth constants from ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      "harvest-failed",
+    );
+  }
+}
+
+export async function postOAuthToken(
+  url: string,
+  body: RefreshTokenRequest,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(OAUTH_TOKEN_POST_TIMEOUT_MS),
+  });
+  const text = await resp.text();
+  let json: Record<string, unknown> = {};
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    json = { error: text.slice(0, 200) };
+  }
+  return { status: resp.status, json };
+}
+
+/**
+ * Refresh one stored oauth profile against Anthropic's token endpoint.
+ *
+ * Never writes `~/.claude/.credentials.json`. Refuses if this profile owns the
+ * live identity (or shares its refresh token) — rotating that RT would kick
+ * the live Claude session to /login. Holds the auth operation lock for the
+ * POST so a concurrent `load` cannot dump the pre-rotation token into live.
+ */
+export async function refreshStoredProfile(opts: RefreshStoredProfileOpts): Promise<RefreshStoredProfileResult> {
+  const { paths, name, now, platform, harvest, postToken } = opts;
+  assertPlatformSupported(platform);
+  validateProfileName(name);
+
+  return withOperationLockAsync(paths, async () => {
+    const profile = readProfile(paths, name);
+    if (!profile) {
+      throw new AuthProfileError(
+        `No such auth profile: "${name}". Run "mcx claude auth ls" to see saved ones.`,
+        "not-found",
+      );
+    }
+    if (profile.kind !== "oauth") {
+      throw new AuthProfileError(`Profile "${name}" is an api-key profile — there is no oauth token to refresh`, "io");
+    }
+    const refreshToken = refreshTokenFromCredentials(profile.credentials);
+    if (!refreshToken) {
+      throw new AuthProfileError(
+        `Profile "${name}" has no refresh token — log in with claude and \`mcx claude auth save ${name}\``,
+        "no-refresh-token",
+      );
+    }
+
+    const live = readLiveState(paths, now);
+    const liveOwner = attributedLiveProfile(paths, live);
+    const liveRt = refreshTokenFromCredentials(live.credentials);
+    if (liveOwner === name || (liveRt !== null && liveRt === refreshToken)) {
+      throw new AuthProfileError(
+        `Refusing to refresh "${name}": it owns the live Claude identity (or shares its refresh token). Switch away first, or let Claude Code refresh in place and \`ls --fetch\`.`,
+        "refresh-live-owner",
+      );
+    }
+
+    const constants = harvest();
+    const storedScopes = scopesFromCredentials(profile.credentials);
+    const scopes = storedScopes.length > 0 ? storedScopes : constants.scopes;
+    const scopeSource: "stored" | "harvested" = storedScopes.length > 0 ? "stored" : "harvested";
+    const body: RefreshTokenRequest = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: constants.clientId,
+      scope: scopes.join(" "),
+    };
+
+    const { status, json } = await postToken(constants.tokenUrl, body);
+    if (status === 429) {
+      throw new AuthProfileError(
+        `Quota/token endpoint rate-limited (429) refreshing "${name}"`,
+        "oauth-refresh-failed",
+      );
+    }
+    if (status !== 200) {
+      const errText =
+        typeof json.error === "string"
+          ? json.error
+          : typeof json.error_description === "string"
+            ? json.error_description
+            : `HTTP ${status}`;
+      const hint =
+        errText.includes("invalid_grant") || status === 401
+          ? " — stored refresh token was rejected (already rotated?). Load this profile once so Claude Code can re-mint it."
+          : "";
+      throw new AuthProfileError(`Token refresh failed for "${name}": ${errText}${hint}`, "oauth-refresh-failed");
+    }
+    const accessToken = json.access_token;
+    if (typeof accessToken !== "string" || accessToken.length === 0) {
+      throw new AuthProfileError(`Token refresh for "${name}" returned no access_token`, "oauth-refresh-failed");
+    }
+    const nextRefresh =
+      typeof json.refresh_token === "string" && json.refresh_token.length > 0 ? json.refresh_token : refreshToken;
+    const expiresIn = typeof json.expires_in === "number" ? json.expires_in : 8 * 3600;
+    const expiresAt = now.getTime() + expiresIn * 1000;
+    const rtExpiresIn = typeof json.refresh_token_expires_in === "number" ? json.refresh_token_expires_in : undefined;
+    const nextScopes =
+      typeof json.scope === "string" && json.scope.trim().length > 0 ? json.scope.trim().split(/\s+/) : scopes;
+
+    const root = credentialsRoot(profile);
+    const nextRoot: Record<string, unknown> = {
+      ...(root ?? {}),
+      accessToken,
+      refreshToken: nextRefresh,
+      expiresAt,
+      scopes: nextScopes,
+    };
+    if (rtExpiresIn !== undefined) nextRoot.refreshTokenExpiresAt = now.getTime() + rtExpiresIn * 1000;
+
+    writeProfile(paths, {
+      ...profile,
+      credentials: { ...profile.credentials, claudeAiOauth: nextRoot },
+      updatedAt: now.toISOString(),
+    });
+
+    return {
+      name,
+      expiresAt: new Date(expiresAt).toISOString(),
+      scopes: nextScopes,
+      scopeSource,
+      rotatedRefreshToken: nextRefresh !== refreshToken,
+    };
+  });
 }
 
 /** Access-token expiry vs `now`. Null when the blob has no numeric `expiresAt`. */

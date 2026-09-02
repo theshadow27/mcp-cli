@@ -17,24 +17,30 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaRateLimitError, flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
+import { restoreEnv } from "../../../test/env";
 import { testOptions } from "../../../test/test-options";
 import {
   type AuthErrorCode,
   type AuthPaths,
   AuthProfileError,
   type ClaudeAuthProfile,
+  type OAuthTokenPoster,
+  type RefreshTokenRequest,
   assertPlatformSupported,
   defaultAuthPaths,
   fetchUnexpiredProfileQuotas,
+  harvestFromInstalledClaude,
   isOauthTokenExpired,
   listProfiles,
   loadProfile,
   patchClaudeConfigIdentity,
+  postOAuthToken,
   readActivePointer,
   readActiveProfileName,
   readLiveState,
   readProfile,
   refreshProfileCredentialsFromLive,
+  refreshStoredProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
   stampActiveProfileQuota,
@@ -135,6 +141,17 @@ function mode(path: string): number {
 function expectAuthError(fn: () => unknown, code: AuthErrorCode): AuthProfileError {
   try {
     fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(AuthProfileError);
+    expect((err as AuthProfileError).code).toBe(code);
+    return err as AuthProfileError;
+  }
+  throw new Error(`expected an AuthProfileError with code "${code}"`);
+}
+
+async function expectAuthErrorAsync(fn: () => Promise<unknown>, code: AuthErrorCode): Promise<AuthProfileError> {
+  try {
+    await fn();
   } catch (err) {
     expect(err).toBeInstanceOf(AuthProfileError);
     expect((err as AuthProfileError).code).toBe(code);
@@ -1703,5 +1720,398 @@ describe("loadProfile — rollback", () => {
     ).toThrow(AuthProfileError);
 
     expect(existsSync(fs.claudeConfigPath)).toBe(false);
+  });
+});
+
+const HARVESTED = {
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"],
+};
+
+const PERSONAL_RT = "sk-ant-ort01-PERSONAL-RT";
+const NEW_ACCESS = "sk-ant-oat01-REFRESHED";
+const NEW_REFRESH = "sk-ant-ort01-ROTATED";
+
+/** Save `work`, then a distinct `personal` that owns the live identity. */
+function parkWork(fs: AuthPaths): void {
+  save(fs, "work");
+  writeFileSync(
+    fs.credentialsPath,
+    JSON.stringify(credentials({ accessToken: "tok-personal", refreshToken: PERSONAL_RT })),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    fs.claudeConfigPath,
+    JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+    { mode: 0o600 },
+  );
+  save(fs, "personal");
+}
+
+function harvestNever(): never {
+  throw new Error("harvest should not run");
+}
+
+function postNever(): Promise<never> {
+  throw new Error("postToken should not run — would have hit the live token endpoint");
+}
+
+function postOk(overrides?: Record<string, unknown>): OAuthTokenPoster {
+  return async () => ({
+    status: 200,
+    json: {
+      access_token: NEW_ACCESS,
+      refresh_token: NEW_REFRESH,
+      expires_in: 3600,
+      ...overrides,
+    },
+  });
+}
+
+describe("refreshStoredProfile", () => {
+  test("writes new tokens onto the parked profile and never touches credentials.json", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+
+    const posts: Array<{ url: string; body: RefreshTokenRequest }> = [];
+    const result = await refreshStoredProfile({
+      paths: fs,
+      name: "work",
+      now: NOW,
+      platform: "linux",
+      harvest: () => HARVESTED,
+      postToken: async (url, body) => {
+        posts.push({ url, body });
+        return postOk()(url, body);
+      },
+    });
+
+    expect(result).toEqual({
+      name: "work",
+      expiresAt: new Date(NOW.getTime() + 3600 * 1000).toISOString(),
+      scopes: ["user:inference"],
+      scopeSource: "stored",
+      rotatedRefreshToken: true,
+    });
+    expect(posts).toEqual([
+      {
+        url: HARVESTED.tokenUrl,
+        body: {
+          grant_type: "refresh_token",
+          refresh_token: REFRESH_TOKEN,
+          client_id: HARVESTED.clientId,
+          scope: "user:inference",
+        },
+      },
+    ]);
+    expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+    const stored = readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>;
+    expect(stored.accessToken).toBe(NEW_ACCESS);
+    expect(stored.refreshToken).toBe(NEW_REFRESH);
+    expect(stored.expiresAt).toBe(NOW.getTime() + 3600 * 1000);
+    expect(stored.subscriptionType).toBe("max");
+    expect(stored.rateLimitTier).toBe("default_claude_max_20x");
+  });
+
+  test("falls back to harvested P3 when the stored blob has no scopes", async () => {
+    using fs = sandbox({ credentials: credentials({ scopes: undefined }) });
+    parkWork(fs);
+
+    const posts: RefreshTokenRequest[] = [];
+    const result = await refreshStoredProfile({
+      paths: fs,
+      name: "work",
+      now: NOW,
+      platform: "linux",
+      harvest: () => HARVESTED,
+      postToken: async (_url, body) => {
+        posts.push(body);
+        return postOk({ scope: HARVESTED.scopes.join(" ") })(_url, body);
+      },
+    });
+
+    expect(posts[0]?.scope).toBe(HARVESTED.scopes.join(" "));
+    expect(result.scopeSource).toBe("harvested");
+    expect(result.scopes).toEqual(HARVESTED.scopes);
+  });
+
+  test("refuses the live owner without harvesting or posting", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const before = readProfile(fs, "work")?.credentials;
+
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "refresh-live-owner",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("refuses a parked profile that still shares the live refresh token", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    writeFileSync(
+      fs.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+      { mode: 0o600 },
+    );
+    save(fs, "personal");
+
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "refresh-live-owner",
+    );
+  });
+
+  test("refuses an api-key profile", async () => {
+    using fs = sandbox();
+    save(fs, "key", { MY_KEY: "sk-secret" }, "MY_KEY");
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "key",
+          now: NOW,
+          platform: "linux",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "io",
+    );
+  });
+
+  test("throws not-found for a missing profile", async () => {
+    using fs = sandbox();
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "nope",
+          now: NOW,
+          platform: "linux",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "not-found",
+    );
+  });
+
+  test("throws when the parked profile has no refresh token", async () => {
+    using fs = sandbox({ credentials: credentials({ refreshToken: undefined }) });
+    parkWork(fs);
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "no-refresh-token",
+    );
+  });
+
+  test("invalid_grant does not rewrite the profile and hints at a load", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+
+    const err = await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: () => HARVESTED,
+          postToken: async () => ({ status: 400, json: { error: "invalid_grant" } }),
+        }),
+      "oauth-refresh-failed",
+    );
+    expect(err.message).toContain("invalid_grant");
+    expect(err.message).toContain("Load this profile");
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("429 does not rewrite the profile", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: () => HARVESTED,
+          postToken: async () => ({ status: 429, json: { error: "rate_limited" } }),
+        }),
+      "oauth-refresh-failed",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("a 200 with no access_token does not rewrite the profile", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "linux",
+          harvest: () => HARVESTED,
+          postToken: async () => ({ status: 200, json: { token_type: "Bearer" } }),
+        }),
+      "oauth-refresh-failed",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("keeps the stored refresh token when the response omits a new one", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const result = await refreshStoredProfile({
+      paths: fs,
+      name: "work",
+      now: NOW,
+      platform: "linux",
+      harvest: () => HARVESTED,
+      postToken: postOk({ refresh_token: undefined }),
+    });
+    expect(result.rotatedRefreshToken).toBe(false);
+    expect((readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>).refreshToken).toBe(
+      REFRESH_TOKEN,
+    );
+  });
+
+  test("darwin is unsupported", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile({
+          paths: fs,
+          name: "work",
+          now: NOW,
+          platform: "darwin",
+          harvest: harvestNever,
+          postToken: postNever,
+        }),
+      "unsupported-platform",
+    );
+  });
+});
+
+describe("harvestFromInstalledClaude", () => {
+  const fixture =
+    'C_="user:inference",aU="user:profile",P3=[aU,C_,"user:sessions:claude_code","user:mcp_servers","user:file_upload"],_={TOKEN_URL:"https://platform.claude.com/v1/oauth/token",CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}';
+
+  test("harvests TOKEN_URL / CLIENT_ID / P3 from MCX_CLAUDE_BINARY", () => {
+    using fs = sandbox();
+    const bin = join(fs.root, "fake-claude");
+    writeFileSync(bin, fixture);
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = bin;
+    try {
+      expect(harvestFromInstalledClaude()).toEqual(HARVESTED);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("maps a missing MCX_CLAUDE_BINARY path to harvest-failed", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = "/nonexistent/path/to/claude";
+    try {
+      expectAuthError(() => harvestFromInstalledClaude(), "harvest-failed");
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("maps a binary without the oauth module to harvest-failed", () => {
+    using fs = sandbox();
+    const bin = join(fs.root, "not-claude");
+    writeFileSync(bin, "not a claude binary");
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = bin;
+    try {
+      expectAuthError(() => harvestFromInstalledClaude(), "harvest-failed");
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+});
+
+describe("postOAuthToken", () => {
+  test("POSTs JSON (not form-urlencoded) and parses the body", async () => {
+    const original = globalThis.fetch;
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ access_token: "x" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const result = await postOAuthToken("https://example.test/v1/oauth/token", {
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("https://example.test/v1/oauth/token");
+      expect(calls[0]?.init.method).toBe("POST");
+      expect(calls[0]?.init.headers).toEqual({ "Content-Type": "application/json" });
+      expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(result).toEqual({ status: 200, json: { access_token: "x" } });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test("non-JSON bodies become { error: text }", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("WAF blocked", { status: 403 })) as unknown as typeof fetch;
+    try {
+      const result = await postOAuthToken("https://example.test/v1/oauth/token", {
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(result).toEqual({ status: 403, json: { error: "WAF blocked" } });
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

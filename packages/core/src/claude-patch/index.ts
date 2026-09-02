@@ -24,3 +24,8 @@ export {
   type UpdateOptions,
   type UpdateOutcome,
 } from "./patcher";
+export {
+  harvestClaudeOAuthConstants,
+  OAuthHarvestError,
+  type HarvestedClaudeOAuth,
+} from "./oauth-harvest";

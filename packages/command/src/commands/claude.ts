@@ -2499,6 +2499,7 @@ Usage:
   mcx claude auth save <profile>           Snapshot the active Claude identity into a profile
   mcx claude auth load <profile>           Switch the active Claude identity to a profile
   mcx claude auth load --auto              Switch to the recommended > profile if needed
+  mcx claude auth refresh <profile>        Mint a new access token onto a parked oauth profile
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude

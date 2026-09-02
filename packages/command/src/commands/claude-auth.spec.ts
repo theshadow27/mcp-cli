@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaRateLimitError, type QuotaStatus } from "@mcp-cli/core";
-import type { AuthPaths } from "../claude-auth-store";
+import { type AuthPaths, AuthProfileError } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
 
@@ -85,6 +85,12 @@ function harness(opts?: { env?: Record<string, string | undefined>; platform?: s
       platform: opts?.platform ?? "linux",
       now: () => NOW,
       fetchQuota: async () => SAMPLE_QUOTA,
+      harvestOAuth: () => {
+        throw new Error("harvestOAuth not injected — test would have read the real claude binary");
+      },
+      postOAuthToken: async () => {
+        throw new Error("postOAuthToken not injected — test would have hit the live token endpoint");
+      },
     },
     [Symbol.dispose]() {
       rmSync(root, { recursive: true, force: true });
@@ -1071,5 +1077,160 @@ describe("mcx claude auth — QA regressions", () => {
     const payload = JSON.parse(h.out.join("\n"));
     expect(payload.outgoingPreservedAs).toBe("backup");
     expect(readFileSync(join(payload.orphanBackupDir, "credentials.json"), "utf-8")).toContain("cli-refreshed");
+  });
+});
+
+const HARVESTED = {
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"],
+};
+
+const PERSONAL_RT = "sk-ant-ort01-PERSONAL-RT";
+const NEW_ACCESS = "sk-ant-oat01-CLI-REFRESHED";
+const NEW_REFRESH = "sk-ant-ort01-CLI-ROTATED";
+
+async function parkWork(h: Harness): Promise<void> {
+  await claudeAuth(["save", "work"], h.deps, h.envDeps);
+  writeFileSync(
+    h.paths.credentialsPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "tok-personal",
+        refreshToken: PERSONAL_RT,
+        expiresAt: EXPIRES_AT,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    }),
+  );
+  writeFileSync(
+    h.paths.claudeConfigPath,
+    JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@example.com", accountUuid: "uuid-b" } }),
+  );
+  await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+}
+
+function injectRefreshOk(h: Harness): Array<{ url: string; body: unknown }> {
+  const posts: Array<{ url: string; body: unknown }> = [];
+  h.envDeps.harvestOAuth = () => HARVESTED;
+  h.envDeps.postOAuthToken = async (url, body) => {
+    posts.push({ url, body });
+    return {
+      status: 200,
+      json: {
+        access_token: NEW_ACCESS,
+        refresh_token: NEW_REFRESH,
+        expires_in: 3600,
+      },
+    };
+  };
+  return posts;
+}
+
+describe("mcx claude auth refresh", () => {
+  test("missing name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["refresh"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Missing profile name");
+  });
+
+  test("darwin exits 2 and writes nothing", async () => {
+    using h = harness({ platform: "darwin" });
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 2);
+    expect(h.err.join(" ")).toContain("Linux-only");
+    expect(existsSync(h.paths.profilesDir)).toBe(false);
+  });
+
+  test("human output confirms the parked refresh and leaves live credentials alone", async () => {
+    using h = harness();
+    await parkWork(h);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    const posts = injectRefreshOk(h);
+    h.out.length = 0;
+
+    await claudeAuth(["refresh", "work"], h.deps, h.envDeps);
+
+    const text = h.out.join("\n");
+    expect(text).toContain('Refreshed auth profile "work"');
+    expect(text).toContain("refresh token rotated");
+    expect(text).toContain("scopes (stored): user:inference");
+    expect(text).not.toContain(ACCESS_TOKEN);
+    expect(text).not.toContain(NEW_ACCESS);
+    expect(text).not.toContain(NEW_REFRESH);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      url: HARVESTED.tokenUrl,
+      body: {
+        grant_type: "refresh_token",
+        client_id: HARVESTED.clientId,
+        scope: "user:inference",
+      },
+    });
+    const stored = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(stored.credentials.claudeAiOauth.accessToken).toBe(NEW_ACCESS);
+    expect(stored.credentials.claudeAiOauth.refreshToken).toBe(NEW_REFRESH);
+  });
+
+  test("--json emits a machine-readable record with no token material", async () => {
+    using h = harness();
+    await parkWork(h);
+    injectRefreshOk(h);
+    h.out.length = 0;
+
+    await claudeAuth(["refresh", "work", "--json"], h.deps, h.envDeps);
+
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload).toMatchObject({
+      ok: true,
+      action: "refresh",
+      name: "work",
+      scopeSource: "stored",
+      rotatedRefreshToken: true,
+    });
+    expect(h.out.join("\n")).not.toContain(ACCESS_TOKEN);
+    expect(h.out.join("\n")).not.toContain(NEW_ACCESS);
+    expect(h.out.join("\n")).not.toContain(NEW_REFRESH);
+  });
+
+  test("refuses to refresh the live owner", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    injectRefreshOk(h);
+    h.out.length = 0;
+
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("owns the live Claude identity");
+    expect(h.out).toEqual([]);
+  });
+
+  test("invalid_grant exits 1 and leaves the stored blob unchanged", async () => {
+    using h = harness();
+    await parkWork(h);
+    const before = readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8");
+    h.envDeps.harvestOAuth = () => HARVESTED;
+    h.envDeps.postOAuthToken = async () => ({ status: 400, json: { error: "invalid_grant" } });
+
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("invalid_grant");
+    expect(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).toBe(before);
+  });
+
+  test("harvest failure exits 1 without posting", async () => {
+    using h = harness();
+    await parkWork(h);
+    let posted = false;
+    h.envDeps.harvestOAuth = () => {
+      throw new AuthProfileError("Could not harvest oauth constants from /nope", "harvest-failed");
+    };
+    h.envDeps.postOAuthToken = async () => {
+      posted = true;
+      return { status: 200, json: {} };
+    };
+
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Could not harvest");
+    expect(posted).toBe(false);
   });
 });

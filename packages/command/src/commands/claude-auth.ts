@@ -1,16 +1,19 @@
 /**
- * `mcx claude auth save|load|ls` — scriptable Claude identity switching (#3006).
+ * `mcx claude auth save|load|ls|refresh` — scriptable Claude identity switching (#3006).
  * `ls --fetch` re-queries the usage API for the live identity and stamps the
  * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
  * `ls --fetch-all` does the same, one profile at a time, for every stored
  * access token that is still valid. Expired tokens are skipped (they need a
- * load). 429s back off, a throttled profile does not stop the walk, and the whole
- * sweep is bounded by a wall-clock budget. Both stamp only onto the profile that
- * provably owns the credentials the numbers were measured with, and copy a token
- * Claude refreshed in place back onto it. `ls` marks the sticky recommended
- * identity with `>` (never on a `wait`); `load --auto` switches to it.
+ * `refresh` or a `load`). 429s back off, a throttled profile does not stop the
+ * walk, and the whole sweep is bounded by a wall-clock budget. Both stamp only
+ * onto the profile that provably owns the credentials the numbers were measured
+ * with, and copy a token Claude refreshed in place back onto it. `ls` marks the
+ * sticky recommended identity with `>` (never on a `wait`); `load --auto`
+ * switches to it. `refresh <profile>` posts a refresh_token grant for a *parked*
+ * oauth profile and writes the new tokens onto that file only — never onto
+ * `~/.claude/.credentials.json`.
  *
- * All three subcommands are non-interactive and agent-callable: JSON on `--json`
+ * All four subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
  * codes. The filesystem work lives in `../claude-auth-store` so it can be tested
  * against injected paths — no test ever touches a real `~/.claude`.
@@ -28,6 +31,7 @@ import {
 import {
   type AuthPaths,
   AuthProfileError,
+  type OAuthTokenPoster,
   type ProfileSummary,
   type QuotaFetcher,
   type SleepFn,
@@ -35,11 +39,14 @@ import {
   attributedLiveProfile,
   defaultAuthPaths,
   fetchUnexpiredProfileQuotas,
+  harvestFromInstalledClaude,
   listProfiles,
   loadProfile,
+  postOAuthToken,
   readActivePointer,
   readLiveState,
   refreshProfileCredentialsFromLive,
+  refreshStoredProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
   snapshotQuotaFromCredentialsRetrying,
@@ -76,6 +83,10 @@ export interface AuthEnvDeps {
   fetchQuota: QuotaFetcher;
   /** Injected by tests so 429 backoff does not wait on the clock. */
   sleep: SleepFn;
+  /** Injected by tests so `auth refresh` never reads the real claude binary. */
+  harvestOAuth?: () => ReturnType<typeof harvestFromInstalledClaude>;
+  /** Injected by tests so `auth refresh` never hits the token endpoint. */
+  postOAuthToken?: OAuthTokenPoster;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -88,13 +99,15 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     now: overrides?.now ?? (() => new Date()),
     fetchQuota: overrides?.fetchQuota ?? fetchQuotaUsage,
     sleep: overrides?.sleep ?? ((ms: number) => Bun.sleep(ms)),
+    harvestOAuth: overrides?.harvestOAuth,
+    postOAuthToken: overrides?.postOAuthToken,
   };
 }
 
 /** Subcommands that read or write Claude's own credential files. */
-const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load"]);
+const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load", "refresh"]);
 
-const AUTH_SUBCOMMANDS = ["save", "load", "ls"] as const;
+const AUTH_SUBCOMMANDS = ["save", "load", "ls", "refresh"] as const;
 type AuthSubcommand = (typeof AUTH_SUBCOMMANDS)[number];
 
 function isAuthSubcommand(value: string): value is AuthSubcommand {
@@ -122,7 +135,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
 
   if (!isAuthSubcommand(sub)) {
     d.printError(
-      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", or "ls".`,
+      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", "ls", or "refresh <profile>".`,
     );
     return d.exit(EXIT_ERROR);
   }
@@ -171,6 +184,8 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
           envDeps,
         );
       }
+      case "refresh":
+        return await runRefresh(parsed.positionals, json, d, envDeps);
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -344,6 +359,27 @@ async function loadNamed(
   if (result.credentialsWritten) d.log("  credentials written");
   if (result.identityWritten) d.log("  identity keys updated in ~/.claude.json");
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
+}
+
+async function runRefresh(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
+  const name = requireName(positionals, "mcx claude auth refresh <profile>", d);
+  validateProfileName(name);
+  const result = await refreshStoredProfile({
+    paths: envDeps.paths,
+    name,
+    now: envDeps.now(),
+    platform: envDeps.platform,
+    harvest: envDeps.harvestOAuth ?? harvestFromInstalledClaude,
+    postToken: envDeps.postOAuthToken ?? postOAuthToken,
+  });
+  if (json) {
+    d.log(JSON.stringify({ ok: true, action: "refresh", ...result }, null, 2));
+    return;
+  }
+  d.log(`Refreshed auth profile "${result.name}"`);
+  d.log(`  access token expires ${result.expiresAt.replace("T", " ").slice(0, 16)}`);
+  d.log(`  scopes (${result.scopeSource}): ${result.scopes.join(" ")}`);
+  if (result.rotatedRefreshToken) d.log("  refresh token rotated");
 }
 
 /** One "kept the older number" line per degraded bucket, so a silent hole is visible. */
