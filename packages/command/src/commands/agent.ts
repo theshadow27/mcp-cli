@@ -233,7 +233,7 @@ export async function cmdAgent(args: string[], deps?: Partial<AgentDeps>): Promi
   const provider = getProvider(providerName);
   if (!provider) {
     const available = getAllProviders()
-      .filter((p) => !["copilot", "gemini", "grok"].includes(p.name))
+      .filter((p) => !["copilot", "gemini", "grok", "kiro"].includes(p.name))
       .map((p) => p.name)
       .join(", ");
     (deps?.printError ?? defaultPrintError)(`Unknown provider: ${providerName}. Available: ${available}`);
@@ -395,7 +395,7 @@ export function parseAgentSpawnArgs(
       if (agentOverride) return 1; // Already set by wrapper
       const val = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
       if (!val || val.startsWith("-")) {
-        extraError = "--agent requires a value (e.g. copilot, gemini, grok)";
+        extraError = "--agent requires a value (e.g. copilot, gemini, grok, kiro)";
         return 0;
       }
       agent = val;
@@ -521,7 +521,7 @@ async function agentSpawn(
 
   // ACP requires --agent
   if (hasFeature(provider, "agentSelect") && !parsed.agent) {
-    d.printError("--agent is required for ACP. Specify which agent to spawn (e.g. copilot, gemini, grok).");
+    d.printError("--agent is required for ACP. Specify which agent to spawn (e.g. copilot, gemini, grok, kiro).");
     d.exit(1);
   }
 
@@ -2027,6 +2027,7 @@ Examples:
   mcx agent copilot wait --timeout 30000
   mcx agent gemini bye <session>
   mcx agent grok spawn --worktree -t "review this diff" --allow Read Grep
+  mcx agent kiro spawn -t "implement this issue" --allow Read Edit
 
 Run "mcx agent <provider> --help" for provider-specific subcommands.`);
 }
@@ -2098,7 +2099,7 @@ function printSpawnUsage(
     lines.push("  --headed                   Open in a visible terminal tab");
   }
   if (hasFeature(provider, "agentSelect") && !agentOverride) {
-    lines.push("  --agent, -a <name>         ACP agent to spawn (e.g. copilot, gemini, grok)");
+    lines.push("  --agent, -a <name>         ACP agent to spawn (e.g. copilot, gemini, grok, kiro)");
   }
   if (provider.name === "opencode") {
     lines.push("  --provider, -p <name>      LLM provider (e.g. anthropic, openai, google)");
