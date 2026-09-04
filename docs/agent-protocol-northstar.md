@@ -2,7 +2,7 @@
 
 ## North Star
 
-mcx talks to ≥6 agent providers today (claude, codex, opencode, acp, gemini, copilot, grok, mock). Only claude is exercised regularly, and only at one pinned version. Codex is fully broken (#2482) and nobody noticed for two sprints. We are flying blind on every non-claude provider.
+mcx talks to ≥6 agent providers today (claude, codex, opencode, acp, gemini, copilot, grok, kiro, mock). Only claude is exercised regularly, and only at one pinned version. Codex is fully broken (#2482) and nobody noticed for two sprints. We are flying blind on every non-claude provider.
 
 **The north star:** a versioned, recorded, machine-checkable protocol between mcx and any agent worker, with a continuously-maintained matrix of `(provider × version)` test outcomes recorded in-repo, a nightly pipeline that adds new versions and retests known-failing ones, and a mock provider that is the canonical reference implementation. When a provider breaks, an issue exists within 24 hours, tagged by failure class and version. The one current dependency we cannot afford to lose — claude 2.1.119, which auto-sprint pins to — is manually archived in LFS so anthropic yanking it from npm cannot brick the auto-sprint.
 

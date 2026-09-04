@@ -667,20 +667,22 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
   }
 
   // Bun.which() is a synchronous builtin — no subprocess, no await needed.
-  const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled, grokInstalled] = [
+  const [codexInstalled, ghInstalled, geminiInstalled, opencodeInstalled, grokInstalled, kiroInstalled] = [
     Bun.which("codex") !== null,
     Bun.which("gh") !== null,
     Bun.which("gemini") !== null,
     Bun.which("opencode") !== null,
     Bun.which("grok") !== null,
+    Bun.which("kiro-cli") !== null,
   ];
 
   // Codex server: only created if `codex` binary is installed
   const codexServer = codexInstalled ? new CodexServer(db, daemonId, undefined, logger) : null;
 
   // ACP server: created if any ACP-compatible agent binary is found on PATH
-  // Includes Grok (via `grok agent stdio`) as a first-class target for sprint orchestration.
-  const acpAgentInstalled = ghInstalled || geminiInstalled || grokInstalled;
+  // Includes Grok (via `grok agent stdio`) and Kiro (via `kiro-cli acp`) as
+  // first-class targets for sprint orchestration.
+  const acpAgentInstalled = ghInstalled || geminiInstalled || grokInstalled || kiroInstalled;
   const acpServer = acpAgentInstalled ? new AcpServer(db, daemonId, undefined, logger) : null;
 
   // OpenCode server: only created if `opencode` binary is installed
