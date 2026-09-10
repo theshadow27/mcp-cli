@@ -2495,10 +2495,13 @@ Usage:
   mcx claude worktrees                     List mcx-created worktrees
   mcx claude worktrees --prune             Remove orphaned worktrees + merged branches
   mcx claude patch-update                  Refresh the patched copy used for mcx spawns (#1808)
-  mcx claude auth ls [--json] [--fetch|--fetch-all]  List saved auth profiles (Linux only)
+  mcx claude auth ls [--json] [--fetch|--fetch-all] [--sort 7d-reset|name]  List saved auth profiles (Linux only)
   mcx claude auth save <profile>           Snapshot the active Claude identity into a profile
   mcx claude auth load <profile>           Switch the active Claude identity to a profile
   mcx claude auth load --auto              Switch to the recommended > profile if needed
+  mcx claude auth refresh <profile>        Mint a new access token onto a parked oauth profile
+  mcx claude auth refresh --all            Same for every parked oauth profile
+  mcx claude auth rm <profile>             Delete a stored profile (does not touch live credentials)
 
 Spawn options:
   --task, -t "description"    Task prompt for Claude

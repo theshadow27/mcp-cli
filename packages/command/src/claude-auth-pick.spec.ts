@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { QuotaUsageBucket } from "@mcp-cli/core";
-import { pickRecommended, planSize, windowRemaining } from "./claude-auth-pick";
+import {
+  formatRelativeFuture,
+  pickRecommended,
+  planSize,
+  sortProfilesForLs,
+  windowRemaining,
+} from "./claude-auth-pick";
 import type { ProfileSummary } from "./claude-auth-store";
 
 const NOW = new Date("2026-08-30T02:33:00.000Z");
@@ -37,8 +43,34 @@ describe("windowRemaining", () => {
     expect(windowRemaining({ utilization: 92, resetsAt: "2026-08-30T07:00:00.000Z" }, NOW)).toBe(8);
   });
 
-  test("a reset already in the past makes the percent unknown", () => {
-    expect(windowRemaining({ utilization: 10, resetsAt: "2026-08-30T02:00:00.000Z" }, NOW)).toBeNull();
+  test("a reset already in the past is 0 remaining, not the cached percent", () => {
+    expect(windowRemaining({ utilization: 10, resetsAt: "2026-08-30T02:00:00.000Z" }, NOW)).toBe(0);
+  });
+
+  test("a 0% placeholder with no reset clock is 0 remaining, not a full tank", () => {
+    expect(windowRemaining({ utilization: 0, resetsAt: null as unknown as string }, NOW)).toBe(0);
+  });
+});
+
+describe("formatRelativeFuture", () => {
+  test("picks days, hours, then minutes", () => {
+    expect(formatRelativeFuture("2026-09-02T02:33:00.000Z", NOW)).toBe("3d");
+    expect(formatRelativeFuture("2026-08-30T06:33:00.000Z", NOW)).toBe("4h");
+    expect(formatRelativeFuture("2026-08-30T02:48:00.000Z", NOW)).toBe("15m");
+  });
+
+  test("floors to the largest unit that fits", () => {
+    expect(formatRelativeFuture("2026-08-31T03:33:00.000Z", NOW)).toBe("1d");
+    expect(formatRelativeFuture("2026-08-30T03:32:00.000Z", NOW)).toBe("59m");
+  });
+
+  test("is null for past or unparsable stamps", () => {
+    expect(formatRelativeFuture("2026-08-30T02:00:00.000Z", NOW)).toBeNull();
+    expect(formatRelativeFuture("not-a-date", NOW)).toBeNull();
+  });
+
+  test("sub-minute future is <1m", () => {
+    expect(formatRelativeFuture("2026-08-30T02:33:30.000Z", NOW)).toBe("<1m");
   });
 });
 
@@ -169,7 +201,7 @@ describe("pickRecommended", () => {
     expect(pick.reason).toContain("harvest");
   });
 
-  test("skips expired hop targets and waits when nothing eligible remains", () => {
+  test("an expired access token is still a hop target — load does the oauth exchange", () => {
     const pick = pickRecommended(
       [
         profile({
@@ -179,7 +211,7 @@ describe("pickRecommended", () => {
           expiresAt: "2026-08-29T22:46:00.000Z",
           quota: {
             capturedAt: NOW.toISOString(),
-            fiveHour: { utilization: 66, resetsAt: "2026-08-30T08:10:00.000Z" },
+            fiveHour: { utilization: 95, resetsAt: "2026-08-30T08:10:00.000Z" },
             sevenDay: { utilization: 18, resetsAt: "2026-09-04T05:00:00.000Z" },
             sevenDaySonnet: null,
             sevenDayOpus: null,
@@ -187,13 +219,13 @@ describe("pickRecommended", () => {
           },
         }),
         profile({
-          name: "dead",
+          name: "gmu",
           expired: true,
           expiresAt: "2026-08-27T03:11:00.000Z",
           quota: {
-            capturedAt: "2026-08-26T19:38:00.000Z",
-            fiveHour: { utilization: 100, resetsAt: "2026-08-26T20:00:00.000Z" },
-            sevenDay: { utilization: 1, resetsAt: "2026-08-30T03:00:00.000Z" },
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 10, resetsAt: "2026-08-30T08:00:00.000Z" },
+            sevenDay: { utilization: 1, resetsAt: "2026-09-04T03:00:00.000Z" },
             sevenDaySonnet: null,
             sevenDayOpus: null,
             extraUsage: null,
@@ -202,8 +234,7 @@ describe("pickRecommended", () => {
       ],
       NOW,
     );
-    expect(pick).toMatchObject({ profile: null, action: "wait" });
-    expect(pick.reason).toContain("every stored token is expired");
+    expect(pick).toMatchObject({ profile: "gmu", action: "load" });
   });
 
   test("does not hop to a profile whose 5h snapshot is already past reset", () => {
@@ -331,25 +362,11 @@ describe("pickRecommended guards", () => {
     expect(pick.profile).toBeNull();
   });
 
-  test("oauthUsable: an expired token is disqualifying without a refresh token", () => {
-    const pick = pickRecommended(
-      [dying(1), healthy("dead", { expired: true, expiresAt: "2026-08-29T22:46:00.000Z", hasRefreshToken: false })],
-      NOW,
-    );
-    expect(pick.action).toBe("wait");
-  });
-
-  test("oauthUsable: `expired` is believed even when the expiry timestamp is unknown", () => {
-    // The lead check cannot carry this one: with no `expiresAt` it returns usable.
-    const pick = pickRecommended([dying(1), healthy("dead", { expired: true, expiresAt: null })], NOW);
-    expect(pick.action).toBe("wait");
-  });
-
-  test("oauthUsable: an expired token is fine WITH a refresh token — Claude re-mints it", () => {
+  test("oauthUsable: an expired access token is still eligible — expiry is not a hop gate", () => {
     const pick = pickRecommended(
       [
         dying(1),
-        healthy("stale-token", { expired: true, expiresAt: "2026-08-29T22:46:00.000Z", hasRefreshToken: true }),
+        healthy("stale-token", { expired: true, expiresAt: "2026-08-29T22:46:00.000Z", hasRefreshToken: false }),
       ],
       NOW,
     );
@@ -359,15 +376,6 @@ describe("pickRecommended guards", () => {
   test("oauthUsable: an unparsable expiry is treated as usable", () => {
     const pick = pickRecommended([dying(1), healthy("weird", { expiresAt: "not-a-date", expired: false })], NOW);
     expect(pick).toMatchObject({ profile: "weird", action: "load" });
-  });
-
-  test("oauthUsable: the 30-minute lead is exact — 30m out is usable, 29m59s is not", () => {
-    const at = (ms: number) => new Date(NOW.getTime() + ms).toISOString();
-    const inThirty = pickRecommended([dying(1), healthy("lead", { expiresAt: at(30 * 60_000) })], NOW);
-    expect(inThirty).toMatchObject({ profile: "lead", action: "load" });
-
-    const justUnder = pickRecommended([dying(1), healthy("lead", { expiresAt: at(30 * 60_000 - 1_000) })], NOW);
-    expect(justUnder.action).toBe("wait");
   });
 
   test("isEligible: the 8% 5h floor is exact — 8% stays, 7.9% leaves", () => {
@@ -515,4 +523,53 @@ describe("pickRecommended guards", () => {
       extraUsage: null,
     };
   }
+});
+
+describe("sortProfilesForLs", () => {
+  test("default is soonest 7d reset, then least 7d remaining, then name", () => {
+    const later = profile({
+      name: "later",
+      quota: {
+        capturedAt: NOW.toISOString(),
+        fiveHour: { utilization: 10, resetsAt: "2026-08-30T07:00:00.000Z" },
+        sevenDay: { utilization: 90, resetsAt: "2026-09-05T00:00:00.000Z" },
+        sevenDaySonnet: null,
+        sevenDayOpus: null,
+        extraUsage: null,
+      },
+    });
+    const soonEmpty = profile({
+      name: "soon-empty",
+      quota: {
+        capturedAt: NOW.toISOString(),
+        fiveHour: { utilization: 10, resetsAt: "2026-08-30T07:00:00.000Z" },
+        sevenDay: { utilization: 80, resetsAt: "2026-09-01T00:00:00.000Z" },
+        sevenDaySonnet: null,
+        sevenDayOpus: null,
+        extraUsage: null,
+      },
+    });
+    const soonFull = profile({
+      name: "soon-full",
+      quota: {
+        capturedAt: NOW.toISOString(),
+        fiveHour: { utilization: 10, resetsAt: "2026-08-30T07:00:00.000Z" },
+        sevenDay: { utilization: 10, resetsAt: "2026-09-01T00:00:00.000Z" },
+        sevenDaySonnet: null,
+        sevenDayOpus: null,
+        extraUsage: null,
+      },
+    });
+    const names = sortProfilesForLs([later, soonFull, soonEmpty], NOW).map((p) => p.name);
+    expect(names).toEqual(["soon-empty", "soon-full", "later"]);
+  });
+
+  test("--sort name is alphabetical", () => {
+    const names = sortProfilesForLs(
+      [profile({ name: "ts27" }), profile({ name: "gbg" }), profile({ name: "ozone" })],
+      NOW,
+      "name",
+    ).map((p) => p.name);
+    expect(names).toEqual(["gbg", "ozone", "ts27"]);
+  });
 });

@@ -17,24 +17,36 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaRateLimitError, flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
+import { restoreEnv } from "../../../test/env";
 import { testOptions } from "../../../test/test-options";
 import {
   type AuthErrorCode,
   type AuthPaths,
   AuthProfileError,
   type ClaudeAuthProfile,
+  type OAuthProfileSnapshot,
+  type OAuthTokenPoster,
+  type RefreshStoredProfileOpts,
+  type RefreshTokenRequest,
   assertPlatformSupported,
   defaultAuthPaths,
+  fetchOAuthProfile,
   fetchUnexpiredProfileQuotas,
+  harvestFromInstalledClaude,
   isOauthTokenExpired,
   listProfiles,
   loadProfile,
+  parseOAuthProfile,
   patchClaudeConfigIdentity,
+  postOAuthToken,
   readActivePointer,
   readActiveProfileName,
   readLiveState,
   readProfile,
+  refreshParkedProfiles,
   refreshProfileCredentialsFromLive,
+  refreshStoredProfile,
+  removeProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
   stampActiveProfileQuota,
@@ -135,6 +147,17 @@ function mode(path: string): number {
 function expectAuthError(fn: () => unknown, code: AuthErrorCode): AuthProfileError {
   try {
     fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(AuthProfileError);
+    expect((err as AuthProfileError).code).toBe(code);
+    return err as AuthProfileError;
+  }
+  throw new Error(`expected an AuthProfileError with code "${code}"`);
+}
+
+async function expectAuthErrorAsync(fn: () => Promise<unknown>, code: AuthErrorCode): Promise<AuthProfileError> {
+  try {
+    await fn();
   } catch (err) {
     expect(err).toBeInstanceOf(AuthProfileError);
     expect((err as AuthProfileError).code).toBe(code);
@@ -708,6 +731,27 @@ describe("stampProfileQuota bucket merge (#3427)", () => {
     const after = readProfile(fs, "work")?.quota;
     expect(after?.fiveHour).toEqual(SAMPLE_STORED_QUOTA.fiveHour);
     expect(after?.sevenDay).toEqual(degraded.sevenDay);
+  });
+
+  test("a placeholder 0% window with no reset clock does not wipe the previous snapshot", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
+
+    const poison = {
+      capturedAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+      fiveHour: { utilization: 0, resetsAt: null as unknown as string },
+      sevenDay: { utilization: 0, resetsAt: null as unknown as string },
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+    };
+    const result = stampProfileQuota(fs, "work", poison);
+    expect(result.keptBuckets).toEqual(["fiveHour", "sevenDay"]);
+    const after = readProfile(fs, "work")?.quota;
+    expect(after?.fiveHour).toEqual(SAMPLE_STORED_QUOTA.fiveHour);
+    expect(after?.sevenDay).toEqual(SAMPLE_STORED_QUOTA.sevenDay);
+    expect(after?.capturedAt).toBe(SAMPLE_STORED_QUOTA.capturedAt);
   });
 
   test("a carried-over bucket drags capturedAt back to the older stamp", () => {
@@ -1703,5 +1747,648 @@ describe("loadProfile — rollback", () => {
     ).toThrow(AuthProfileError);
 
     expect(existsSync(fs.claudeConfigPath)).toBe(false);
+  });
+});
+
+const HARVESTED = {
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"],
+};
+
+const PERSONAL_RT = "sk-ant-ort01-PERSONAL-RT";
+const NEW_ACCESS = "sk-ant-oat01-REFRESHED";
+const NEW_REFRESH = "sk-ant-ort01-ROTATED";
+
+/** Save `work`, then a distinct `personal` that owns the live identity. */
+function parkWork(fs: AuthPaths): void {
+  save(fs, "work");
+  writeFileSync(
+    fs.credentialsPath,
+    JSON.stringify(credentials({ accessToken: "tok-personal", refreshToken: PERSONAL_RT })),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    fs.claudeConfigPath,
+    JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+    { mode: 0o600 },
+  );
+  save(fs, "personal");
+}
+
+function harvestNever(): never {
+  throw new Error("harvest should not run");
+}
+
+function postNever(): Promise<never> {
+  throw new Error("postToken should not run — would have hit the live token endpoint");
+}
+
+function postOk(overrides?: Record<string, unknown>): OAuthTokenPoster {
+  return async () => ({
+    status: 200,
+    json: {
+      access_token: NEW_ACCESS,
+      refresh_token: NEW_REFRESH,
+      expires_in: 3600,
+      ...overrides,
+    },
+  });
+}
+
+const NULL_PROFILE: OAuthProfileSnapshot = {
+  subscriptionType: null,
+  rateLimitTier: null,
+  accountUuid: null,
+  emailAddress: null,
+  organizationUuid: null,
+  organizationName: null,
+  displayName: null,
+};
+
+function refreshOpts(fs: AuthPaths, extra: Partial<RefreshStoredProfileOpts> = {}): RefreshStoredProfileOpts {
+  return {
+    paths: fs,
+    name: "work",
+    now: NOW,
+    platform: "linux",
+    harvest: () => HARVESTED,
+    postToken: postOk(),
+    fetchProfile: async () => NULL_PROFILE,
+    ...extra,
+  };
+}
+
+describe("refreshStoredProfile", () => {
+  test("writes new tokens onto the parked profile and never touches credentials.json", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+
+    const posts: Array<{ url: string; body: RefreshTokenRequest }> = [];
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        postToken: async (url, body) => {
+          posts.push({ url, body });
+          return postOk()(url, body);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      name: "work",
+      expiresAt: new Date(NOW.getTime() + 3600 * 1000).toISOString(),
+      scopes: ["user:inference"],
+      scopeSource: "stored",
+      rotatedRefreshToken: true,
+      profileFetched: false,
+      warnings: [],
+    });
+    expect(posts).toEqual([
+      {
+        url: HARVESTED.tokenUrl,
+        body: {
+          grant_type: "refresh_token",
+          refresh_token: REFRESH_TOKEN,
+          client_id: HARVESTED.clientId,
+          scope: "user:inference",
+        },
+      },
+    ]);
+    expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+    const stored = readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>;
+    expect(stored.accessToken).toBe(NEW_ACCESS);
+    expect(stored.refreshToken).toBe(NEW_REFRESH);
+    expect(stored.expiresAt).toBe(NOW.getTime() + 3600 * 1000);
+    expect(stored.subscriptionType).toBe("max");
+    expect(stored.rateLimitTier).toBe("default_claude_max_20x");
+    expect(stored.clientId).toBe(HARVESTED.clientId);
+  });
+
+  test("falls back to harvested P3 when the stored blob has no scopes", async () => {
+    using fs = sandbox({ credentials: credentials({ scopes: undefined }) });
+    parkWork(fs);
+
+    const posts: RefreshTokenRequest[] = [];
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        postToken: async (_url, body) => {
+          posts.push(body);
+          return postOk({ scope: HARVESTED.scopes.join(" ") })(_url, body);
+        },
+      }),
+    );
+
+    expect(posts[0]?.scope).toBe(HARVESTED.scopes.join(" "));
+    expect(result.scopeSource).toBe("harvested");
+    expect(result.scopes).toEqual(HARVESTED.scopes);
+  });
+
+  test("refuses the live owner without harvesting or posting", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const before = readProfile(fs, "work")?.credentials;
+
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { harvest: harvestNever, postToken: postNever })),
+      "refresh-live-owner",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("refuses a parked profile that still shares the live refresh token", async () => {
+    using fs = sandbox();
+    save(fs, "work");
+    writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "tok-personal" })), { mode: 0o600 });
+    writeFileSync(
+      fs.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+      { mode: 0o600 },
+    );
+    save(fs, "personal");
+
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { harvest: harvestNever, postToken: postNever })),
+      "refresh-live-owner",
+    );
+  });
+
+  test("refuses an api-key profile", async () => {
+    using fs = sandbox();
+    save(fs, "key", { MY_KEY: "sk-secret" }, "MY_KEY");
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { name: "key", harvest: harvestNever, postToken: postNever })),
+      "io",
+    );
+  });
+
+  test("throws not-found for a missing profile", async () => {
+    using fs = sandbox();
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { name: "nope", harvest: harvestNever, postToken: postNever })),
+      "not-found",
+    );
+  });
+
+  test("throws when the parked profile has no refresh token", async () => {
+    using fs = sandbox({ credentials: credentials({ refreshToken: undefined }) });
+    parkWork(fs);
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { harvest: harvestNever, postToken: postNever })),
+      "no-refresh-token",
+    );
+  });
+
+  test("invalid_grant does not rewrite the profile and hints at a load", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+
+    const err = await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile(
+          refreshOpts(fs, { postToken: async () => ({ status: 400, json: { error: "invalid_grant" } }) }),
+        ),
+      "oauth-refresh-failed",
+    );
+    expect(err.message).toContain("invalid_grant");
+    expect(err.message).toContain("Load this profile");
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("429 does not rewrite the profile", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile(
+          refreshOpts(fs, { postToken: async () => ({ status: 429, json: { error: "rate_limited" } }) }),
+        ),
+      "oauth-refresh-failed",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("a 200 with no access_token does not rewrite the profile", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const before = readProfile(fs, "work")?.credentials;
+    await expectAuthErrorAsync(
+      () =>
+        refreshStoredProfile(
+          refreshOpts(fs, { postToken: async () => ({ status: 200, json: { token_type: "Bearer" } }) }),
+        ),
+      "oauth-refresh-failed",
+    );
+    expect(readProfile(fs, "work")?.credentials).toEqual(before);
+  });
+
+  test("keeps the stored refresh token when the response omits a new one", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const result = await refreshStoredProfile(refreshOpts(fs, { postToken: postOk({ refresh_token: undefined }) }));
+    expect(result.rotatedRefreshToken).toBe(false);
+    expect((readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>).refreshToken).toBe(
+      REFRESH_TOKEN,
+    );
+  });
+
+  test("stores an update when expires_in and scope are missing", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        postToken: async () => ({ status: 200, json: { access_token: NEW_ACCESS } }),
+        fetchProfile: async () => NULL_PROFILE,
+      }),
+    );
+    expect(result.warnings).toEqual([]);
+    expect(result.rotatedRefreshToken).toBe(false);
+    const stored = readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>;
+    expect(stored.accessToken).toBe(NEW_ACCESS);
+    expect(stored.refreshToken).toBe(REFRESH_TOKEN);
+    expect(stored.expiresAt).toBe(NOW.getTime() + 8 * 3600 * 1000);
+    expect(stored.scopes).toEqual(["user:inference"]);
+  });
+
+  test("accepts expires_in as a decimal string and scope as an array", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    await refreshStoredProfile(
+      refreshOpts(fs, {
+        postToken: async () => ({
+          status: 200,
+          json: { access_token: NEW_ACCESS, expires_in: "7200", scope: ["user:inference", "user:profile"] },
+        }),
+        fetchProfile: async () => NULL_PROFILE,
+      }),
+    );
+    const stored = readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>;
+    expect(stored.expiresAt).toBe(NOW.getTime() + 7200 * 1000);
+    expect(stored.scopes).toEqual(["user:inference", "user:profile"]);
+  });
+
+  test("harvest failure still posts and stores using fallback constants", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const posts: Array<{ url: string; body: RefreshTokenRequest }> = [];
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        harvest: () => {
+          throw new AuthProfileError("Could not harvest oauth constants from /nope", "harvest-failed");
+        },
+        postToken: async (url, body) => {
+          posts.push({ url, body });
+          return postOk()(url, body);
+        },
+        fetchProfile: async () => NULL_PROFILE,
+      }),
+    );
+    expect(posts[0]?.url).toBe("https://platform.claude.com/v1/oauth/token");
+    expect(posts[0]?.body.client_id).toBe(HARVESTED.clientId);
+    expect(result.scopeSource).toBe("stored");
+    expect(result.warnings.some((w) => w.includes("fallback"))).toBe(true);
+    expect((readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>).accessToken).toBe(
+      NEW_ACCESS,
+    );
+  });
+
+  test("merges a partial oauth profile without requiring every field", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        fetchProfile: async () => ({
+          ...NULL_PROFILE,
+          subscriptionType: "pro",
+          emailAddress: "work@example.com",
+        }),
+      }),
+    );
+    expect(result.profileFetched).toBe(true);
+    expect(result.warnings).toEqual([]);
+    const stored = readProfile(fs, "work");
+    const root = stored?.credentials?.claudeAiOauth as Record<string, unknown>;
+    expect(root.accessToken).toBe(NEW_ACCESS);
+    expect(root.subscriptionType).toBe("pro");
+    expect(root.rateLimitTier).toBe("default_claude_max_20x");
+    expect(stored?.identity?.oauthAccount?.emailAddress).toBe("work@example.com");
+  });
+
+  test("a throwing profile fetch still keeps the new tokens", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const result = await refreshStoredProfile(
+      refreshOpts(fs, {
+        fetchProfile: async () => {
+          throw new Error("socket hang up");
+        },
+      }),
+    );
+    expect(result.profileFetched).toBe(false);
+    expect(result.warnings.some((w) => w.includes("socket hang up"))).toBe(true);
+    expect((readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>).accessToken).toBe(
+      NEW_ACCESS,
+    );
+  });
+
+  test("darwin is unsupported", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    await expectAuthErrorAsync(
+      () => refreshStoredProfile(refreshOpts(fs, { platform: "darwin", harvest: harvestNever, postToken: postNever })),
+      "unsupported-platform",
+    );
+  });
+});
+
+describe("parseOAuthProfile", () => {
+  test("maps organization_type and keeps missing fields as null", () => {
+    expect(
+      parseOAuthProfile({
+        account: { uuid: "acct-1", email: "a@example.com" },
+        organization: { uuid: "org-1", organization_type: "claude_max", rate_limit_tier: "default_claude_max_20x" },
+      }),
+    ).toEqual({
+      subscriptionType: "max",
+      rateLimitTier: "default_claude_max_20x",
+      accountUuid: "acct-1",
+      emailAddress: "a@example.com",
+      organizationUuid: "org-1",
+      organizationName: null,
+      displayName: null,
+    });
+  });
+
+  test("a body missing the fields Claude's Zod requires is still usable", () => {
+    expect(parseOAuthProfile({ organization: { organization_type: "claude_pro" } })).toMatchObject({
+      subscriptionType: "pro",
+      accountUuid: null,
+      emailAddress: null,
+      organizationUuid: null,
+    });
+  });
+
+  test("non-objects yield an all-null snapshot", () => {
+    expect(parseOAuthProfile(null).subscriptionType).toBeNull();
+    expect(parseOAuthProfile("nope").accountUuid).toBeNull();
+  });
+});
+
+describe("removeProfile", () => {
+  test("deletes the stored file and does not touch live credentials", () => {
+    using fs = sandbox();
+    parkWork(fs);
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+
+    const result = removeProfile({ paths: fs, name: "work", now: NOW });
+
+    expect(result).toEqual({ name: "work", wasActive: false, ownedLive: false });
+    expect(readProfile(fs, "work")).toBeNull();
+    expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+    expect(readActivePointer(fs)?.name).toBe("personal");
+  });
+
+  test("clearing the active profile drops the pointer but leaves live credentials", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    const liveBefore = readFileSync(fs.credentialsPath, "utf-8");
+
+    const result = removeProfile({ paths: fs, name: "work", now: NOW });
+
+    expect(result.wasActive).toBe(true);
+    expect(result.ownedLive).toBe(true);
+    expect(readActivePointer(fs)).toBeNull();
+    expect(readFileSync(fs.credentialsPath, "utf-8")).toBe(liveBefore);
+  });
+
+  test("throws not-found for a missing profile", () => {
+    using fs = sandbox();
+    expectAuthError(() => removeProfile({ paths: fs, name: "nope", now: NOW }), "not-found");
+  });
+});
+
+describe("refreshParkedProfiles", () => {
+  test("refreshes parked oauth profiles, skips the live owner, continues after a failure", async () => {
+    using fs = sandbox();
+    parkWork(fs);
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "tok-personal", refreshToken: PERSONAL_RT })),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      fs.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+      { mode: 0o600 },
+    );
+    // `parkWork` already saved personal as live owner. Add a third parked profile that will fail.
+    writeFileSync(
+      join(fs.profilesDir, "dead.json"),
+      JSON.stringify({
+        version: 1,
+        name: "dead",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        credentials: credentials({ refreshToken: "sk-ant-ort01-DEAD" }),
+      }),
+      { mode: 0o600 },
+    );
+
+    const posted: string[] = [];
+    const result = await refreshParkedProfiles(
+      refreshOpts(fs, {
+        postToken: async (_url, body) => {
+          posted.push(body.refresh_token);
+          if (body.refresh_token === "sk-ant-ort01-DEAD") {
+            return { status: 400, json: { error: "invalid_grant" } };
+          }
+          return postOk()(_url, body);
+        },
+        fetchProfile: async () => NULL_PROFILE,
+      }),
+    );
+
+    expect(result.refreshed.map((r) => r.name)).toEqual(["work"]);
+    expect(result.skipped).toContainEqual({ name: "personal", reason: "owns the live Claude identity" });
+    expect(result.failed.map((f) => f.name)).toEqual(["dead"]);
+    expect(posted).toContain(REFRESH_TOKEN);
+    expect(posted).toContain("sk-ant-ort01-DEAD");
+    expect((readProfile(fs, "work")?.credentials?.claudeAiOauth as Record<string, unknown>).accessToken).toBe(
+      NEW_ACCESS,
+    );
+    expect((readProfile(fs, "personal")?.credentials?.claudeAiOauth as Record<string, unknown>).accessToken).toBe(
+      "tok-personal",
+    );
+  });
+
+  test("skips api-key profiles and blobs with no refresh token", async () => {
+    using fs = sandbox();
+    save(fs, "key", { MY_KEY: "sk-secret" }, "MY_KEY");
+    writeFileSync(
+      fs.credentialsPath,
+      JSON.stringify(credentials({ accessToken: "tok-personal", refreshToken: PERSONAL_RT })),
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      fs.claudeConfigPath,
+      JSON.stringify({ userID: "user-b", oauthAccount: oauthAccount("b@example.com") }),
+      { mode: 0o600 },
+    );
+    save(fs, "personal");
+    writeFileSync(
+      join(fs.profilesDir, "bare.json"),
+      JSON.stringify({
+        version: 1,
+        name: "bare",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        credentials: credentials({ refreshToken: undefined }),
+      }),
+      { mode: 0o600 },
+    );
+
+    const result = await refreshParkedProfiles(
+      refreshOpts(fs, { harvest: harvestNever, postToken: postNever, fetchProfile: async () => null }),
+    );
+    expect(result.refreshed).toEqual([]);
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([
+        { name: "key", reason: "api-key profile" },
+        { name: "bare", reason: "no refresh token" },
+        { name: "personal", reason: "owns the live Claude identity" },
+      ]),
+    );
+  });
+});
+
+describe("harvestFromInstalledClaude", () => {
+  const fixture =
+    'C_="user:inference",aU="user:profile",P3=[aU,C_,"user:sessions:claude_code","user:mcp_servers","user:file_upload"],_={TOKEN_URL:"https://platform.claude.com/v1/oauth/token",CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}';
+
+  test("harvests TOKEN_URL / CLIENT_ID / P3 from MCX_CLAUDE_BINARY", () => {
+    using fs = sandbox();
+    const bin = join(fs.root, "fake-claude");
+    writeFileSync(bin, fixture);
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = bin;
+    try {
+      expect(harvestFromInstalledClaude()).toEqual(HARVESTED);
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("maps a missing MCX_CLAUDE_BINARY path to harvest-failed", () => {
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = "/nonexistent/path/to/claude";
+    try {
+      expectAuthError(() => harvestFromInstalledClaude(), "harvest-failed");
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+
+  test("maps a binary without the oauth module to harvest-failed", () => {
+    using fs = sandbox();
+    const bin = join(fs.root, "not-claude");
+    writeFileSync(bin, "not a claude binary");
+    const prev = process.env.MCX_CLAUDE_BINARY;
+    process.env.MCX_CLAUDE_BINARY = bin;
+    try {
+      expectAuthError(() => harvestFromInstalledClaude(), "harvest-failed");
+    } finally {
+      restoreEnv("MCX_CLAUDE_BINARY", prev);
+    }
+  });
+});
+
+describe("postOAuthToken", () => {
+  test("POSTs JSON (not form-urlencoded) and parses the body", async () => {
+    const original = globalThis.fetch;
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ access_token: "x" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const result = await postOAuthToken("https://example.test/v1/oauth/token", {
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("https://example.test/v1/oauth/token");
+      expect(calls[0]?.init.method).toBe("POST");
+      expect(calls[0]?.init.headers).toEqual({ "Content-Type": "application/json" });
+      expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(result).toEqual({ status: 200, json: { access_token: "x" } });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test("non-JSON bodies become { error: text }", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("WAF blocked", { status: 403 })) as unknown as typeof fetch;
+    try {
+      const result = await postOAuthToken("https://example.test/v1/oauth/token", {
+        grant_type: "refresh_token",
+        refresh_token: "rt",
+        client_id: "cid",
+        scope: "user:inference",
+      });
+      expect(result).toEqual({ status: 403, json: { error: "WAF blocked" } });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("fetchOAuthProfile", () => {
+  test("GETs /api/oauth/profile with a bearer token and parses a partial body", async () => {
+    const original = globalThis.fetch;
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ organization: { organization_type: "claude_team" } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const result = await fetchOAuthProfile("tok");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("https://api.anthropic.com/api/oauth/profile");
+      expect(calls[0]?.init.method).toBe("GET");
+      expect(result?.subscriptionType).toBe("team");
+      expect(result?.accountUuid).toBeNull();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test("HTTP errors and transport failures return null instead of throwing", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+    try {
+      expect(await fetchOAuthProfile("tok")).toBeNull();
+    } finally {
+      globalThis.fetch = original;
+    }
+    globalThis.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    try {
+      expect(await fetchOAuthProfile("tok")).toBeNull();
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

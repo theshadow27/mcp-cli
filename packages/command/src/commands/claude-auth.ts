@@ -1,38 +1,62 @@
 /**
- * `mcx claude auth save|load|ls` — scriptable Claude identity switching (#3006).
+ * `mcx claude auth save|load|ls|refresh|rm` — scriptable Claude identity switching (#3006).
  * `ls --fetch` re-queries the usage API for the live identity and stamps the
  * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
  * `ls --fetch-all` does the same, one profile at a time, for every stored
  * access token that is still valid. Expired tokens are skipped (they need a
- * load). 429s back off, a throttled profile does not stop the walk, and the whole
- * sweep is bounded by a wall-clock budget. Both stamp only onto the profile that
- * provably owns the credentials the numbers were measured with, and copy a token
- * Claude refreshed in place back onto it. `ls` marks the sticky recommended
- * identity with `>` (never on a `wait`); `load --auto` switches to it.
+ * `refresh` or a `load`). 429s back off, a throttled profile does not stop the
+ * walk, and the whole sweep is bounded by a wall-clock budget. Both stamp only
+ * onto the profile that provably owns the credentials the numbers were measured
+ * with, and copy a token Claude refreshed in place back onto it. `ls` marks the
+ * sticky recommended identity with `>` (never on a `wait`); `load --auto`
+ * switches to it. `refresh <profile>` posts a refresh_token grant for a *parked*
+ * oauth profile and writes the new tokens onto that file only — never onto
+ * `~/.claude/.credentials.json`. After the token 200 it GETs `/api/oauth/profile`
+ * the way Claude Code does, merging whatever fields come back; a partial body
+ * never rolls the token write back. `refresh --all` does that for every parked
+ * oauth profile. `rm <profile>` deletes a stored profile (canceled accounts)
+ * without touching the live Claude files.
  *
- * All three subcommands are non-interactive and agent-callable: JSON on `--json`
+ * All five subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
  * codes. The filesystem work lives in `../claude-auth-store` so it can be tested
  * against injected paths — no test ever touches a real `~/.claude`.
  */
 
 import { fetchQuotaUsage } from "@mcp-cli/core";
-import { type AuthPick, pickRecommended } from "../claude-auth-pick";
+import {
+  type AuthLsSort,
+  type AuthPick,
+  DEFAULT_AUTH_LS_SORT,
+  formatRelativeFuture,
+  isAuthLsSort,
+  pickRecommended,
+  sortProfilesForLs,
+  windowResetPassed,
+} from "../claude-auth-pick";
 import {
   type AuthPaths,
   AuthProfileError,
+  type OAuthProfileFetcher,
+  type OAuthTokenPoster,
   type ProfileSummary,
   type QuotaFetcher,
   type SleepFn,
   assertPlatformSupported,
   attributedLiveProfile,
   defaultAuthPaths,
+  fetchOAuthProfile,
   fetchUnexpiredProfileQuotas,
+  harvestFromInstalledClaude,
   listProfiles,
   loadProfile,
+  postOAuthToken,
   readActivePointer,
   readLiveState,
+  refreshParkedProfiles,
   refreshProfileCredentialsFromLive,
+  refreshStoredProfile,
+  removeProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
   snapshotQuotaFromCredentialsRetrying,
@@ -69,6 +93,12 @@ export interface AuthEnvDeps {
   fetchQuota: QuotaFetcher;
   /** Injected by tests so 429 backoff does not wait on the clock. */
   sleep: SleepFn;
+  /** Injected by tests so `auth refresh` never reads the real claude binary. */
+  harvestOAuth?: () => ReturnType<typeof harvestFromInstalledClaude>;
+  /** Injected by tests so `auth refresh` never hits the token endpoint. */
+  postOAuthToken?: OAuthTokenPoster;
+  /** Injected by tests so `auth refresh` never hits `/api/oauth/profile`. */
+  fetchOAuthProfile?: OAuthProfileFetcher;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -81,13 +111,16 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     now: overrides?.now ?? (() => new Date()),
     fetchQuota: overrides?.fetchQuota ?? fetchQuotaUsage,
     sleep: overrides?.sleep ?? ((ms: number) => Bun.sleep(ms)),
+    harvestOAuth: overrides?.harvestOAuth,
+    postOAuthToken: overrides?.postOAuthToken,
+    fetchOAuthProfile: overrides?.fetchOAuthProfile,
   };
 }
 
 /** Subcommands that read or write Claude's own credential files. */
-const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load"]);
+const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load", "refresh"]);
 
-const AUTH_SUBCOMMANDS = ["save", "load", "ls"] as const;
+const AUTH_SUBCOMMANDS = ["save", "load", "ls", "refresh", "rm"] as const;
 type AuthSubcommand = (typeof AUTH_SUBCOMMANDS)[number];
 
 function isAuthSubcommand(value: string): value is AuthSubcommand {
@@ -115,7 +148,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
 
   if (!isAuthSubcommand(sub)) {
     d.printError(
-      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", or "ls".`,
+      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", "ls", "refresh <profile|--all>", or "rm <profile>".`,
     );
     return d.exit(EXIT_ERROR);
   }
@@ -126,7 +159,9 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
     fetch: { type: "boolean" },
     "fetch-all": { type: "boolean" },
     auto: { type: "boolean" },
+    sort: { type: "string" },
     "api-key-env": { type: "string" },
+    all: { type: "boolean" },
   });
   if (parsed.errors.length > 0) {
     for (const err of parsed.errors) d.printError(err);
@@ -146,13 +181,27 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
         );
       case "load":
         return await runLoad(parsed.positionals, { json, auto: parsed.flags.auto === true }, d, envDeps);
-      case "ls":
+      case "ls": {
+        const sortFlag = parsed.flags.sort;
+        let sort: AuthLsSort = DEFAULT_AUTH_LS_SORT;
+        if (typeof sortFlag === "string") {
+          if (!isAuthLsSort(sortFlag)) {
+            d.printError(`Unknown --sort "${sortFlag}". Use "7d-reset" (default) or "name".`);
+            return d.exit(EXIT_ERROR);
+          }
+          sort = sortFlag;
+        }
         return await runLs(
           json,
-          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true },
+          { fetch: parsed.flags.fetch === true, fetchAll: parsed.flags["fetch-all"] === true, sort },
           d,
           envDeps,
         );
+      }
+      case "refresh":
+        return await runRefresh(parsed.positionals, { json, all: parsed.flags.all === true }, d, envDeps);
+      case "rm":
+        return runRm(parsed.positionals, json, d, envDeps);
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -328,6 +377,100 @@ async function loadNamed(
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
 }
 
+function refreshSeams(envDeps: AuthEnvDeps) {
+  return {
+    harvest: envDeps.harvestOAuth ?? harvestFromInstalledClaude,
+    postToken: envDeps.postOAuthToken ?? postOAuthToken,
+    fetchProfile: envDeps.fetchOAuthProfile ?? fetchOAuthProfile,
+  };
+}
+
+function printRefreshResult(d: AuthCliDeps, result: Awaited<ReturnType<typeof refreshStoredProfile>>): void {
+  for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
+  d.log(`Refreshed auth profile "${result.name}"`);
+  d.log(`  access token expires ${result.expiresAt.replace("T", " ").slice(0, 16)}`);
+  d.log(`  scopes (${result.scopeSource}): ${result.scopes.join(" ")}`);
+  if (result.rotatedRefreshToken) d.log("  refresh token rotated");
+  if (result.profileFetched) d.log("  oauth profile merged");
+}
+
+async function runRefresh(
+  positionals: string[],
+  opts: { json: boolean; all: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  if (opts.all && positionals[0]) {
+    d.printError('Do not pass a profile name with --all. Use "mcx claude auth refresh --all" or "refresh <profile>".');
+    return d.exit(EXIT_ERROR);
+  }
+  const seams = refreshSeams(envDeps);
+  if (opts.all) {
+    const result = await refreshParkedProfiles({
+      paths: envDeps.paths,
+      now: envDeps.now(),
+      platform: envDeps.platform,
+      ...seams,
+    });
+    if (opts.json) {
+      d.log(JSON.stringify({ ok: true, action: "refresh-all", ...result }, null, 2));
+    } else {
+      if (result.refreshed.length === 0 && result.skipped.length === 0 && result.failed.length === 0) {
+        d.log("No oauth profiles to refresh.");
+      }
+      if (result.refreshed.length > 0) {
+        d.log(`Refreshed ${result.refreshed.length} profile(s): ${result.refreshed.map((r) => r.name).join(", ")}`);
+        for (const row of result.refreshed) {
+          for (const warning of row.warnings) d.printInfo(`warning: profile "${row.name}": ${warning}`);
+        }
+      }
+      if (result.skipped.length > 0) {
+        d.printInfo(
+          `skipped ${result.skipped.length}: ${result.skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}`,
+        );
+      }
+      if (result.failed.length > 0) {
+        d.printInfo(
+          `failed ${result.failed.length}: ${result.failed.map((f) => `${f.name} (${f.message})`).join(", ")}`,
+        );
+      }
+    }
+    return;
+  }
+  const name = requireName(positionals, "mcx claude auth refresh <profile|--all>", d);
+  validateProfileName(name);
+  const result = await refreshStoredProfile({
+    paths: envDeps.paths,
+    name,
+    now: envDeps.now(),
+    platform: envDeps.platform,
+    ...seams,
+  });
+  if (opts.json) {
+    d.log(JSON.stringify({ ok: true, action: "refresh", ...result }, null, 2));
+    return;
+  }
+  printRefreshResult(d, result);
+}
+
+function runRm(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): void {
+  const name = requireName(positionals, "mcx claude auth rm <profile>", d);
+  validateProfileName(name);
+  const result = removeProfile({ paths: envDeps.paths, name, now: envDeps.now() });
+  if (result.ownedLive) {
+    d.printInfo(
+      `warning: "${name}" owned the live Claude identity — live credentials were left untouched. Load another profile to switch away.`,
+    );
+  } else if (result.wasActive) {
+    d.printInfo("warning: cleared the active-profile pointer");
+  }
+  if (json) {
+    d.log(JSON.stringify({ ok: true, action: "rm", ...result }, null, 2));
+    return;
+  }
+  d.log(`Removed auth profile "${result.name}"`);
+}
+
 /** One "kept the older number" line per degraded bucket, so a silent hole is visible. */
 function reportKeptBuckets(d: AuthCliDeps, name: string, keptBuckets: string[]): void {
   if (keptBuckets.length === 0) return;
@@ -344,27 +487,28 @@ async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Pro
   if (snap.warning) d.printInfo(`warning: ${snap.warning}`);
   else if (!snap.quota) d.printInfo("warning: could not snapshot quota: no access token in live credentials");
   const quota = snap.quota;
-  if (!quota) return;
   // Skip the operation lock when there is no pointer so `--fetch` on an
   // empty store does not create `auth-profiles/` just to no-op.
   if (!readActivePointer(envDeps.paths)) {
-    d.printInfo("warning: fetched quota but no active oauth profile to record it on");
+    if (quota) d.printInfo("warning: fetched quota but no active oauth profile to record it on");
     return;
   }
   // Attribution, the stamp and the token write-back all happen inside one lock, on
   // state re-read there: a concurrent `load` between the fetch and the stamp would
   // otherwise file these numbers against the profile that just became active.
+  // Write-back is independent of the usage call: Claude may have rotated the live
+  // token even when the usage API 401s/times out, and that rotation is what keeps
+  // EXPIRES from going stale.
   const result = withOperationLock(envDeps.paths, () => {
     const locked = readLiveState(envDeps.paths, now);
     const owner = attributedLiveProfile(envDeps.paths, locked);
-    const stamp = stampActiveProfileQuota(envDeps.paths, quota, locked);
-    // Keep the owning profile's stored token in step with the one Claude refreshed
-    // in place; without it the stored copy ages out after ~8h and the profile reads
-    // as expired forever (#3423).
+    const stamp = quota
+      ? stampActiveProfileQuota(envDeps.paths, quota, locked)
+      : { stamped: false, keptBuckets: [] as string[] };
     refreshProfileCredentialsFromLive(envDeps.paths, locked, now);
     return { stamp, owner };
   });
-  if (!result.stamp.stamped) {
+  if (quota && !result.stamp.stamped) {
     d.printInfo(
       result.owner === null
         ? "warning: fetched quota but the live credentials do not provably belong to any profile — not recorded"
@@ -372,7 +516,7 @@ async function fetchActive(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Pro
     );
     return;
   }
-  reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
+  if (result.stamp.stamped) reportKeptBuckets(d, result.owner ?? "", result.stamp.keptBuckets);
 }
 
 async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date): Promise<void> {
@@ -410,7 +554,7 @@ async function fetchAllUnexpired(d: AuthCliDeps, envDeps: AuthEnvDeps, now: Date
 
 async function runLs(
   json: boolean,
-  opts: { fetch: boolean; fetchAll: boolean },
+  opts: { fetch: boolean; fetchAll: boolean; sort: AuthLsSort },
   d: AuthCliDeps,
   envDeps: AuthEnvDeps,
 ): Promise<void> {
@@ -421,7 +565,8 @@ async function runLs(
     await fetchActive(d, envDeps, now);
   }
 
-  const { profiles: summaries, problems } = listProfiles(envDeps.paths, now);
+  const { profiles: unsorted, problems } = listProfiles(envDeps.paths, now);
+  const summaries = sortProfilesForLs(unsorted, now, opts.sort);
   const pick = pickRecommended(summaries, now);
   // `pick.profile` is null on a `wait` verdict — the picker's contract. Stamping
   // `recommended: true` on a row it just refused to run on handed
@@ -446,24 +591,24 @@ async function runLs(
     return;
   }
 
-  for (const line of formatProfileTable(listed)) d.log(line);
+  for (const line of formatProfileTable(listed, now)) d.log(line);
   if (pick.action === "wait") d.log(`> (none)  ${pick.reason}`);
   else if (pick.profile && pick.action !== "stay") d.log(`> ${pick.profile}  ${pick.reason}`);
 }
 
 /** Render the `ls` table. Exported for tests — must never contain token material. */
-export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>): string[] {
+export function formatProfileTable(summaries: Array<ProfileSummary & { recommended?: boolean }>, now: Date): string[] {
   const rows = summaries.map((s) => ({
     marker: `${s.active ? "*" : " "}${s.recommended ? ">" : " "}`,
     name: s.name,
     kind: s.kind,
     account: s.kind === "api-key" ? `$${s.apiKeyEnvVar ?? "ANTHROPIC_API_KEY"}` : (s.account ?? "-"),
-    expires: formatExpiry(s),
-    fiveHour: formatPct(s.quota?.fiveHour?.utilization),
-    fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt),
-    sevenDay: formatPct(s.quota?.sevenDay?.utilization),
-    sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt),
-    asOf: formatStamp(s.quota?.capturedAt),
+    expires: formatExpiry(s, now),
+    fiveHour: formatBucketPct(s.quota?.fiveHour, now),
+    fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt, now),
+    sevenDay: formatBucketPct(s.quota?.sevenDay, now),
+    sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt, now),
+    asOf: formatStamp(s.quota?.capturedAt, now, { relative: false }),
     remote: s.allowRemoteControl === null ? "unknown" : s.allowRemoteControl ? "yes" : "no",
   }));
 
@@ -490,18 +635,27 @@ export function formatProfileTable(summaries: Array<ProfileSummary & { recommend
   return lines;
 }
 
-function formatExpiry(summary: ProfileSummary): string {
+function formatExpiry(summary: ProfileSummary, now: Date): string {
   if (summary.expiresAt === null) return "-";
-  const stamp = formatStamp(summary.expiresAt);
-  return summary.expired ? `${stamp} (expired)` : stamp;
+  if (summary.expired) return `${formatStamp(summary.expiresAt, now, { relative: false })} (expired)`;
+  return formatStamp(summary.expiresAt, now);
 }
 
-function formatStamp(iso: string | null | undefined): string {
+function formatStamp(iso: string | null | undefined, now: Date, opts?: { relative?: boolean }): string {
   if (!iso) return "-";
-  return iso.replace("T", " ").slice(0, 16);
+  const stamp = iso.replace("T", " ").slice(0, 16);
+  if (opts?.relative === false) return stamp;
+  const rel = formatRelativeFuture(iso, now);
+  return rel ? `${stamp} (${rel})` : stamp;
 }
 
-function formatPct(n: number | null | undefined): string {
-  if (n == null) return "-";
+/** `-` never fetched; `--` reset already passed or the bucket has no reset clock. */
+function formatBucketPct(
+  bucket: { utilization: number; resetsAt?: string | null } | null | undefined,
+  now: Date,
+): string {
+  if (!bucket) return "-";
+  if (windowResetPassed(bucket, now)) return "--";
+  const n = bucket.utilization;
   return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
 }

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaRateLimitError, type QuotaStatus } from "@mcp-cli/core";
-import type { AuthPaths } from "../claude-auth-store";
+import { type AuthPaths, AuthProfileError } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
 
@@ -85,6 +85,13 @@ function harness(opts?: { env?: Record<string, string | undefined>; platform?: s
       platform: opts?.platform ?? "linux",
       now: () => NOW,
       fetchQuota: async () => SAMPLE_QUOTA,
+      harvestOAuth: () => {
+        throw new Error("harvestOAuth not injected — test would have read the real claude binary");
+      },
+      postOAuthToken: async () => {
+        throw new Error("postOAuthToken not injected — test would have hit the live token endpoint");
+      },
+      fetchOAuthProfile: async () => null,
     },
     [Symbol.dispose]() {
       rmSync(root, { recursive: true, force: true });
@@ -326,12 +333,13 @@ describe("mcx claude auth ls", () => {
     expect(text).toContain("NAME");
     expect(text).toContain("a@example.com");
     expect(text).toContain("$MY_KEY");
-    expect(text).toContain("2026-08-19 03:14");
+    expect(text).toContain("2026-08-19 03:14 (15h)");
     expect(text).toContain("yes"); // remote control allowed per the policy fixture
     expect(text).toContain("*> work"); // active and recommended
     expect(text).toContain("42%");
-    expect(text).toContain("2026-08-18 20:00");
+    expect(text).toContain("2026-08-18 20:00 (8h)");
     expect(text).toContain("8%");
+    expect(text).toContain("2026-08-25 04:00 (6d)");
     expect(text).toContain("AS OF");
     expect(text).not.toContain(ACCESS_TOKEN);
   });
@@ -875,6 +883,69 @@ describe("mcx claude auth ls --fetch — token write-back (#3423)", () => {
     // for a 5h reset" — from t+8h onward, forever, at 95% remaining.
     expect(JSON.parse(h.out.join("\n"))).toMatchObject({ action: "stay", name: "work" });
   });
+
+  test("--fetch copies a rotated live token even when the usage API fails", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const rotated = {
+      claudeAiOauth: {
+        accessToken: "sk-ant-oat01-ROTATED",
+        refreshToken: "sk-ant-ort01-FAKE-CLI-REFRESH",
+        expiresAt: EXPIRES_AT + 8 * 3_600_000,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    };
+    writeFileSync(h.paths.credentialsPath, JSON.stringify(rotated));
+    h.envDeps.fetchQuota = async () => {
+      throw new Error("timeout");
+    };
+    await claudeAuth(["ls", "--fetch"], h.deps, h.envDeps);
+    expect(JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).credentials).toEqual(rotated);
+  });
+});
+
+describe("mcx claude auth ls --sort", () => {
+  test("defaults to soonest 7d reset, then least remaining", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    writeFileSync(
+      h.paths.credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "tok-personal",
+          refreshToken: "rt",
+          expiresAt: EXPIRES_AT,
+          subscriptionType: "max",
+        },
+      }),
+    );
+    await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+    const patch7d = (name: string, resetsAt: string, utilization: number) => {
+      const path = join(h.paths.profilesDir, `${name}.json`);
+      const raw = JSON.parse(readFileSync(path, "utf-8")) as {
+        quota: { sevenDay: { resetsAt: string; utilization: number } };
+      };
+      raw.quota.sevenDay = { ...raw.quota.sevenDay, resetsAt, utilization };
+      writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    };
+    patch7d("work", "2026-09-01T00:00:00.000Z", 80);
+    patch7d("personal", "2026-09-05T00:00:00.000Z", 10);
+
+    h.out.length = 0;
+    await claudeAuth(["ls", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n")).map((p: { name: string }) => p.name)).toEqual(["work", "personal"]);
+
+    h.out.length = 0;
+    await claudeAuth(["ls", "--sort", "name", "--json"], h.deps, h.envDeps);
+    expect(JSON.parse(h.out.join("\n")).map((p: { name: string }) => p.name)).toEqual(["personal", "work"]);
+  });
+
+  test("unknown --sort exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["ls", "--sort", "quota"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain('Unknown --sort "quota"');
+  });
 });
 
 describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
@@ -893,62 +964,144 @@ describe("mcx claude auth ls --fetch — degraded responses (#3427)", () => {
 
 describe("formatProfileTable", () => {
   test("marks expired tokens and unknown policy without leaking secrets", () => {
-    const lines = formatProfileTable([
-      {
-        name: "old",
-        kind: "oauth",
-        active: false,
-        account: "old@example.com",
-        organization: null,
-        subscriptionType: "pro",
-        rateLimitTier: null,
-        expiresAt: "2020-01-01T00:00:00.000Z",
-        expired: true,
-        hasRefreshToken: false,
-        apiKeyEnvVar: null,
-        allowRemoteControl: null,
-        hasCredentials: true,
-        updatedAt: NOW.toISOString(),
-        quota: {
-          capturedAt: "2020-01-01T00:00:00.000Z",
-          fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
-          sevenDay: { utilization: 10, resetsAt: "2020-01-07T00:00:00.000Z" },
-          sevenDaySonnet: null,
-          sevenDayOpus: null,
-          extraUsage: null,
+    const lines = formatProfileTable(
+      [
+        {
+          name: "old",
+          kind: "oauth",
+          active: false,
+          account: "old@example.com",
+          organization: null,
+          subscriptionType: "pro",
+          rateLimitTier: null,
+          expiresAt: "2020-01-01T00:00:00.000Z",
+          expired: true,
+          hasRefreshToken: false,
+          apiKeyEnvVar: null,
+          allowRemoteControl: null,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: "2020-01-01T00:00:00.000Z",
+            fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
+            sevenDay: { utilization: 10, resetsAt: "2020-01-07T00:00:00.000Z" },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
         },
-      },
-    ]);
+      ],
+      NOW,
+    );
 
     const text = lines.join("\n");
     expect(text).toContain("2020-01-01 00:00 (expired)");
     expect(text).toContain("unknown");
-    expect(text).toContain("97.5%");
+    expect(text).toContain("--");
+    expect(text).not.toContain("97.5%");
     expect(text).toContain("2020-01-01 05:00");
     expect(text).toContain("AS OF");
     expect(text).not.toContain("Token");
   });
 
+  test("future reset dates get a relative (3d)/(4h)/(15m) and past percents print --", () => {
+    const lines = formatProfileTable(
+      [
+        {
+          name: "work",
+          kind: "oauth",
+          active: true,
+          account: "a@example.com",
+          organization: null,
+          subscriptionType: "max",
+          rateLimitTier: "default_claude_max_20x",
+          expiresAt: "2026-08-19T03:14:00.000Z",
+          expired: false,
+          hasRefreshToken: true,
+          apiKeyEnvVar: null,
+          allowRemoteControl: true,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 99, resetsAt: "2026-08-18T11:00:00.000Z" },
+            sevenDay: { utilization: 8, resetsAt: "2026-08-21T12:00:00.000Z" },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
+        },
+      ],
+      NOW,
+    );
+    const text = lines.join("\n");
+    expect(text).toContain("2026-08-19 03:14 (15h)");
+    expect(text).toContain("--");
+    expect(text).not.toContain("99%");
+    expect(text).toContain("2026-08-18 11:00");
+    expect(text).not.toContain("2026-08-18 11:00 (");
+    expect(text).toContain("8%");
+    expect(text).toContain("2026-08-21 12:00 (3d)");
+  });
+
+  test("a 0% bucket with no reset clock prints --, not 0%", () => {
+    const lines = formatProfileTable(
+      [
+        {
+          name: "gmu",
+          kind: "oauth",
+          active: false,
+          account: "jdilles@gmu.edu",
+          organization: null,
+          subscriptionType: "max",
+          rateLimitTier: null,
+          expiresAt: "2026-09-02T10:00:00.000Z",
+          expired: false,
+          hasRefreshToken: true,
+          apiKeyEnvVar: null,
+          allowRemoteControl: false,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 0, resetsAt: null as unknown as string },
+            sevenDay: { utilization: 0, resetsAt: null as unknown as string },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
+        },
+      ],
+      NOW,
+    );
+    const text = lines.join("\n");
+    expect(text).toContain("--");
+    expect(text).not.toContain("0%");
+  });
+
   test("falls back to a dash when the account is unknown", () => {
-    const lines = formatProfileTable([
-      {
-        name: "bare",
-        kind: "oauth",
-        active: true,
-        account: null,
-        organization: null,
-        subscriptionType: null,
-        rateLimitTier: null,
-        expiresAt: null,
-        expired: null,
-        hasRefreshToken: false,
-        apiKeyEnvVar: null,
-        allowRemoteControl: true,
-        hasCredentials: true,
-        updatedAt: NOW.toISOString(),
-        quota: null,
-      },
-    ]);
+    const lines = formatProfileTable(
+      [
+        {
+          name: "bare",
+          kind: "oauth",
+          active: true,
+          account: null,
+          organization: null,
+          subscriptionType: null,
+          rateLimitTier: null,
+          expiresAt: null,
+          expired: null,
+          hasRefreshToken: false,
+          apiKeyEnvVar: null,
+          allowRemoteControl: true,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: null,
+        },
+      ],
+      NOW,
+    );
     expect(lines[1]).toContain("*  bare");
     expect(lines[1]).toContain("-");
   });
@@ -1008,5 +1161,278 @@ describe("mcx claude auth — QA regressions", () => {
     const payload = JSON.parse(h.out.join("\n"));
     expect(payload.outgoingPreservedAs).toBe("backup");
     expect(readFileSync(join(payload.orphanBackupDir, "credentials.json"), "utf-8")).toContain("cli-refreshed");
+  });
+});
+
+const HARVESTED = {
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"],
+};
+
+const PERSONAL_RT = "sk-ant-ort01-PERSONAL-RT";
+const NEW_ACCESS = "sk-ant-oat01-CLI-REFRESHED";
+const NEW_REFRESH = "sk-ant-ort01-CLI-ROTATED";
+
+async function parkWork(h: Harness): Promise<void> {
+  await claudeAuth(["save", "work"], h.deps, h.envDeps);
+  writeFileSync(
+    h.paths.credentialsPath,
+    JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "tok-personal",
+        refreshToken: PERSONAL_RT,
+        expiresAt: EXPIRES_AT,
+        scopes: ["user:inference"],
+        subscriptionType: "max",
+      },
+    }),
+  );
+  writeFileSync(
+    h.paths.claudeConfigPath,
+    JSON.stringify({ userID: "user-b", oauthAccount: { emailAddress: "b@example.com", accountUuid: "uuid-b" } }),
+  );
+  await claudeAuth(["save", "personal"], h.deps, h.envDeps);
+}
+
+function injectRefreshOk(h: Harness): Array<{ url: string; body: unknown }> {
+  const posts: Array<{ url: string; body: unknown }> = [];
+  h.envDeps.harvestOAuth = () => HARVESTED;
+  h.envDeps.postOAuthToken = async (url, body) => {
+    posts.push({ url, body });
+    return {
+      status: 200,
+      json: {
+        access_token: NEW_ACCESS,
+        refresh_token: NEW_REFRESH,
+        expires_in: 3600,
+      },
+    };
+  };
+  return posts;
+}
+
+describe("mcx claude auth refresh", () => {
+  test("missing name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["refresh"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Missing profile name");
+  });
+
+  test("darwin exits 2 and writes nothing", async () => {
+    using h = harness({ platform: "darwin" });
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 2);
+    expect(h.err.join(" ")).toContain("Linux-only");
+    expect(existsSync(h.paths.profilesDir)).toBe(false);
+  });
+
+  test("human output confirms the parked refresh and leaves live credentials alone", async () => {
+    using h = harness();
+    await parkWork(h);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    const posts = injectRefreshOk(h);
+    h.out.length = 0;
+
+    await claudeAuth(["refresh", "work"], h.deps, h.envDeps);
+
+    const text = h.out.join("\n");
+    expect(text).toContain('Refreshed auth profile "work"');
+    expect(text).toContain("refresh token rotated");
+    expect(text).toContain("scopes (stored): user:inference");
+    expect(text).not.toContain(ACCESS_TOKEN);
+    expect(text).not.toContain(NEW_ACCESS);
+    expect(text).not.toContain(NEW_REFRESH);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      url: HARVESTED.tokenUrl,
+      body: {
+        grant_type: "refresh_token",
+        client_id: HARVESTED.clientId,
+        scope: "user:inference",
+      },
+    });
+    const stored = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(stored.credentials.claudeAiOauth.accessToken).toBe(NEW_ACCESS);
+    expect(stored.credentials.claudeAiOauth.refreshToken).toBe(NEW_REFRESH);
+  });
+
+  test("--json emits a machine-readable record with no token material", async () => {
+    using h = harness();
+    await parkWork(h);
+    injectRefreshOk(h);
+    h.out.length = 0;
+
+    await claudeAuth(["refresh", "work", "--json"], h.deps, h.envDeps);
+
+    const payload = JSON.parse(h.out.join("\n"));
+    expect(payload).toMatchObject({
+      ok: true,
+      action: "refresh",
+      name: "work",
+      scopeSource: "stored",
+      rotatedRefreshToken: true,
+      profileFetched: false,
+    });
+    expect(h.out.join("\n")).not.toContain(ACCESS_TOKEN);
+    expect(h.out.join("\n")).not.toContain(NEW_ACCESS);
+    expect(h.out.join("\n")).not.toContain(NEW_REFRESH);
+  });
+
+  test("refuses to refresh the live owner", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    injectRefreshOk(h);
+    h.out.length = 0;
+
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("owns the live Claude identity");
+    expect(h.out).toEqual([]);
+  });
+
+  test("invalid_grant exits 1 and leaves the stored blob unchanged", async () => {
+    using h = harness();
+    await parkWork(h);
+    const before = readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8");
+    h.envDeps.harvestOAuth = () => HARVESTED;
+    h.envDeps.postOAuthToken = async () => ({ status: 400, json: { error: "invalid_grant" } });
+
+    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("invalid_grant");
+    expect(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).toBe(before);
+  });
+
+  test("harvest failure still refreshes using fallback constants", async () => {
+    using h = harness();
+    await parkWork(h);
+    let posted = false;
+    h.envDeps.harvestOAuth = () => {
+      throw new AuthProfileError("Could not harvest oauth constants from /nope", "harvest-failed");
+    };
+    h.envDeps.postOAuthToken = async () => {
+      posted = true;
+      return { status: 200, json: { access_token: NEW_ACCESS, refresh_token: NEW_REFRESH, expires_in: 3600 } };
+    };
+    h.envDeps.fetchOAuthProfile = async () => ({
+      subscriptionType: null,
+      rateLimitTier: null,
+      accountUuid: null,
+      emailAddress: null,
+      organizationUuid: null,
+      organizationName: null,
+      displayName: null,
+    });
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["refresh", "work"], h.deps, h.envDeps);
+
+    expect(posted).toBe(true);
+    expect(h.out.join("\n")).toContain('Refreshed auth profile "work"');
+    expect(h.info.join(" ")).toContain("fallback");
+  });
+
+  test("--all refreshes parked profiles and skips the live owner", async () => {
+    using h = harness();
+    await parkWork(h);
+    injectRefreshOk(h);
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["refresh", "--all"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain("Refreshed 1 profile(s): work");
+    expect(h.info.join(" ")).toContain("personal");
+    expect(h.info.join(" ")).toContain("owns the live Claude identity");
+    const work = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(work.credentials.claudeAiOauth.accessToken).toBe(NEW_ACCESS);
+    const personal = JSON.parse(readFileSync(join(h.paths.profilesDir, "personal.json"), "utf-8"));
+    expect(personal.credentials.claudeAiOauth.accessToken).toBe("tok-personal");
+  });
+
+  test("--all with a profile name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["refresh", "work", "--all"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Do not pass a profile name with --all");
+  });
+});
+
+describe("mcx claude auth rm", () => {
+  test("missing name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["rm"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Missing profile name");
+  });
+
+  test("deletes a parked profile and leaves live credentials alone", async () => {
+    using h = harness();
+    await parkWork(h);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    h.out.length = 0;
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(existsSync(join(h.paths.profilesDir, "work.json"))).toBe(false);
+    expect(existsSync(join(h.paths.profilesDir, "personal.json"))).toBe(true);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+  });
+
+  test("removing the active profile clears the pointer and warns", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(h.info.join(" ")).toContain("live Claude identity");
+    expect(existsSync(join(h.paths.profilesDir, "active.json"))).toBe(false);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+  });
+
+  test("--json emits a machine-readable record", async () => {
+    using h = harness();
+    await parkWork(h);
+    h.out.length = 0;
+
+    await claudeAuth(["rm", "work", "--json"], h.deps, h.envDeps);
+
+    expect(JSON.parse(h.out.join("\n"))).toMatchObject({
+      ok: true,
+      action: "rm",
+      name: "work",
+      wasActive: false,
+      ownedLive: false,
+    });
+  });
+
+  test("unknown profile exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["rm", "nope"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("No such auth profile");
+  });
+
+  test("darwin can still rm — it does not touch Claude credential files", async () => {
+    using h = harness({ platform: "darwin" });
+    mkdirSync(h.paths.profilesDir, { recursive: true });
+    writeFileSync(
+      join(h.paths.profilesDir, "work.json"),
+      JSON.stringify({
+        version: 1,
+        name: "work",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+      }),
+      { mode: 0o600 },
+    );
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(existsSync(join(h.paths.profilesDir, "work.json"))).toBe(false);
   });
 });

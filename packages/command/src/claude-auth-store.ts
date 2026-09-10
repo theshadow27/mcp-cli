@@ -51,6 +51,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  FALLBACK_CLAUDE_OAUTH,
+  type HarvestedClaudeOAuth,
   QUOTA_FETCH_ALL_BUDGET_MS,
   QUOTA_RATE_LIMIT_BACKOFF_MS,
   QUOTA_RATE_LIMIT_MAX_ATTEMPTS,
@@ -60,9 +62,12 @@ import {
   type StoredQuota,
   fetchQuotaUsage,
   flockUnlock,
+  harvestClaudeOAuthConstants,
+  isCompleteQuotaBucket,
   isQuotaRateLimitError,
   options,
   quotaRetryAfterMs,
+  resolveSourceClaudePath,
   toStoredQuota,
   tryFlockExclusive,
 } from "@mcp-cli/core";
@@ -198,6 +203,10 @@ export const AUTH_ERROR_CODES = [
   "config-locked",
   "config-unreadable",
   "io",
+  "refresh-live-owner",
+  "no-refresh-token",
+  "oauth-refresh-failed",
+  "harvest-failed",
 ] as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
@@ -401,6 +410,50 @@ export function withOperationLock<T>(paths: AuthPaths, fn: () => T, deadlineMs =
   }
 }
 
+const OAUTH_TOKEN_POST_TIMEOUT_MS = 30_000;
+const OAUTH_PROFILE_GET_TIMEOUT_MS = 10_000;
+const OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
+const REFRESH_LOCK_DEADLINE_MS = OAUTH_TOKEN_POST_TIMEOUT_MS + OAUTH_PROFILE_GET_TIMEOUT_MS + 5_000;
+
+/** Claude maps `organization.organization_type` onto the credential blob's `subscriptionType`. */
+const SUBSCRIPTION_TYPE_BY_ORG: Record<string, string> = {
+  claude_max: "max",
+  claude_pro: "pro",
+  claude_enterprise: "enterprise",
+  claude_team: "team",
+};
+
+/**
+ * Same exclusive lock as `withOperationLock`, but the critical section may
+ * await (the oauth token POST is 30s). Other auth commands still fail after
+ * 2s rather than wait out the refresh.
+ */
+export async function withOperationLockAsync<T>(
+  paths: AuthPaths,
+  fn: () => Promise<T>,
+  deadlineMs = REFRESH_LOCK_DEADLINE_MS,
+): Promise<T> {
+  ensureProfilesDir(paths);
+  const lockPath = join(paths.profilesDir, OPERATION_LOCK_FILE);
+  const fd = io(`open ${lockPath}`, () => openSync(lockPath, "a+", FILE_MODE));
+  const deadline = Date.now() + deadlineMs;
+  let held = false;
+  try {
+    while (!held) {
+      held = tryFlockExclusive(fd);
+      if (held) break;
+      if (Date.now() >= deadline) {
+        throw new AuthProfileError("another mcx claude auth command is running — retry in a moment", "config-locked");
+      }
+      await Bun.sleep(LOCK_RETRY_MS);
+    }
+    return await fn();
+  } finally {
+    if (held) flockUnlock(fd);
+    closeSync(fd);
+  }
+}
+
 // ── Profile records ──
 
 export function listProfileNames(paths: AuthPaths): string[] {
@@ -437,6 +490,55 @@ export function writeProfile(paths: AuthPaths, profile: ClaudeAuthProfile): Clau
   // JSON.stringify drops undefined-valued keys, so the stripped fields never hit disk.
   writeFileAtomic(profilePath(paths, record.name), `${JSON.stringify(record, null, 2)}\n`);
   return record;
+}
+
+export interface RemoveProfileResult {
+  name: string;
+  /** True when `active.json` named this profile and was cleared. */
+  wasActive: boolean;
+  /**
+   * True when the live credential blob was attributed to this profile. The live
+   * files are never touched — a canceled account can still be dropped from the
+   * store while Claude Code keeps whatever is in `~/.claude/.credentials.json`.
+   */
+  ownedLive: boolean;
+}
+
+/**
+ * Delete one stored profile file. Never writes `~/.claude/.credentials.json` or
+ * `~/.claude.json`. If the active pointer names this profile it is cleared, so
+ * a later `ls --fetch` does not stamp numbers onto a name that no longer exists.
+ *
+ * Platform-agnostic: this only mutates `~/.mcp-cli/auth-profiles/`.
+ */
+export function removeProfile(opts: { paths: AuthPaths; name: string; now: Date }): RemoveProfileResult {
+  const { paths, name, now } = opts;
+  validateProfileName(name);
+
+  return withOperationLock(paths, () => {
+    const path = profilePath(paths, name);
+    if (!existsSync(path)) {
+      throw new AuthProfileError(
+        `No such auth profile: "${name}". Run "mcx claude auth ls" to see saved ones.`,
+        "not-found",
+      );
+    }
+
+    const wasActive = readActivePointer(paths)?.name === name;
+    let ownedLive = false;
+    try {
+      ownedLive = attributedLiveProfile(paths, readLiveState(paths, now)) === name;
+    } catch {
+      // Live files unreadable or absent (macOS Keychain, corrupt JSON) — still delete.
+    }
+
+    io(`remove ${path}`, () => unlinkSync(path));
+    if (wasActive) {
+      const activePath = join(paths.profilesDir, ACTIVE_FILE);
+      if (existsSync(activePath)) io(`remove ${activePath}`, () => unlinkSync(activePath));
+    }
+    return { name, wasActive, ownedLive };
+  });
 }
 
 /**
@@ -494,7 +596,12 @@ function mergeStoredQuota(
   const merged: StoredQuota = { ...incoming };
   const keptBuckets: string[] = [];
   const keep = <K extends "fiveHour" | "sevenDay" | "sevenDaySonnet" | "sevenDayOpus" | "extraUsage">(key: K): void => {
-    if (incoming[key] != null || stored[key] == null) return;
+    const incomingBucket = incoming[key];
+    // A placeholder `{ utilization: 0, resetsAt: null }` is not a real window —
+    // treat it like an omitted bucket so a freshly-minted token cannot wipe the
+    // previous snapshot. extraUsage has no reset clock; non-null is complete.
+    const incomingComplete = key === "extraUsage" ? incomingBucket != null : isCompleteQuotaBucket(incomingBucket);
+    if (incomingComplete || stored[key] == null) return;
     merged[key] = stored[key];
     keptBuckets.push(key);
   };
@@ -1249,6 +1356,509 @@ export function accessTokenFromCredentials(credentials: Record<string, unknown> 
   if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
   const token = (root as Record<string, unknown>).accessToken;
   return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+/** Pull the refresh token out of a credentials blob. Never logs it. */
+export function refreshTokenFromCredentials(credentials: Record<string, unknown> | null | undefined): string | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  const token = (root as Record<string, unknown>).refreshToken;
+  return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+function scopesFromCredentials(credentials: Record<string, unknown> | null | undefined): string[] {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return [];
+  const raw = (root as Record<string, unknown>).scopes;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === "string" && s.length > 0);
+}
+
+export interface RefreshTokenRequest {
+  grant_type: "refresh_token";
+  refresh_token: string;
+  client_id: string;
+  scope: string;
+}
+
+export type OAuthTokenPoster = (
+  url: string,
+  body: RefreshTokenRequest,
+) => Promise<{ status: number; json: Record<string, unknown> }>;
+
+/**
+ * Lenient projection of `GET /api/oauth/profile`. Every field is optional —
+ * a partial body still contributes whatever it has. Claude Code's Zod schema
+ * rejects the whole response when `account.uuid` / `account.email` /
+ * `organization.uuid` are missing, which is why a successful token rotation
+ * can fail to land on disk.
+ */
+export interface OAuthProfileSnapshot {
+  subscriptionType: string | null;
+  rateLimitTier: string | null;
+  accountUuid: string | null;
+  emailAddress: string | null;
+  organizationUuid: string | null;
+  organizationName: string | null;
+  displayName: string | null;
+}
+
+export type OAuthProfileFetcher = (accessToken: string) => Promise<OAuthProfileSnapshot | null>;
+
+export interface RefreshStoredProfileOpts {
+  paths: AuthPaths;
+  name: string;
+  now: Date;
+  platform: string;
+  /** Called only after live-owner / missing-token guards pass — never on a refuse. */
+  harvest: () => HarvestedClaudeOAuth;
+  postToken: OAuthTokenPoster;
+  /**
+   * Claude's post-refresh `GET /api/oauth/profile`. Failure or a partial body
+   * must not roll back the token write. Injected by tests.
+   */
+  fetchProfile: OAuthProfileFetcher;
+}
+
+export interface RefreshStoredProfileResult {
+  name: string;
+  expiresAt: string;
+  scopes: string[];
+  scopeSource: "stored" | "harvested" | "fallback";
+  rotatedRefreshToken: boolean;
+  /** True when `/api/oauth/profile` returned a body we could merge. */
+  profileFetched: boolean;
+  warnings: string[];
+}
+
+export interface RefreshParkedProfilesResult {
+  refreshed: RefreshStoredProfileResult[];
+  skipped: Array<{ name: string; reason: string }>;
+  failed: Array<{ name: string; message: string }>;
+}
+
+/** Read TOKEN_URL / CLIENT_ID / P3 from the installed claude binary. */
+export function harvestFromInstalledClaude(): HarvestedClaudeOAuth {
+  let path: string | null;
+  try {
+    path = resolveSourceClaudePath();
+  } catch (err) {
+    throw new AuthProfileError(
+      `Could not locate claude binary: ${err instanceof Error ? err.message : String(err)}`,
+      "harvest-failed",
+    );
+  }
+  if (!path) {
+    throw new AuthProfileError(
+      "Could not locate `claude` on PATH to harvest oauth constants. Install Claude Code or set MCX_CLAUDE_BINARY.",
+      "harvest-failed",
+    );
+  }
+  try {
+    return harvestClaudeOAuthConstants(readFileSync(path));
+  } catch (err) {
+    throw new AuthProfileError(
+      `Could not harvest oauth constants from ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      "harvest-failed",
+    );
+  }
+}
+
+export async function postOAuthToken(
+  url: string,
+  body: RefreshTokenRequest,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(OAUTH_TOKEN_POST_TIMEOUT_MS),
+  });
+  const text = await resp.text();
+  let json: Record<string, unknown> = {};
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    json = { error: text.slice(0, 200) };
+  }
+  return { status: resp.status, json };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
+  return null;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Finite number from a JSON number or a decimal string (`"3600"`). */
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+function clientIdFromCredentials(credentials: Record<string, unknown> | null | undefined): string | null {
+  const root = credentials?.claudeAiOauth;
+  if (typeof root !== "object" || root === null || Array.isArray(root)) return null;
+  return asNonEmptyString((root as Record<string, unknown>).clientId);
+}
+
+function mapSubscriptionType(raw: unknown): string | null {
+  const value = asNonEmptyString(raw);
+  if (!value) return null;
+  return SUBSCRIPTION_TYPE_BY_ORG[value] ?? (["max", "pro", "enterprise", "team"].includes(value) ? value : null);
+}
+
+function scopesFromTokenResponse(json: Record<string, unknown>, fallback: string[]): string[] {
+  if (typeof json.scope === "string" && json.scope.trim().length > 0) return json.scope.trim().split(/\s+/);
+  if (Array.isArray(json.scope)) {
+    const scopes = json.scope.filter((s): s is string => typeof s === "string" && s.length > 0);
+    if (scopes.length > 0) return scopes;
+  }
+  return fallback;
+}
+
+/** Pull whatever identity fields the token endpoint happened to echo. */
+function identityPatchFromTokenResponse(json: Record<string, unknown>): Record<string, unknown> {
+  const account = asRecord(json.account);
+  const organization = asRecord(json.organization);
+  const patch: Record<string, unknown> = {};
+  const uuid = asNonEmptyString(account?.uuid);
+  const email = asNonEmptyString(account?.email_address) ?? asNonEmptyString(account?.email);
+  const orgUuid = asNonEmptyString(organization?.uuid);
+  if (uuid) patch.accountUuid = uuid;
+  if (email) patch.emailAddress = email;
+  if (orgUuid) patch.organizationUuid = orgUuid;
+  return patch;
+}
+
+/**
+ * Parse `GET /api/oauth/profile` without requiring any field. A body that would
+ * fail Claude Code's Zod shape check still contributes the keys that are present.
+ */
+export function parseOAuthProfile(json: unknown): OAuthProfileSnapshot {
+  const root = asRecord(json);
+  const account = asRecord(root?.account);
+  const organization = asRecord(root?.organization);
+  return {
+    subscriptionType: mapSubscriptionType(organization?.organization_type),
+    rateLimitTier: asNonEmptyString(organization?.rate_limit_tier),
+    accountUuid: asNonEmptyString(account?.uuid),
+    emailAddress: asNonEmptyString(account?.email) ?? asNonEmptyString(account?.email_address),
+    organizationUuid: asNonEmptyString(organization?.uuid),
+    organizationName: asNonEmptyString(organization?.name) ?? asNonEmptyString(organization?.organization_name),
+    displayName: asNonEmptyString(account?.display_name),
+  };
+}
+
+function profileSnapshotHasFields(snap: OAuthProfileSnapshot): boolean {
+  return (
+    snap.subscriptionType !== null ||
+    snap.rateLimitTier !== null ||
+    snap.accountUuid !== null ||
+    snap.emailAddress !== null ||
+    snap.organizationUuid !== null ||
+    snap.organizationName !== null ||
+    snap.displayName !== null
+  );
+}
+
+/** Claude's post-refresh profile GET. Returns null on transport/HTTP failure. */
+export async function fetchOAuthProfile(accessToken: string): Promise<OAuthProfileSnapshot | null> {
+  try {
+    const resp = await fetch(OAUTH_PROFILE_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+      },
+      signal: AbortSignal.timeout(OAUTH_PROFILE_GET_TIMEOUT_MS),
+    });
+    if (!resp.ok) return null;
+    return parseOAuthProfile(await resp.json());
+  } catch {
+    return null;
+  }
+}
+
+function mergeOauthAccount(
+  existing: Record<string, unknown> | undefined,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...(existing ?? {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value == null || value === "") continue;
+    next[key] = value;
+  }
+  return next;
+}
+
+function identityPatchFromProfile(snap: OAuthProfileSnapshot): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (snap.accountUuid) patch.accountUuid = snap.accountUuid;
+  if (snap.emailAddress) patch.emailAddress = snap.emailAddress;
+  if (snap.organizationUuid) patch.organizationUuid = snap.organizationUuid;
+  if (snap.organizationName) patch.organizationName = snap.organizationName;
+  if (snap.displayName) patch.displayName = snap.displayName;
+  return patch;
+}
+
+function resolveRefreshConstants(
+  harvest: () => HarvestedClaudeOAuth,
+  stored: { clientId: string | null; scopes: string[] },
+): { constants: HarvestedClaudeOAuth; scopeSource: RefreshStoredProfileResult["scopeSource"]; warning?: string } {
+  try {
+    const harvested = harvest();
+    const scopes = stored.scopes.length > 0 ? stored.scopes : harvested.scopes;
+    return {
+      constants: { ...harvested, scopes },
+      scopeSource: stored.scopes.length > 0 ? "stored" : "harvested",
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const scopes = stored.scopes.length > 0 ? stored.scopes : FALLBACK_CLAUDE_OAUTH.scopes;
+    return {
+      constants: {
+        tokenUrl: FALLBACK_CLAUDE_OAUTH.tokenUrl,
+        clientId: stored.clientId ?? FALLBACK_CLAUDE_OAUTH.clientId,
+        scopes,
+      },
+      scopeSource: stored.scopes.length > 0 ? "stored" : "fallback",
+      warning: `could not harvest oauth constants from claude binary (${msg}) — using fallback`,
+    };
+  }
+}
+
+/**
+ * Refresh one stored oauth profile against Anthropic's token endpoint.
+ *
+ * Never writes `~/.claude/.credentials.json`. Refuses if this profile owns the
+ * live identity (or shares its refresh token) — rotating that RT would kick
+ * the live Claude session to /login. Holds the auth operation lock for the
+ * POST so a concurrent `load` cannot dump the pre-rotation token into live.
+ *
+ * After a 200 with an access_token the new tokens are written immediately.
+ * Claude Code then GETs `/api/oauth/profile` to fill `subscriptionType` /
+ * `rateLimitTier` / identity; a missing field or a failed fetch does not
+ * roll that write back (Claude's own Zod check on the profile body is what
+ * used to skip the store). Harvest failure falls back to the last-known
+ * TOKEN_URL / CLIENT_ID rather than refusing the rotation.
+ */
+export async function refreshStoredProfile(opts: RefreshStoredProfileOpts): Promise<RefreshStoredProfileResult> {
+  const { paths, name, now, platform, harvest, postToken, fetchProfile } = opts;
+  assertPlatformSupported(platform);
+  validateProfileName(name);
+
+  return withOperationLockAsync(paths, async () => {
+    const profile = readProfile(paths, name);
+    if (!profile) {
+      throw new AuthProfileError(
+        `No such auth profile: "${name}". Run "mcx claude auth ls" to see saved ones.`,
+        "not-found",
+      );
+    }
+    if (profile.kind !== "oauth") {
+      throw new AuthProfileError(`Profile "${name}" is an api-key profile — there is no oauth token to refresh`, "io");
+    }
+    const refreshToken = refreshTokenFromCredentials(profile.credentials);
+    if (!refreshToken) {
+      throw new AuthProfileError(
+        `Profile "${name}" has no refresh token — log in with claude and \`mcx claude auth save ${name}\``,
+        "no-refresh-token",
+      );
+    }
+
+    const live = readLiveState(paths, now);
+    const liveOwner = attributedLiveProfile(paths, live);
+    const liveRt = refreshTokenFromCredentials(live.credentials);
+    if (liveOwner === name || (liveRt !== null && liveRt === refreshToken)) {
+      throw new AuthProfileError(
+        `Refusing to refresh "${name}": it owns the live Claude identity (or shares its refresh token). Switch away first, or let Claude Code refresh in place and \`ls --fetch\`.`,
+        "refresh-live-owner",
+      );
+    }
+
+    const warnings: string[] = [];
+    const storedScopes = scopesFromCredentials(profile.credentials);
+    const resolved = resolveRefreshConstants(harvest, {
+      clientId: clientIdFromCredentials(profile.credentials),
+      scopes: storedScopes,
+    });
+    if (resolved.warning) warnings.push(resolved.warning);
+    const { constants, scopeSource } = resolved;
+    const body: RefreshTokenRequest = {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: constants.clientId,
+      scope: constants.scopes.join(" "),
+    };
+
+    const { status, json } = await postToken(constants.tokenUrl, body);
+    if (status === 429) {
+      throw new AuthProfileError(
+        `Quota/token endpoint rate-limited (429) refreshing "${name}"`,
+        "oauth-refresh-failed",
+      );
+    }
+    if (status !== 200) {
+      const errText =
+        typeof json.error === "string"
+          ? json.error
+          : typeof json.error_description === "string"
+            ? json.error_description
+            : `HTTP ${status}`;
+      const hint =
+        errText.includes("invalid_grant") || status === 401
+          ? " — stored refresh token was rejected (already rotated?). Load this profile once so Claude Code can re-mint it."
+          : "";
+      throw new AuthProfileError(`Token refresh failed for "${name}": ${errText}${hint}`, "oauth-refresh-failed");
+    }
+    const accessToken = asNonEmptyString(json.access_token);
+    if (!accessToken) {
+      throw new AuthProfileError(`Token refresh for "${name}" returned no access_token`, "oauth-refresh-failed");
+    }
+    const nextRefresh = asNonEmptyString(json.refresh_token) ?? refreshToken;
+    const expiresIn = finiteNumber(json.expires_in);
+    const expiresAt = now.getTime() + (expiresIn !== undefined && expiresIn > 0 ? expiresIn : 8 * 3600) * 1000;
+    const rtExpiresIn = finiteNumber(json.refresh_token_expires_in);
+    const nextScopes = scopesFromTokenResponse(json, constants.scopes);
+
+    const root = credentialsRoot(profile);
+    const nextRoot: Record<string, unknown> = {
+      ...(root ?? {}),
+      accessToken,
+      refreshToken: nextRefresh,
+      expiresAt,
+      scopes: nextScopes,
+      clientId: constants.clientId,
+    };
+    if (rtExpiresIn !== undefined && rtExpiresIn > 0) {
+      nextRoot.refreshTokenExpiresAt = now.getTime() + rtExpiresIn * 1000;
+    }
+
+    const tokenIdentityPatch = identityPatchFromTokenResponse(json);
+    const identity: StoredIdentity | undefined =
+      Object.keys(tokenIdentityPatch).length > 0
+        ? {
+            ...profile.identity,
+            oauthAccount: mergeOauthAccount(profile.identity?.oauthAccount, tokenIdentityPatch),
+          }
+        : profile.identity;
+
+    // Tokens land first so a later profile-fetch miss cannot skip the update.
+    let stored: ClaudeAuthProfile = writeProfile(paths, {
+      ...profile,
+      credentials: { ...profile.credentials, claudeAiOauth: nextRoot },
+      identity,
+      updatedAt: now.toISOString(),
+    });
+
+    let profileFetched = false;
+    let snap: OAuthProfileSnapshot | null = null;
+    let profileFetchThrew = false;
+    try {
+      snap = await fetchProfile(accessToken);
+    } catch (err) {
+      profileFetchThrew = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`oauth profile fetch failed (${msg}) — tokens were still stored`);
+    }
+    if (snap && profileSnapshotHasFields(snap)) {
+      profileFetched = true;
+      if (snap.subscriptionType) nextRoot.subscriptionType = snap.subscriptionType;
+      if (snap.rateLimitTier) nextRoot.rateLimitTier = snap.rateLimitTier;
+      stored = writeProfile(paths, {
+        ...stored,
+        credentials: { ...stored.credentials, claudeAiOauth: nextRoot },
+        identity: {
+          ...stored.identity,
+          oauthAccount: mergeOauthAccount(stored.identity?.oauthAccount, identityPatchFromProfile(snap)),
+        },
+        updatedAt: now.toISOString(),
+      });
+    } else if (snap === null && !profileFetchThrew) {
+      warnings.push("oauth profile fetch returned nothing — tokens were still stored");
+    }
+
+    return {
+      name,
+      expiresAt: new Date(expiresAt).toISOString(),
+      scopes: nextScopes,
+      scopeSource,
+      rotatedRefreshToken: nextRefresh !== refreshToken,
+      profileFetched,
+      warnings,
+    };
+  });
+}
+
+/**
+ * Refresh every parked oauth profile that has a refresh token.
+ *
+ * Skips the live owner (same refuse as a named `refresh`), api-key profiles,
+ * and blobs with no refresh token. A failure on one name does not stop the
+ * walk. Harvests the claude binary once and reuses the constants.
+ */
+export async function refreshParkedProfiles(
+  opts: Omit<RefreshStoredProfileOpts, "name">,
+): Promise<RefreshParkedProfilesResult> {
+  const { paths } = opts;
+  assertPlatformSupported(opts.platform);
+
+  let cachedHarvest: HarvestedClaudeOAuth | undefined;
+  let cachedHarvestError: unknown;
+  const harvest = (): HarvestedClaudeOAuth => {
+    if (cachedHarvest) return cachedHarvest;
+    if (cachedHarvestError !== undefined) throw cachedHarvestError;
+    try {
+      cachedHarvest = opts.harvest();
+      return cachedHarvest;
+    } catch (err) {
+      cachedHarvestError = err;
+      throw err;
+    }
+  };
+
+  const refreshed: RefreshStoredProfileResult[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
+  const failed: Array<{ name: string; message: string }> = [];
+
+  for (const name of listProfileNames(paths)) {
+    let profile: ClaudeAuthProfile | null;
+    try {
+      profile = readProfile(paths, name);
+    } catch (err) {
+      failed.push({ name, message: err instanceof Error ? err.message : String(err) });
+      continue;
+    }
+    if (!profile) continue;
+    if (profile.kind !== "oauth") {
+      skipped.push({ name, reason: "api-key profile" });
+      continue;
+    }
+    if (!refreshTokenFromCredentials(profile.credentials)) {
+      skipped.push({ name, reason: "no refresh token" });
+      continue;
+    }
+    try {
+      refreshed.push(await refreshStoredProfile({ ...opts, name, harvest }));
+    } catch (err) {
+      if (err instanceof AuthProfileError && err.code === "refresh-live-owner") {
+        skipped.push({ name, reason: "owns the live Claude identity" });
+        continue;
+      }
+      failed.push({ name, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { refreshed, skipped, failed };
 }
 
 /** Access-token expiry vs `now`. Null when the blob has no numeric `expiresAt`. */
