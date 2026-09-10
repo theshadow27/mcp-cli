@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { restoreEnv, unsetEnv } from "../../../../test/env";
-import { OAuthHarvestError, harvestClaudeOAuthConstants } from "./oauth-harvest";
+import { FALLBACK_CLAUDE_OAUTH, OAuthHarvestError, harvestClaudeOAuthConstants } from "./oauth-harvest";
 import { resolveSourceClaudePath } from "./patcher";
 
 const enc = new TextEncoder();
@@ -21,6 +21,7 @@ describe("harvestClaudeOAuthConstants", () => {
       "user:mcp_servers",
       "user:file_upload",
     ]);
+    expect(harvested).toEqual(FALLBACK_CLAUDE_OAUTH);
   });
 
   test("does not pick up design/projects scopes sitting next to P3", () => {

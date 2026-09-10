@@ -25,6 +25,7 @@ export {
   type UpdateOutcome,
 } from "./patcher";
 export {
+  FALLBACK_CLAUDE_OAUTH,
   harvestClaudeOAuthConstants,
   OAuthHarvestError,
   type HarvestedClaudeOAuth,

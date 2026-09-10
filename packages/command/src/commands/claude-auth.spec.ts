@@ -91,6 +91,7 @@ function harness(opts?: { env?: Record<string, string | undefined>; platform?: s
       postOAuthToken: async () => {
         throw new Error("postOAuthToken not injected — test would have hit the live token endpoint");
       },
+      fetchOAuthProfile: async () => null,
     },
     [Symbol.dispose]() {
       rmSync(root, { recursive: true, force: true });
@@ -1271,6 +1272,7 @@ describe("mcx claude auth refresh", () => {
       name: "work",
       scopeSource: "stored",
       rotatedRefreshToken: true,
+      profileFetched: false,
     });
     expect(h.out.join("\n")).not.toContain(ACCESS_TOKEN);
     expect(h.out.join("\n")).not.toContain(NEW_ACCESS);
@@ -1300,7 +1302,7 @@ describe("mcx claude auth refresh", () => {
     expect(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8")).toBe(before);
   });
 
-  test("harvest failure exits 1 without posting", async () => {
+  test("harvest failure still refreshes using fallback constants", async () => {
     using h = harness();
     await parkWork(h);
     let posted = false;
@@ -1309,11 +1311,128 @@ describe("mcx claude auth refresh", () => {
     };
     h.envDeps.postOAuthToken = async () => {
       posted = true;
-      return { status: 200, json: {} };
+      return { status: 200, json: { access_token: NEW_ACCESS, refresh_token: NEW_REFRESH, expires_in: 3600 } };
     };
+    h.envDeps.fetchOAuthProfile = async () => ({
+      subscriptionType: null,
+      rateLimitTier: null,
+      accountUuid: null,
+      emailAddress: null,
+      organizationUuid: null,
+      organizationName: null,
+      displayName: null,
+    });
+    h.out.length = 0;
+    h.info.length = 0;
 
-    await expectExit(() => claudeAuth(["refresh", "work"], h.deps, h.envDeps), 1);
-    expect(h.err.join(" ")).toContain("Could not harvest");
-    expect(posted).toBe(false);
+    await claudeAuth(["refresh", "work"], h.deps, h.envDeps);
+
+    expect(posted).toBe(true);
+    expect(h.out.join("\n")).toContain('Refreshed auth profile "work"');
+    expect(h.info.join(" ")).toContain("fallback");
+  });
+
+  test("--all refreshes parked profiles and skips the live owner", async () => {
+    using h = harness();
+    await parkWork(h);
+    injectRefreshOk(h);
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["refresh", "--all"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain("Refreshed 1 profile(s): work");
+    expect(h.info.join(" ")).toContain("personal");
+    expect(h.info.join(" ")).toContain("owns the live Claude identity");
+    const work = JSON.parse(readFileSync(join(h.paths.profilesDir, "work.json"), "utf-8"));
+    expect(work.credentials.claudeAiOauth.accessToken).toBe(NEW_ACCESS);
+    const personal = JSON.parse(readFileSync(join(h.paths.profilesDir, "personal.json"), "utf-8"));
+    expect(personal.credentials.claudeAiOauth.accessToken).toBe("tok-personal");
+  });
+
+  test("--all with a profile name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["refresh", "work", "--all"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Do not pass a profile name with --all");
+  });
+});
+
+describe("mcx claude auth rm", () => {
+  test("missing name exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["rm"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("Missing profile name");
+  });
+
+  test("deletes a parked profile and leaves live credentials alone", async () => {
+    using h = harness();
+    await parkWork(h);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    h.out.length = 0;
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(existsSync(join(h.paths.profilesDir, "work.json"))).toBe(false);
+    expect(existsSync(join(h.paths.profilesDir, "personal.json"))).toBe(true);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+  });
+
+  test("removing the active profile clears the pointer and warns", async () => {
+    using h = harness();
+    await claudeAuth(["save", "work"], h.deps, h.envDeps);
+    const liveBefore = readFileSync(h.paths.credentialsPath, "utf-8");
+    h.out.length = 0;
+    h.info.length = 0;
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(h.info.join(" ")).toContain("live Claude identity");
+    expect(existsSync(join(h.paths.profilesDir, "active.json"))).toBe(false);
+    expect(readFileSync(h.paths.credentialsPath, "utf-8")).toBe(liveBefore);
+  });
+
+  test("--json emits a machine-readable record", async () => {
+    using h = harness();
+    await parkWork(h);
+    h.out.length = 0;
+
+    await claudeAuth(["rm", "work", "--json"], h.deps, h.envDeps);
+
+    expect(JSON.parse(h.out.join("\n"))).toMatchObject({
+      ok: true,
+      action: "rm",
+      name: "work",
+      wasActive: false,
+      ownedLive: false,
+    });
+  });
+
+  test("unknown profile exits 1", async () => {
+    using h = harness();
+    await expectExit(() => claudeAuth(["rm", "nope"], h.deps, h.envDeps), 1);
+    expect(h.err.join(" ")).toContain("No such auth profile");
+  });
+
+  test("darwin can still rm — it does not touch Claude credential files", async () => {
+    using h = harness({ platform: "darwin" });
+    mkdirSync(h.paths.profilesDir, { recursive: true });
+    writeFileSync(
+      join(h.paths.profilesDir, "work.json"),
+      JSON.stringify({
+        version: 1,
+        name: "work",
+        kind: "oauth",
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+      }),
+      { mode: 0o600 },
+    );
+
+    await claudeAuth(["rm", "work"], h.deps, h.envDeps);
+
+    expect(h.out.join("\n")).toContain('Removed auth profile "work"');
+    expect(existsSync(join(h.paths.profilesDir, "work.json"))).toBe(false);
   });
 });

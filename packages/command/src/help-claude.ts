@@ -211,7 +211,7 @@ registerHelp("claude patch-update", {
 
 registerHelp("claude auth", {
   name: "mcx claude auth",
-  summary: "Save, list, and switch Claude identities without an interactive /login (see #3006)",
+  summary: "Save, list, switch, refresh, and remove Claude identities without an interactive /login (see #3006)",
   notes: [
     "Linux only for now — on macOS Claude Code keeps its credentials in the Keychain,",
     "so save/load exit 2 with a clear error there (ls still works).",
@@ -233,8 +233,9 @@ registerHelp("claude auth", {
     "locally — the 5H/7D/AS OF columns are not live unless you pass `--fetch` (the",
     "currently selected identity) or `--fetch-all` (every profile whose access token",
     "is still valid, one at a time). Expired tokens are skipped: mint a new access",
-    "token with `auth refresh <profile>` (parked only) or `load` (Claude Code",
-    "exchanges on switch). 429s back off (Retry-After / exponential, capped at 60s);",
+    "token with `auth refresh <profile>` or `auth refresh --all` (parked only) or",
+    "`load` (Claude Code exchanges on switch). 429s back off (Retry-After /",
+    "exponential, capped at 60s);",
     "a throttled profile is recorded and the walk continues with retries off, and the",
     "whole sweep is bounded by a 2-minute wall-clock budget. Both flags copy a token Claude",
     "refreshed in place back onto the profile that provably owns it — nothing is",
@@ -258,7 +259,16 @@ registerHelp("claude auth", {
     "`~/.claude/.credentials.json`. Refuses if the profile owns the live identity",
     "(rotating that refresh token would kick the running Claude session). Scopes come",
     "from the stored blob if present, otherwise harvested from the installed `claude`",
-    "binary (same byte-scan as `patch-update`).",
+    "binary (same byte-scan as `patch-update`); harvest failure falls back to the",
+    "last-known TOKEN_URL / CLIENT_ID rather than skipping the write. After the token",
+    "200 it GETs `/api/oauth/profile` (Claude Code's follow-up) and merges whatever",
+    "subscription / account fields come back — a partial or missing body still keeps",
+    "the new tokens. `refresh --all` walks every parked oauth profile; a live owner,",
+    "api-key profile, or individual failure does not stop the rest.",
+    "",
+    "`rm <profile>` deletes the stored profile file. Use it for an account you have",
+    "canceled. It never writes Claude's live credential files; if the profile was",
+    "active the pointer is cleared.",
   ],
   usage: [
     "mcx claude auth save <profile> [--json]",
@@ -270,6 +280,8 @@ registerHelp("claude auth", {
     "mcx claude auth ls --fetch [--json]",
     "mcx claude auth ls --fetch-all [--json]",
     "mcx claude auth refresh <profile> [--json]",
+    "mcx claude auth refresh --all [--json]",
+    "mcx claude auth rm <profile> [--json]",
   ],
   options: [
     ["--json", "Structured JSON on stdout instead of human text"],
@@ -279,6 +291,7 @@ registerHelp("claude auth", {
     ["--auto", "load: switch to the recommended profile if it is not already current"],
     ["--api-key-env <VAR>", "Save an api-key profile bound to this env var name (value never stored)"],
     ["--oauth", "Capture the claude.ai OAuth identity even when ANTHROPIC_API_KEY is exported"],
+    ["--all", "refresh: mint a new access token onto every parked oauth profile"],
   ],
   examples: [
     "mcx claude auth save work           # capture the identity that is logged in right now",
@@ -288,6 +301,8 @@ registerHelp("claude auth", {
     "mcx claude auth ls --fetch-all      # same for every unexpired profile",
     "mcx claude auth load --auto         # hop to the `>` row if it is not already *",
     "mcx claude auth refresh personal    # mint a new access token onto a parked profile",
+    "mcx claude auth refresh --all       # same for every parked oauth profile",
+    "mcx claude auth rm ozone            # drop a canceled account from the store",
   ],
 });
 

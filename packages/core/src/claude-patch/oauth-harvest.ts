@@ -18,6 +18,20 @@ export interface HarvestedClaudeOAuth {
   scopes: string[];
 }
 
+/**
+ * Last-known identity-OAuth constants from claude 2.1.257 / 2.1.267.
+ *
+ * Used when the installed binary cannot be harvested (missing P3, no claude on
+ * PATH, module reshaped). TOKEN_URL and CLIENT_ID have been stable across the
+ * versions we have scanned; scopes match the identity array that contains
+ * `user:sessions:claude_code`.
+ */
+export const FALLBACK_CLAUDE_OAUTH: HarvestedClaudeOAuth = {
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"],
+};
+
 const TOKEN_ASSIGN = 'TOKEN_URL:"https://';
 const TOKEN_ASSIGN_RE = /TOKEN_URL:"(https:\/\/[^"]+\/v1\/oauth\/token)"/;
 /** Negative lookbehind so `DESIGN_CLIENT_ID` (same window) is not harvested. */

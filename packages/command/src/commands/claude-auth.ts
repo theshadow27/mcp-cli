@@ -1,5 +1,5 @@
 /**
- * `mcx claude auth save|load|ls|refresh` — scriptable Claude identity switching (#3006).
+ * `mcx claude auth save|load|ls|refresh|rm` — scriptable Claude identity switching (#3006).
  * `ls --fetch` re-queries the usage API for the live identity and stamps the
  * result onto the active oauth profile so the table's 5H/7D/AS OF are current.
  * `ls --fetch-all` does the same, one profile at a time, for every stored
@@ -11,9 +11,13 @@
  * sticky recommended identity with `>` (never on a `wait`); `load --auto`
  * switches to it. `refresh <profile>` posts a refresh_token grant for a *parked*
  * oauth profile and writes the new tokens onto that file only — never onto
- * `~/.claude/.credentials.json`.
+ * `~/.claude/.credentials.json`. After the token 200 it GETs `/api/oauth/profile`
+ * the way Claude Code does, merging whatever fields come back; a partial body
+ * never rolls the token write back. `refresh --all` does that for every parked
+ * oauth profile. `rm <profile>` deletes a stored profile (canceled accounts)
+ * without touching the live Claude files.
  *
- * All four subcommands are non-interactive and agent-callable: JSON on `--json`
+ * All five subcommands are non-interactive and agent-callable: JSON on `--json`
  * (stdout), human text otherwise, warnings and errors on stderr, meaningful exit
  * codes. The filesystem work lives in `../claude-auth-store` so it can be tested
  * against injected paths — no test ever touches a real `~/.claude`.
@@ -33,6 +37,7 @@ import {
 import {
   type AuthPaths,
   AuthProfileError,
+  type OAuthProfileFetcher,
   type OAuthTokenPoster,
   type ProfileSummary,
   type QuotaFetcher,
@@ -40,6 +45,7 @@ import {
   assertPlatformSupported,
   attributedLiveProfile,
   defaultAuthPaths,
+  fetchOAuthProfile,
   fetchUnexpiredProfileQuotas,
   harvestFromInstalledClaude,
   listProfiles,
@@ -47,8 +53,10 @@ import {
   postOAuthToken,
   readActivePointer,
   readLiveState,
+  refreshParkedProfiles,
   refreshProfileCredentialsFromLive,
   refreshStoredProfile,
+  removeProfile,
   saveProfile,
   snapshotQuotaFromCredentials,
   snapshotQuotaFromCredentialsRetrying,
@@ -89,6 +97,8 @@ export interface AuthEnvDeps {
   harvestOAuth?: () => ReturnType<typeof harvestFromInstalledClaude>;
   /** Injected by tests so `auth refresh` never hits the token endpoint. */
   postOAuthToken?: OAuthTokenPoster;
+  /** Injected by tests so `auth refresh` never hits `/api/oauth/profile`. */
+  fetchOAuthProfile?: OAuthProfileFetcher;
 }
 
 function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
@@ -103,13 +113,14 @@ function resolveEnvDeps(overrides?: Partial<AuthEnvDeps>): AuthEnvDeps {
     sleep: overrides?.sleep ?? ((ms: number) => Bun.sleep(ms)),
     harvestOAuth: overrides?.harvestOAuth,
     postOAuthToken: overrides?.postOAuthToken,
+    fetchOAuthProfile: overrides?.fetchOAuthProfile,
   };
 }
 
 /** Subcommands that read or write Claude's own credential files. */
 const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set(["save", "load", "refresh"]);
 
-const AUTH_SUBCOMMANDS = ["save", "load", "ls", "refresh"] as const;
+const AUTH_SUBCOMMANDS = ["save", "load", "ls", "refresh", "rm"] as const;
 type AuthSubcommand = (typeof AUTH_SUBCOMMANDS)[number];
 
 function isAuthSubcommand(value: string): value is AuthSubcommand {
@@ -137,7 +148,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
 
   if (!isAuthSubcommand(sub)) {
     d.printError(
-      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", "ls", or "refresh <profile>".`,
+      `Unknown claude auth subcommand: "${sub || "(none)"}". Use "save <profile>", "load <profile>", "ls", "refresh <profile|--all>", or "rm <profile>".`,
     );
     return d.exit(EXIT_ERROR);
   }
@@ -150,6 +161,7 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
     auto: { type: "boolean" },
     sort: { type: "string" },
     "api-key-env": { type: "string" },
+    all: { type: "boolean" },
   });
   if (parsed.errors.length > 0) {
     for (const err of parsed.errors) d.printError(err);
@@ -187,7 +199,9 @@ export async function claudeAuth(args: string[], d: AuthCliDeps, overrides?: Par
         );
       }
       case "refresh":
-        return await runRefresh(parsed.positionals, json, d, envDeps);
+        return await runRefresh(parsed.positionals, { json, all: parsed.flags.all === true }, d, envDeps);
+      case "rm":
+        return runRm(parsed.positionals, json, d, envDeps);
     }
   } catch (err) {
     if (err instanceof AuthProfileError) {
@@ -363,25 +377,98 @@ async function loadNamed(
   if (result.policyInvalidated) d.log("  org policy cache invalidated (policy-limits.json removed)");
 }
 
-async function runRefresh(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): Promise<void> {
-  const name = requireName(positionals, "mcx claude auth refresh <profile>", d);
+function refreshSeams(envDeps: AuthEnvDeps) {
+  return {
+    harvest: envDeps.harvestOAuth ?? harvestFromInstalledClaude,
+    postToken: envDeps.postOAuthToken ?? postOAuthToken,
+    fetchProfile: envDeps.fetchOAuthProfile ?? fetchOAuthProfile,
+  };
+}
+
+function printRefreshResult(d: AuthCliDeps, result: Awaited<ReturnType<typeof refreshStoredProfile>>): void {
+  for (const warning of result.warnings) d.printInfo(`warning: ${warning}`);
+  d.log(`Refreshed auth profile "${result.name}"`);
+  d.log(`  access token expires ${result.expiresAt.replace("T", " ").slice(0, 16)}`);
+  d.log(`  scopes (${result.scopeSource}): ${result.scopes.join(" ")}`);
+  if (result.rotatedRefreshToken) d.log("  refresh token rotated");
+  if (result.profileFetched) d.log("  oauth profile merged");
+}
+
+async function runRefresh(
+  positionals: string[],
+  opts: { json: boolean; all: boolean },
+  d: AuthCliDeps,
+  envDeps: AuthEnvDeps,
+): Promise<void> {
+  if (opts.all && positionals[0]) {
+    d.printError('Do not pass a profile name with --all. Use "mcx claude auth refresh --all" or "refresh <profile>".');
+    return d.exit(EXIT_ERROR);
+  }
+  const seams = refreshSeams(envDeps);
+  if (opts.all) {
+    const result = await refreshParkedProfiles({
+      paths: envDeps.paths,
+      now: envDeps.now(),
+      platform: envDeps.platform,
+      ...seams,
+    });
+    if (opts.json) {
+      d.log(JSON.stringify({ ok: true, action: "refresh-all", ...result }, null, 2));
+    } else {
+      if (result.refreshed.length === 0 && result.skipped.length === 0 && result.failed.length === 0) {
+        d.log("No oauth profiles to refresh.");
+      }
+      if (result.refreshed.length > 0) {
+        d.log(`Refreshed ${result.refreshed.length} profile(s): ${result.refreshed.map((r) => r.name).join(", ")}`);
+        for (const row of result.refreshed) {
+          for (const warning of row.warnings) d.printInfo(`warning: profile "${row.name}": ${warning}`);
+        }
+      }
+      if (result.skipped.length > 0) {
+        d.printInfo(
+          `skipped ${result.skipped.length}: ${result.skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}`,
+        );
+      }
+      if (result.failed.length > 0) {
+        d.printInfo(
+          `failed ${result.failed.length}: ${result.failed.map((f) => `${f.name} (${f.message})`).join(", ")}`,
+        );
+      }
+    }
+    return;
+  }
+  const name = requireName(positionals, "mcx claude auth refresh <profile|--all>", d);
   validateProfileName(name);
   const result = await refreshStoredProfile({
     paths: envDeps.paths,
     name,
     now: envDeps.now(),
     platform: envDeps.platform,
-    harvest: envDeps.harvestOAuth ?? harvestFromInstalledClaude,
-    postToken: envDeps.postOAuthToken ?? postOAuthToken,
+    ...seams,
   });
-  if (json) {
+  if (opts.json) {
     d.log(JSON.stringify({ ok: true, action: "refresh", ...result }, null, 2));
     return;
   }
-  d.log(`Refreshed auth profile "${result.name}"`);
-  d.log(`  access token expires ${result.expiresAt.replace("T", " ").slice(0, 16)}`);
-  d.log(`  scopes (${result.scopeSource}): ${result.scopes.join(" ")}`);
-  if (result.rotatedRefreshToken) d.log("  refresh token rotated");
+  printRefreshResult(d, result);
+}
+
+function runRm(positionals: string[], json: boolean, d: AuthCliDeps, envDeps: AuthEnvDeps): void {
+  const name = requireName(positionals, "mcx claude auth rm <profile>", d);
+  validateProfileName(name);
+  const result = removeProfile({ paths: envDeps.paths, name, now: envDeps.now() });
+  if (result.ownedLive) {
+    d.printInfo(
+      `warning: "${name}" owned the live Claude identity — live credentials were left untouched. Load another profile to switch away.`,
+    );
+  } else if (result.wasActive) {
+    d.printInfo("warning: cleared the active-profile pointer");
+  }
+  if (json) {
+    d.log(JSON.stringify({ ok: true, action: "rm", ...result }, null, 2));
+    return;
+  }
+  d.log(`Removed auth profile "${result.name}"`);
 }
 
 /** One "kept the older number" line per degraded bucket, so a silent hole is visible. */
