@@ -104,6 +104,17 @@ export class AcpSession {
   private readonly rules: PermissionRule[];
   private readonly containment: ContainmentGuard | null;
   private readonly pendingPermissions = new Map<string, AgentPermissionRequest>();
+  /**
+   * Original JSON-RPC id for each pending permission request, keyed by the
+   * stringified id used everywhere else. The response MUST echo the id with its
+   * original JSON type: kiro (and ACP generally) send a numeric request id, and a
+   * peer correlates the response by strict `===` on the id. Responding with the
+   * stringified `"5"` to a request that used `5` never matches, so the agent waits
+   * on the permission outcome forever and the turn silently stalls until the
+   * session ends. The auto-approve path already responds with the original `id`;
+   * this preserves the same type for the manual approve/deny path.
+   */
+  private readonly pendingPermissionIds = new Map<string, number | string>();
   private readonly transcript: TranscriptEntry[] = [];
   private model: string | null = null;
   private agentDisplayName: string;
@@ -266,11 +277,16 @@ export class AcpSession {
       findOptionId(options, "allow_always") ?? findOptionId(options, "allow_once") ?? options[0]?.optionId;
 
     if (optionId) {
-      this.rpc.respondToServerRequest(requestId, {
+      // Echo the ORIGINAL id (preserving its JSON number/string type) — a
+      // stringified id never correlates against a numeric request and the agent
+      // hangs on the outcome. Falls back to the string key only if somehow absent.
+      const responseId = this.pendingPermissionIds.get(requestId) ?? requestId;
+      this.rpc.respondToServerRequest(responseId, {
         outcome: { outcome: "selected", optionId },
       });
     }
     this.permissionOptions.delete(requestId);
+    this.pendingPermissionIds.delete(requestId);
 
     if (this.pendingPermissions.size === 0 && this.state === "waiting_permission") {
       this.setState("active");
@@ -289,11 +305,13 @@ export class AcpSession {
       findOptionId(options, "reject_once") ?? findOptionId(options, "reject_always") ?? options[0]?.optionId;
 
     if (optionId) {
-      this.rpc.respondToServerRequest(requestId, {
+      const responseId = this.pendingPermissionIds.get(requestId) ?? requestId;
+      this.rpc.respondToServerRequest(responseId, {
         outcome: { outcome: "selected", optionId },
       });
     }
     this.permissionOptions.delete(requestId);
+    this.pendingPermissionIds.delete(requestId);
 
     if (this.pendingPermissions.size === 0 && this.state === "waiting_permission") {
       this.setState("active");
@@ -682,6 +700,7 @@ export class AcpSession {
       requestId: String(id),
     };
     this.pendingPermissions.set(String(id), permWithId);
+    this.pendingPermissionIds.set(String(id), id);
     this.permissionOptions.set(String(id), params.options);
     this.setState("waiting_permission");
     this.emit({ type: "session:permission_request", request: permWithId });

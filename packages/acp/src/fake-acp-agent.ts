@@ -6,6 +6,8 @@
  *   simple          (default) — handshake + session/new + session/prompt completes
  *   with-updates    — handshake + session/new + streams session/update chunks before completing
  *   permission      — handshake + session/new + sends session/request_permission, completes after response
+ *   permission-numeric — like `permission` but uses a NUMERIC request id and only completes once
+ *                        the client echoes that numeric id back (guards id-type correlation on approve)
  *   crash-after-prompt — handshake + session/new + prompt completes + exit code 2
  *   silent          — handshake + session/new + prompt accepted, then no events (for watchdog testing)
  *   banner-then-handshake — prints a non-JSON update banner on stdout, then behaves like `simple`
@@ -75,6 +77,14 @@ let promptDone = false;
 let kiroTokenProvided = false;
 /** Correlate the auth-callback response by id. */
 const KIRO_AUTH_REQUEST_ID = "kiro-auth-1";
+/**
+ * permission-numeric mode: the request id kiro-style peers use for
+ * session/request_permission is a NUMBER, not a string. The host must echo it
+ * back with its original numeric type or the peer can't correlate the outcome.
+ */
+const PERM_NUMERIC_ID = 42;
+/** permission-numeric: set once the client's correctly-correlated response arrives. */
+let permissionAnswered = false;
 
 rl.on("line", (line) => {
   const trimmed = line.trim();
@@ -86,6 +96,17 @@ rl.on("line", (line) => {
   if (mode === "kiro-auth-callback" && msg.id === KIRO_AUTH_REQUEST_ID && method === undefined) {
     const result = msg.result as { accessToken?: string } | undefined;
     kiroTokenProvided = typeof result?.accessToken === "string" && result.accessToken.length > 0;
+    return;
+  }
+
+  // permission-numeric: correlate the permission response by its NUMERIC id, exactly
+  // as real kiro does. `msg.id === PERM_NUMERIC_ID` uses strict equality, so a
+  // stringified `"42"` from the client fails to match `42` and the prompt never
+  // completes — the regression this mode guards (host stalling on a numeric-id
+  // permission when the client echoes the id as a string). No method → it's a response.
+  if (mode === "permission-numeric" && method === undefined && msg.id === PERM_NUMERIC_ID) {
+    permissionAnswered = true;
+    if (permissionAnswered) completePrompt();
     return;
   }
 
@@ -212,6 +233,24 @@ function schedulePromptEvents(): void {
       });
       // Complete after a delay (regardless of permission response)
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "permission-numeric") {
+    // Like `permission`, but the request id is NUMERIC and the prompt only
+    // completes when the client echoes that numeric id back (see the response
+    // handler above). If the client stringifies the id, `permissionAnswered`
+    // stays false and the prompt hangs — the regression under test.
+    setTimeout(() => {
+      sendServerRequest(PERM_NUMERIC_ID, "session/request_permission", {
+        sessionId: acpSessionId,
+        tool: "Bash",
+        command: "npm test",
+        description: "Run npm test",
+        options: [
+          { optionId: "opt-allow-once", kind: "allow_once", description: "Allow once" },
+          { optionId: "opt-allow-always", kind: "allow_always", description: "Allow always" },
+          { optionId: "opt-reject-once", kind: "reject_once", description: "Reject" },
+        ],
+      });
     }, STEP_DELAY_MS);
   } else if (mode === "crash-after-prompt") {
     setTimeout(() => {
