@@ -127,7 +127,7 @@ rl.on("line", (line) => {
 });
 
 /** kiro-auth-callback: how long to wait for the client's token before failing the prompt. */
-const KIRO_AUTH_WAIT_MS = 2000;
+const KIRO_AUTH_WAIT_MS = 300;
 /** kiro-auth-callback: poll interval while awaiting the client's token response. */
 const KIRO_AUTH_POLL_MS = 10;
 

@@ -31,9 +31,23 @@ export interface AcpAdapterDecision {
 
 /**
  * Map ACP permission request params to an AgentPermissionRequest.
+ *
+ * Two shapes are supported:
+ *  - Flat (copilot/gemini/grok): `tool` / `command` / `path` fields.
+ *  - Kiro: the call is under `toolCall` and the semantics under `_meta.kiro`
+ *    (`toolId`, `consent.capability`, `command`). Kiro's coarse capability is
+ *    mapped to the Claude-style tool names the rule engine + DEFAULT_SAFE_TOOLS
+ *    speak (`shell`→Bash, `fsRead`/read→Read, `fsWrite`/write→Write), so an
+ *    `--allow Bash`/`Read`/`Write` rule matches a kiro run_command / file tool.
+ *    Without this mapping every kiro tool maps to "unknown" and fail-closes.
  */
 export function mapPermissionRequest(params: PermissionRequestParams): AgentPermissionRequest {
-  // Determine tool name from the request context
+  const kiro = params._meta?.kiro;
+  if (kiro || params.toolCall) {
+    return mapKiroPermissionRequest(params);
+  }
+
+  // Flat shape (copilot/gemini/grok)
   const toolName = params.tool ?? (params.command ? "Bash" : params.path ? "Write" : "unknown");
   const input: Record<string, unknown> = {};
 
@@ -44,6 +58,43 @@ export function mapPermissionRequest(params: PermissionRequestParams): AgentPerm
 
   return {
     requestId: "", // Will be set by the session using the JSON-RPC id
+    toolName,
+    input,
+    inputSummary: summary,
+  };
+}
+
+/** Map kiro's capability/toolId to a Claude-style tool name the rule engine understands. */
+function kiroCapabilityToToolName(capability: string | undefined, toolId: string | undefined): string {
+  const c = capability?.toLowerCase();
+  if (c === "shell" || toolId === "run_command" || toolId === "execute_bash") return "Bash";
+  if (c === "fswrite" || c === "write" || toolId?.startsWith("fs_write") || toolId === "write_file") return "Write";
+  if (c === "fsread" || c === "read" || toolId?.startsWith("fs_read") || toolId === "read_file") return "Read";
+  // Fall back to the kiro toolId itself so an explicit `--allow <toolId>` rule can match.
+  return toolId ?? "unknown";
+}
+
+/** Map a kiro `session/request_permission` (toolCall + _meta.kiro) into the rule-engine shape. */
+function mapKiroPermissionRequest(params: PermissionRequestParams): AgentPermissionRequest {
+  const kiro = params._meta?.kiro;
+  const toolName = kiroCapabilityToToolName(kiro?.consent?.capability, kiro?.toolId);
+  const command = kiro?.command ?? params.toolCall?.title;
+  const resource = kiro?.consent?.resource;
+
+  const input: Record<string, unknown> = {};
+  if (toolName === "Bash" && command) {
+    input.command = command;
+  } else if ((toolName === "Read" || toolName === "Write") && resource) {
+    input.file_path = resource;
+  } else if (command) {
+    // Unknown/other kiro tool — expose the command so a bare tool-name rule still matches.
+    input.command = command;
+  }
+
+  const summary = params.toolCall?.title ?? command ?? resource ?? `kiro ${kiro?.toolId ?? "tool"}`;
+
+  return {
+    requestId: "",
     toolName,
     input,
     inputSummary: summary,

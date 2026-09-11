@@ -32,11 +32,17 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { spawnCaptureSync } from "./subprocess";
 
-/** Keychain service name / on-disk key kiro-cli stores its OIDC token under. */
+/** Keychain service name / on-disk key kiro-cli stores its OIDC token under.
+ *  `odic` is kiro-cli's own spelling (sic — matches the upstream key); do NOT "fix" it to `oidc`. */
 export const KIRO_TOKEN_KEY = "kirocli:odic:token";
 
-/** Buffer before hard expiry — a token this close to expiring is treated as unusable. */
-const EXPIRY_BUFFER_MS = 60_000;
+/**
+ * Buffer before hard expiry — a token this close to expiring is treated as unusable.
+ * Matches KAS's `AcpCallbackAuthProvider` REFRESH_BUFFER_MS (3 min): KAS rejects a token
+ * inside its own 3-minute pre-expiry window, so returning one would fail at KAS anyway
+ * and read as an intermittent auth flake. Keep this equal to KAS's buffer.
+ */
+const EXPIRY_BUFFER_MS = 3 * 60_000;
 
 /** Shape of the token document kiro-cli persists (snake_case, matches kiro-cli). */
 interface KiroStoredToken {
@@ -150,13 +156,6 @@ function readKvFromDisk(table: "auth_kv" | "state", key: string, env: NodeJS.Pro
   }
 }
 
-/**
- * Resolve a currently-valid Kiro access token from the local credential store.
- * Tries the macOS Keychain first (a no-op off-darwin), then the on-disk store
- * kiro-cli also writes (the Linux source, and a macOS mirror). The profile ARN
- * always comes from the on-disk `state` table. Returns `null` when no usable
- * token exists — callers should treat that as "not signed in".
- */
 /** Injectable readers for testing without touching the real Keychain / user store. */
 export interface KiroTokenSources {
   /** Raw token JSON from the macOS Keychain (null off-darwin or on miss). */

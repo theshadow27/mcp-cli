@@ -14,7 +14,13 @@
  */
 
 import { resolve } from "node:path";
-import type { AgentPermissionRequest, AgentSessionEvent, AgentSessionInfo, AgentSessionState } from "@mcp-cli/core";
+import type {
+  AgentPermissionRequest,
+  AgentSessionEvent,
+  AgentSessionInfo,
+  AgentSessionState,
+  KiroToken,
+} from "@mcp-cli/core";
 import {
   ContainmentGuard,
   NO_DOMAIN_ID,
@@ -22,6 +28,7 @@ import {
   isPathContained,
   resolveKiroToken,
   resolveRealpath,
+  sanitizeText,
   spawnCapture,
 } from "@mcp-cli/core";
 import type { PermissionRule } from "@mcp-cli/permissions";
@@ -74,6 +81,12 @@ export interface AcpSessionConfig {
   env?: Record<string, string>;
   /** Watchdog timeout in ms. Defaults to WATCHDOG_TIMEOUT_MS (5 min). Set 0 to disable. */
   watchdogTimeoutMs?: number;
+  /**
+   * Kiro token resolver override (kiro provider only). Defaults to the real
+   * `resolveKiroToken`. Injected in tests so the Keychain/SQLite store path can be
+   * exercised deterministically without touching the user's real credentials.
+   */
+  resolveToken?: (env: NodeJS.ProcessEnv) => KiroToken | null;
 }
 
 export type SessionEventHandler = (event: AgentSessionEvent) => void;
@@ -99,6 +112,8 @@ export class AcpSession {
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bounded tail of the child process's stderr, for failure diagnostics. */
   private childStderrTail = "";
+  /** Per-session memoized Kiro token (avoids re-shelling to security / re-opening SQLite per callback). */
+  private cachedKiroToken: KiroToken | undefined;
 
   /** Resolvers for waitForResult/waitForEvent. */
   private resultWaiters: Array<(event: AgentSessionEvent) => void> = [];
@@ -139,20 +154,26 @@ export class AcpSession {
         console.error(`[acp-session:${this.sessionId}] Skipping non-JSON preamble before handshake: ${line}`);
       },
       onStderr: (chunk) => {
-        // Retain a bounded tail so a spawn/handshake failure can surface the
-        // agent's own diagnostics (e.g. kiro-cli auth/region errors) instead of
-        // a bare "Process exited". Child stderr is otherwise inherited and lost.
+        // Tee to the daemon log (preserves the cross-provider observability that
+        // `stderr: "inherit"` gave — copilot/gemini/grok stderr must still surface)
+        // via console.error, matching onPreamble/onError. NOTE: do NOT write to
+        // process.stderr directly — in the ACP worker thread that raises EPIPE and
+        // crashes the worker on every stderr chunk. Also retain a bounded, sanitized
+        // tail so a spawn/handshake failure can explain itself.
+        const trimmed = chunk.trimEnd();
+        if (trimmed) console.error(`[acp-session:${this.sessionId}] ${trimmed}`);
         this.childStderrTail = `${this.childStderrTail}${chunk}`.slice(-MAX_CHILD_STDERR_CHARS);
       },
     });
 
-    // Wire the RPC client BEFORE spawning. `spawn()` starts reading stdout
-    // immediately, and some agents (kiro-cli) emit a server→client request
-    // (`_kiro/auth/getAccessToken`) the instant KAS boots — before we've even
-    // sent `initialize`. If `this.rpc` were assigned after `spawn()`, that first
-    // frame could arrive while `handleMessage` sees `this.rpc === undefined` and
-    // drop it, leaving the agent blocked on an auth response that never comes
-    // (an intermittent spawn/turn stall that tracks event-loop timing).
+    // Wire the RPC client before spawning as a defensive ordering invariant. Note:
+    // this does NOT fix a live race — `spawn()` calls `readLines()`, whose first act
+    // is `await reader.read()`, which suspends synchronously before any frame is
+    // delivered, so the subsequent `this.rpc =` always runs first under today's
+    // AcpProcess. We assign first anyway so the invariant survives a future refactor
+    // (e.g. a synchronous first read, or buffered stdout) that could otherwise let an
+    // early server-request — kiro emits `_kiro/auth/getAccessToken` the instant KAS
+    // boots — reach `handleMessage` before `this.rpc` exists.
     this.rpc = new AcpRpcClient(this.proc, {
       onNotification: (method, params) => this.handleNotification(method, params),
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
@@ -204,10 +225,12 @@ export class AcpSession {
         );
       }
       // No preamble but the child died / handshake failed — attach its stderr tail
-      // so the real reason (auth, region, crash) reaches the caller.
+      // (sanitized: agent stderr is a prime place for auth/debug secrets) so the
+      // real reason (auth, region, crash) reaches the caller.
       if (stderrTail) {
         const orig = err instanceof Error ? err.message : String(err);
-        const shown = stderrTail.length > 800 ? `…${stderrTail.slice(-800)}` : stderrTail;
+        const cleaned = sanitizeText(stderrTail).text;
+        const shown = cleaned.length > 800 ? `…${cleaned.slice(-800)}` : cleaned;
         throw new Error(`${orig} — agent "${this.agentDisplayName}" stderr: ${shown}`);
       }
       throw err;
@@ -429,9 +452,9 @@ export class AcpSession {
    * Map an opaque agent error to an actionable one. Kiro's KAS reports a
    * missing/invalid token as `ModelRegistryUnauthenticatedError` /
    * `TokenInvalidError` at prompt time; without translation the operator sees
-   * only "you are not signed in", with no hint that mcx authenticates Kiro via
-   * the `KIRO_API_KEY` environment variable (its host-auth callback needs a
-   * token to hand back). Non-Kiro agents pass through unchanged.
+   * only "you are not signed in", with no hint that mcx authenticates Kiro from
+   * the local kiro-cli login (Keychain / on-disk store), or from `KIRO_API_KEY`.
+   * Non-Kiro agents pass through unchanged.
    */
   private explainError(message: string): string {
     if (/Unauthenticated|not signed in|TokenInvalid/i.test(message) && this.config.agent === "kiro") {
@@ -507,8 +530,28 @@ export class AcpSession {
       case "terminal/kill":
         this.rpc?.respondToServerRequest(id, {});
         break;
+      case "_kiro/terminal/shell_type":
+        // Kiro asks the host what shell it runs under before executing commands.
+        // An empty/absent answer makes kiro's terminal wrapper throw
+        // ("Cannot read properties of undefined"), failing every run_command.
+        // The daemon executes via spawnCapture (POSIX sh semantics), so report bash.
+        this.rpc?.respondToServerRequest(id, { shellType: "bash" });
+        break;
       case "_kiro/auth/getAccessToken":
-        this.handleKiroAuthTokenRequest(id);
+        // Credential gate: ONLY a kiro session may receive a Kiro token. Any other
+        // ACP agent (grok/copilot/gemini, or an arbitrary `--agent <name>`/
+        // customCommand binary) emitting this method is untrusted input trying to
+        // harvest a live OIDC access token + account ARN — treat it exactly like an
+        // unknown request and hand back nothing. Mirrors the `agent === "kiro"` gate
+        // in explainError; agent-initiated requests are untrusted, like fs/terminal.
+        if (this.config.agent === "kiro") {
+          this.handleKiroAuthTokenRequest(id);
+        } else {
+          console.error(
+            `[acp-session:${this.sessionId}] Ignoring _kiro/auth/getAccessToken from non-kiro agent "${this.config.agent}" — refusing to disclose a Kiro credential.`,
+          );
+          this.rpc?.respondToServerRequest(id, {});
+        }
         break;
       default:
         // Unknown server request — respond with empty result to not block
@@ -526,12 +569,16 @@ export class AcpSession {
    * (see the KAS `AcpCallbackAuthProvider`). Copilot/Gemini/Grok authenticate
    * out-of-band and never issue this callback, so this handler is Kiro-specific.
    *
-   * The token is sourced from `KIRO_API_KEY` in the session environment. This
-   * mirrors KAS's own `selectAuthProvider` priority, where a present `KIRO_API_KEY`
-   * takes precedence over the callback entirely (`EnvAuthProvider`). Passing the
-   * key through the environment is the primary path and usually means this
-   * callback is never invoked; answering it here covers the case where KAS still
-   * routes through the callback provider.
+   * The token is sourced in three tiers: (1) an explicit `KIRO_API_KEY` in the
+   * session environment — mirroring KAS's own `selectAuthProvider`, where a present
+   * key skips the callback entirely (`EnvAuthProvider`); (2) otherwise kiro-cli's own
+   * login token, read from the macOS Keychain / on-disk SQLite store via
+   * `resolveKiroToken` (memoized per session); (3) if neither yields a token, an empty
+   * response, which makes KAS raise its own auth error that `explainError` turns into
+   * an actionable "run kiro-cli login" message.
+   *
+   * Dispatch is gated to kiro sessions only (see `handleServerRequest`) so no other
+   * ACP agent can request a Kiro credential.
    *
    * Response shape required by KAS: `{ accessToken, expiresAt, profileArn? }`,
    * where `expiresAt` (ISO-8601 or epoch ms) must be at least ~3 minutes ahead.
@@ -558,7 +605,18 @@ export class AcpSession {
     // 2. Reuse kiro-cli's own login: read its short-lived access token from the
     //    Keychain (macOS) or on-disk store (Linux), exactly as mcx reads Claude
     //    Code's tokens. No KIRO_API_KEY needed when the user is `kiro-cli login`'d.
-    const token = resolveKiroToken(this.config.env ?? process.env);
+    //    Memoized per session, keyed on expiry: each callback otherwise shells out
+    //    to `/usr/bin/security` and opens SQLite twice (~50-100ms on the RPC path).
+    //    `config.env` is a sparse spawn overlay, not a full environment — merge it
+    //    over process.env so the resolver still sees the real XDG_DATA_HOME etc.
+    const mergedEnv = { ...process.env, ...this.config.env };
+    const now = Date.now();
+    let token = this.cachedKiroToken;
+    if (!token || (token.expiresAt !== undefined && token.expiresAt <= now)) {
+      const resolve = this.config.resolveToken ?? resolveKiroToken;
+      token = resolve(mergedEnv) ?? undefined;
+      this.cachedKiroToken = token;
+    }
     if (token) {
       const result: Record<string, unknown> = {
         accessToken: token.accessToken,
@@ -741,7 +799,16 @@ export class AcpSession {
     }
 
     try {
-      const result = await spawnCapture(cmd, cmdArgs, {
+      // Two shapes reach here: copilot/gemini send `command` + `args[]` (exec form,
+      // e.g. command:"git" args:["status"]); kiro sends the whole shell command as a
+      // single `command` string with no args (e.g. "echo hi && ls"). Running the
+      // latter as argv[0] tries to exec a binary literally named "echo hi && ls" and
+      // fails with exit -1 / no output. When no args are supplied, run through
+      // `sh -c` so a full command line executes correctly; the exec form is preserved
+      // when args are present.
+      const { spawnCmd, spawnArgs } =
+        cmdArgs.length === 0 ? { spawnCmd: "sh", spawnArgs: ["-c", cmd] } : { spawnCmd: cmd, spawnArgs: cmdArgs };
+      const result = await spawnCapture(spawnCmd, spawnArgs, {
         cwd: effectiveCwd,
         timeoutMs: AcpSession.TERMINAL_TIMEOUT_MS,
       });
