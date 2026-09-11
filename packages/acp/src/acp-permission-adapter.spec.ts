@@ -36,6 +36,165 @@ describe("mapPermissionRequest", () => {
     const result = mapPermissionRequest(params);
     expect(result.toolName).toBe("unknown");
   });
+
+  test("maps a path-only flat permission with no command to Write", () => {
+    // The `params.command ? "Bash" : params.path ? "Write"` ladder — path branch.
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      path: "/tmp/out.txt",
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    };
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Write");
+    expect(result.input).toEqual({ file_path: "/tmp/out.txt" });
+    // Summary falls back to the path when no description/command is present.
+    expect(result.inputSummary).toBe("/tmp/out.txt");
+  });
+});
+
+describe("mapPermissionRequest — kiro shape (_meta.kiro / toolCall)", () => {
+  test("maps kiro shell capability to Bash with the command as input", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-1", title: "Run tests" },
+      _meta: { kiro: { toolId: "run_command", command: "bun test", consent: { capability: "shell" } } },
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Bash");
+    expect(result.input).toEqual({ command: "bun test" });
+    expect(result.inputSummary).toBe("Run tests");
+  });
+
+  test("maps kiro fsWrite capability to Write with the resource as file_path", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-2", title: "Write file" },
+      _meta: { kiro: { toolId: "fs_write", consent: { capability: "fsWrite", resource: "/repo/a.ts" } } },
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Write");
+    expect(result.input).toEqual({ file_path: "/repo/a.ts" });
+  });
+
+  test("maps kiro fsRead capability to Read with the resource as file_path", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-3", title: "Read file" },
+      _meta: { kiro: { toolId: "fs_read", consent: { capability: "fsRead", resource: "/repo/b.ts" } } },
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Read");
+    expect(result.input).toEqual({ file_path: "/repo/b.ts" });
+  });
+
+  test("maps execute_bash toolId (no capability) to Bash", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "execute_bash", command: "ls -la" } },
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Bash");
+    expect(result.input).toEqual({ command: "ls -la" });
+  });
+
+  test("maps write_file / read_file toolIds without a capability", () => {
+    const write = mapPermissionRequest({
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "write_file", consent: { resource: "/w.ts" } } },
+      options: [],
+    } as unknown as PermissionRequestParams);
+    expect(write.toolName).toBe("Write");
+    expect(write.input).toEqual({ file_path: "/w.ts" });
+
+    const read = mapPermissionRequest({
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "read_file", consent: { resource: "/r.ts" } } },
+      options: [],
+    } as unknown as PermissionRequestParams);
+    expect(read.toolName).toBe("Read");
+    expect(read.input).toEqual({ file_path: "/r.ts" });
+  });
+
+  test("unknown kiro toolId falls back to the toolId itself, exposing command for a bare rule", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "grep_search", command: "grep foo" } },
+      options: [{ optionId: "opt-1", kind: "allow_once" }],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    // Falls back to the raw toolId so an explicit `--allow grep_search` rule matches.
+    expect(result.toolName).toBe("grep_search");
+    // Unknown/other tool still surfaces the command so a bare tool-name rule matches.
+    expect(result.input).toEqual({ command: "grep foo" });
+  });
+
+  test("kiro request with neither capability nor toolId maps to unknown", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-x", title: "Mystery" },
+      _meta: { kiro: {} },
+      options: [],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("unknown");
+    // command falls back to toolCall.title; the unknown-tool branch surfaces it as
+    // input.command so a bare tool-name rule can still match.
+    expect(result.input).toEqual({ command: "Mystery" });
+    expect(result.inputSummary).toBe("Mystery");
+  });
+
+  test("kiro Bash without a command leaves input empty (no command key)", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "run_command", consent: { capability: "shell" } } },
+      options: [],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Bash");
+    expect(result.input).toEqual({});
+    // Summary falls back to `kiro <toolId>` when no title/command/resource exists.
+    expect(result.inputSummary).toBe("kiro run_command");
+  });
+
+  test("kiro summary falls back to command when toolCall.title is absent", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      _meta: { kiro: { toolId: "run_command", command: "echo hi", consent: { capability: "shell" } } },
+      options: [],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.inputSummary).toBe("echo hi");
+  });
+
+  test("toolCall-only shape (no _meta.kiro) still routes through the kiro mapper", () => {
+    // `kiro || params.toolCall` — the toolCall-present branch with no _meta.
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-9", title: "Some tool" },
+      options: [],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    // No kiro capability/toolId → unknown, summary from the toolCall title.
+    expect(result.toolName).toBe("unknown");
+    expect(result.inputSummary).toBe("Some tool");
+  });
+
+  test("kiro command falls back to toolCall.title when _meta has no command", () => {
+    const params: PermissionRequestParams = {
+      sessionId: "s1",
+      toolCall: { toolCallId: "tc-10", title: "cargo build" },
+      _meta: { kiro: { toolId: "run_command", consent: { capability: "shell" } } },
+      options: [],
+    } as unknown as PermissionRequestParams;
+    const result = mapPermissionRequest(params);
+    expect(result.toolName).toBe("Bash");
+    // command is undefined in _meta → uses toolCall.title as the command.
+    expect(result.input).toEqual({ command: "cargo build" });
+  });
 });
 
 describe("evaluatePermission", () => {
