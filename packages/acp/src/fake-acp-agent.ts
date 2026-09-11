@@ -23,6 +23,9 @@
  *                        handshake, like real kiro-cli; the prompt SUCCEEDS only if the client
  *                        returned a non-empty `accessToken`, otherwise it fails with an
  *                        Unauthenticated error. Reproduces the kiro host-auth flow (#kiro-acp).
+ *   auth-before-init — emits `_kiro/auth/getAccessToken` on the FIRST stdin byte, before even
+ *                        reading `initialize`, to exercise the "server-request arrives before the
+ *                        client's RPC layer is wired" startup race. Then behaves like `simple`.
  */
 import { createInterface } from "node:readline";
 
@@ -50,8 +53,19 @@ if (rawMode === "banner-then-handshake" || rawMode === "banner-then-exit") {
   if (rawMode === "banner-then-exit") process.exit(1);
 }
 
-// banner-then-handshake behaves like `simple` for the rest of the flow.
-const mode = rawMode === "banner-then-handshake" ? "simple" : rawMode;
+// banner-then-handshake behaves like `simple` for the rest of the flow;
+// auth-before-init also behaves like `simple` after its early server-request.
+const mode = rawMode === "banner-then-handshake" || rawMode === "auth-before-init" ? "simple" : rawMode;
+
+// auth-before-init: emit a server→client request the instant we start, BEFORE any
+// stdin is read. This lands on the client's stdout reader before it has sent
+// `initialize` — exercising the race where the RPC layer must already be wired to
+// route (not drop) an early server-request.
+if (rawMode === "auth-before-init") {
+  process.stdout.write(
+    `${JSON.stringify({ jsonrpc: "2.0", id: "early-auth", method: "_kiro/auth/getAccessToken", params: {} })}\n`,
+  );
+}
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 

@@ -583,4 +583,18 @@ describe("AcpSession (kiro host-auth callback)", () => {
       expect(result.errors[0]).toMatch(/kiro-cli login|KIRO_API_KEY/);
     }
   });
+
+  test("a server-request arriving before initialize is routed, not dropped (startup race)", async () => {
+    // `auth-before-init` emits _kiro/auth/getAccessToken on its first output, before
+    // the client sends initialize. If the RPC client were wired AFTER spawn(), that
+    // frame would hit an undefined handler and be dropped; a real agent then blocks
+    // forever. Wiring RPC before spawn() makes the turn complete deterministically.
+    const { session } = makeSession({ agent: "kiro", customCommand: ["bun", FAKE_AGENT, "auth-before-init"] });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    const result = await resultPromise;
+
+    expect(result.type).toBe("session:result");
+  });
 });

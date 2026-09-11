@@ -43,6 +43,9 @@ import type { InitializeResult, PermissionRequestParams, SessionNewResult, Sessi
 /** Default watchdog timeout: 5 minutes with no events kills the process. */
 export const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Bounded tail of child stderr retained to explain a spawn/handshake failure. */
+const MAX_CHILD_STDERR_CHARS = 4000;
+
 export interface AcpSessionConfig {
   /** Working directory for the agent process. */
   cwd: string;
@@ -94,6 +97,8 @@ export class AcpSession {
   private readonly eventHandler: SessionEventHandler;
   private readonly watchdogTimeoutMs: number;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bounded tail of the child process's stderr, for failure diagnostics. */
+  private childStderrTail = "";
 
   /** Resolvers for waitForResult/waitForEvent. */
   private resultWaiters: Array<(event: AgentSessionEvent) => void> = [];
@@ -133,14 +138,27 @@ export class AcpSession {
       onPreamble: (line) => {
         console.error(`[acp-session:${this.sessionId}] Skipping non-JSON preamble before handshake: ${line}`);
       },
+      onStderr: (chunk) => {
+        // Retain a bounded tail so a spawn/handshake failure can surface the
+        // agent's own diagnostics (e.g. kiro-cli auth/region errors) instead of
+        // a bare "Process exited". Child stderr is otherwise inherited and lost.
+        this.childStderrTail = `${this.childStderrTail}${chunk}`.slice(-MAX_CHILD_STDERR_CHARS);
+      },
     });
 
-    this.proc.spawn();
-
+    // Wire the RPC client BEFORE spawning. `spawn()` starts reading stdout
+    // immediately, and some agents (kiro-cli) emit a server→client request
+    // (`_kiro/auth/getAccessToken`) the instant KAS boots — before we've even
+    // sent `initialize`. If `this.rpc` were assigned after `spawn()`, that first
+    // frame could arrive while `handleMessage` sees `this.rpc === undefined` and
+    // drop it, leaving the agent blocked on an auth response that never comes
+    // (an intermittent spawn/turn stall that tracks event-loop timing).
     this.rpc = new AcpRpcClient(this.proc, {
       onNotification: (method, params) => this.handleNotification(method, params),
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
     });
+
+    this.proc.spawn();
 
     try {
       // Step 1: Initialize handshake
@@ -176,6 +194,7 @@ export class AcpSession {
       await this.startPrompt(this.config.prompt);
     } catch (err) {
       const preamble = this.proc.preambleText;
+      const stderrTail = this.childStderrTail.trim();
       this.proc.kill();
       if (preamble) {
         const orig = err instanceof Error ? err.message : String(err);
@@ -183,6 +202,13 @@ export class AcpSession {
         throw new Error(
           `${orig} — agent "${this.agentDisplayName}" emitted non-JSON-RPC output before the handshake (expected JSON-RPC, got: ${JSON.stringify(shown)}). This is often a self-update or MOTD banner; re-run to let the agent consume it.`,
         );
+      }
+      // No preamble but the child died / handshake failed — attach its stderr tail
+      // so the real reason (auth, region, crash) reaches the caller.
+      if (stderrTail) {
+        const orig = err instanceof Error ? err.message : String(err);
+        const shown = stderrTail.length > 800 ? `…${stderrTail.slice(-800)}` : stderrTail;
+        throw new Error(`${orig} — agent "${this.agentDisplayName}" stderr: ${shown}`);
       }
       throw err;
     }
