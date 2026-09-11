@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 
-const PROVIDER_NAMES = ["claude", "codex", "grok", "copilot", "gemini", "opencode", "acp", "mock"] as const;
+const PROVIDER_NAMES = ["claude", "codex", "grok", "copilot", "gemini", "kiro", "opencode", "acp", "mock"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 const TRACK_VALUES = ["patch", "minor", "major"] as const;

@@ -20,6 +20,7 @@ import {
   NO_DOMAIN_ID,
   gateContainment,
   isPathContained,
+  resolveKiroToken,
   resolveRealpath,
   spawnCapture,
 } from "@mcp-cli/core";
@@ -390,12 +391,27 @@ export class AcpSession {
         this.setState("idle");
         this.emit({
           type: "session:error",
-          errors: [err instanceof Error ? err.message : String(err)],
+          errors: [this.explainError(err instanceof Error ? err.message : String(err))],
           cost: this.eventState.cost,
         });
       });
 
     this.resetWatchdog();
+  }
+
+  /**
+   * Map an opaque agent error to an actionable one. Kiro's KAS reports a
+   * missing/invalid token as `ModelRegistryUnauthenticatedError` /
+   * `TokenInvalidError` at prompt time; without translation the operator sees
+   * only "you are not signed in", with no hint that mcx authenticates Kiro via
+   * the `KIRO_API_KEY` environment variable (its host-auth callback needs a
+   * token to hand back). Non-Kiro agents pass through unchanged.
+   */
+  private explainError(message: string): string {
+    if (/Unauthenticated|not signed in|TokenInvalid/i.test(message) && this.config.agent === "kiro") {
+      return `${message} — mcx authenticates Kiro from your kiro-cli login (Keychain on macOS, ~/.local/share/kiro-cli on Linux). Run \`kiro-cli login\` and retry, or set KIRO_API_KEY to a valid Kiro API key before spawning.`;
+    }
+    return message;
   }
 
   private handlePromptResponse(result: SessionPromptResult | null): void {
@@ -465,11 +481,73 @@ export class AcpSession {
       case "terminal/kill":
         this.rpc?.respondToServerRequest(id, {});
         break;
+      case "_kiro/auth/getAccessToken":
+        this.handleKiroAuthTokenRequest(id);
+        break;
       default:
         // Unknown server request — respond with empty result to not block
         this.rpc?.respondToServerRequest(id, {});
         break;
     }
+  }
+
+  /**
+   * Answer Kiro's host-mediated auth callback (`_kiro/auth/getAccessToken`).
+   *
+   * Kiro's KAS server, when launched with `--auth=acp-callback` (the default for
+   * `kiro-cli acp`), asks the ACP *client* to supply an access token — it keeps
+   * custody of the OIDC refresh token and only ever handles access tokens
+   * (see the KAS `AcpCallbackAuthProvider`). Copilot/Gemini/Grok authenticate
+   * out-of-band and never issue this callback, so this handler is Kiro-specific.
+   *
+   * The token is sourced from `KIRO_API_KEY` in the session environment. This
+   * mirrors KAS's own `selectAuthProvider` priority, where a present `KIRO_API_KEY`
+   * takes precedence over the callback entirely (`EnvAuthProvider`). Passing the
+   * key through the environment is the primary path and usually means this
+   * callback is never invoked; answering it here covers the case where KAS still
+   * routes through the callback provider.
+   *
+   * Response shape required by KAS: `{ accessToken, expiresAt, profileArn? }`,
+   * where `expiresAt` (ISO-8601 or epoch ms) must be at least ~3 minutes ahead.
+   * When no key is configured we respond with an empty object; KAS then surfaces
+   * its own `ModelRegistryUnauthenticatedError`, which we translate at the turn
+   * boundary into an actionable "set KIRO_API_KEY" message.
+   */
+  private handleKiroAuthTokenRequest(id: number | string): void {
+    // 1. Explicit KIRO_API_KEY wins — mirrors KAS's own selectAuthProvider priority,
+    //    where a present key skips the callback entirely (EnvAuthProvider).
+    const apiKey = (this.config.env?.KIRO_API_KEY ?? process.env.KIRO_API_KEY)?.trim();
+    if (apiKey) {
+      const ttlMs = Number(
+        this.config.env?.KIRO_ACCESS_TOKEN_TTL_MS ?? process.env.KIRO_ACCESS_TOKEN_TTL_MS ?? 3_600_000,
+      );
+      const expiresAt = new Date(Date.now() + (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 3_600_000)).toISOString();
+      const profileArn = this.config.env?.KIRO_PROFILE_ARN ?? process.env.KIRO_PROFILE_ARN;
+      const result: Record<string, unknown> = { accessToken: apiKey, expiresAt };
+      if (profileArn) result.profileArn = profileArn;
+      this.rpc?.respondToServerRequest(id, result);
+      return;
+    }
+
+    // 2. Reuse kiro-cli's own login: read its short-lived access token from the
+    //    Keychain (macOS) or on-disk store (Linux), exactly as mcx reads Claude
+    //    Code's tokens. No KIRO_API_KEY needed when the user is `kiro-cli login`'d.
+    const token = resolveKiroToken(this.config.env ?? process.env);
+    if (token) {
+      const result: Record<string, unknown> = {
+        accessToken: token.accessToken,
+        expiresAt: token.expiresAtIso ?? new Date(token.expiresAt ?? Date.now() + 3_600_000).toISOString(),
+      };
+      // KAS derives the CodeWhisperer service region from the profile ARN;
+      // omitting it resolves the wrong region → ModelRegistryUnavailableError.
+      if (token.profileArn) result.profileArn = token.profileArn;
+      this.rpc?.respondToServerRequest(id, result);
+      return;
+    }
+
+    // 3. Nothing available — respond empty; KAS raises its own auth error, which
+    //    explainError() turns into an actionable "sign in with kiro-cli" message.
+    this.rpc?.respondToServerRequest(id, {});
   }
 
   private handlePermissionRequest(id: number | string, params: PermissionRequestParams): void {

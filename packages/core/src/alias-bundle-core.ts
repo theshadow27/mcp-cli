@@ -23,6 +23,7 @@ export * from "./schema-display";
 export * from "./model";
 export * from "./agent-provider";
 export * from "./agent-session";
+export * from "./kiro-token";
 export * from "./session-names";
 export * from "./session-types";
 export * from "./trace";

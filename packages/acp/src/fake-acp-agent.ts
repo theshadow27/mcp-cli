@@ -19,6 +19,10 @@
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
  *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
+ *   kiro-auth-callback — sends `_kiro/auth/getAccessToken` (a server→client request) during the
+ *                        handshake, like real kiro-cli; the prompt SUCCEEDS only if the client
+ *                        returned a non-empty `accessToken`, otherwise it fails with an
+ *                        Unauthenticated error. Reproduces the kiro host-auth flow (#kiro-acp).
  */
 import { createInterface } from "node:readline";
 
@@ -53,12 +57,23 @@ const rl = createInterface({ input: process.stdin, terminal: false });
 
 const acpSessionId = "test-acp-session";
 let promptDone = false;
+/** For kiro-auth-callback mode: did the client hand back a usable access token? */
+let kiroTokenProvided = false;
+/** Correlate the auth-callback response by id. */
+const KIRO_AUTH_REQUEST_ID = "kiro-auth-1";
 
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
   const msg = JSON.parse(trimmed) as Record<string, unknown>;
   const method = msg.method as string | undefined;
+
+  // Client's response to our _kiro/auth/getAccessToken server-request (has id + result, no method).
+  if (mode === "kiro-auth-callback" && msg.id === KIRO_AUTH_REQUEST_ID && method === undefined) {
+    const result = msg.result as { accessToken?: string } | undefined;
+    kiroTokenProvided = typeof result?.accessToken === "string" && result.accessToken.length > 0;
+    return;
+  }
 
   // Only handle requests (have id + method); skip notifications
   if (msg.id === undefined || !method) {
@@ -74,6 +89,11 @@ rl.on("line", (line) => {
   }
 
   if (method === "initialize") {
+    // Real kiro sends the auth callback as a server→client request during the
+    // handshake, before answering initialize. Mimic that ordering.
+    if (mode === "kiro-auth-callback") {
+      sendServerRequest(KIRO_AUTH_REQUEST_ID, "_kiro/auth/getAccessToken", {});
+    }
     respond(msg.id, {
       agentInfo: { name: "fake-acp-agent", version: "0.0.1" },
       protocolVersion: 1,
@@ -82,14 +102,44 @@ rl.on("line", (line) => {
     respond(msg.id, { sessionId: acpSessionId });
   } else if (method === "session/prompt") {
     pendingPromptId = msg.id;
+    if (mode === "kiro-auth-callback") {
+      // The client answers the auth callback asynchronously; wait briefly for it
+      // (real KAS blocks session/prompt on the token) before deciding the outcome.
+      void resolveKiroPrompt(msg.id);
+      return;
+    }
     schedulePromptEvents();
   }
 });
+
+/** kiro-auth-callback: how long to wait for the client's token before failing the prompt. */
+const KIRO_AUTH_WAIT_MS = 2000;
+/** kiro-auth-callback: poll interval while awaiting the client's token response. */
+const KIRO_AUTH_POLL_MS = 10;
+
+/** Wait up to ~2s for the client's auth-callback response, then complete or fail the prompt. */
+async function resolveKiroPrompt(id: unknown): Promise<void> {
+  const deadline = Date.now() + KIRO_AUTH_WAIT_MS;
+  while (!kiroTokenProvided && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, KIRO_AUTH_POLL_MS));
+  }
+  if (!kiroTokenProvided) {
+    respondError(id, -32000, "Kiro could not load the available models because you are not signed in.", {
+      errorType: "ModelRegistryUnauthenticatedError",
+    });
+    return;
+  }
+  completePrompt();
+}
 
 let pendingPromptId: unknown = null;
 
 function respond(id: unknown, result: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+}
+
+function respondError(id: unknown, code: number, message: string, data?: unknown): void {
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, data } })}\n`);
 }
 
 function sendNotification(method: string, params?: unknown): void {
