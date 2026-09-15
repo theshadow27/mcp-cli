@@ -21,6 +21,8 @@
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
  *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
+ *   terminal-shell  — kiro shape: the whole shell command in `command` with NO `args`, so the
+ *                        client must run it via `sh -c` for the shell operators to take effect
  *   kiro-auth-callback — sends `_kiro/auth/getAccessToken` (a server→client request) during the
  *                        handshake, like real kiro-cli; the prompt SUCCEEDS only if the client
  *                        returned a non-empty `accessToken`, otherwise it fails with an
@@ -319,6 +321,18 @@ function schedulePromptEvents(): void {
         cwd: process.cwd(),
       });
       // After terminal/create response, request output and release
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "terminal-shell") {
+    // Kiro sends the entire shell command line as `command` with no `args` (unlike
+    // copilot/gemini's exec form). The client must run it through a shell, or argv[0]
+    // is a binary literally named "echo … && …" and nothing executes.
+    setTimeout(() => {
+      const probe = process.env.ACP_FAKE_SHELL_PROBE;
+      sendServerRequest("term-4", "terminal/create", {
+        command: `echo shell-ok > ${probe} && echo done`,
+        cwd: process.cwd(),
+      });
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
   } else if (mode === "terminal-escape") {

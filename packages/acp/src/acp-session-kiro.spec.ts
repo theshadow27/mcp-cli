@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
 import { AcpSession } from "./acp-session";
@@ -121,5 +123,29 @@ describe("AcpSession (kiro host-auth callback)", () => {
     const result = await resultPromise;
 
     expect(result.type).toBe("session:result");
+  });
+
+  test("terminal/create with a command and no args runs through a shell (kiro shape)", async () => {
+    // Kiro sends `command: "echo hi && ls"` with no `args`; copilot/gemini send the
+    // exec form (`command:"git"`, `args:["status"]`). Without the sh -c fallback the
+    // whole string is exec'd as argv[0] and every kiro run_command silently fails.
+    const dir = mkdtempSync(join(tmpdir(), "acp-shell-"));
+    const probe = join(dir, "probe.txt");
+    try {
+      const { session } = makeSession({
+        customCommand: ["bun", FAKE_AGENT, "terminal-shell"],
+        env: { ACP_FAKE_SHELL_PROBE: probe, MCX_KIRO_DISABLE_TOKEN_LOOKUP: "1" },
+      });
+
+      const resultPromise = session.waitForResult(10000);
+      await session.start();
+      await resultPromise;
+
+      // The shell operators only take effect if the command ran under `sh -c`.
+      expect(existsSync(probe)).toBe(true);
+      expect(readFileSync(probe, "utf8").trim()).toBe("shell-ok");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
