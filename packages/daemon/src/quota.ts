@@ -19,7 +19,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { Logger, QuotaExtraUsage, QuotaStatus, QuotaUsageBucket, StoredQuota } from "@mcp-cli/core";
-import { consoleLogger, fetchQuotaUsage, options, parseUsageResponse, toStoredQuota } from "@mcp-cli/core";
+import {
+  appendQuotaHistory,
+  consoleLogger,
+  fetchQuotaUsage,
+  options,
+  parseUsageResponse,
+  toStoredQuota,
+} from "@mcp-cli/core";
 import { type ClaudeOAuthToken, readClaudeSessionToken } from "./auth/keychain";
 import { safeSetTimeout } from "./safe-timers";
 
@@ -61,7 +68,12 @@ export function stampActiveProfileQuota(quota: StoredQuota, profilesDir: string 
     const profile = profileRaw as Record<string, unknown>;
     if (profile.kind === "api-key") return false;
 
-    profile.quota = quota;
+    const existing = profile.quota;
+    const stored =
+      typeof existing === "object" && existing !== null && !Array.isArray(existing)
+        ? (existing as StoredQuota)
+        : undefined;
+    profile.quota = appendQuotaHistory(quota, stored);
     writeProfileAtomic(profilePath, `${JSON.stringify(profile, null, 2)}\n`);
     return true;
   } catch {

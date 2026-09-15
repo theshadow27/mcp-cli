@@ -478,7 +478,21 @@ describe("stampActiveProfileQuota", () => {
     const written = JSON.parse(readFileSync(join(dir.profilesDir, "work.json"), "utf-8"));
     expect(written.quota.fiveHour.utilization).toBe(42);
     expect(written.quota.capturedAt).toBe("2026-08-18T12:00:00.000Z");
+    expect(written.quota.history).toHaveLength(1);
+    expect(written.quota.history[0].fiveHour.utilization).toBe(42);
     expect(written.credentials.claudeAiOauth.accessToken).toBe("secret");
+  });
+
+  test("a second stamp appends history instead of replacing it", () => {
+    using dir = profileDir();
+    writeFileSync(join(dir.profilesDir, "active.json"), JSON.stringify({ profile: "work" }));
+    writeFileSync(join(dir.profilesDir, "work.json"), JSON.stringify({ name: "work", kind: "oauth" }));
+    stampActiveProfileQuota(storedQuota(), dir.profilesDir);
+    const later = toStoredQuota(parseUsageResponse(SAMPLE_RESPONSE), "2026-08-18T12:10:00.000Z");
+    expect(stampActiveProfileQuota(later, dir.profilesDir)).toBe(true);
+    const written = JSON.parse(readFileSync(join(dir.profilesDir, "work.json"), "utf-8"));
+    expect(written.quota.history).toHaveLength(2);
+    expect(written.quota.history[1].capturedAt).toBe("2026-08-18T12:10:00.000Z");
   });
 
   test("skips api-key profiles", () => {

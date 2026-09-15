@@ -606,8 +606,10 @@ export function formatProfileTable(summaries: Array<ProfileSummary & { recommend
     expires: formatExpiry(s, now),
     fiveHour: formatBucketPct(s.quota?.fiveHour, now),
     fiveReset: formatStamp(s.quota?.fiveHour?.resetsAt, now),
+    fiveEta: formatPace(s.fiveHourPace, now),
     sevenDay: formatBucketPct(s.quota?.sevenDay, now),
     sevenReset: formatStamp(s.quota?.sevenDay?.resetsAt, now),
+    sevenEta: formatPace(s.sevenDayPace, now),
     asOf: formatStamp(s.quota?.capturedAt, now, { relative: false }),
     remote: s.allowRemoteControl === null ? "unknown" : s.allowRemoteControl ? "yes" : "no",
   }));
@@ -620,16 +622,18 @@ export function formatProfileTable(summaries: Array<ProfileSummary & { recommend
   const expiresW = width((r) => r.expires, "EXPIRES");
   const fiveW = width((r) => r.fiveHour, "5H");
   const fiveResetW = width((r) => r.fiveReset, "5H-RESET");
+  const fiveEtaW = width((r) => r.fiveEta, "5H-ETA");
   const sevenW = width((r) => r.sevenDay, "7D");
   const sevenResetW = width((r) => r.sevenReset, "7D-RESET");
+  const sevenEtaW = width((r) => r.sevenEta, "7D-ETA");
   const asOfW = width((r) => r.asOf, "AS OF");
 
   const lines = [
-    `   ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
+    `   ${"NAME".padEnd(nameW)}  ${"KIND".padEnd(kindW)}  ${"ACCOUNT".padEnd(accountW)}  ${"EXPIRES".padEnd(expiresW)}  ${"5H".padEnd(fiveW)}  ${"5H-RESET".padEnd(fiveResetW)}  ${"5H-ETA".padEnd(fiveEtaW)}  ${"7D".padEnd(sevenW)}  ${"7D-RESET".padEnd(sevenResetW)}  ${"7D-ETA".padEnd(sevenEtaW)}  ${"AS OF".padEnd(asOfW)}  REMOTE-CONTROL`,
   ];
   for (const r of rows) {
     lines.push(
-      `${r.marker} ${r.name.padEnd(nameW)}  ${r.kind.padEnd(kindW)}  ${r.account.padEnd(accountW)}  ${r.expires.padEnd(expiresW)}  ${r.fiveHour.padEnd(fiveW)}  ${r.fiveReset.padEnd(fiveResetW)}  ${r.sevenDay.padEnd(sevenW)}  ${r.sevenReset.padEnd(sevenResetW)}  ${r.asOf.padEnd(asOfW)}  ${r.remote}`,
+      `${r.marker} ${r.name.padEnd(nameW)}  ${r.kind.padEnd(kindW)}  ${r.account.padEnd(accountW)}  ${r.expires.padEnd(expiresW)}  ${r.fiveHour.padEnd(fiveW)}  ${r.fiveReset.padEnd(fiveResetW)}  ${r.fiveEta.padEnd(fiveEtaW)}  ${r.sevenDay.padEnd(sevenW)}  ${r.sevenReset.padEnd(sevenResetW)}  ${r.sevenEta.padEnd(sevenEtaW)}  ${r.asOf.padEnd(asOfW)}  ${r.remote}`,
     );
   }
   return lines;
@@ -647,6 +651,18 @@ function formatStamp(iso: string | null | undefined, now: Date, opts?: { relativ
   if (opts?.relative === false) return stamp;
   const rel = formatRelativeFuture(iso, now);
   return rel ? `${stamp} (${rel})` : stamp;
+}
+
+/**
+ * `-` not enough history; `ok` slope will not empty the window before reset
+ * (or is idle); `40m miss` hits 100% before reset at the current slope.
+ */
+function formatPace(pace: { etaAt: string | null; miss: boolean } | null | undefined, now: Date): string {
+  if (!pace) return "-";
+  if (!pace.miss) return "ok";
+  if (!pace.etaAt) return "miss";
+  const rel = formatRelativeFuture(pace.etaAt, now);
+  return rel ? `${rel} miss` : "miss";
 }
 
 /** `-` never fetched; `--` reset already passed or the bucket has no reset clock. */
