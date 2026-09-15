@@ -340,6 +340,62 @@ describe("isToolError", () => {
   });
 });
 
+describe("printServerList status column", () => {
+  function captureStdout(fn: () => void): string {
+    const original = console.log;
+    const lines: string[] = [];
+    console.log = mock((...args: unknown[]) => lines.push(args.join(" ")));
+    try {
+      fn();
+      return lines.join("\n");
+    } finally {
+      console.log = original;
+    }
+  }
+
+  const http = { name: "remote", transport: "http", toolCount: 3, source: "user" };
+
+  // The daemon drops idle HTTP connections on purpose (#3447), so "disconnected"
+  // is the normal resting state and says nothing a caller should act on.
+  test("shows last use rather than connection state for an HTTP server", () => {
+    const output = captureStdout(() =>
+      printServerList([{ ...http, state: "disconnected", lastUsed: Date.now() - 120_000 }]),
+    );
+    expect(output).toContain("used 2m");
+    expect(output).not.toContain("disconnected");
+  });
+
+  test("shows 'used never' for an HTTP server that has not been called", () => {
+    const output = captureStdout(() => printServerList([{ ...http, state: "disconnected" }]));
+    expect(output).toContain("used never");
+  });
+
+  test("an error still wins the column, and carries the reason", () => {
+    const output = captureStdout(() =>
+      printServerList([{ ...http, state: "error", lastUsed: Date.now(), lastError: "ECONNREFUSED" }]),
+    );
+    expect(output).toContain("error: ECONNREFUSED");
+    expect(output).not.toContain("used ");
+  });
+
+  // A stdio server is a child process and is never idle-reaped, so its live
+  // state is real information.
+  test("keeps live state for stdio servers", () => {
+    const output = captureStdout(() =>
+      printServerList([{ name: "local", transport: "stdio", state: "connected", toolCount: 1, source: "user" }]),
+    );
+    expect(output).toContain("connected");
+    expect(output).not.toContain("used ");
+  });
+
+  test("keeps live state for virtual servers", () => {
+    const output = captureStdout(() =>
+      printServerList([{ name: "_work_items", transport: "virtual", state: "connected", toolCount: 9, source: "-" }]),
+    );
+    expect(output).toContain("connected");
+  });
+});
+
 describe("printServerList rate limit line", () => {
   function captureStdout(fn: () => void): string {
     const original = console.log;

@@ -226,6 +226,17 @@ export function projectConfigPath(cwd: string): string {
 /** Default daemon idle timeout (ms) */
 export const DAEMON_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * How long an HTTP MCP server may sit unused before the daemon drops its
+ * connection (#3447). `ensureConnected()` reconnects on the next call, so this
+ * only trades one cheap handshake for not holding a remote connection — and the
+ * SDK's standalone notification stream — open indefinitely.
+ */
+export const HTTP_IDLE_DISCONNECT_MS = 2 * 60 * 1000; // 2 minutes
+
+/** How often the daemon sweeps for idle HTTP connections (ms) */
+export const HTTP_IDLE_SWEEP_MS = 30_000;
+
 /** IPC connect timeout when auto-starting daemon (ms) */
 export const DAEMON_START_TIMEOUT_MS = 5_000;
 

@@ -4,7 +4,14 @@
  * JSON to stdout (pipeable), errors/status to stderr.
  */
 
-import { type JsonSchema, formatAliasSignature, jsonSchemaToTs, parsePythonRepr } from "@mcp-cli/core";
+import {
+  type JsonSchema,
+  formatAgo,
+  formatAliasSignature,
+  jsonSchemaToTs,
+  parsePythonRepr,
+  usesLastUsedStatus,
+} from "@mcp-cli/core";
 import type { AliasDetail, AliasType } from "@mcp-cli/core";
 import type { RegistryEntry } from "./registry/client";
 
@@ -85,6 +92,29 @@ function formatJson(text: string): string {
   }
 }
 
+/**
+ * Status cell for one server row.
+ *
+ * HTTP servers report **last use**, not live connection state: the daemon drops
+ * an idle HTTP connection on purpose (#3447), so "disconnected" says only that
+ * nobody has called it lately — it is not a fault, and rendering it as one made
+ * the column noise. An actual error still wins the cell, because that is the
+ * one thing worth interrupting for.
+ *
+ * Stdio and virtual servers keep the live state: those are child processes whose
+ * liveness is real information, and they are never idle-reaped.
+ */
+function serverStatusCell(s: { transport: string; state: string; lastUsed?: number; lastError?: string }): {
+  text: string;
+  color: string;
+} {
+  if (s.state === "error") return { text: s.lastError ? `error: ${s.lastError}` : "error", color: c.red };
+  if (!usesLastUsedStatus(s.transport)) {
+    return { text: s.state, color: s.state === "connected" ? c.green : c.dim };
+  }
+  return { text: `used ${formatAgo(s.lastUsed)}`, color: s.lastUsed ? c.green : c.dim };
+}
+
 /** Print a server list in compact format */
 export function printServerList(
   servers: Array<{
@@ -93,6 +123,8 @@ export function printServerList(
     state: string;
     toolCount: number;
     source: string;
+    lastUsed?: number;
+    lastError?: string;
     recentStderr?: string[];
     rateLimit?: { limit: string; utilization: number; queueDepth: number; maxQueue?: number; error?: string };
   }>,
@@ -105,9 +137,9 @@ export function printServerList(
   const maxName = Math.max(...servers.map((s) => s.name.length));
 
   for (const s of servers) {
-    const stateColor = s.state === "connected" ? c.green : s.state === "error" ? c.red : c.dim;
+    const status = serverStatusCell(s);
     console.log(
-      `  ${c.cyan}${s.name.padEnd(maxName)}${c.reset}  ${stateColor}${s.state.padEnd(12)}${c.reset}  ${c.dim}${s.transport}${c.reset}  ${s.toolCount > 0 ? `${s.toolCount} tools` : ""}`,
+      `  ${c.cyan}${s.name.padEnd(maxName)}${c.reset}  ${status.color}${status.text.padEnd(12)}${c.reset}  ${c.dim}${s.transport}${c.reset}  ${s.toolCount > 0 ? `${s.toolCount} tools` : ""}`,
     );
     if (s.rateLimit) {
       const { limit, utilization, queueDepth, maxQueue, error } = s.rateLimit;
