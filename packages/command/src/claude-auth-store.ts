@@ -58,8 +58,11 @@ import {
   QUOTA_RATE_LIMIT_MAX_ATTEMPTS,
   QUOTA_RATE_LIMIT_MAX_BACKOFF_MS,
   QUOTA_RATE_LIMIT_MAX_RETRY_AFTER_MS,
+  type QuotaPace,
   type QuotaStatus,
   type StoredQuota,
+  appendQuotaHistory,
+  estimateQuotaPace,
   fetchQuotaUsage,
   flockUnlock,
   harvestClaudeOAuthConstants,
@@ -140,6 +143,10 @@ export interface ProfileSummary {
   updatedAt: string;
   /** Last quota snapshot, or null when none has been captured. */
   quota: StoredQuota | null;
+  /** 5h burn projection from `quota.history`. Null until two samples exist. */
+  fiveHourPace: QuotaPace | null;
+  /** 7d burn projection from `quota.history`. */
+  sevenDayPace: QuotaPace | null;
 }
 
 /** Filesystem locations the store reads and writes. Injected so tests never touch a real `~/.claude`. */
@@ -592,7 +599,7 @@ function mergeStoredQuota(
   incoming: StoredQuota,
   stored: StoredQuota | undefined,
 ): { quota: StoredQuota; keptBuckets: string[] } {
-  if (!stored) return { quota: incoming, keptBuckets: [] };
+  if (!stored) return { quota: appendQuotaHistory(incoming), keptBuckets: [] };
   const merged: StoredQuota = { ...incoming };
   const keptBuckets: string[] = [];
   const keep = <K extends "fiveHour" | "sevenDay" | "sevenDaySonnet" | "sevenDayOpus" | "extraUsage">(key: K): void => {
@@ -615,7 +622,7 @@ function mergeStoredQuota(
     const fresh = Date.parse(merged.capturedAt);
     if (!Number.isNaN(older) && (Number.isNaN(fresh) || older < fresh)) merged.capturedAt = stored.capturedAt;
   }
-  return { quota: merged, keptBuckets };
+  return { quota: appendQuotaHistory(merged, stored), keptBuckets };
 }
 
 /**
@@ -2096,6 +2103,8 @@ export function summarizeProfile(profile: ClaudeAuthProfile, activeName: string 
     hasCredentials: profile.credentials !== undefined,
     updatedAt: profile.updatedAt,
     quota: profile.quota ?? null,
+    fiveHourPace: estimateQuotaPace(profile.quota, "fiveHour", now),
+    sevenDayPace: estimateQuotaPace(profile.quota, "sevenDay", now),
   };
 }
 

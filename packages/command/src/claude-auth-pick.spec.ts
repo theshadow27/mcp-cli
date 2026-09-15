@@ -26,6 +26,8 @@ function profile(partial: Partial<ProfileSummary> & Pick<ProfileSummary, "name">
     allowRemoteControl: true,
     hasCredentials: true,
     updatedAt: NOW.toISOString(),
+    fiveHourPace: null,
+    sevenDayPace: null,
     quota: {
       capturedAt: NOW.toISOString(),
       fiveHour: { utilization: 10, resetsAt: "2026-08-30T07:00:00.000Z" },

@@ -104,6 +104,36 @@ export interface StoredQuota {
   sevenDaySonnet: QuotaUsageBucket | null;
   sevenDayOpus: QuotaUsageBucket | null;
   extraUsage: QuotaExtraUsage | null;
+  /**
+   * Recent 5h/7d stamps for pace. Ring-capped; samples from a previous reset
+   * window are ignored at estimate time, not rewritten here.
+   */
+  history?: QuotaHistorySample[];
+}
+
+/** One point on the 5h/7d series. Sonnet/opus/extra are not in the autoload path. */
+export interface QuotaHistorySample {
+  capturedAt: string;
+  fiveHour: QuotaUsageBucket | null;
+  sevenDay: QuotaUsageBucket | null;
+}
+
+/** How many stamps to keep. Daemon poller is 5m, so 48 ≈ 4h of active-profile samples. */
+export const QUOTA_HISTORY_MAX = 48;
+/** Two points closer than this are not a slope — likely a double stamp. */
+export const QUOTA_PACE_MIN_SPAN_MS = 60_000;
+
+/**
+ * Projected burn of one usage window. `miss` is the autoload signal: utilization
+ * hits 100% before `resetsAt` at the current slope. Not wired into `load --auto` yet.
+ */
+export interface QuotaPace {
+  samples: number;
+  spanMs: number;
+  /** When utilization hits 100% at the current slope. Null when slope ≤ 0 (idle). */
+  etaAt: string | null;
+  resetsAt: string;
+  miss: boolean;
 }
 
 /** Raw JSON shape from the API. Extra keys are ignored. */
@@ -128,7 +158,7 @@ export interface RawUsageResponse {
  */
 export function isCompleteQuotaBucket(
   bucket: { utilization?: unknown; resetsAt?: unknown } | null | undefined,
-): boolean {
+): bucket is QuotaUsageBucket {
   if (!bucket) return false;
   if (typeof bucket.utilization !== "number" || !Number.isFinite(bucket.utilization)) return false;
   if (typeof bucket.resetsAt !== "string" || Number.isNaN(Date.parse(bucket.resetsAt))) return false;
@@ -178,6 +208,92 @@ export function toStoredQuota(status: QuotaStatus, capturedAt?: string): StoredQ
     sevenDayOpus: status.sevenDayOpus,
     extraUsage: status.extraUsage,
   };
+}
+
+function historySampleFrom(quota: StoredQuota): QuotaHistorySample | null {
+  const fiveHour = isCompleteQuotaBucket(quota.fiveHour) ? quota.fiveHour : null;
+  const sevenDay = isCompleteQuotaBucket(quota.sevenDay) ? quota.sevenDay : null;
+  if (!fiveHour && !sevenDay) return null;
+  if (typeof quota.capturedAt !== "string" || Number.isNaN(Date.parse(quota.capturedAt))) return null;
+  return { capturedAt: quota.capturedAt, fiveHour, sevenDay };
+}
+
+/**
+ * Attach `incoming` as the newest history sample. Seeds from `stored`'s current
+ * buckets when history is empty so a save snapshot plus the first `--fetch`
+ * already make a slope. Same `capturedAt` as the last sample replaces it.
+ * Incoming `history` is ignored — the series lives on the stored profile.
+ */
+export function appendQuotaHistory(incoming: StoredQuota, stored?: StoredQuota, max = QUOTA_HISTORY_MAX): StoredQuota {
+  const sample = historySampleFrom(incoming);
+  if (!sample) {
+    return stored?.history ? { ...incoming, history: stored.history } : incoming;
+  }
+  let prev = stored?.history ?? [];
+  if (prev.length === 0 && stored) {
+    const seed = historySampleFrom(stored);
+    if (seed && seed.capturedAt !== sample.capturedAt) prev = [seed];
+  }
+  const last = prev[prev.length - 1];
+  const next = last && last.capturedAt === sample.capturedAt ? [...prev.slice(0, -1), sample] : [...prev, sample];
+  return { ...incoming, history: next.slice(-max) };
+}
+
+type PaceBucket = "fiveHour" | "sevenDay";
+
+/**
+ * OLS slope of utilization vs time for one window. Null until two samples in the
+ * *current* reset window span at least QUOTA_PACE_MIN_SPAN_MS.
+ */
+export function estimateQuotaPace(
+  quota: StoredQuota | null | undefined,
+  bucket: PaceBucket,
+  now: Date = new Date(),
+): QuotaPace | null {
+  const current = quota?.[bucket];
+  if (!isCompleteQuotaBucket(current)) return null;
+  if (Date.parse(current.resetsAt) <= now.getTime()) return null;
+
+  const points: Array<{ t: number; u: number }> = [];
+  for (const row of quota?.history ?? []) {
+    const b = row[bucket];
+    if (!isCompleteQuotaBucket(b) || b.resetsAt !== current.resetsAt) continue;
+    const t = Date.parse(row.capturedAt);
+    if (Number.isNaN(t)) continue;
+    points.push({ t, u: b.utilization });
+  }
+  if (points.length < 2) return null;
+  const spanMs = points[points.length - 1].t - points[0].t;
+  if (spanMs < QUOTA_PACE_MIN_SPAN_MS) return null;
+
+  const n = points.length;
+  let meanT = 0;
+  let meanU = 0;
+  for (const p of points) {
+    meanT += p.t;
+    meanU += p.u;
+  }
+  meanT /= n;
+  meanU /= n;
+  let num = 0;
+  let den = 0;
+  for (const p of points) {
+    const dt = p.t - meanT;
+    num += dt * (p.u - meanU);
+    den += dt * dt;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  const last = points[points.length - 1];
+  const remaining = 100 - last.u;
+  let etaAt: string | null = null;
+  if (remaining <= 0) {
+    etaAt = new Date(last.t).toISOString();
+  } else if (slope > 0) {
+    etaAt = new Date(last.t + remaining / slope).toISOString();
+  }
+  const resetMs = Date.parse(current.resetsAt);
+  const miss = etaAt !== null && Date.parse(etaAt) < resetMs;
+  return { samples: n, spanMs, etaAt, resetsAt: current.resetsAt, miss };
 }
 
 export type QuotaFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;

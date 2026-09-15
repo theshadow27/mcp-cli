@@ -287,6 +287,13 @@ const SAMPLE_STORED_QUOTA = {
   extraUsage: null,
 };
 
+function withHistory(q: typeof SAMPLE_STORED_QUOTA) {
+  return {
+    ...q,
+    history: [{ capturedAt: q.capturedAt, fiveHour: q.fiveHour, sevenDay: q.sevenDay }],
+  };
+}
+
 describe("saveProfile quota snapshot", () => {
   test("stores a provided quota on oauth profiles", () => {
     using fs = sandbox();
@@ -390,7 +397,7 @@ describe("stampActiveProfileQuota", () => {
     expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
 
     const after = readProfile(fs, "work");
-    expect(after?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(after?.quota).toEqual(withHistory(SAMPLE_STORED_QUOTA));
     expect(after?.updatedAt).toBe(before?.updatedAt);
     expect(after?.credentials).toEqual(before?.credentials);
   });
@@ -424,7 +431,7 @@ describe("stampActiveProfileQuota", () => {
     save(fs, "personal");
 
     expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
-    expect(readProfile(fs, "personal")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "personal")?.quota).toEqual(withHistory(SAMPLE_STORED_QUOTA));
     expect(readProfile(fs, "work")?.quota).toBeUndefined();
   });
 
@@ -435,7 +442,7 @@ describe("stampActiveProfileQuota", () => {
     save(fs, "personal");
 
     expect(stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA)).toMatchObject({ stamped: true });
-    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "work")?.quota).toEqual(withHistory(SAMPLE_STORED_QUOTA));
     expect(readProfile(fs, "personal")?.quota).toBeUndefined();
   });
 });
@@ -649,7 +656,7 @@ describe("quota stamps are attributed (#3424)", () => {
     writeFileSync(fs.credentialsPath, JSON.stringify(credentials({ accessToken: "refreshed" })), { mode: 0o600 });
 
     expect(stampActiveProfileQuota(fs, SAMPLE_STORED_QUOTA, readLiveState(fs, NOW))).toMatchObject({ stamped: true });
-    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    expect(readProfile(fs, "work")?.quota).toEqual(withHistory(SAMPLE_STORED_QUOTA));
   });
 
   test("stampProfileQuota refuses an api-key profile", () => {
@@ -770,7 +777,29 @@ describe("stampProfileQuota bucket merge (#3427)", () => {
     stampProfileQuota(fs, "work", degraded);
     const result = stampProfileQuota(fs, "work", SAMPLE_STORED_QUOTA);
     expect(result.keptBuckets).toEqual([]);
-    expect(readProfile(fs, "work")?.quota).toEqual(SAMPLE_STORED_QUOTA);
+    const after = readProfile(fs, "work")?.quota;
+    expect(after?.fiveHour).toEqual(SAMPLE_STORED_QUOTA.fiveHour);
+    expect(after?.sevenDay).toEqual(SAMPLE_STORED_QUOTA.sevenDay);
+    expect(after?.history).toHaveLength(2);
+  });
+
+  test("two stamps 10 minutes apart project a 5h miss", () => {
+    using fs = sandbox();
+    save(fs, "work");
+    stampProfileQuota(fs, "work", {
+      ...SAMPLE_STORED_QUOTA,
+      capturedAt: NOW.toISOString(),
+      fiveHour: { utilization: 10, resetsAt: "2026-08-18T20:00:00.000Z" },
+    });
+    stampProfileQuota(fs, "work", {
+      ...SAMPLE_STORED_QUOTA,
+      capturedAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+      fiveHour: { utilization: 40, resetsAt: "2026-08-18T20:00:00.000Z" },
+    });
+    const summary = summarizeProfile(readProfile(fs, "work") as ClaudeAuthProfile, "work", NOW);
+    expect(summary.fiveHourPace?.miss).toBe(true);
+    expect(summary.fiveHourPace?.samples).toBe(2);
+    expect(summary.sevenDayPace?.miss).toBe(false);
   });
 });
 

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  QUOTA_HISTORY_MAX,
   QuotaRateLimitError,
+  appendQuotaHistory,
+  estimateQuotaPace,
   fetchQuotaUsage,
   isQuotaRateLimitError,
   parseRetryAfterHeader,
@@ -103,6 +106,119 @@ describe("toStoredQuota", () => {
   test("honours an explicit capturedAt (deterministic save/load snapshots)", () => {
     const status = parseUsageResponse(SAMPLE_RESPONSE);
     expect(toStoredQuota(status, "2026-08-18T12:00:00.000Z").capturedAt).toBe("2026-08-18T12:00:00.000Z");
+  });
+});
+
+const RESET_5H = "2026-08-18T20:00:00.000Z";
+const RESET_7D = "2026-08-25T04:00:00.000Z";
+
+function snap(capturedAt: string, five: number, seven: number) {
+  return {
+    capturedAt,
+    fiveHour: { utilization: five, resetsAt: RESET_5H },
+    sevenDay: { utilization: seven, resetsAt: RESET_7D },
+    sevenDaySonnet: null,
+    sevenDayOpus: null,
+    extraUsage: null,
+  };
+}
+
+describe("appendQuotaHistory", () => {
+  test("starts a series from the incoming snapshot", () => {
+    const first = snap("2026-08-18T12:00:00.000Z", 10, 8);
+    expect(appendQuotaHistory(first).history).toEqual([
+      { capturedAt: first.capturedAt, fiveHour: first.fiveHour, sevenDay: first.sevenDay },
+    ]);
+  });
+
+  test("seeds from the stored current buckets so save + first fetch make two points", () => {
+    const saved = snap("2026-08-18T12:00:00.000Z", 10, 8);
+    const fetched = snap("2026-08-18T12:10:00.000Z", 20, 9);
+    const out = appendQuotaHistory(fetched, saved);
+    expect(out.history).toHaveLength(2);
+    expect(out.history?.[0]?.fiveHour?.utilization).toBe(10);
+    expect(out.history?.[1]?.fiveHour?.utilization).toBe(20);
+  });
+
+  test("replaces the last sample when capturedAt matches", () => {
+    const first = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    const retry = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 11, 8), first);
+    expect(retry.history).toHaveLength(1);
+    expect(retry.history?.[0]?.fiveHour?.utilization).toBe(11);
+  });
+
+  test("caps the ring", () => {
+    let stored = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 0, 0));
+    for (let i = 1; i <= QUOTA_HISTORY_MAX + 5; i++) {
+      const t = new Date(Date.UTC(2026, 7, 18, 12, i)).toISOString();
+      stored = appendQuotaHistory(snap(t, i, 0), stored);
+    }
+    expect(stored.history).toHaveLength(QUOTA_HISTORY_MAX);
+    expect(stored.history?.[0]?.fiveHour?.utilization).toBe(6);
+  });
+
+  test("keeps previous history when the incoming snapshot has no complete bucket", () => {
+    const first = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    const empty = {
+      capturedAt: "2026-08-18T12:10:00.000Z",
+      fiveHour: null,
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: null,
+      extraUsage: null,
+    };
+    expect(appendQuotaHistory(empty, first).history).toEqual(first.history);
+  });
+});
+
+describe("estimateQuotaPace", () => {
+  const now = new Date("2026-08-18T12:30:00.000Z");
+
+  test("null with fewer than two samples in the current window", () => {
+    const q = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    expect(estimateQuotaPace(q, "fiveHour", now)).toBeNull();
+  });
+
+  test("miss when the slope hits 100% before reset", () => {
+    // 10% at t0, 40% 10 minutes later → 6%/min → 10 min to 100%, reset is ~7.5h away.
+    const a = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    const b = appendQuotaHistory(snap("2026-08-18T12:10:00.000Z", 40, 8), a);
+    const pace = estimateQuotaPace(b, "fiveHour", now);
+    expect(pace?.miss).toBe(true);
+    expect(pace?.samples).toBe(2);
+    expect(pace?.etaAt).toBe("2026-08-18T12:30:00.000Z");
+  });
+
+  test("ok (no eta) when utilization is flat", () => {
+    const a = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 40, 8));
+    const b = appendQuotaHistory(snap("2026-08-18T12:10:00.000Z", 40, 8), a);
+    const pace = estimateQuotaPace(b, "fiveHour", now);
+    expect(pace).toMatchObject({ miss: false, etaAt: null, samples: 2 });
+  });
+
+  test("ok when eta is after the reset", () => {
+    // 1% in 10 minutes → 0.1%/min → 990 min to 100%, reset in ~7.5h.
+    const a = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    const b = appendQuotaHistory(snap("2026-08-18T12:10:00.000Z", 11, 8), a);
+    const pace = estimateQuotaPace(b, "fiveHour", now);
+    expect(pace?.miss).toBe(false);
+    expect(pace?.etaAt).not.toBeNull();
+  });
+
+  test("ignores samples from a previous 5h window", () => {
+    const oldWindow = {
+      ...snap("2026-08-18T06:00:00.000Z", 90, 8),
+      fiveHour: { utilization: 90, resetsAt: "2026-08-18T07:00:00.000Z" },
+    };
+    const a = appendQuotaHistory(oldWindow);
+    const b = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8), a);
+    expect(estimateQuotaPace(b, "fiveHour", now)).toBeNull();
+  });
+
+  test("null once the reset has already passed", () => {
+    const a = appendQuotaHistory(snap("2026-08-18T12:00:00.000Z", 10, 8));
+    const b = appendQuotaHistory(snap("2026-08-18T12:10:00.000Z", 40, 8), a);
+    expect(estimateQuotaPace(b, "fiveHour", new Date("2026-08-18T21:00:00.000Z"))).toBeNull();
   });
 });
 

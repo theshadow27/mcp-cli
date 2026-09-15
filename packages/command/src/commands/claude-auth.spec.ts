@@ -365,6 +365,8 @@ describe("mcx claude auth ls", () => {
         fiveHour: { utilization: 42, resetsAt: "2026-08-18T20:00:01.000Z" },
         sevenDay: { utilization: 8, resetsAt: "2026-08-25T04:00:00.000Z" },
       },
+      fiveHourPace: null,
+      sevenDayPace: null,
     });
     expect(entry.expiresAt).toBe(new Date(EXPIRES_AT).toISOString());
   });
@@ -981,6 +983,8 @@ describe("formatProfileTable", () => {
           allowRemoteControl: null,
           hasCredentials: true,
           updatedAt: NOW.toISOString(),
+          fiveHourPace: null,
+          sevenDayPace: null,
           quota: {
             capturedAt: "2020-01-01T00:00:00.000Z",
             fiveHour: { utilization: 97.5, resetsAt: "2020-01-01T05:00:00.000Z" },
@@ -1022,6 +1026,8 @@ describe("formatProfileTable", () => {
           allowRemoteControl: true,
           hasCredentials: true,
           updatedAt: NOW.toISOString(),
+          fiveHourPace: null,
+          sevenDayPace: null,
           quota: {
             capturedAt: NOW.toISOString(),
             fiveHour: { utilization: 99, resetsAt: "2026-08-18T11:00:00.000Z" },
@@ -1062,6 +1068,8 @@ describe("formatProfileTable", () => {
           allowRemoteControl: false,
           hasCredentials: true,
           updatedAt: NOW.toISOString(),
+          fiveHourPace: null,
+          sevenDayPace: null,
           quota: {
             capturedAt: NOW.toISOString(),
             fiveHour: { utilization: 0, resetsAt: null as unknown as string },
@@ -1098,12 +1106,66 @@ describe("formatProfileTable", () => {
           hasCredentials: true,
           updatedAt: NOW.toISOString(),
           quota: null,
+          fiveHourPace: null,
+          sevenDayPace: null,
         },
       ],
       NOW,
     );
     expect(lines[1]).toContain("*  bare");
     expect(lines[1]).toContain("-");
+  });
+
+  test("5H-ETA / 7D-ETA print ok, miss, or dash", () => {
+    const lines = formatProfileTable(
+      [
+        {
+          name: "burn",
+          kind: "oauth",
+          active: true,
+          account: "a@example.com",
+          organization: null,
+          subscriptionType: "max",
+          rateLimitTier: null,
+          expiresAt: null,
+          expired: null,
+          hasRefreshToken: true,
+          apiKeyEnvVar: null,
+          allowRemoteControl: true,
+          hasCredentials: true,
+          updatedAt: NOW.toISOString(),
+          quota: {
+            capturedAt: NOW.toISOString(),
+            fiveHour: { utilization: 40, resetsAt: "2026-08-18T20:00:00.000Z" },
+            sevenDay: { utilization: 8, resetsAt: "2026-08-25T04:00:00.000Z" },
+            sevenDaySonnet: null,
+            sevenDayOpus: null,
+            extraUsage: null,
+          },
+          fiveHourPace: {
+            samples: 2,
+            spanMs: 600_000,
+            etaAt: "2026-08-18T12:30:00.000Z",
+            resetsAt: "2026-08-18T20:00:00.000Z",
+            miss: true,
+          },
+          sevenDayPace: {
+            samples: 2,
+            spanMs: 600_000,
+            etaAt: null,
+            resetsAt: "2026-08-25T04:00:00.000Z",
+            miss: false,
+          },
+        },
+      ],
+      NOW,
+    );
+    const header = lines[0] ?? "";
+    const row = lines[1] ?? "";
+    expect(header).toContain("5H-ETA");
+    expect(header).toContain("7D-ETA");
+    expect(row).toContain("30m miss");
+    expect(row).toContain("ok");
   });
 });
 
