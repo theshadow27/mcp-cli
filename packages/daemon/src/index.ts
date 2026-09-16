@@ -39,6 +39,8 @@ import {
   DAEMON_READY_SIGNAL,
   DAEMON_RESTARTED,
   DEFAULT_CLAUDE_WS_PORT,
+  HTTP_IDLE_DISCONNECT_MS,
+  HTTP_IDLE_SWEEP_MS,
   LOCKFILE_NAME,
   MAIL_SERVER_NAME,
   METRICS_SERVER_NAME,
@@ -757,6 +759,15 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
     // would ever notice. Returns immediately when no worker is running.
     domainSupervisor.sync();
   }, 30_000);
+
+  // Drop idle HTTP connections (#3447). `ensureConnected()` runs at the head of
+  // every callTool/listTools, so the next call reconnects transparently — holding
+  // the socket open between calls buys nothing and keeps a server-side connection
+  // (and the SDK's standalone notification stream) alive indefinitely. Stdio is
+  // deliberately untouched: respawning a child process is a real cost.
+  const httpIdleReapInterval = safeSetInterval(() => {
+    void pool.reapIdleHttpServers(HTTP_IDLE_DISCONNECT_MS);
+  }, HTTP_IDLE_SWEEP_MS);
 
   // Update uptime and server gauges periodically
   const metricsInterval = safeSetInterval(() => {
@@ -1482,6 +1493,7 @@ export async function startDaemon(opts?: StartDaemonOptions): Promise<DaemonHand
       logger.info(`[mcpd] Shutting down${reason ? ` (${reason})` : ""}...`);
       if (idleTimer) clearTimeout(idleTimer);
       clearInterval(pruneInterval);
+      clearInterval(httpIdleReapInterval);
       clearInterval(metricsInterval);
       automation.stop();
       eventLog.stopPruning();

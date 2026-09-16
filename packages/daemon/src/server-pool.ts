@@ -46,6 +46,7 @@ import {
 } from "@mcp-cli/core";
 import { McpOAuthProvider } from "./auth/oauth-provider";
 import type { McxDb } from "./db/state";
+import { createHttpStreamGuard } from "./http-stream-guard";
 import { metrics } from "./metrics";
 import { getProcessStartTime } from "./process-identity";
 import { killPid } from "./process-util";
@@ -904,16 +905,71 @@ export class ServerPool {
    * flight is never idle, even when `lastUsed` is stale — `lastUsed` only
    * advances when a call finishes, so a long call (or a long rate-limit wait)
    * would otherwise look idle and get its connection reaped mid-flight.
+   *
+   * `transports` narrows the sweep to specific transport types. Virtual servers
+   * are never returned: they are owned by daemon code, not by config, and
+   * `ensureConnected` cannot rebuild one (see the guard in `ensureConnected`).
    */
-  getIdleServers(thresholdMs: number): string[] {
+  getIdleServers(thresholdMs: number, transports?: ReadonlySet<"stdio" | "http" | "sse">): string[] {
     const now = Date.now();
     return [...this.connections.entries()]
-      .filter(
-        ([, c]) => c.state === "connected" && c.inflight === 0 && c.lastUsed > 0 && now - c.lastUsed > thresholdMs,
-      )
+      .filter(([, c]) => {
+        if (c.state !== "connected" || c.inflight !== 0 || c.lastUsed <= 0) return false;
+        if (now - c.lastUsed <= thresholdMs) return false;
+        if (!transports) return true;
+        if (c.virtual) return false;
+        return transports.has(getTransportType(c.resolved.config));
+      })
       .map(([name]) => name);
   }
+
+  /**
+   * Disconnect HTTP servers that have been idle past the threshold.
+   *
+   * Nothing consumes the connection while it is idle — `ensureConnected()` runs
+   * at the head of every `callTool`/`listTools`, so the next call reconnects
+   * transparently. Holding the socket open buys nothing and costs a live
+   * notification stream against the remote server (#3447).
+   *
+   * Scoped to `http` deliberately: a stdio server is a child process whose
+   * respawn cost is real and whose liveness is genuinely meaningful, and `sse`
+   * has different reconnect semantics that this change does not cover.
+   *
+   * @returns the names actually disconnected.
+   */
+  async reapIdleHttpServers(thresholdMs: number): Promise<string[]> {
+    const idle = this.getIdleServers(thresholdMs, HTTP_ONLY);
+    const reaped: string[] = [];
+    for (const name of idle) {
+      try {
+        await this.disconnect(name);
+        // `disconnect()` clears the in-memory tool map. An idle reap is meant to
+        // be invisible, so put the cached tools back — otherwise `mcx ls` reports
+        // 0 tools for a server that is merely asleep. The db cache is the same
+        // source the constructor pre-populates from.
+        this.restoreCachedTools(name);
+        reaped.push(name);
+        this.logger.debug(`[pool] Disconnected idle HTTP server "${name}" (idle > ${thresholdMs}ms)`);
+      } catch (e) {
+        this.logger.warn(`[pool] Failed to disconnect idle server "${name}": ${e}`);
+      }
+    }
+    if (reaped.length > 0) metrics.counter("mcpd_idle_http_disconnects_total").inc(reaped.length);
+    return reaped;
+  }
+
+  /** Repopulate a disconnected server's tool map from the persistent cache. */
+  private restoreCachedTools(name: string): void {
+    const conn = this.connections.get(name);
+    if (!conn || !this.db) return;
+    for (const tool of this.db.getCachedTools(name)) {
+      conn.tools.set(tool.name, tool);
+    }
+  }
 }
+
+/** Transport filter for the idle sweep — see `reapIdleHttpServers`. */
+const HTTP_ONLY: ReadonlySet<"stdio" | "http" | "sse"> = new Set(["http"] as const);
 
 /** Smallest budget worth dispatching an MCP call with. */
 const MIN_CALL_BUDGET_MS = 1;
@@ -1125,7 +1181,7 @@ async function defaultConnect(
   authProvider?: OAuthClientProvider,
   signal?: AbortSignal,
 ): ReturnType<ConnectFn> {
-  const transport = createTransport(config, authProvider);
+  const transport = createTransport(name, config, authProvider);
   const client = new Client({ name: `mcp-cli/${name}`, version: "0.1.0" });
 
   // When the signal fires (timeout), force-close the transport to abort
@@ -1145,7 +1201,7 @@ async function defaultConnect(
   return { client, transport, childPid };
 }
 
-function createTransport(config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
+function createTransport(name: string, config: ServerConfig, authProvider?: OAuthClientProvider): Transport {
   if (isStdioConfig(config)) {
     const mergedEnv = buildChildEnv(process.env as Record<string, string | undefined>, config.env);
 
@@ -1162,6 +1218,20 @@ function createTransport(config: ServerConfig, authProvider?: OAuthClientProvide
     return new StreamableHTTPClientTransport(new URL(config.url), {
       authProvider,
       requestInit: config.headers ? { headers: config.headers } : undefined,
+      // #3447: the SDK reopens the standalone notification stream forever, with
+      // no reachable cap and no error, when a server closes it on every open.
+      // We consume no server-initiated notifications, so the guard answers that
+      // GET locally with a 405 and the SDK stops reopening it.
+      fetch: createHttpStreamGuard(name, {
+        onSuppress: ({ server, reason, reopens, windowMs }) => {
+          metrics.counter("mcpd_http_notification_stream_suppressed_total", { reason }).inc();
+          const detail =
+            reason === "stateless"
+              ? "server issued no mcp-session-id (stateless)"
+              : `stream reopened ${reopens} times in ${windowMs}ms`;
+          console.warn(`[pool] Server "${server}": notification stream suppressed — ${detail}`);
+        },
+      }),
     });
   }
 

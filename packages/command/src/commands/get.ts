@@ -4,7 +4,7 @@
  * Shows config details, source file, scope, and connection status.
  */
 
-import { ipcCall } from "@mcp-cli/core";
+import { formatAgo, ipcCall, usesLastUsedStatus } from "@mcp-cli/core";
 import { c, printError } from "../output";
 import { extractJsonFlag } from "../parse";
 
@@ -39,6 +39,7 @@ export async function cmdGet(args: string[]): Promise<void> {
           toolCount: serverConfig.toolCount,
           state: status?.state ?? "unknown",
           lastError: status?.lastError,
+          lastUsed: status?.lastUsed,
         },
         null,
         2,
@@ -54,6 +55,11 @@ export async function cmdGet(args: string[]): Promise<void> {
   console.log(`${c.bold}Source${c.reset}: ${serverConfig.source} ${c.dim}(${serverConfig.scope})${c.reset}`);
   console.log(`${c.bold}Status${c.reset}: ${stateColor}${status?.state ?? "unknown"}${c.reset}`);
   console.log(`${c.bold}Tools${c.reset}: ${serverConfig.toolCount}`);
+  // An idle HTTP connection is dropped on purpose (#3447), so "disconnected"
+  // above says only that nothing has called it lately — show when that was.
+  if (usesLastUsedStatus(serverConfig.transport)) {
+    console.log(`${c.bold}Last used${c.reset}: ${formatAgo(status?.lastUsed)}`);
+  }
 
   if (status?.lastError) {
     console.log(`${c.bold}Error${c.reset}: ${c.red}${status.lastError}${c.reset}`);

@@ -17,6 +17,7 @@ export * from "./rate-limit";
 export * from "./cli-config";
 export * from "./constants";
 export * from "./env";
+export * from "./format-age";
 export * from "./fs";
 export * from "./containment";
 export * from "./schema-display";

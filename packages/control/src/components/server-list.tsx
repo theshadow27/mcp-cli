@@ -1,4 +1,5 @@
 import type { ServeInstanceInfo, ServerStatus, UsageStat } from "@mcp-cli/core";
+import { formatAgo, usesLastUsedStatus } from "@mcp-cli/core";
 import { Box, Text } from "ink";
 import React from "react";
 import { ServerDetail } from "./server-detail";
@@ -18,6 +19,22 @@ const stateColor: Record<ServerStatus["state"], string> = {
   disconnected: "gray",
   error: "red",
 };
+
+/**
+ * Status cell for one server row.
+ *
+ * An HTTP server reports last use rather than live connection state: the daemon
+ * drops idle HTTP connections on purpose (#3447), so `disconnected` is their
+ * resting state and colouring it grey implies a fault that is not there. An
+ * error still wins the cell; the message itself is rendered separately below.
+ */
+function statusCell(server: ServerStatus): { text: string; color: string } {
+  if (server.state === "error") return { text: "error", color: stateColor.error };
+  if (!usesLastUsedStatus(server.transport)) {
+    return { text: server.state, color: stateColor[server.state] };
+  }
+  return { text: `used ${formatAgo(server.lastUsed)}`, color: server.lastUsed ? "green" : "gray" };
+}
 
 /** Format millisecond duration as human-readable uptime. */
 function formatUptime(ms: number): string {
@@ -53,7 +70,7 @@ export function ServerList({
       {servers.map((server, index) => {
         const selected = index === selectedIndex;
         const expanded = expandedServer === server.name;
-        const color = stateColor[server.state];
+        const status = statusCell(server);
 
         return (
           <Box key={server.name} flexDirection="column">
@@ -62,7 +79,7 @@ export function ServerList({
               <Text bold={selected}>{server.name}</Text>
               <Text dimColor> ({server.transport})</Text>
               {"  "}
-              <Text color={color}>{server.state}</Text>
+              <Text color={status.color}>{status.text}</Text>
               {"  "}
               <Text dimColor>[{server.toolCount} tools]</Text>
               {(server.callCount ?? 0) > 0 && (

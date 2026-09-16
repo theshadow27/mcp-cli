@@ -2084,3 +2084,94 @@ describe("ServerPool rate limiting", () => {
     expect(pool.getIdleServers(-1)).toEqual(["test"]);
   });
 });
+
+describe("ServerPool.reapIdleHttpServers", () => {
+  test("disconnects an idle HTTP server", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ remote: { type: "http", url: "http://example.invalid/mcp" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("remote", "my-tool", {});
+    expect(pool.listServers()[0].state).toBe("connected");
+
+    expect(await pool.reapIdleHttpServers(-1)).toEqual(["remote"]);
+    expect(pool.listServers()[0].state).toBe("disconnected");
+  });
+
+  test("leaves stdio servers alone — respawning a child process is a real cost", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(makeConfig({ local: { command: "echo" } }), undefined, connectFn, silentLogger);
+
+    await pool.callTool("local", "my-tool", {});
+
+    expect(await pool.reapIdleHttpServers(-1)).toEqual([]);
+    expect(pool.listServers()[0].state).toBe("connected");
+  });
+
+  test("leaves SSE servers alone — different reconnect semantics, out of scope", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ streamy: { type: "sse", url: "http://example.invalid/sse" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("streamy", "my-tool", {});
+
+    expect(await pool.reapIdleHttpServers(-1)).toEqual([]);
+  });
+
+  test("does not reap a server that is still within the idle threshold", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ remote: { type: "http", url: "http://example.invalid/mcp" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("remote", "my-tool", {});
+
+    expect(await pool.reapIdleHttpServers(60_000)).toEqual([]);
+    expect(pool.listServers()[0].state).toBe("connected");
+  });
+
+  test("a reaped server reconnects transparently on the next call", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ remote: { type: "http", url: "http://example.invalid/mcp" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("remote", "my-tool", {});
+    await pool.reapIdleHttpServers(-1);
+
+    const result = await pool.callTool("remote", "my-tool", {});
+
+    expect(result).toBeDefined();
+    expect(pool.listServers()[0].state).toBe("connected");
+    expect(connectFn).toHaveBeenCalledTimes(2);
+  });
+
+  test("getIdleServers without a transport filter still reports every transport", async () => {
+    const { connectFn } = mockConnectFn();
+    const pool = new ServerPool(
+      makeConfig({ local: { command: "echo" }, remote: { type: "http", url: "http://example.invalid/mcp" } }),
+      undefined,
+      connectFn,
+      silentLogger,
+    );
+
+    await pool.callTool("local", "my-tool", {});
+    await pool.callTool("remote", "my-tool", {});
+
+    expect(pool.getIdleServers(-1).sort()).toEqual(["local", "remote"]);
+  });
+});
