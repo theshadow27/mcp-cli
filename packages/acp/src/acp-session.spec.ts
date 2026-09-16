@@ -276,6 +276,40 @@ describe("AcpSession (with fake ACP agent)", () => {
     }
   });
 
+  test("approve() echoes a NUMERIC permission id back so a kiro-style peer resumes", async () => {
+    // Regression: kiro (and ACP peers generally) send session/request_permission
+    // with a NUMERIC JSON-RPC id and correlate the outcome by strict `===` on the
+    // id. The manual approve/deny path keyed the pending map by String(id) and
+    // responded with that string, so a numeric-id request received `"42"` instead
+    // of `42`, never matched, and the turn stalled in waiting_permission until the
+    // session ended (observed with autonomous kiro QA runs). The `permission-numeric`
+    // fake mode only completes the prompt when the client echoes the numeric id
+    // back — so this test hangs-to-timeout without the id-type-preserving fix.
+    const { session, events } = makeSession({ agent: "permission-numeric" });
+
+    const resultPromise = session.waitForResult(10000);
+    await session.start();
+    await waitFor(() => events.some((e) => e.type === "session:permission_request"));
+
+    const permEvent = events.find(
+      (e): e is Extract<AgentSessionEvent, { type: "session:permission_request" }> =>
+        e.type === "session:permission_request",
+    );
+    if (!permEvent) throw new Error("Expected permission_request event");
+
+    try {
+      session.approve(permEvent.request.requestId);
+
+      // The peer only resolves the prompt when the echoed id correlates — reaching
+      // a result at all proves the numeric id round-tripped with its type intact.
+      const result = await resultPromise;
+      expect(result.type).toBe("session:result");
+      expect(session.getInfo().pendingPermissions).toBe(0);
+    } finally {
+      session.terminate();
+    }
+  });
+
   test("send() starts a follow-up prompt after first completes", async () => {
     const { session } = makeSession({ agent: "simple" });
 

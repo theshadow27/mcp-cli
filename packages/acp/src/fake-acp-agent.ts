@@ -6,6 +6,8 @@
  *   simple          (default) — handshake + session/new + session/prompt completes
  *   with-updates    — handshake + session/new + streams session/update chunks before completing
  *   permission      — handshake + session/new + sends session/request_permission, completes after response
+ *   permission-numeric — like `permission` but uses a NUMERIC request id and only completes once
+ *                        the client echoes that numeric id back (guards id-type correlation on approve)
  *   crash-after-prompt — handshake + session/new + prompt completes + exit code 2
  *   silent          — handshake + session/new + prompt accepted, then no events (for watchdog testing)
  *   banner-then-handshake — prints a non-JSON update banner on stdout, then behaves like `simple`
@@ -19,6 +21,15 @@
  *   terminal        — handshake + session/new + sends terminal/create request, then completes
  *   terminal-escape — sends terminal/create with a command targeting a path outside the worktree
  *   terminal-cwd-escape — sends terminal/create with a benign command but a cwd outside the worktree
+ *   terminal-shell  — kiro shape: the whole shell command in `command` with NO `args`, so the
+ *                        client must run it via `sh -c` for the shell operators to take effect
+ *   kiro-auth-callback — sends `_kiro/auth/getAccessToken` (a server→client request) during the
+ *                        handshake, like real kiro-cli; the prompt SUCCEEDS only if the client
+ *                        returned a non-empty `accessToken`, otherwise it fails with an
+ *                        Unauthenticated error. Reproduces the kiro host-auth flow (#kiro-acp).
+ *   auth-before-init — emits `_kiro/auth/getAccessToken` on the FIRST stdin byte, before even
+ *                        reading `initialize`, to exercise the "server-request arrives before the
+ *                        client's RPC layer is wired" startup race. Then behaves like `simple`.
  */
 import { createInterface } from "node:readline";
 
@@ -46,19 +57,60 @@ if (rawMode === "banner-then-handshake" || rawMode === "banner-then-exit") {
   if (rawMode === "banner-then-exit") process.exit(1);
 }
 
-// banner-then-handshake behaves like `simple` for the rest of the flow.
-const mode = rawMode === "banner-then-handshake" ? "simple" : rawMode;
+// banner-then-handshake behaves like `simple` for the rest of the flow;
+// auth-before-init also behaves like `simple` after its early server-request.
+const mode = rawMode === "banner-then-handshake" || rawMode === "auth-before-init" ? "simple" : rawMode;
+
+// auth-before-init: emit a server→client request the instant we start, BEFORE any
+// stdin is read. This lands on the client's stdout reader before it has sent
+// `initialize` — exercising the race where the RPC layer must already be wired to
+// route (not drop) an early server-request.
+if (rawMode === "auth-before-init") {
+  process.stdout.write(
+    `${JSON.stringify({ jsonrpc: "2.0", id: "early-auth", method: "_kiro/auth/getAccessToken", params: {} })}\n`,
+  );
+}
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 
 const acpSessionId = "test-acp-session";
 let promptDone = false;
+/** For kiro-auth-callback mode: did the client hand back a usable access token? */
+let kiroTokenProvided = false;
+/** Correlate the auth-callback response by id. */
+const KIRO_AUTH_REQUEST_ID = "kiro-auth-1";
+/**
+ * permission-numeric mode: the request id kiro-style peers use for
+ * session/request_permission is a NUMBER, not a string. The host must echo it
+ * back with its original numeric type or the peer can't correlate the outcome.
+ */
+const PERM_NUMERIC_ID = 42;
+/** permission-numeric: set once the client's correctly-correlated response arrives. */
+let permissionAnswered = false;
 
 rl.on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
   const msg = JSON.parse(trimmed) as Record<string, unknown>;
   const method = msg.method as string | undefined;
+
+  // Client's response to our _kiro/auth/getAccessToken server-request (has id + result, no method).
+  if (mode === "kiro-auth-callback" && msg.id === KIRO_AUTH_REQUEST_ID && method === undefined) {
+    const result = msg.result as { accessToken?: string } | undefined;
+    kiroTokenProvided = typeof result?.accessToken === "string" && result.accessToken.length > 0;
+    return;
+  }
+
+  // permission-numeric: correlate the permission response by its NUMERIC id, exactly
+  // as real kiro does. `msg.id === PERM_NUMERIC_ID` uses strict equality, so a
+  // stringified `"42"` from the client fails to match `42` and the prompt never
+  // completes — the regression this mode guards (host stalling on a numeric-id
+  // permission when the client echoes the id as a string). No method → it's a response.
+  if (mode === "permission-numeric" && method === undefined && msg.id === PERM_NUMERIC_ID) {
+    permissionAnswered = true;
+    if (permissionAnswered) completePrompt();
+    return;
+  }
 
   // Only handle requests (have id + method); skip notifications
   if (msg.id === undefined || !method) {
@@ -74,6 +126,11 @@ rl.on("line", (line) => {
   }
 
   if (method === "initialize") {
+    // Real kiro sends the auth callback as a server→client request during the
+    // handshake, before answering initialize. Mimic that ordering.
+    if (mode === "kiro-auth-callback") {
+      sendServerRequest(KIRO_AUTH_REQUEST_ID, "_kiro/auth/getAccessToken", {});
+    }
     respond(msg.id, {
       agentInfo: { name: "fake-acp-agent", version: "0.0.1" },
       protocolVersion: 1,
@@ -82,14 +139,44 @@ rl.on("line", (line) => {
     respond(msg.id, { sessionId: acpSessionId });
   } else if (method === "session/prompt") {
     pendingPromptId = msg.id;
+    if (mode === "kiro-auth-callback") {
+      // The client answers the auth callback asynchronously; wait briefly for it
+      // (real KAS blocks session/prompt on the token) before deciding the outcome.
+      void resolveKiroPrompt(msg.id);
+      return;
+    }
     schedulePromptEvents();
   }
 });
+
+/** kiro-auth-callback: how long to wait for the client's token before failing the prompt. */
+const KIRO_AUTH_WAIT_MS = 300;
+/** kiro-auth-callback: poll interval while awaiting the client's token response. */
+const KIRO_AUTH_POLL_MS = 10;
+
+/** Wait up to ~2s for the client's auth-callback response, then complete or fail the prompt. */
+async function resolveKiroPrompt(id: unknown): Promise<void> {
+  const deadline = Date.now() + KIRO_AUTH_WAIT_MS;
+  while (!kiroTokenProvided && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, KIRO_AUTH_POLL_MS));
+  }
+  if (!kiroTokenProvided) {
+    respondError(id, -32000, "Kiro could not load the available models because you are not signed in.", {
+      errorType: "ModelRegistryUnauthenticatedError",
+    });
+    return;
+  }
+  completePrompt();
+}
 
 let pendingPromptId: unknown = null;
 
 function respond(id: unknown, result: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+}
+
+function respondError(id: unknown, code: number, message: string, data?: unknown): void {
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, data } })}\n`);
 }
 
 function sendNotification(method: string, params?: unknown): void {
@@ -148,6 +235,24 @@ function schedulePromptEvents(): void {
       });
       // Complete after a delay (regardless of permission response)
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "permission-numeric") {
+    // Like `permission`, but the request id is NUMERIC and the prompt only
+    // completes when the client echoes that numeric id back (see the response
+    // handler above). If the client stringifies the id, `permissionAnswered`
+    // stays false and the prompt hangs — the regression under test.
+    setTimeout(() => {
+      sendServerRequest(PERM_NUMERIC_ID, "session/request_permission", {
+        sessionId: acpSessionId,
+        tool: "Bash",
+        command: "npm test",
+        description: "Run npm test",
+        options: [
+          { optionId: "opt-allow-once", kind: "allow_once", description: "Allow once" },
+          { optionId: "opt-allow-always", kind: "allow_always", description: "Allow always" },
+          { optionId: "opt-reject-once", kind: "reject_once", description: "Reject" },
+        ],
+      });
     }, STEP_DELAY_MS);
   } else if (mode === "crash-after-prompt") {
     setTimeout(() => {
@@ -216,6 +321,18 @@ function schedulePromptEvents(): void {
         cwd: process.cwd(),
       });
       // After terminal/create response, request output and release
+      setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
+    }, STEP_DELAY_MS);
+  } else if (mode === "terminal-shell") {
+    // Kiro sends the entire shell command line as `command` with no `args` (unlike
+    // copilot/gemini's exec form). The client must run it through a shell, or argv[0]
+    // is a binary literally named "echo … && …" and nothing executes.
+    setTimeout(() => {
+      const probe = process.env.ACP_FAKE_SHELL_PROBE;
+      sendServerRequest("term-4", "terminal/create", {
+        command: `echo shell-ok > ${probe} && echo done`,
+        cwd: process.cwd(),
+      });
       setTimeout(() => completePrompt(), LONG_COMPLETE_DELAY_MS);
     }, STEP_DELAY_MS);
   } else if (mode === "terminal-escape") {

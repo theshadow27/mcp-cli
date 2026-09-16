@@ -37,6 +37,13 @@ export const ACP_AGENTS: Record<string, AcpAgent> = {
     installHint:
       "Install the Grok CLI (grok) — see console.x.ai or your package distribution. Supports native ACP via `grok agent stdio`.",
   },
+  kiro: {
+    name: "kiro",
+    command: "kiro-cli",
+    args: ["acp", "--agent-engine", "v3"],
+    installHint:
+      "Install the Kiro CLI (kiro-cli) — see kiro.dev. Supports native ACP via the `kiro-cli acp` subcommand.",
+  },
 };
 
 /**

@@ -160,6 +160,24 @@ export interface PermissionRequestParams {
   /** Command or file path being requested. */
   command?: string;
   path?: string;
+  /**
+   * Kiro shape: the tool call under review. Kiro does not use the flat
+   * `tool`/`command`/`path` fields above — it sends the call here and the
+   * semantic detail under `_meta.kiro`.
+   */
+  toolCall?: { toolCallId?: string; status?: string; title?: string };
+  /**
+   * Kiro extension metadata. `toolId` is kiro's tool name (e.g. `run_command`,
+   * `fs_read`); `consent.capability` is the coarse class (`shell`, `fsRead`,
+   * `fsWrite`, …); `command` is the concrete shell command when capability=shell.
+   */
+  _meta?: {
+    kiro?: {
+      toolId?: string;
+      command?: string;
+      consent?: { capability?: string; resource?: string };
+    };
+  };
 }
 
 export interface PermissionOption {

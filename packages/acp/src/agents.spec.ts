@@ -24,6 +24,14 @@ describe("ACP_AGENTS registry", () => {
     expect(agent.args).toEqual(["agent", "stdio"]);
     expect(agent.installHint).toContain("grok");
   });
+
+  test("kiro uses the kiro-cli acp subcommand, not --acp", () => {
+    const agent = ACP_AGENTS.kiro;
+    expect(agent.command).toBe("kiro-cli");
+    expect(agent.args).toEqual(["acp", "--agent-engine", "v3"]);
+    expect(agent.args).not.toContain("--acp");
+    expect(agent.installHint).toContain("kiro-cli");
+  });
 });
 
 describe("resolveAgentCommand", () => {
@@ -43,6 +51,12 @@ describe("resolveAgentCommand", () => {
     const result = resolveAgentCommand("some-new-agent");
     expect(result.command).toEqual(["some-new-agent", "--acp"]);
     expect(result.displayName).toBe("some-new-agent");
+  });
+
+  test("kiro resolves to the kiro-cli acp subcommand", () => {
+    const result = resolveAgentCommand("kiro");
+    expect(result.command).toEqual(["kiro-cli", "acp", "--agent-engine", "v3"]);
+    expect(result.displayName).toBe("kiro");
   });
 
   test("empty custom command uses agent name", () => {

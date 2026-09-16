@@ -38,3 +38,14 @@ providers:
   - name: gemini
     track: minor
     enabled: false
+
+  # Kiro (kiro-cli acp): first-class ACP variant. Live real-binary runs need an
+  # authenticated `kiro-cli login` (SSO/OIDC) the CI box doesn't have, so this
+  # starts untested — the mcx-side auth + protocol path is covered by unit/
+  # integration specs (kiro-token.spec.ts, acp-session.spec.ts "kiro host-auth").
+  - name: kiro
+    track: minor
+    versions:
+      - version: latest
+        first_seen: "2026-09-04T00:00:00Z"
+        outcome: untested

@@ -48,7 +48,16 @@ export interface CommonSpawnOpts {
   extras?: Record<string, unknown>;
 }
 
-export type BuiltInProviderName = "claude" | "codex" | "opencode" | "acp" | "copilot" | "gemini" | "grok" | "mock";
+export type BuiltInProviderName =
+  | "claude"
+  | "codex"
+  | "opencode"
+  | "acp"
+  | "copilot"
+  | "gemini"
+  | "grok"
+  | "kiro"
+  | "mock";
 
 export interface AgentProvider {
   /** Provider identifier: "claude", "codex", "acp", "opencode", "copilot", "gemini" */
@@ -274,6 +283,30 @@ registerProvider({
   toolPrefix: "acp",
   buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown> {
     return { ...passthrough(opts), agentOverride: "grok" };
+  },
+  native: {
+    worktree: false,
+    resume: false,
+    repoScoped: false,
+    costTracking: false,
+    compactLog: false,
+    afterSeq: false,
+    headed: false,
+    agentSelect: true,
+    permissionRoundtrip: false,
+    multiTurn: true,
+    interruptAck: false,
+    toolCallReporting: false,
+  },
+});
+
+/** Kiro is an ACP variant via `kiro-cli acp` — first-class harness integration target. */
+registerProvider({
+  name: "kiro",
+  serverName: "_acp",
+  toolPrefix: "acp",
+  buildSpawnArgs(opts: CommonSpawnOpts): Record<string, unknown> {
+    return { ...passthrough(opts), agentOverride: "kiro" };
   },
   native: {
     worktree: false,
