@@ -1169,7 +1169,15 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
     return;
   }
 
-  let entries: Array<{ timestamp: number; direction: string; message: { type: string; [k: string]: unknown } }>;
+  // Two transcript shapes reach this formatter:
+  //  - Claude/Codex: { timestamp, direction, message: { type, ... } }
+  //  - ACP (kiro, copilot, gemini): { timestamp, role, content, tool?, input? }
+  // ACP entries have no `message`, so an unguarded `entry.message.type` throws
+  // "undefined is not an object". Handle both explicitly.
+  type ClaudeEntry = { timestamp: number; direction: string; message: { type: string; [k: string]: unknown } };
+  type AcpEntry = { timestamp: number; role: string; content?: string; tool?: string; input?: unknown };
+
+  let entries: Array<ClaudeEntry | AcpEntry>;
   try {
     entries = JSON.parse(text);
   } catch {
@@ -1178,14 +1186,25 @@ async function agentLog(args: string[], provider: AgentProvider, d: AgentDeps): 
   }
 
   const truncate = (s: string) => (full || s.length <= 200 ? s : `${s.slice(0, 200)}…`);
+  const isAcpEntry = (e: ClaudeEntry | AcpEntry): e is AcpEntry =>
+    typeof (e as AcpEntry).role === "string" && (e as ClaudeEntry).message === undefined;
 
   for (const entry of entries) {
     const time = new Date(entry.timestamp).toLocaleTimeString();
+
+    if (isAcpEntry(entry)) {
+      const label = entry.tool ? `${entry.role}:${entry.tool}` : entry.role;
+      const dir = entry.role === "user" ? `${c.green}→${c.reset}` : `${c.cyan}←${c.reset}`;
+      d.log(`${c.dim}${time}${c.reset} ${dir} ${c.bold}${label}${c.reset}`);
+      if (entry.content) d.log(`  ${truncate(entry.content)}`);
+      continue;
+    }
+
     const dir = entry.direction === "outbound" ? `${c.green}→${c.reset}` : `${c.cyan}←${c.reset}`;
-    const type = entry.message.type ?? "unknown";
+    const type = entry.message?.type ?? "unknown";
     d.log(`${c.dim}${time}${c.reset} ${dir} ${c.bold}${type}${c.reset}`);
 
-    if ((type === "user" || type === "assistant") && entry.message.message) {
+    if ((type === "user" || type === "assistant") && entry.message?.message) {
       const msg = entry.message.message as { content?: unknown };
       const summary = extractContentSummary(msg.content);
       if (summary) {
