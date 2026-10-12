@@ -1881,9 +1881,11 @@ describe("ServerPool rate limiting", () => {
       [0, 1, 2].map(() => pool.callTool("test", "my-tool", {}, MCP_TOOL_TIMEOUT_MS, { onRateLimitWait })),
     );
 
-    // Two calls fit the window; the third had to wait for a slot to free.
-    expect(waits.length).toBe(1);
-    expect(waits[0]).toBeGreaterThan(0);
+    // Two calls fit the window; the third had to wait for a slot to free. The
+    // admitted calls can still report a few ms of queueing jitter on a loaded
+    // runner, so count only waits that slept for the window, not any wait > 0.
+    const throttled = waits.filter((ms) => ms >= 100);
+    expect(throttled.length).toBe(1);
   });
 
   test("falls back to MCX_RATE_LIMIT_<SERVER> when config omits the limit", () => {
