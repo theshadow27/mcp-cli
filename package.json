@@ -22,7 +22,7 @@
   "files": ["bin/", "packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
   "scripts": {
     "build": "bun scripts/build.ts",
-    "typecheck": "bun install && bun --bun tsc -b",
+    "typecheck": "bun install && bun check --all",
     "lint": "bun install && bunx biome check --write .",
     "lint:check": "bun install && bunx biome check .",
     "am-i-done": "bun scripts/am-i-done.ts",

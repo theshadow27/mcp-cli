@@ -308,7 +308,8 @@ jobs:
           fail=0
           check() {
             local label="$1" pattern="$2"
-            if strings dist/mcpd | grep -q "$pattern"; then
+            # Bun stores non-Latin-1 text (teams wiggle.js has "→") as UTF-16LE, so search both encodings.
+            if { strings dist/mcpd; strings -e l dist/mcpd; } | grep -q "$pattern"; then
               echo "  PASS: $label ($pattern)"
             else
               echo "  FAIL: $label ($pattern) — not found in dist/mcpd"
