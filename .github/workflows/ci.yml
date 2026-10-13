@@ -76,7 +76,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.0"
+          bun-version: "1.4.3"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       # Single source of truth: `am-i-done --ci` runs typecheck, lint:check,
@@ -137,7 +137,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.0"
+          bun-version: "1.4.3"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       # Coverage ratchet via am-i-done's `coverage` step (same code path the
@@ -184,7 +184,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.0"
+          bun-version: "1.4.3"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - name: Install unbuffer (expect)
@@ -229,7 +229,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.0"
+          bun-version: "1.4.3"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - if: needs.detect.outputs.docs_only != 'true'
@@ -308,7 +308,8 @@ jobs:
           fail=0
           check() {
             local label="$1" pattern="$2"
-            if strings dist/mcpd | grep -q "$pattern"; then
+            # Bun stores non-Latin-1 text (teams wiggle.js has "→") as UTF-16LE, so search both encodings.
+            if { strings dist/mcpd; strings -e l dist/mcpd; } | grep -q "$pattern"; then
               echo "  PASS: $label ($pattern)"
             else
               echo "  FAIL: $label ($pattern) — not found in dist/mcpd"

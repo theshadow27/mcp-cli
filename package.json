@@ -1,7 +1,7 @@
 {
   "name": "@theshadow27/mcp-cli",
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.3"
   },
   "version": "2.0.0",
   "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
@@ -22,7 +22,7 @@
   "files": ["bin/", "packages/*/src/**", "packages/*/package.json", "tsconfig*.json", "!**/*.spec.ts", "!**/test/**"],
   "scripts": {
     "build": "bun scripts/build.ts",
-    "typecheck": "bun install && bun --bun tsc -b",
+    "typecheck": "bun install && bun check --all",
     "lint": "bun install && bunx biome check --write .",
     "lint:check": "bun install && bunx biome check .",
     "am-i-done": "bun scripts/am-i-done.ts",

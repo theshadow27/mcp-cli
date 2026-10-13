@@ -63,8 +63,8 @@ const INSTALL: Step = {
 
 const TYPECHECK: Step = {
   name: "typecheck",
-  description: "tsc --noEmit across all packages",
-  command: "bun --bun tsc -b",
+  description: "bun check (Bun's native TS7 checker) across all packages",
+  command: "bun check --all",
   onFailure: ["fix type errors before continuing", "run with --only typecheck to iterate fast"],
 };
 
