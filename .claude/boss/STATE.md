@@ -19,6 +19,28 @@ into run.md.
 its own boundary from the then-current board. (The old 79–83 waterfall here is
 void.)
 
+## Current sprint
+
+**Sprint 82 — close the reconciler loop** (planned 2026-08-28). Plan:
+`.claude/sprints/sprint-82.md`; container PR on branch `sprint-82`. Goal is MVP-2
+in one sprint: the ticker (#3274) is the clock, the exception sink (#3272) is the
+mouth, and four defects (#3366 #3393 #3357 #3245) are what would make an
+unattended tick lie. Serial chain #3274 → #3272 → #3398 on `daemon/src/index.ts`
+— foundation must be MERGED, not merely open.
+
+**Tracker reconciled at planning — `mcx tracked` is EMPTY.** All 14 rows from
+sprints 80–81 were cleared: 13 at `phase: done` (each verified PR MERGED + issue
+CLOSED) and `d2:#3333` (open but not loop-aligned; held no branch or PR).
+Sprint 82 starts from a clean slate, which is the precondition for #3274 ticking
+unattended — a tracked row becomes a standing instruction to spawn its phase.
+The standing rule is now `plan.md` Step 0b (PR #3414): at every plan, each
+tracked row is untracked as finished, written into the plan as a carried item,
+or untracked with a reason. Wind-down no longer sweeps unfinished work.
+
+Planning-time meta fixes landed as PR #3412: triage now treats assigned scrutiny
+as a floor it may raise but never lower (#3384), and run.md's low-risk anecdote
+pass (#3061, 981→966 lines; the structural pass waits for a few clean sprints).
+
 ## The two MVPs (operator-approved 2026-08-24)
 
 **MVP-1 COMPLETE 2026-08-28 — v2.0.0 SHIPPED. The release hold is discharged.**
