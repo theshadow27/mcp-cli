@@ -626,7 +626,7 @@ async function agentSpawn(
 
   // Handle worktree creation (shared across all providers)
   if (parsed.worktree) {
-    setupWorktree(parsed.worktree, toolArgs, d);
+    setupWorktree(parsed.worktree, toolArgs, provider, d);
   }
 
   const result = await d.callTool(`${P}_prompt`, toolArgs);
@@ -795,7 +795,12 @@ async function agentSpawnHeaded(parsed: AgentSpawnArgs, provider: AgentProvider,
 }
 
 /** Set up a worktree for spawn — shared logic across all providers. */
-function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, d: AgentDeps): void {
+function setupWorktree(
+  worktreeName: string,
+  toolArgs: Record<string, unknown>,
+  provider: AgentProvider,
+  d: AgentDeps,
+): void {
   // Prefer getGitRoot() over getCwd(): it resolves to the main repo even when
   // invoked from a worktree, and works when core.bare=true is set on the
   // ambient repo (see #1243, #1206).
@@ -829,9 +834,25 @@ function setupWorktree(worktreeName: string, toolArgs: Record<string, unknown>, 
     toolArgs.worktree = worktreeName;
     toolArgs.repoRoot = repoRoot;
     d.printInfo(`Created worktree: ${worktreePath}`);
+  } else if (!hasFeature(provider, "worktree")) {
+    // Provider does not create worktrees itself (e.g. ACP: kiro/copilot/gemini).
+    // Without this the agent inherits the daemon's cwd (the main repo) and its
+    // file operations leak into the main working tree — same failure #1109 fixed
+    // for Claude. Create the worktree here and point cwd at it (#3450 bug 1).
+    const worktreePath = resolveWorktreePath(repoRoot, worktreeName, wtConfig);
+    const branchName = `${provider.name}/${worktreeName}`;
+    const { exitCode, stdout } = d.exec(["git", "worktree", "add", worktreePath, "-b", branchName, "HEAD"]);
+    if (exitCode !== 0) {
+      d.printError(`Failed to create worktree: ${stdout}`);
+      d.exit(1);
+    }
+    toolArgs.cwd = worktreePath;
+    toolArgs.worktree = worktreeName;
+    toolArgs.repoRoot = repoRoot;
+    d.printInfo(`Created worktree: ${worktreePath}`);
   } else {
-    // Native worktree path (provider creates the worktree itself). We still
-    // record repoRoot so session scoping, hook lookup at teardown, and
+    // Native worktree path (provider creates the worktree itself, e.g. Claude).
+    // We still record repoRoot so session scoping, hook lookup at teardown, and
     // cross-repo filters work correctly (#1243).
     toolArgs.worktree = worktreeName;
     toolArgs.repoRoot = repoRoot;

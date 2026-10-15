@@ -341,13 +341,23 @@ describe("agent codex spawn", () => {
     expect(sentCwd?.endsWith("/sub")).toBe(true);
   });
 
-  test("--worktree still suppresses the cwd fallback", async () => {
+  test("creates a worktree and sets cwd for non-native providers (#3450)", async () => {
+    // codex/ACP don't create worktrees themselves (native.worktree=false), so
+    // the command layer must run `git worktree add` and point cwd at it —
+    // otherwise the agent runs in the main repo and file writes leak there.
+    const execMock = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const deps = makeDeps({
       callTool: mock(async () => toolResult({ sessionId: "s1" })),
+      exec: execMock,
     });
     await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "wt"], deps);
+    const gitCall = execMock.mock.calls.find((c) => {
+      const cmd = (c as unknown as unknown[])[0] as string[];
+      return Array.isArray(cmd) && cmd[0] === "git" && cmd[1] === "worktree" && cmd[2] === "add";
+    });
+    expect(gitCall).toBeDefined();
     const call = (deps.callTool as ReturnType<typeof mock>).mock.calls.find((c) => c[0] === "codex_prompt");
-    expect((call?.[1] as { cwd?: string }).cwd).toBeUndefined();
+    expect((call?.[1] as { cwd?: string }).cwd).toBeDefined();
   });
 
   test("passes worktree name to daemon", async () => {
@@ -356,6 +366,22 @@ describe("agent codex spawn", () => {
     });
     await cmdAgent(["codex", "spawn", "--task", "x", "--worktree", "my-wt"], deps);
     expect(deps.callTool).toHaveBeenCalledWith("codex_prompt", expect.objectContaining({ worktree: "my-wt" }));
+  });
+
+  test("does not create a worktree for native providers (claude)", async () => {
+    // claude has native.worktree=true and pre-creates via its own command path,
+    // so agent-layer setupWorktree must not run `git worktree add` for it.
+    const execMock = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const deps = makeDeps({
+      callTool: mock(async () => toolResult({ sessionId: "s1" })),
+      exec: execMock,
+    });
+    await cmdAgent(["claude", "spawn", "--task", "x", "--worktree", "wt"], deps);
+    const gitCall = execMock.mock.calls.find((c) => {
+      const cmd = (c as unknown as unknown[])[0] as string[];
+      return Array.isArray(cmd) && cmd[0] === "git" && cmd[1] === "worktree" && cmd[2] === "add";
+    });
+    expect(gitCall).toBeUndefined();
   });
 
   // #3003: a spawn that never started comes back as a plain "Error: <reason>"
