@@ -42,7 +42,10 @@ export interface TranscriptStats {
  * - command summary (Bash tool calls aggregated by first token)
  * - last N Grep/Glob queries
  */
-export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): TranscriptStats {
+export function walkTranscript(
+  entries: Array<TranscriptEntry | AcpTranscriptEntry>,
+  lastQueryCount = 3,
+): TranscriptStats {
   let lastPrompt: string | null = null;
   let lastResult: string | null = null;
   const dirReads = new Map<string, number>();
@@ -52,7 +55,22 @@ export function walkTranscript(entries: TranscriptEntry[], lastQueryCount = 3): 
   const bashToolUseIds = new Map<string, string>();
   const queries: QueryEntry[] = [];
 
-  for (const entry of entries) {
+  for (const rawEntry of entries) {
+    // ACP entries (kiro, copilot, gemini) carry role/content, not message.type.
+    // Feed what they have into lastPrompt/lastResult, then skip the Claude-only
+    // tool-mining below (ACP tool calls aren't in message.message.content blocks).
+    if (
+      (rawEntry as TranscriptEntry).message === undefined &&
+      typeof (rawEntry as AcpTranscriptEntry).role === "string"
+    ) {
+      const acp = rawEntry as AcpTranscriptEntry;
+      if (acp.content) {
+        if (acp.role === "user") lastPrompt = acp.content;
+        else if (acp.role === "assistant") lastResult = acp.content;
+      }
+      continue;
+    }
+    const entry = rawEntry as TranscriptEntry;
     const type = entry.message.type;
 
     // Last user prompt: outbound user message with text content (not tool results)
@@ -298,6 +316,14 @@ export interface TranscriptEntry {
   timestamp: number;
   direction: string;
   message: { type: string; [k: string]: unknown };
+}
+
+/** ACP transcript entry shape (kiro, copilot, gemini) — role/content, no message. */
+export interface AcpTranscriptEntry {
+  timestamp: number;
+  role: string;
+  content?: string;
+  tool?: string;
 }
 
 /**

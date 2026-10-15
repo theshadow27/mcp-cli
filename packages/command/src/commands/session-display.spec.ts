@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkItem } from "@mcp-cli/core";
 import {
+  type AcpTranscriptEntry,
   type TranscriptEntry,
   compactTranscript,
   estimateCost,
@@ -604,6 +605,40 @@ describe("walkTranscript", () => {
     ];
     const stats = walkTranscript(entries, 0);
     expect(stats.lastQueries).toHaveLength(0);
+  });
+
+  // ACP transcripts (kiro, copilot, gemini) use { role, content } — no `message`.
+  // Regression: feeding these used to throw
+  // "undefined is not an object (evaluating 'message.type')".
+  test("does not throw on ACP-shaped entries (role/content, no message)", () => {
+    const entries: AcpTranscriptEntry[] = [
+      { timestamp: Date.now(), role: "user", content: "acp prompt" },
+      { timestamp: Date.now(), role: "assistant", content: "acp reply" },
+    ];
+    expect(() => walkTranscript(entries)).not.toThrow();
+  });
+
+  test("extracts lastPrompt/lastResult from ACP-shaped entries", () => {
+    const entries: AcpTranscriptEntry[] = [
+      { timestamp: Date.now(), role: "user", content: "first prompt" },
+      { timestamp: Date.now(), role: "assistant", content: "first reply" },
+      { timestamp: Date.now(), role: "user", content: "second prompt" },
+      { timestamp: Date.now(), role: "assistant", content: "second reply" },
+    ];
+    const stats = walkTranscript(entries);
+    expect(stats.lastPrompt).toBe("second prompt");
+    expect(stats.lastResult).toBe("second reply");
+  });
+
+  test("handles a mix of Claude and ACP entries", () => {
+    const entries: Array<TranscriptEntry | AcpTranscriptEntry> = [
+      makeUserMsg("claude prompt"),
+      { timestamp: Date.now(), role: "assistant", content: "acp reply" },
+    ];
+    expect(() => walkTranscript(entries)).not.toThrow();
+    const stats = walkTranscript(entries);
+    expect(stats.lastPrompt).toBe("claude prompt");
+    expect(stats.lastResult).toBe("acp reply");
   });
 });
 
