@@ -1,6 +1,6 @@
 import { compareVersions } from "./upgrade";
 
-export const MIN_BUN_VERSION = "1.4.3";
+export const MIN_BUN_VERSION = "1.4.4";
 
 /**
  * Exits with a clear error if the running Bun version is older than minVersion.

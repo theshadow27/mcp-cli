@@ -76,7 +76,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       # Single source of truth: `am-i-done --ci` runs typecheck, lint:check,
@@ -137,7 +137,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       # Coverage ratchet via am-i-done's `coverage` step (same code path the
@@ -184,7 +184,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - name: Install unbuffer (expect)
@@ -229,7 +229,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: needs.detect.outputs.docs_only != 'true'
         with:
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
       - if: needs.detect.outputs.docs_only != 'true'
         run: bun install --frozen-lockfile
       - if: needs.detect.outputs.docs_only != 'true'

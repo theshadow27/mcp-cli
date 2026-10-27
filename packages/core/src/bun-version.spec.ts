@@ -2,8 +2,8 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { MIN_BUN_VERSION, assertBunVersion } from "./bun-version";
 
 describe("assertBunVersion", () => {
-  it("MIN_BUN_VERSION is 1.4.3", () => {
-    expect(MIN_BUN_VERSION).toBe("1.4.3");
+  it("MIN_BUN_VERSION is 1.4.4", () => {
+    expect(MIN_BUN_VERSION).toBe("1.4.4");
   });
 
   it("does not exit when current Bun version meets the minimum", () => {
@@ -49,7 +49,7 @@ describe("assertBunVersion", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      // Any currently-shipping Bun (>=1.4.3) should satisfy a >=1.2.0 requirement
+      // Any currently-shipping Bun (>=1.4.4) should satisfy a >=1.2.0 requirement
       expect(() => assertBunVersion("1.2.0")).not.toThrow();
       expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
