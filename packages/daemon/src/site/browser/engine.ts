@@ -7,6 +7,16 @@
  * only inside adapter implementations loaded via dynamic import.
  */
 
+/** A site's `captureBinary` setting. Matching logic lives in ../binary-capture.ts. */
+export interface CaptureBinarySpec {
+  /** Media types to keep, e.g. "image/jpeg". "image/*" matches any image subtype. */
+  types: string[];
+  /** Skip bodies smaller than this many decoded bytes. Default 0. */
+  minBytes?: number;
+  /** Skip bodies larger than this many decoded bytes. Default 20 MB. */
+  maxBytes?: number;
+}
+
 export interface SiteSpec {
   name: string;
   url: string;
@@ -17,6 +27,8 @@ export interface SiteSpec {
   wiggleSrc?: string;
   /** Profile dir the adapter should use for this site's user data. */
   profileDir: string;
+  /** Opt-in binary body capture (see ../binary-capture.ts). Absent = metadata-only for binary responses. */
+  captureBinary?: CaptureBinarySpec;
 }
 
 export interface CapturedRequest {
@@ -38,6 +50,12 @@ export interface CapturedResponse {
   bodyText: string | null;
   requestHeaders: Record<string, string>;
   requestPostData: string | null;
+  /** Decoded body bytes, present only for a response matching the site's `captureBinary`. */
+  bodyBinary?: Uint8Array;
+  /** True when the body matched `captureBinary` but the browser no longer held it. */
+  bodyEvicted?: boolean;
+  /** Request resource type, lowercase (e.g. "image", "xhr"), when the engine knows it. */
+  resourceType?: string;
 }
 
 export interface CapturedWsFrame {
@@ -51,6 +69,8 @@ export interface BrowserEvents {
   onRequest?: (site: string, req: CapturedRequest) => void;
   onResponse?: (site: string, resp: CapturedResponse) => void;
   onWsFrame?: (site: string, frame: CapturedWsFrame) => void;
+  /** Whether a response for this URL would be recorded. Lets the engine skip body reads nobody will keep. */
+  shouldCapture?: (site: string, url: string) => boolean;
 }
 
 export interface ColdStartResult {

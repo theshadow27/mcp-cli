@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { type SiteDeps, cmdSite } from "./site";
+import { type SiteDeps, cmdSite, parseCaptureBinaryFlag, parseCaptureHookFlag } from "./site";
 
 function makeDeps(ipcReply: unknown = { content: [{ type: "text", text: "[]" }] }): {
   deps: SiteDeps;
@@ -320,5 +320,52 @@ describe("cmdSite", () => {
     }
     expect(String(caught)).toContain("__exit_1__");
     expect(stderr.join("\n")).toContain("Error: boom");
+  });
+});
+
+describe("site add --capture-binary", () => {
+  test("parses JSON into captureBinary", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "s", "--capture-binary", '{"types":["image/jpeg"],"minBytes":5}'], deps);
+    expect(readLastCall(calls).params.arguments).toEqual({
+      name: "s",
+      captureBinary: { types: ["image/jpeg"], minBytes: 5 },
+    });
+  });
+
+  test("off sends clearCaptureBinary", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "s", "--capture-binary", "off"], deps);
+    const args = readLastCall(calls).params.arguments;
+    expect(args.clearCaptureBinary).toBe(true);
+    expect(args.captureBinary).toBeUndefined();
+  });
+
+  test("parseCaptureBinaryFlag rejects non-JSON", () => {
+    expect(parseCaptureBinaryFlag("{nope")).toMatch(/not valid JSON/);
+    expect(parseCaptureBinaryFlag(true)).toMatch(/usage/);
+    expect(parseCaptureBinaryFlag(false)).toEqual({ value: false });
+  });
+});
+
+describe("site add --capture-hook", () => {
+  test("a path becomes {module}", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "s", "--capture-hook", "hook.js"], deps);
+    expect(readLastCall(calls).params.arguments).toEqual({ name: "s", captureHook: { module: "hook.js" } });
+  });
+
+  test("JSON is passed through, off clears", () => {
+    expect(parseCaptureHookFlag('{"module":"h.js","timeoutMs":100}')).toEqual({
+      value: { module: "h.js", timeoutMs: 100 },
+    });
+    expect(parseCaptureHookFlag("off")).toEqual({ value: false });
+    expect(parseCaptureHookFlag("{bad")).toMatch(/not valid JSON/);
+  });
+
+  test("off sends clearCaptureHook", async () => {
+    const { deps, calls } = makeDeps();
+    await cmdSite(["add", "s", "--capture-hook", "off"], deps);
+    expect(readLastCall(calls).params.arguments.clearCaptureHook).toBe(true);
   });
 });

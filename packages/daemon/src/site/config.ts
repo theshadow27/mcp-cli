@@ -10,6 +10,9 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { validateCaptureBinary } from "./binary-capture";
+import type { CaptureBinarySpec } from "./browser/engine";
+import { type CaptureHookSpec, validateCaptureHook } from "./capture-hook";
 import { siteConfigPath, sitePath, sitesDir } from "./paths";
 import { BUILTIN_SEEDS } from "./seeds";
 
@@ -80,6 +83,17 @@ export interface SiteConfig {
   captureFilters?: CaptureFilters;
   /** Per-account values `mcx site capture` extracts from sniffer output into vars.json. */
   captureVars?: CaptureVarSpec[];
+  /**
+   * Opt-in: write matching binary response bodies to `<stem>.bin` sidecars next to
+   * their capture JSON. Bodies come from the browser's own buffer, never a re-fetch.
+   * Absent (the default) keeps the metadata-only stub. Takes effect on browser start.
+   */
+  captureBinary?: CaptureBinarySpec;
+  /**
+   * Opt-in: a local JS module that decides, per response, what the sniffer writes.
+   * A string is shorthand for `{ module }`. See capture-hook.ts. Takes effect on browser start.
+   */
+  captureHook?: CaptureHookSpec | string;
   /** Path (relative to the site dir or built-in seed) to a JS keep-alive script. */
   wiggle?: string;
   /** Built-in seed name to fall back to if local files are missing. Defaults to the site name. */
@@ -125,6 +139,8 @@ function mergeConfig(name: string, seed: PartialSiteConfig, user: PartialSiteCon
     captureMode: merged.captureMode,
     captureFilters: merged.captureFilters,
     captureVars: merged.captureVars,
+    captureBinary: merged.captureBinary,
+    captureHook: merged.captureHook,
     wiggle: merged.wiggle,
     seed: merged.seed ?? name,
     browser: {
@@ -169,6 +185,8 @@ export function writeSiteConfig(name: string, config: PartialSiteConfig): void {
   if (config.browser?.profileDir !== undefined) {
     validateProfileDir(config.browser.profileDir);
   }
+  if (config.captureBinary !== undefined) validateCaptureBinary(config.captureBinary);
+  if (config.captureHook !== undefined) validateCaptureHook(config.captureHook);
   const path = siteConfigPath(name);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(config, null, 2));

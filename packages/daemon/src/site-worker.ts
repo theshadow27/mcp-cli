@@ -137,6 +137,7 @@ function siteSpecFor(cfg: SiteConfig): SiteSpec {
     profileDir: resolveProfileDir(cfg),
     wigglePath: wigglePath ?? undefined,
     wiggleSrc: getBuiltinWiggleSource(seedName) ?? undefined,
+    ...(cfg.captureBinary ? { captureBinary: cfg.captureBinary } : {}),
   };
 }
 
@@ -197,6 +198,8 @@ function handleAdd(args: Record<string, unknown>): ToolResult {
     ...(args.domains !== undefined ? { domains: args.domains } : {}),
     ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
     ...(args.captureMode !== undefined ? { captureMode: args.captureMode } : {}),
+    ...(args.captureBinary !== undefined ? { captureBinary: args.captureBinary } : {}),
+    ...(args.captureHook !== undefined ? { captureHook: args.captureHook } : {}),
     ...(args.blockProtocols !== undefined ? { blockProtocols: args.blockProtocols } : {}),
     ...(args.wiggle !== undefined ? { wiggle: args.wiggle } : {}),
     ...(args.seed !== undefined ? { seed: args.seed } : {}),
@@ -210,7 +213,13 @@ function handleAdd(args: Record<string, unknown>): ToolResult {
       ...(args.profileDir !== undefined ? { profileDir: args.profileDir } : {}),
     };
   }
-  writeSiteConfig(name, merged);
+  if (args.clearCaptureBinary === true) merged.captureBinary = undefined;
+  if (args.clearCaptureHook === true) merged.captureHook = undefined;
+  try {
+    writeSiteConfig(name, merged);
+  } catch (err) {
+    return error(err instanceof Error ? err.message : String(err));
+  }
   return ok({ ok: true, site: getSite(name) });
 }
 
@@ -404,6 +413,7 @@ function handleSniff(args: Record<string, unknown>): ToolResult {
       .filter((r) => r.site === site.name)
       .slice(-limit),
     credentials: vault.getAll(site.name).map(summarizeCredential),
+    hookStats: sniffer.getHookStats(site.name),
   });
 }
 

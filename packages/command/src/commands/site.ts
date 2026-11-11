@@ -31,6 +31,11 @@ Usage:
   mcx site list                           List configured sites
   mcx site show <name>                    Show a site's config
   mcx site add <name> --url <u> [...]     Create or update a site
+  mcx site add <name> --capture-binary '{"types":["image/jpeg"],"minBytes":20000}'
+                                          Write matching binary bodies to .bin
+                                          sidecars (--capture-binary off removes)
+  mcx site add <name> --capture-hook <module.js | '{"module":"...","timeoutMs":5000}' | off>
+                                          Per-response hook deciding what is written
   mcx site remove <name>                  Remove a user-configured site
 
   mcx site calls <site>                   List named calls in a site's catalog
@@ -85,6 +90,29 @@ function parseKv(args: string[]): { kv: Record<string, unknown>; rest: string[] 
     }
   }
   return { kv, rest };
+}
+
+/** `--capture-binary <json|off>` → the site_add value, or a usage error string. */
+export function parseCaptureBinaryFlag(raw: unknown): { value: unknown } | string {
+  if (raw === false || raw === "off") return { value: false };
+  if (typeof raw !== "string") return 'usage: --capture-binary \'{"types":["image/jpeg"]}\' | off';
+  try {
+    return { value: JSON.parse(raw) };
+  } catch {
+    return `--capture-binary: not valid JSON: ${raw}`;
+  }
+}
+
+/** `--capture-hook <path|json|off>` → the site_add value, or a usage error string. */
+export function parseCaptureHookFlag(raw: unknown): { value: unknown } | string {
+  if (raw === false || raw === "off") return { value: false };
+  if (typeof raw !== "string") return "usage: --capture-hook <module path | json | off>";
+  if (!raw.trimStart().startsWith("{")) return { value: { module: raw } };
+  try {
+    return { value: JSON.parse(raw) };
+  } catch {
+    return `--capture-hook: not valid JSON: ${raw}`;
+  }
 }
 
 function coerce(v: string): string | number | boolean {
@@ -154,6 +182,26 @@ export async function cmdSite(args: string[], depsOverride?: Partial<SiteDeps>):
       if (!name) return fail(deps, "usage: mcx site add <name> --url <url> [--domains a,b,...]");
       const { kv } = parseKv(subArgs.slice(1));
       if (typeof kv.domains === "string") kv.domains = kv.domains.split(",");
+      if (kv.captureBinary !== undefined) {
+        const parsed = parseCaptureBinaryFlag(kv.captureBinary);
+        if (typeof parsed === "string") return fail(deps, parsed);
+        if (parsed.value === false) {
+          kv.captureBinary = undefined;
+          kv.clearCaptureBinary = true;
+        } else {
+          kv.captureBinary = parsed.value;
+        }
+      }
+      if (kv.captureHook !== undefined) {
+        const parsed = parseCaptureHookFlag(kv.captureHook);
+        if (typeof parsed === "string") return fail(deps, parsed);
+        if (parsed.value === false) {
+          kv.captureHook = undefined;
+          kv.clearCaptureHook = true;
+        } else {
+          kv.captureHook = parsed.value;
+        }
+      }
       emit(deps, await callSiteTool(deps, "site_add", { name, ...kv }), json);
       return;
     }

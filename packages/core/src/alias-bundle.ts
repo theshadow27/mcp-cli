@@ -151,6 +151,33 @@ export function stripModuleSyntax(bundledJs: string): string {
     .replace(/\bimport\.meta\b/g, "({})");
 }
 
+/**
+ * Name of the local binding a Bun.build bundle exports as default, or null.
+ * Bun.build normalizes `export default <expr>` to `var x_default = <expr>; export { x_default as default };`.
+ */
+export function findDefaultExportBinding(bundledJs: string): string | null {
+  const block = /^export\s*\{([^}]*)\};?[ \t]*$/ms.exec(bundledJs);
+  const fromBlock = block ? /(?:^|,)\s*([\w$]+)\s+as\s+default\s*(?:,|$)/.exec(block[1]) : null;
+  if (fromBlock) return fromBlock[1];
+  const direct = /^export\s+default\s+([\w$]+)\s*;?[ \t]*$/m.exec(bundledJs);
+  return direct ? direct[1] : null;
+}
+
+/**
+ * Evaluate a bundled module once and return its default export, using the same
+ * module-syntax stripping and `@mcp-cli/core` injection as alias evaluation.
+ * The returned value closes over the module's top-level state, so a caller that
+ * keeps it keeps that state resident.
+ */
+export async function evalBundledDefaultExport(bundledJs: string): Promise<unknown> {
+  const binding = findDefaultExportBinding(bundledJs);
+  if (!binding) throw new Error("module has no default export");
+  const stripped = stripModuleSyntax(bundledJs);
+  const coreBarrel = await import("./alias-bundle-core");
+  const fn = new AsyncFunction("__mcp_core__", `${stripped}\nreturn ${binding};`);
+  return fn(coreBarrel);
+}
+
 /** @deprecated Use stripModuleSyntax — kept for backwards compatibility of test imports */
 export const stripMcpCliImport = stripModuleSyntax;
 

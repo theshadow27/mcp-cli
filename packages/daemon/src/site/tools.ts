@@ -53,6 +53,31 @@ export const SITE_TOOLS: SiteToolDef[] = [
         },
         enabled: { type: "boolean", description: "Defaults to true" },
         captureMode: { type: "string", enum: ["off", "filtered", "firehose"] },
+        captureBinary: {
+          type: "object",
+          description:
+            "Opt-in binary body capture: {types: string[], minBytes?: number, maxBytes?: number}. " +
+            "Matching binary responses are written to <stem>.bin next to their capture JSON, read from the browser's " +
+            "own buffer (no re-fetch). Takes effect on the next browser start.",
+          properties: {
+            types: { type: "array", items: { type: "string" } },
+            minBytes: { type: "integer", minimum: 0 },
+            maxBytes: { type: "integer", minimum: 0 },
+          },
+        },
+        clearCaptureBinary: { type: "boolean", description: "Remove captureBinary from the site config." },
+        captureHook: {
+          type: "object",
+          description:
+            "Opt-in capture hook: {module: path, timeoutMs?: number, queueSize?: number}. The module's default export " +
+            "`async ({req, res}) => false | {keep?, meta?}` decides per response what is written. Takes effect on the next browser start.",
+          properties: {
+            module: { type: "string" },
+            timeoutMs: { type: "integer", minimum: 1 },
+            queueSize: { type: "integer", minimum: 1 },
+          },
+        },
+        clearCaptureHook: { type: "boolean", description: "Remove captureHook from the site config." },
         blockProtocols: {
           type: "array",
           items: { type: "string" },

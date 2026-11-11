@@ -9,15 +9,32 @@
  *                and kept in rings with full headers/body.
  *   firehose  — everything is kept, including WebSocket frames.
  *
+ * A binary response's JSON carries a stub body. When the engine attached the bytes
+ * (the site's opt-in `captureBinary`, see binary-capture.ts), they go to a sidecar
+ * `<stem>.bin` next to `<stem>.json`, and the stub names it in `_file`.
+ *
+ * With the site's opt-in `captureHook` (see capture-hook.ts), each textual response
+ * and each binary response that passed `captureBinary` goes through the hook first,
+ * and its verdict decides what is written.
+ *
  * This module is pure TypeScript — no Playwright imports.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserEvents, CapturedRequest, CapturedResponse, CapturedWsFrame } from "./browser/engine";
+import {
+  type CaptureHookFn,
+  type CaptureHookSpec,
+  type HookOutcome,
+  HookRunner,
+  type HookStats,
+  createModuleLoader,
+  resolveHookModule,
+} from "./capture-hook";
 import type { CaptureFilters } from "./config";
 import type { CredentialVault } from "./credentials";
-import { siteCapturesDir } from "./paths";
+import { siteCapturesDir, sitePath } from "./paths";
 
 export type CaptureMode = "off" | "filtered" | "firehose";
 
@@ -40,6 +57,8 @@ export interface ResponseRecord {
   contentType: string;
   bytes: number;
   savedFile: string | null;
+  /** Sidecar holding the decoded binary body, when one was written. */
+  savedBinaryFile?: string | null;
   isText: boolean;
 }
 
@@ -80,12 +99,41 @@ export class Sniffer {
   private respRing: ResponseRecord[] = [];
   private wsFrameRing: WsFrameRecord[] = [];
   private wsList: Array<{ site: string; url: string; openedAt: string; frames: number }> = [];
+  private hooks = new Map<string, HookRunner>();
 
-  constructor(private vault: CredentialVault) {}
+  constructor(
+    private vault: CredentialVault,
+    /** Test seam: replaces the dynamic-import module loader. */
+    private hookLoader: (modulePath: string) => () => Promise<CaptureHookFn> = createModuleLoader,
+  ) {}
 
-  configureSite(site: string, mode: CaptureMode, filters?: CaptureFilters): void {
+  configureSite(
+    site: string,
+    mode: CaptureMode,
+    filters?: CaptureFilters,
+    opts: { captureHook?: CaptureHookSpec } = {},
+  ): void {
     this.modes.set(site, mode);
     this.filters.set(site, compileFilters(filters));
+    const spec = opts.captureHook;
+    if (spec) {
+      const load = this.hookLoader(resolveHookModule(spec.module, sitePath(site)));
+      const runner = new HookRunner(load, { timeoutMs: spec.timeoutMs, queueSize: spec.queueSize });
+      runner.preload();
+      this.hooks.set(site, runner);
+    } else {
+      this.hooks.delete(site);
+    }
+  }
+
+  /** Counters for the site's capture hook, or null when it has none. */
+  getHookStats(site: string): HookStats | null {
+    return this.hooks.get(site)?.stats ?? null;
+  }
+
+  /** Resolves once every queued hook call has been written. */
+  async drainHooks(): Promise<void> {
+    await Promise.all([...this.hooks.values()].map((h) => h.drain()));
   }
 
   getMode(site: string): CaptureMode {
@@ -101,6 +149,7 @@ export class Sniffer {
       onRequest: (site, req) => this.handleRequest(site, req),
       onResponse: (site, resp) => this.handleResponse(site, resp),
       onWsFrame: (site, frame) => this.handleWsFrame(site, frame),
+      shouldCapture: (site, url) => this.shouldCapture(site, url),
     };
   }
 
@@ -114,6 +163,13 @@ export class Sniffer {
 
   getRecentWsFrames(filter?: string): WsFrameRecord[] {
     return filterRing(this.wsFrameRing, filter, (f) => [f.wsUrl, f.preview]);
+  }
+
+  /** Whether handleResponse would write a capture for this URL. */
+  shouldCapture(site: string, url: string): boolean {
+    const mode = this.getMode(site);
+    if (mode === "off") return false;
+    return mode === "firehose" || this.passesFilter(site, url);
   }
 
   private passesFilter(site: string, url: string): boolean {
@@ -164,13 +220,73 @@ export class Sniffer {
     if (mode === "off") return;
     if (mode === "filtered" && !this.passesFilter(site, resp.url)) return;
 
+    const hook = this.hooks.get(site);
+    // Binary responses without a body passed no captureBinary pre-filter: they skip the hook.
+    const eligible = resp.bodyText !== null || resp.bodyBinary !== undefined || resp.bodyEvicted === true;
+    if (!hook || !eligible) {
+      this.writeResponse(site, resp, { kind: "keep", meta: undefined });
+      return;
+    }
+    const input = {
+      req: {
+        url: resp.url,
+        method: resp.method,
+        headers: resp.requestHeaders,
+        postData: resp.requestPostData,
+        resourceType: resp.resourceType ?? "",
+      },
+      res: {
+        url: resp.url,
+        status: resp.status,
+        headers: resp.headers,
+        contentType: resp.contentType,
+        bytes: resp.bodyBinary ?? null,
+        bodyText: resp.bodyText,
+      },
+    };
+    const queued = hook.submit(input, (outcome) => this.writeResponse(site, resp, outcome));
+    if (!queued) this.writeResponse(site, resp, { kind: "stub", meta: { skipped: "queue-full" } });
+  }
+
+  private writeResponse(site: string, resp: CapturedResponse, outcome: HookOutcome): void {
+    if (outcome.kind === "drop") return;
+    const stubOnly = outcome.kind === "stub";
+    const hookTag = outcome.kind === "fallback" ? outcome.hook : outcome.meta;
+
     const at = tsToken();
     const dir = siteCapturesDir(site);
     let savedFile: string | null = null;
+    let savedBinaryFile: string | null = null;
     try {
       mkdirSync(dir, { recursive: true });
-      const file = join(dir, `${at}-${resp.method}-${shortHash(resp.url)}.json`);
-      const record = {
+      const stem = uniqueStem(dir, `${at}-${resp.method}-${shortHash(resp.url)}`);
+      const file = join(dir, `${stem}.json`);
+      let body: unknown;
+      if (resp.bodyText !== null) {
+        body = stubOnly
+          ? { _omitted: true, _bytes: resp.bodyBytes, _contentType: resp.contentType }
+          : tryParseJson(resp.bodyText, resp.contentType);
+      } else {
+        const stub: Record<string, unknown> = { _binary: true, _bytes: resp.bodyBytes, _contentType: resp.contentType };
+        if (stubOnly) {
+          // Seen, not kept: metadata only.
+        } else if (resp.bodyBinary) {
+          // Sidecar first, so a JSON that names a file never points at a missing one.
+          try {
+            const binFile = join(dir, `${stem}.bin`);
+            writeFileSync(binFile, resp.bodyBinary);
+            savedBinaryFile = binFile;
+            stub._file = `${stem}.bin`;
+          } catch {
+            stub._file = null;
+          }
+        } else if (resp.bodyEvicted) {
+          stub._file = null;
+          stub._evicted = true;
+        }
+        body = stub;
+      }
+      const record: Record<string, unknown> = {
         _meta: {
           at,
           url: resp.url,
@@ -179,13 +295,11 @@ export class Sniffer {
           contentType: resp.contentType,
           bytes: resp.bodyBytes,
         },
+        ...(hookTag !== undefined ? { _hook: hookTag } : {}),
         requestHeaders: resp.requestHeaders,
         requestPostData: resp.requestPostData,
         responseHeaders: resp.headers,
-        body:
-          resp.bodyText !== null
-            ? tryParseJson(resp.bodyText, resp.contentType)
-            : { _binary: true, _bytes: resp.bodyBytes, _contentType: resp.contentType },
+        body,
       };
       writeFileSync(file, JSON.stringify(record, null, 2));
       savedFile = file;
@@ -202,6 +316,7 @@ export class Sniffer {
       contentType: resp.contentType,
       bytes: resp.bodyBytes,
       savedFile,
+      savedBinaryFile,
       isText: resp.bodyText !== null,
     });
   }
@@ -240,6 +355,15 @@ export class Sniffer {
       preview: frame.payload.slice(0, 400),
       savedFile,
     });
+  }
+}
+
+/** Same URL within one millisecond would otherwise overwrite the earlier capture. */
+function uniqueStem(dir: string, base: string): string {
+  if (!existsSync(join(dir, `${base}.json`))) return base;
+  for (let n = 1; ; n++) {
+    const stem = `${base}-${n}`;
+    if (!existsSync(join(dir, `${stem}.json`))) return stem;
   }
 }
 
