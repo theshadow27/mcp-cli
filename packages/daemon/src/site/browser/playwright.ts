@@ -19,6 +19,7 @@ import type {
   Response as PwResponse,
   WebSocket as PwWebSocket,
 } from "playwright";
+import { BinaryBodyTap, isRedirectStatus, isTextual } from "../binary-capture";
 import type {
   BrowserEngine,
   BrowserEvents,
@@ -29,17 +30,6 @@ import type {
   StartSiteResult,
 } from "./engine";
 import { resolvePlaywright } from "./resolve-playwright";
-
-function isTextual(contentType: string): boolean {
-  if (!contentType) return true;
-  return (
-    contentType.includes("json") ||
-    contentType.startsWith("text/") ||
-    contentType.includes("xml") ||
-    contentType.includes("javascript") ||
-    contentType.includes("form")
-  );
-}
 
 /**
  * Minimal BrowserContext surface used by {@link openSitesInContext}. Exists so
@@ -95,12 +85,12 @@ export function partitionSitesForRunningBrowser(
 export async function openSitesInContext<P extends OpenPageLike>(
   ctx: { newPage(): Promise<P> },
   sites: SiteSpec[],
-  onPage: (page: P, siteName: string) => void,
+  onPage: (page: P, siteName: string) => void | Promise<void>,
 ): Promise<StartSiteResult[]> {
   const results: StartSiteResult[] = [];
   for (const [i, s] of sites.entries()) {
     const page = await ctx.newPage();
-    onPage(page, s.name);
+    await onPage(page, s.name);
 
     try {
       await page.goto(s.url, { waitUntil: "domcontentloaded" });
@@ -155,9 +145,9 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
 
       if (toOpen.length > 0) {
         for (const s of toOpen) this.siteSpecs.set(s.name, s);
-        const newResults = await openSitesInContext(this.context, toOpen, (page, name) => {
+        const newResults = await openSitesInContext(this.context, toOpen, async (page, name) => {
           this.pages.set(name, page);
-          this.attachListeners(page, name);
+          await this.attachListeners(page, name);
         });
         results.push(...newResults);
       }
@@ -227,14 +217,31 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
       }
     });
 
-    const results = await openSitesInContext(ctx, sites, (page, name) => {
+    const results = await openSitesInContext(ctx, sites, async (page, name) => {
       this.pages.set(name, page);
-      this.attachListeners(page, name);
+      await this.attachListeners(page, name);
     });
     return results;
   }
 
-  private attachListeners(page: Page, siteName: string): void {
+  private async attachListeners(page: Page, siteName: string): Promise<void> {
+    const binarySpec = this.siteSpecs.get(siteName)?.captureBinary;
+    let binaryTapped = false;
+    if (binarySpec) {
+      // Attached before navigation so the first page load is seen. Reads bodies from
+      // the browser's buffer only; see ../binary-capture.ts.
+      try {
+        const cdp = await page.context().newCDPSession(page);
+        await new BinaryBodyTap(siteName, binarySpec, this.events).attach({
+          send: (method, params) => cdp.send(method as never, params as never),
+          on: (event, handler) => cdp.on(event as never, handler),
+        });
+        binaryTapped = true;
+      } catch (err) {
+        console.warn(`[site] captureBinary tap failed site=${siteName}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     page.on("request", (req: PwRequest) => {
       try {
         const captured: CapturedRequest = {
@@ -251,6 +258,9 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
     });
 
     page.on("response", (resp: PwResponse) => {
+      // With the tap attached, it reports non-textual responses itself; Response.body()
+      // could re-fetch an evicted body, so this path must not touch them.
+      if (binaryTapped && !isTextual(resp.headers()["content-type"] ?? "") && !isRedirectStatus(resp.status())) return;
       void this.handleResponse(resp, siteName);
     });
 
@@ -302,6 +312,7 @@ export class PlaywrightBrowserEngine implements BrowserEngine {
         bodyText,
         requestHeaders: req.headers(),
         requestPostData: req.postData() ?? null,
+        resourceType: req.resourceType(),
       };
       this.events.onResponse?.(siteName, captured);
     } catch {

@@ -194,3 +194,28 @@ describe("listSites phantom-dir fix", () => {
     expect(Array.isArray(names)).toBe(true);
   });
 });
+
+describe("captureBinary", () => {
+  test("is absent by default and round-trips through writeSiteConfig/getSite", () => {
+    writeSiteConfig("plain", { url: "https://a.test" });
+    expect(getSite("plain")?.captureBinary).toBeUndefined();
+    writeSiteConfig("bin", { url: "https://a.test", captureBinary: { types: ["image/jpeg"], minBytes: 1 } });
+    expect(getSite("bin")?.captureBinary).toEqual({ types: ["image/jpeg"], minBytes: 1 });
+  });
+
+  test("writeSiteConfig rejects an invalid captureBinary", () => {
+    expect(() =>
+      writeSiteConfig("bad", { url: "https://a.test", captureBinary: { types: [] } as unknown as { types: string[] } }),
+    ).toThrow(/captureBinary.types/);
+  });
+});
+
+describe("captureHook", () => {
+  test("round-trips and rejects an invalid value", () => {
+    writeSiteConfig("h", { url: "https://a.test", captureHook: { module: "hook.js", timeoutMs: 100 } });
+    expect(getSite("h")?.captureHook).toEqual({ module: "hook.js", timeoutMs: 100 });
+    expect(() => writeSiteConfig("h2", { url: "https://a.test", captureHook: { module: "" } })).toThrow(
+      /captureHook.module/,
+    );
+  });
+});

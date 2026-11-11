@@ -6,6 +6,7 @@
 
 import { createBrowserLock, withDeadline } from "./browser-lock";
 import type { BrowserEngine, BrowserEngineName, BrowserEvents, SiteSpec, StartSiteResult } from "./browser/engine";
+import { type CaptureHookSpec, validateCaptureHook } from "./capture-hook";
 import type { CaptureFilters } from "./config";
 import type { CaptureMode } from "./sniffer";
 
@@ -62,6 +63,7 @@ export interface SiteConfigLike {
   enabled?: boolean;
   captureMode?: "off" | "filtered" | "firehose";
   captureFilters?: CaptureFilters;
+  captureHook?: CaptureHookSpec | string;
   browser?: { engine?: string };
 }
 
@@ -76,9 +78,27 @@ export interface BrowserHandlerDeps<S extends SiteConfigLike = SiteConfigLike> {
   listSitesFn: () => S[];
   siteSpecForFn: (cfg: S) => SiteSpec;
   sniffer: {
-    configureSite(site: string, mode: CaptureMode, filters?: CaptureFilters): void;
+    configureSite(
+      site: string,
+      mode: CaptureMode,
+      filters?: CaptureFilters,
+      opts?: { captureHook?: CaptureHookSpec },
+    ): void;
     asEvents(): BrowserEvents;
   };
+}
+
+/** Configure one site on the sniffer. An invalid captureHook is logged and left off. */
+function configureSniffer(sniffer: BrowserHandlerDeps["sniffer"], s: SiteConfigLike): void {
+  let captureHook: CaptureHookSpec | undefined;
+  if (s.captureHook !== undefined) {
+    try {
+      captureHook = validateCaptureHook(s.captureHook);
+    } catch (err) {
+      console.warn(`[site] captureHook ignored site=${s.name}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters, { captureHook });
 }
 
 // ── Factory ──
@@ -146,7 +166,7 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
       if (configs.length === 0) return false as false;
 
       for (const s of configs) {
-        sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
+        configureSniffer(sniffer, s);
       }
 
       const eng = await loadBrowserInternal(engine);
@@ -208,7 +228,7 @@ export function createBrowserHandlers<S extends SiteConfigLike = SiteConfigLike>
             `All sites opened in one browser must use the same engine. Mixed: ${engine} vs ${s.browser?.engine}`,
           );
         }
-        sniffer.configureSite(s.name, s.captureMode ?? "firehose", s.captureFilters);
+        configureSniffer(sniffer, s);
       }
 
       const eng = await loadBrowserInternal(engine);
