@@ -131,6 +131,55 @@ export default async () => {
     expect((await call(createModuleLoader(path))).meta.n).toBe(10);
   });
 
+  test("static builtin imports and dynamic imports (absolute and relative) work", async () => {
+    const dir = join(tmp, "imports");
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "dep.ts"), "export const tag = 'rel';\n");
+    const abs = join(tmp, "abs-dep.mjs");
+    writeFileSync(abs, "export const tag = 'abs';\n");
+    const path = join(dir, "hook.ts");
+    writeFileSync(
+      path,
+      `import { createHash } from "crypto";
+import { join } from "path";
+import { homedir } from "os";
+import { file } from "bun";
+let loaded: string[] | null = null;
+async function deps(): Promise<string[]> {
+  const a = await import(${JSON.stringify(abs)});
+  const r = await import("./lib/dep.ts");
+  return [a.tag, r.tag];
+}
+export default async ({ res }: { res: { url: string } }) => {
+  loaded ??= await deps();
+  const h = createHash("sha256").update(res.url).digest("hex").slice(0, 8);
+  return { keep: false, meta: { h, deps: loaded, home: typeof homedir(), j: join("a", "b"), f: typeof file } };
+};
+`,
+    );
+    const fn = await createModuleLoader(path)();
+    const out = (await fn({ req: {}, res: { url: "u" } } as never)) as { meta: Record<string, unknown> };
+    expect(out.meta).toEqual({ h: "0bfe935e", deps: ["abs", "rel"], home: "string", j: "a/b", f: "function" });
+  });
+
+  test("a prebuilt `bun build --target bun` bundle with builtin imports loads", async () => {
+    const src = join(tmp, "prebuilt-src.ts");
+    writeFileSync(
+      src,
+      `import { createHash } from "crypto";
+import { tmpdir } from "os";
+export default async () => ({ keep: false, meta: { h: createHash("md5").update("x").digest("hex"), t: typeof tmpdir() } });
+`,
+    );
+    const out = await Bun.build({ entrypoints: [src], target: "bun", outdir: join(tmp, "dist") });
+    expect(out.success).toBe(true);
+    const fn = await createModuleLoader(out.outputs[0].path)();
+    expect(await fn({} as never)).toEqual({
+      keep: false,
+      meta: { h: "9dd4e461268c8034f5c8564e155c67a6", t: "string" },
+    });
+  });
+
   test("a module without a default function throws", async () => {
     const path = join(tmp, "bad.ts");
     writeFileSync(path, "export const x = 1;");
@@ -191,6 +240,20 @@ describe("Sniffer with captureHook", () => {
     expect(bodies.find((b) => b._binary)).toEqual({ _binary: true, _bytes: 3, _contentType: "image/jpeg" });
     expect(bodies.find((b) => b._omitted)).toEqual({ _omitted: true, _bytes: 3, _contentType: "application/json" });
     expect(sniffer.getHookStats("s")?.stubbed).toBe(2);
+  });
+
+  test("keep:true on a textual response writes the parsed body with _hook", async () => {
+    let text: string | null | undefined;
+    const { sniffer, send, json } = sniffWith(async ({ res }) => {
+      text = res.bodyText;
+      return { keep: true, meta: { t: 1 } };
+    });
+    send(imageResp({ bodyBinary: undefined, bodyText: '{"a":1}', contentType: "application/json" }));
+    await sniffer.drainHooks();
+    expect(text).toBe('{"a":1}');
+    const [rec] = json();
+    expect(rec._hook).toEqual({ t: 1 });
+    expect(rec.body).toEqual({ a: 1 });
   });
 
   test("a throwing hook falls back to the unhooked capture and counts the error", async () => {

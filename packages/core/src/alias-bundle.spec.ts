@@ -5,11 +5,9 @@ import { join } from "node:path";
 import {
   bundleAlias,
   computeSourceHash,
-  evalBundledDefaultExport,
   executeAliasBundled,
   extractMetadata,
   extractMonitorMetadata,
-  findDefaultExportBinding,
   stripMcpCliImport,
   stripModuleSyntax,
   stubProxy,
@@ -860,28 +858,5 @@ describe("defineMonitor metadata extraction", () => {
     expect(result.errors).toContain("Script did not call defineAlias()");
     expect(result.monitorDefs).toHaveLength(1);
     expect(result.monitorDefs?.[0].name).toBe("deploy-watcher");
-  });
-});
-
-describe("evalBundledDefaultExport", () => {
-  test("findDefaultExportBinding reads Bun's export block and a direct default", () => {
-    expect(findDefaultExportBinding("var a_default = 1;\nexport {\n  a_default as default\n};\n")).toBe("a_default");
-    expect(findDefaultExportBinding("export {\n  hook as default,\n  x\n};\n")).toBe("hook");
-    expect(findDefaultExportBinding("var h = 1;\nexport default h;\n")).toBe("h");
-    expect(findDefaultExportBinding("export {\n  x\n};\n")).toBeNull();
-  });
-
-  test("returns the default export of a bundled TS module with its top-level state", async () => {
-    const dir = join(tmpdir(), `mcp-default-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    mkdirSync(dir, { recursive: true });
-    const src = join(dir, "m.ts");
-    writeFileSync(src, "let n: number = 0;\nexport default () => ++n;\nexport const other = 1;\n");
-    const { js } = await bundleAlias(src);
-    const fn = (await evalBundledDefaultExport(js)) as () => number;
-    expect([fn(), fn()]).toEqual([1, 2]);
-  });
-
-  test("throws without a default export", async () => {
-    await expect(evalBundledDefaultExport("var x = 1;\nexport {\n  x\n};\n")).rejects.toThrow(/no default export/);
   });
 });

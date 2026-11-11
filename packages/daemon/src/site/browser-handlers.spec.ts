@@ -276,3 +276,46 @@ describe("createBrowserHandlers — handler-level race coverage", () => {
     expect(startCallCount).toBe(1);
   });
 });
+
+describe("createBrowserHandlers — captureHook configuration", () => {
+  async function startWith(captureHook: unknown): Promise<unknown[][]> {
+    const { engine, controls } = makePausableEngine();
+    const calls: unknown[][] = [];
+    const sniffer = {
+      configureSite(...args: unknown[]): void {
+        calls.push(args);
+      },
+      asEvents(): BrowserEvents {
+        return {};
+      },
+    };
+    const site = { ...fakeSite(), captureHook } as ReturnType<typeof fakeSite> & { captureHook?: string };
+    const handlers = createBrowserHandlers({
+      loadBrowserFn: async () => engine,
+      getSiteFn: () => site,
+      listSitesFn: () => [site],
+      siteSpecForFn: () => fakeSpec(),
+      sniffer,
+    });
+    const started = handlers.handleBrowserStart({ sites: ["test-site"] });
+    await controls.startCalled;
+    controls.resolveStart();
+    await started;
+    return calls;
+  }
+
+  test("a valid captureHook is passed to the sniffer, normalized", async () => {
+    const calls = await startWith("hook.js");
+    expect(calls).toEqual([["test-site", "firehose", undefined, { captureHook: { module: "hook.js" } }]]);
+  });
+
+  test("an invalid captureHook is ignored, not fatal", async () => {
+    const calls = await startWith({ module: "" });
+    expect(calls).toEqual([["test-site", "firehose", undefined, { captureHook: undefined }]]);
+  });
+
+  test("no captureHook passes none", async () => {
+    const calls = await startWith(undefined);
+    expect(calls).toEqual([["test-site", "firehose", undefined, { captureHook: undefined }]]);
+  });
+});

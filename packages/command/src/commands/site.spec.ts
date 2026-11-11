@@ -369,3 +369,19 @@ describe("site add --capture-hook", () => {
     expect(readLastCall(calls).params.arguments.clearCaptureHook).toBe(true);
   });
 });
+
+describe("site add capture flag errors", () => {
+  test("invalid --capture-binary JSON exits 1 without calling the daemon", async () => {
+    const h = makeDeps();
+    await expect(cmdSite(["add", "s", "--capture-binary", "{bad"], h.deps)).rejects.toThrow("__exit_1__");
+    expect(h.exitCode).toBe(1);
+    expect(h.calls).toEqual([]);
+  });
+
+  test("invalid --capture-hook JSON exits 1 without calling the daemon", async () => {
+    const h = makeDeps();
+    await expect(cmdSite(["add", "s", "--capture-hook", "{bad"], h.deps)).rejects.toThrow("__exit_1__");
+    expect(h.exitCode).toBe(1);
+    expect(h.calls).toEqual([]);
+  });
+});

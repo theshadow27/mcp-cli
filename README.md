@@ -459,7 +459,8 @@ export default async ({ req, res }) => {
 
 - Calls run one at a time on a bounded queue. The browser event path never waits on the hook. Worst-case queued memory is `queueSize × maxBytes`.
 - A timed-out call is not cancelled. It keeps running in the background.
-- The module is loaded once and kept resident. Module-level state persists across calls, so an expensive resource built at load time is reused for every response. Loading uses the alias machinery (`Bun.build` bundle, then one evaluation), so imports are bundled into the module. The module is reloaded only when the site is configured again (`mcx site browser`) and its source hash changed.
+- The module is loaded once and kept resident. Module-level state persists across calls, so an expensive resource built at load time is reused for every response. It is imported as an ES module (`.ts` or `.js`, including a `bun build --target bun` bundle). Static imports of node builtins, `bun:` modules and packages work. The module is reloaded only when the site is configured again (`mcx site browser`) and its source hash changed.
+- Specifiers resolve as in any ES module: a relative `import("./x.js")` resolves against the hook module's own file, an absolute path is used as is, and a bare package name resolves from `node_modules` above the hook module's directory. A bundle resolves against the bundle file's location, not the original source.
 - Loading starts when the site is configured. Load time does not count toward `timeoutMs`.
 - Counters (`calls`, `kept`, `stubbed`, `dropped`, `errors`, `timeouts`, `queueFull`, `lastError`) appear as `hookStats` in `mcx site sniff <site> --json`.
 - The hook runs on response events only. It is not a request interceptor: intercepting with `page.route` would make the browser fetch the response a second time. It does not run in the page: an `<img>` load is not a `fetch`, and reading a cross-origin image through a canvas taints it.

@@ -23,7 +23,6 @@
 
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { bundleAlias, computeSourceHash, evalBundledDefaultExport } from "@mcp-cli/core";
 
 export interface CaptureHookSpec {
   /** Path to the module: absolute, `~/…`, or relative to the site directory. */
@@ -110,13 +109,22 @@ export function resolveHookModule(module: string, siteDir: string): string {
 
 /** Resident hook instances by resolved path, shared across loaders while the source is unchanged. */
 const resident = new Map<string, { hash: string; fn: Promise<CaptureHookFn> }>();
+/** Paths imported at least once: the runtime caches a module per specifier, so a re-import needs a new one. */
+const imported = new Set<string>();
+
+async function sourceHash(path: string): Promise<string> {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(await Bun.file(path).arrayBuffer());
+  return hasher.digest("hex");
+}
 
 /**
- * Load a hook module once and keep it resident. Uses the alias machinery
- * (`bundleAlias` + `evalBundledDefaultExport`), so TypeScript sources work and
- * no cache-busting import() runs in the site worker. The returned loader loads at
- * most once; a later loader for the same path reuses the instance (and its
- * module-level state) unless the source hash changed.
+ * Load a hook module once and keep it resident. The module is imported as a real
+ * ES module, so static imports (node builtins, `bun:` modules, packages) and
+ * dynamic `import()` work, and relative specifiers resolve against the module's
+ * own file. The returned loader imports at most once. A later loader for the same
+ * path reuses the instance (and its module-level state) unless the source hash
+ * changed; only then is the module imported again, under a `?v=<hash>` specifier.
  */
 export function createModuleLoader(path: string): () => Promise<CaptureHookFn> {
   let loaded: Promise<CaptureHookFn> | null = null;
@@ -127,14 +135,15 @@ export function createModuleLoader(path: string): () => Promise<CaptureHookFn> {
 }
 
 async function loadResident(path: string): Promise<CaptureHookFn> {
-  const hash = await computeSourceHash(path);
+  const hash = await sourceHash(path);
   const cached = resident.get(path);
   if (cached && cached.hash === hash) return cached.fn;
+  const specifier = imported.has(path) ? `${path}?v=${hash}` : path;
+  imported.add(path);
   const fn = (async () => {
-    const { js } = await bundleAlias(path);
-    const def = await evalBundledDefaultExport(js);
-    if (typeof def !== "function") throw new Error(`captureHook module ${path} has no default export function`);
-    return def as CaptureHookFn;
+    const mod = (await import(specifier)) as { default?: unknown };
+    if (typeof mod.default !== "function") throw new Error(`captureHook module ${path} has no default export function`);
+    return mod.default as CaptureHookFn;
   })();
   const entry = { hash, fn };
   resident.set(path, entry);
