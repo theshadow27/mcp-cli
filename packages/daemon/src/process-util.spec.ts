@@ -70,10 +70,18 @@ describe("killPid", () => {
   });
 
   test("logs EPERM warning when not permitted to kill", async () => {
-    // PID 1 (launchd/init) is not killable by a regular user
+    // PID 1 (launchd/init) is not killable by a regular user. A bystander
+    // process must also survive: walking init's tree and signaling every
+    // descendant would SIGTERM the test runner (#3459 CI).
+    const bystander = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
     const logger = capturingLogger();
-    await killPid(1, logger);
-    expect(logger.warns.some((w) => w.includes("EPERM"))).toBe(true);
+    try {
+      await killPid(1, logger);
+      expect(logger.warns.some((w) => w.includes("EPERM"))).toBe(true);
+      expect(isAlive(bystander.pid)).toBe(true);
+    } finally {
+      forceKill(bystander.pid);
+    }
   });
 
   test("skips kill when PID has been recycled (pidStartTime mismatch)", async () => {

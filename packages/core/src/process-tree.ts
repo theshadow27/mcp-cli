@@ -18,7 +18,10 @@ const PGREP_TIMEOUT_MS = 2_000;
  * (and a /proc status scan if that file is missing). macOS uses `pgrep -P`.
  */
 export function listChildPids(pid: number): number[] {
-  if (!Number.isInteger(pid) || pid <= 0) return [];
+  // Never walk PID 1 (init/launchd): its tree is the whole machine, and a
+  // caller like killPid(1) (the EPERM fixture) would SIGTERM the test
+  // runner and every sibling. #3459
+  if (!Number.isInteger(pid) || pid <= 1) return [];
   if (process.platform === "linux") return linuxChildren(pid);
   if (process.platform === "darwin") return pgrepChildren(pid);
   return [];
@@ -26,6 +29,7 @@ export function listChildPids(pid: number): number[] {
 
 /** All descendants of `pid`, breadth-first, not including `pid` itself. */
 export function listDescendantPids(pid: number): number[] {
+  if (!Number.isInteger(pid) || pid <= 1) return [];
   const out: number[] = [];
   const seen = new Set<number>([pid]);
   const queue = listChildPids(pid);

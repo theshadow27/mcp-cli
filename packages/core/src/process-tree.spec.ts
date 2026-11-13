@@ -36,6 +36,12 @@ describe("listDescendantPids", () => {
     }
   });
 
+  test("refuses to walk PID 1 (init/launchd) (#3459)", () => {
+    expect(listDescendantPids(1)).toEqual([]);
+    expect(listDescendantPids(0)).toEqual([]);
+    expect(listDescendantPids(-1)).toEqual([]);
+  });
+
   test("returns empty for a process with no children", () => {
     expect(listDescendantPids(process.pid).every((pid) => pid !== process.pid)).toBe(true);
   });

@@ -99,8 +99,9 @@ export async function killPid(
 
   // Snapshot the tree first: a wrapper (pnpm/nvm `bun` shim) dies on SIGTERM
   // and would otherwise leave its child reparented to PID 1, unkillable by
-  // a later walk of this PID. #3459
-  const tree = [pid, ...listDescendantPids(pid)];
+  // a later walk of this PID. Never walk PID 1 itself — that tree is the
+  // whole machine (the EPERM fixture calls killPid(1)). #3459
+  const tree = pid <= 1 ? [pid] : [pid, ...listDescendantPids(pid)];
   let signaled = false;
   for (const target of tree) {
     if (trySendSignal(target, "SIGTERM", logger)) signaled = true;
