@@ -15,7 +15,7 @@ describe("getPortHolder", () => {
       const port = server.port;
       if (port === undefined) throw new Error("server.port is undefined");
       const result = await getPortHolder(port);
-      // lsof should find the bun process holding this port
+      // lsof, or the Linux /proc fallback, should find the process holding this port
       expect(result).not.toBeNull();
       expect(result).toContain("PID");
     } finally {

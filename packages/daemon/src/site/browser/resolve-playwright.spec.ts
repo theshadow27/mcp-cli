@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { options } from "@mcp-cli/core";
@@ -165,31 +165,44 @@ describe("_resolveBunBinary", () => {
   });
 
   test("falls back to BUN_INSTALL/bin/bun when PATH returns nothing", () => {
-    // Provide the real bun location via BUN_INSTALL so we can verify the fallback
-    // without touching process.env.PATH (which could break other tests).
-    const realBin = Bun.which("bun");
-    if (!realBin) return; // skip if bun truly isn't on PATH
-    const bunInstallDir = join(realBin, "..", ".."); // .../bin/bun → ...
-    const bin = _resolveBunBinary(vendorDir, {
-      which: () => null,
-      bunInstallEnv: bunInstallDir,
-      homeDir: "/nonexistent/home",
-    });
-    expect(existsSync(bin)).toBe(true);
+    // Synthetic layout — do not derive BUN_INSTALL from the real Bun.which("bun")
+    // path, which is not `<prefix>/bin/bun` on pnpm/nvm/nix shims (#3011, #3459).
+    const bunInstallDir = mkdtempSync(join(tmpdir(), "mcx-bun-install-"));
+    mkdirSync(join(bunInstallDir, "bin"), { recursive: true });
+    const placeholder = join(bunInstallDir, "bin", "bun");
+    writeFileSync(placeholder, "");
+    try {
+      const bin = _resolveBunBinary(vendorDir, {
+        which: () => null,
+        bunInstallEnv: bunInstallDir,
+        homeDir: "/nonexistent/home",
+      });
+      expect(bin).toBe(placeholder);
+      expect(existsSync(bin)).toBe(true);
+    } finally {
+      rmSync(bunInstallDir, { recursive: true, force: true });
+    }
   });
 
   test("falls back to ~/.bun/bin/bun when PATH and BUN_INSTALL are absent", () => {
-    const realBin = Bun.which("bun");
-    if (!realBin) return;
-    // Treat the directory two levels above the real bun as the fake home so
-    // ~/.bun/bin/bun resolves to the actual binary.
-    const fakeHome = join(realBin, "..", "..", "..");
-    const bin = _resolveBunBinary(vendorDir, {
-      which: () => null,
-      bunInstallEnv: undefined,
-      homeDir: fakeHome,
-    });
-    expect(existsSync(bin)).toBe(true);
+    // Synthetic ~/.bun/bin/bun — the real Bun.which("bun") layout is not
+    // assumed (pnpm shims live at /usr/local/bin/bun, official installs at
+    // ~/.bun/bin/bun). #3011, #3459
+    const fakeHome = mkdtempSync(join(tmpdir(), "mcx-bun-home-"));
+    mkdirSync(join(fakeHome, ".bun", "bin"), { recursive: true });
+    const placeholder = join(fakeHome, ".bun", "bin", "bun");
+    writeFileSync(placeholder, "");
+    try {
+      const bin = _resolveBunBinary(vendorDir, {
+        which: () => null,
+        bunInstallEnv: undefined,
+        homeDir: fakeHome,
+      });
+      expect(bin).toBe(placeholder);
+      expect(existsSync(bin)).toBe(true);
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 
   test("throws Install bun message when nothing found", () => {

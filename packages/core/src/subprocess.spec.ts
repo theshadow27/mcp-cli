@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { spawnCapture, spawnCaptureSync, spawnManaged } from "./subprocess";
 
 const POLL_INTERVAL_MS = 10;
+const TREE_SETTLE_MS = 50;
 
 describe("spawnCapture", () => {
   it("captures stdout from a successful command", async () => {
@@ -222,6 +223,36 @@ describe("spawnManaged", () => {
     const status = await r.handle.kill(100);
     expect(status.exitCode).not.toBe(0);
     expect(status.signal).toBeTruthy();
+  });
+
+  it("kill() SIGTERMs the grandchild of a wrapper shell (#3459)", async () => {
+    // Same shape as a pnpm/nvm bun shim: the spawned PID is a wrapper that
+    // starts the real process and waits. Signaling only the wrapper would
+    // orphan the child.
+    const r = spawnManaged("sh", ["-c", "sleep 60 & wait"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const { listDescendantPids } = await import("./process-tree");
+    const deadline = Date.now() + 2_000;
+    let kids: number[] = [];
+    while (Date.now() < deadline) {
+      kids = listDescendantPids(r.handle.pid);
+      if (kids.length > 0) break;
+      await Bun.sleep(POLL_INTERVAL_MS);
+    }
+    expect(kids.length).toBeGreaterThan(0);
+    await r.handle.kill(200);
+    await Bun.sleep(TREE_SETTLE_MS);
+    const alive = kids.filter((pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+        // dotw-ignore test-empty-catch: process.kill(pid, 0) throws ESRCH when already dead
+      } catch {
+        return false;
+      }
+    });
+    expect(alive).toEqual([]);
   });
 
   it("killNow() bypasses grace and SIGKILLs immediately", async () => {

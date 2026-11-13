@@ -1,3 +1,5 @@
+import { listDescendantPids } from "./process-tree";
+
 export interface SpawnResult {
   ok: boolean;
   exitCode: number | null;
@@ -142,18 +144,22 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
   const kill = (overrideGraceMs?: number): Promise<ManagedExitStatus> => {
     if (killed) return exitedPromise;
     killed = true;
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-      // already dead
-    }
+    // Snapshot the tree before any signal so a wrapper shim that dies on
+    // SIGTERM cannot hide its grandchild (reparented to PID 1). #3459
+    const tree = [proc.pid, ...listDescendantPids(proc.pid)];
+    const signalTree = (sig: NodeJS.Signals): void => {
+      for (const target of tree) {
+        try {
+          process.kill(target, sig);
+        } catch {
+          // already dead
+        }
+      }
+    };
+    signalTree("SIGTERM");
     const g = overrideGraceMs ?? graceMs;
     const timer = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-        // already dead
-      }
+      signalTree("SIGKILL");
     }, g);
     exitedPromise.finally(() => clearTimeout(timer));
     return exitedPromise;
@@ -170,10 +176,13 @@ export function spawnManaged(cmd: string, args: string[], opts?: ManagedSpawnOpt
       : null;
 
   const killNow = (): void => {
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // already dead
+    const tree = [proc.pid, ...listDescendantPids(proc.pid)];
+    for (const target of tree) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch {
+        // already dead
+      }
     }
   };
 

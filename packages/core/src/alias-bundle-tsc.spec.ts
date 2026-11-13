@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateFreeformTsc } from "./alias-bundle";
+import { resolveTscBin, validateFreeformTsc } from "./alias-bundle";
 
 function makeTmpDir(): string {
   const dir = join(tmpdir(), `alias-bundle-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -11,6 +12,12 @@ function makeTmpDir(): string {
 }
 
 describe("validateFreeformTsc", () => {
+  test("resolveTscBin finds a tsc binary in this checkout", () => {
+    const bin = resolveTscBin();
+    expect(bin).toBeTruthy();
+    expect(existsSync(bin as string)).toBe(true);
+  });
+
   test("returns no warnings for valid freeform script", async () => {
     const dir = makeTmpDir();
     const scriptPath = join(dir, "valid-freeform.ts");

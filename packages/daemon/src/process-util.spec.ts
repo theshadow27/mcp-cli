@@ -216,6 +216,45 @@ describe("findProcessesByCwd", () => {
     expect(logger.warns.some((w) => w.includes("timed out"))).toBe(true);
   });
 
+  test.skipIf(process.platform !== "linux")(
+    "when lsof is unavailable, Linux /proc fallback still finds a process (#3459)",
+    async () => {
+      const tmpDir = `${import.meta.dir}/__test-cwd-fallback-${process.pid}`;
+      const { mkdirSync, rmdirSync } = require("node:fs");
+      mkdirSync(tmpDir, { recursive: true });
+      const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
+      try {
+        const missingBinaryResult = async () => ({
+          ok: false as const,
+          exitCode: null,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+        });
+        const logger = capturingLogger();
+        const deadline = Date.now() + 2_000;
+        let pids: number[] = [];
+        while (Date.now() < deadline) {
+          pids = await findProcessesByCwd(tmpDir, logger, missingBinaryResult);
+          if (pids.includes(proc.pid)) break;
+          await Bun.sleep(POLL_MS);
+        }
+        expect(pids).toContain(proc.pid);
+        expect(logger.warns.some((w) => w.includes("unavailable"))).toBe(true);
+      } finally {
+        forceKill(proc.pid);
+        try {
+          rmdirSync(tmpDir);
+          // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+        } catch {
+          /* noop */
+        }
+      }
+    },
+  );
+
   test("warns and returns empty when lsof is unavailable", async () => {
     const logger = capturingLogger();
     const missingBinaryResult = async () => ({

@@ -32,10 +32,24 @@ export function createTestDir(): string {
   return dir;
 }
 
+/**
+ * The bun binary running this process — not the `bun` name on PATH, which
+ * may be a pnpm/nvm/nix shim. Signaling the shim kills only the wrapper and
+ * orphans the real process (#3459). `process.execPath` is the bun executable
+ * under `bun test` / `bun`; do not use this in compiled `mcpd` (execPath is
+ * mcpd itself).
+ */
+export function bunExecutable(): string {
+  const exe = process.execPath;
+  const base = exe.split(/[/\\]/).pop()?.toLowerCase() ?? "";
+  if (base === "bun" || base === "bun.exe" || base.includes("bun")) return exe;
+  return Bun.which("bun") ?? "bun";
+}
+
 /** Stdio config pointing to the echo test server */
 export function echoServerConfig(): ServerConfig {
   return {
-    command: "bun",
+    command: bunExecutable(),
     args: [resolve("test/echo-server.ts")],
   };
 }
@@ -69,7 +83,7 @@ export async function startTestDaemon(
   // Production keeps the well-known port; only test daemons opt in to wsPort: 0.
   writeFileSync(join(dir, "config.json"), JSON.stringify({ wsPort: 0 }));
 
-  const result = spawnManaged("bun", [resolve("packages/daemon/src/main.ts")], {
+  const result = spawnManaged(bunExecutable(), [resolve("packages/daemon/src/main.ts")], {
     stdout: "ignore",
     stderr: "pipe",
     env: {
@@ -265,7 +279,7 @@ export async function pollUntil(
  * The server script must print the listening port as the first line of stdout.
  */
 export async function startMockServer(scriptPath: string): Promise<MockServer> {
-  const result = spawnManaged("bun", [resolve(scriptPath)], {
+  const result = spawnManaged(bunExecutable(), [resolve(scriptPath)], {
     env: process.env,
     stdout: "pipe",
     stderr: "pipe",
