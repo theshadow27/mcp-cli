@@ -70,10 +70,18 @@ describe("killPid", () => {
   });
 
   test("logs EPERM warning when not permitted to kill", async () => {
-    // PID 1 (launchd/init) is not killable by a regular user
+    // PID 1 (launchd/init) is not killable by a regular user. A bystander
+    // process must also survive: walking init's tree and signaling every
+    // descendant would SIGTERM the test runner (#3459 CI).
+    const bystander = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore" });
     const logger = capturingLogger();
-    await killPid(1, logger);
-    expect(logger.warns.some((w) => w.includes("EPERM"))).toBe(true);
+    try {
+      await killPid(1, logger);
+      expect(logger.warns.some((w) => w.includes("EPERM"))).toBe(true);
+      expect(isAlive(bystander.pid)).toBe(true);
+    } finally {
+      forceKill(bystander.pid);
+    }
   });
 
   test("skips kill when PID has been recycled (pidStartTime mismatch)", async () => {
@@ -215,6 +223,45 @@ describe("findProcessesByCwd", () => {
     expect(pids).toEqual([]);
     expect(logger.warns.some((w) => w.includes("timed out"))).toBe(true);
   });
+
+  test.skipIf(process.platform !== "linux")(
+    "when lsof is unavailable, Linux /proc fallback still finds a process (#3459)",
+    async () => {
+      const tmpDir = `${import.meta.dir}/__test-cwd-fallback-${process.pid}`;
+      const { mkdirSync, rmdirSync } = require("node:fs");
+      mkdirSync(tmpDir, { recursive: true });
+      const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: tmpDir });
+      try {
+        const missingBinaryResult = async () => ({
+          ok: false as const,
+          exitCode: null,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+        });
+        const logger = capturingLogger();
+        const deadline = Date.now() + 2_000;
+        let pids: number[] = [];
+        while (Date.now() < deadline) {
+          pids = await findProcessesByCwd(tmpDir, logger, missingBinaryResult);
+          if (pids.includes(proc.pid)) break;
+          await Bun.sleep(POLL_MS);
+        }
+        expect(pids).toContain(proc.pid);
+        expect(logger.warns.some((w) => w.includes("unavailable"))).toBe(true);
+      } finally {
+        forceKill(proc.pid);
+        try {
+          rmdirSync(tmpDir);
+          // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+        } catch {
+          /* noop */
+        }
+      }
+    },
+  );
 
   test("warns and returns empty when lsof is unavailable", async () => {
     const logger = capturingLogger();

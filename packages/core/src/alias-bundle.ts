@@ -14,6 +14,8 @@ import { z } from "zod/v4";
 import type { AliasContext, AliasDefinition, AliasMonitorEventInput, McpProxy, MonitorAliasDefinition } from "./alias";
 import type { MonitorAliasMetadata } from "./alias-bundle-types";
 export type { MonitorAliasMetadata } from "./alias-bundle-types";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AutomationDefinition } from "./automation";
 import { defineAutomation } from "./automation";
 import { MONITOR_CATEGORIES } from "./monitor-event";
@@ -591,14 +593,50 @@ function escapeRegExp(s: string): string {
  * tsconfig.json, then runs tsc. Diagnostics are returned as warnings.
  * Returns valid: true unless tsc crashes (signal kill, not diagnostic errors).
  */
-function resolveTscBin(): string | null {
+/**
+ * Locate a `tsc` binary.
+ *
+ * TypeScript 7's package `exports` map does not include `./bin/tsc`, so
+ * `require.resolve("typescript/bin/tsc")` throws even when the file exists
+ * on disk (#2439, #3459). Walk `typescript/package.json`'s `bin` field
+ * (which is exported) and `node_modules/.bin/tsc` instead.
+ */
+export function resolveTscBin(): string | null {
   const fromPath = Bun.which("tsc");
-  if (fromPath) return fromPath;
-  try {
-    return require.resolve("typescript/bin/tsc");
-  } catch {
-    return null;
+  if (fromPath && existsSync(fromPath)) return fromPath;
+
+  const candidates: string[] = [];
+
+  const addFromPackage = (name: string): void => {
+    try {
+      const pkgPath = require.resolve(`${name}/package.json`);
+      const raw = JSON.parse(readFileSync(pkgPath, "utf8")) as { bin?: string | Record<string, string> };
+      const binField = typeof raw.bin === "string" ? raw.bin : raw.bin?.tsc;
+      if (binField) candidates.push(join(dirname(pkgPath), binField));
+      candidates.push(join(dirname(pkgPath), "bin", "tsc"));
+    } catch {
+      // package not installed, or package.json not in the exports map
+    }
+  };
+  addFromPackage("typescript");
+  addFromPackage("typescript-5");
+
+  const walkBins = (start: string): void => {
+    let dir = start;
+    for (let i = 0; i < 8; i++) {
+      candidates.push(join(dir, "node_modules", ".bin", "tsc"));
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  };
+  walkBins(import.meta.dir);
+  walkBins(process.cwd());
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
   }
+  return null;
 }
 
 export async function validateFreeformTsc(

@@ -18,8 +18,15 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { dnsFixtureSkipReason } from "./dns-fixture";
 import type { TestDaemon } from "./harness";
 import { createTestDir, rpc, startTestDaemon } from "./harness";
+
+const DNS_FIXTURE_HOST = "this-host-does-not-resolve.invalid";
+const dnsFixtureSkip = await dnsFixtureSkipReason(DNS_FIXTURE_HOST);
+if (dnsFixtureSkip) {
+  console.warn(`[transport-errors] skipping DNS-failure test: ${dnsFixtureSkip}`);
+}
 
 // 30s covers individual test cases. The 72s hang observed in #1023 exceeded this
 // because SSE's EventSource retried internally, keeping the Bun event loop alive
@@ -65,7 +72,7 @@ beforeAll(async () => {
       crasher: { command: "bun", args: [resolve("test/exit-immediately.ts")] },
       // HTTP servers
       deadhttp: { type: "http", url: "http://127.0.0.1:19999/mcp" },
-      baddns: { type: "http", url: "http://this-host-does-not-resolve.invalid/mcp" },
+      baddns: { type: "http", url: `http://${DNS_FIXTURE_HOST}/mcp` },
       // SSE server
       deadsse: { type: "sse", url: "http://127.0.0.1:19998/events" },
       // Healthy server (for listServers tests)
@@ -136,7 +143,7 @@ describe("HTTP transport errors", () => {
     expect(status?.lastError).toContain("could not connect to");
   });
 
-  test("DNS failure → DNS-specific message with URL", async () => {
+  test.skipIf(dnsFixtureSkip !== null)("DNS failure → DNS-specific message with URL", async () => {
     const rpcError = await triggerConnect(daemon.socketPath, "baddns");
     expect(rpcError).toBeDefined();
     // The MCP SDK wraps ENOTFOUND — wrapTransportError now checks err.cause

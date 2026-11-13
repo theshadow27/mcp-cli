@@ -74,6 +74,7 @@ export * from "./automation";
 export * from "./recording";
 export * from "./sanitizer";
 export * from "./subprocess";
+export * from "./process-tree";
 export * from "./mcp-result";
 export * from "./lookup-result";
 export * from "./spawn-lookup";

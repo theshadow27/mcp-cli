@@ -6,7 +6,8 @@
  */
 
 import type { Logger } from "@mcp-cli/core";
-import { spawnCapture } from "@mcp-cli/core";
+import { listDescendantPids, spawnCapture } from "@mcp-cli/core";
+import { findPidsByCwdLinux } from "./proc-fs";
 import { isOurProcess } from "./process-identity";
 
 /** Time (ms) to wait after SIGTERM before escalating to SIGKILL. */
@@ -41,17 +42,23 @@ function trySendSignal(pid: number, signal: NodeJS.Signals, logger: Logger): boo
   }
 }
 
-/** Poll `process.kill(pid, 0)` until the process exits or deadline is reached. */
-async function awaitExit(pid: number, deadlineMs: number): Promise<boolean> {
-  while (Date.now() < deadlineMs) {
-    await Bun.sleep(POLL_INTERVAL_MS);
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true; // process exited
-    }
+/** True if `process.kill(pid, 0)` succeeds. */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
-  return false; // still alive
+}
+
+/** Poll until every PID has exited, or the deadline is reached. */
+async function awaitExitAll(pids: number[], deadlineMs: number): Promise<boolean> {
+  while (Date.now() < deadlineMs) {
+    if (pids.every((p) => !isPidAlive(p))) return true;
+    await Bun.sleep(POLL_INTERVAL_MS);
+  }
+  return pids.every((p) => !isPidAlive(p));
 }
 
 /**
@@ -90,17 +97,28 @@ export async function killPid(
     }
   }
 
-  if (!trySendSignal(pid, "SIGTERM", logger)) return;
+  // Snapshot the tree first: a wrapper (pnpm/nvm `bun` shim) dies on SIGTERM
+  // and would otherwise leave its child reparented to PID 1, unkillable by
+  // a later walk of this PID. Never walk PID 1 itself — that tree is the
+  // whole machine (the EPERM fixture calls killPid(1)). #3459
+  const tree = pid <= 1 ? [pid] : [pid, ...listDescendantPids(pid)];
+  let signaled = false;
+  for (const target of tree) {
+    if (trySendSignal(target, "SIGTERM", logger)) signaled = true;
+  }
+  if (!signaled) return;
 
-  // Poll for exit up to killTimeoutMs
-  if (await awaitExit(pid, Date.now() + killTimeoutMs)) return;
+  // Poll until every process in the snapshot is gone, not just the root.
+  if (await awaitExitAll(tree, Date.now() + killTimeoutMs)) return;
 
   // Still alive — escalate to SIGKILL
   logger.error(`[process] PID ${pid} did not exit after SIGTERM — sending SIGKILL`);
-  if (!trySendSignal(pid, "SIGKILL", logger)) return;
+  for (const target of tree) {
+    trySendSignal(target, "SIGKILL", logger);
+  }
 
   // Wait briefly for SIGKILL to take effect
-  await awaitExit(pid, Date.now() + KILL_SIGKILL_GRACE_MS);
+  await awaitExitAll(tree, Date.now() + KILL_SIGKILL_GRACE_MS);
 }
 
 /**
@@ -120,12 +138,12 @@ export async function findProcessesByCwd(
       timeoutMs: LSOF_TIMEOUT_MS,
     });
     if (result.timedOut) {
-      logger.warn(`[process] lsof scan timed out for ${dirPath} — orphaned processes may persist`);
-      return [];
+      logger.warn(`[process] lsof scan timed out for ${dirPath} — trying /proc fallback`);
+      return fallbackPidsByCwd(dirPath, myPid);
     }
     if (result.exitCode === null) {
-      logger.warn(`[process] lsof unavailable for ${dirPath} — orphaned processes may persist`);
-      return [];
+      logger.warn(`[process] lsof unavailable for ${dirPath} — trying /proc fallback`);
+      return fallbackPidsByCwd(dirPath, myPid);
     }
     if (!result.ok && result.stderr.trim()) {
       logger.debug(`[process] lsof exited ${result.exitCode} for ${dirPath}: ${result.stderr.trim()}`);
@@ -141,8 +159,8 @@ export async function findProcessesByCwd(
     }
     return pids;
   } catch (err) {
-    logger.warn(`[process] lsof scan for cwd under ${dirPath} failed: ${err}`);
-    return [];
+    logger.warn(`[process] lsof scan for cwd under ${dirPath} failed: ${err} — trying /proc fallback`);
+    return fallbackPidsByCwd(dirPath, myPid);
   }
 }
 
@@ -167,4 +185,10 @@ export async function reapWorktreeProcesses(worktreePath: string, logger: Logger
     }
   }
   return killed;
+}
+
+/** /proc cwd scan when lsof is missing or hung. Empty on non-Linux. */
+function fallbackPidsByCwd(dirPath: string, myPid: number): number[] {
+  if (process.platform !== "linux") return [];
+  return findPidsByCwdLinux(dirPath, myPid);
 }
