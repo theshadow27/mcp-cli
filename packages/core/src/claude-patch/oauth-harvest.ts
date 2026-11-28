@@ -7,7 +7,7 @@
  * change every ship; the string literals and the `_={TOKEN_URL, CLIENT_ID}`
  * object do not.
  *
- * Verified against claude 2.1.257. `g1` (refresh) sends
+ * Verified against claude 2.1.257 and 2.1.332. `g1` (refresh) sends
  * `scope: (passed.length ? passed : P3).join(" ")`.
  */
 
@@ -37,6 +37,7 @@ const TOKEN_ASSIGN_RE = /TOKEN_URL:"(https:\/\/[^"]+\/v1\/oauth\/token)"/;
 /** Negative lookbehind so `DESIGN_CLIENT_ID` (same window) is not harvested. */
 const CLIENT_ID_RE = /(?<![A-Za-z0-9_])CLIENT_ID:"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i;
 const SESSIONS_SCOPE = "user:sessions:claude_code";
+const INFERENCE_SCOPE = "user:inference";
 const LOOKBACK = 4_000;
 const LOOKAHEAD = 4_000;
 
@@ -92,46 +93,64 @@ export function harvestClaudeOAuthConstants(bytes: Uint8Array): HarvestedClaudeO
 }
 
 /**
- * Parse the array that contains `user:sessions:claude_code`, resolving minified
- * aliases (`aU="user:profile"`) from assignments in the same window.
+ * Find the identity-scope array (`P3`) and resolve its minified aliases
+ * (`aU="user:profile"`) from assignments earlier in the same window.
+ *
+ * The array is located by what it resolves to, not by where the
+ * `"user:sessions:claude_code"` literal sits: since 2.1.332 that literal is its
+ * own alias (`xje="user:sessions:claude_code"`) and P3 names it
+ * (`n=[a3,tI,xje,...]`), so the nearest `[` before the literal belongs to an
+ * unrelated array (`bX=["","-staging-oauth",...]`).
+ *
+ * The identity array is the one flat array that resolves to both
+ * `user:sessions:claude_code` and `user:inference`. That rules out the
+ * `[profile, sessions]` subset check (`Ato`) and spread unions
+ * (`[...r,...P3]`). A candidate with an element that does not resolve, or more
+ * than one distinct candidate, is treated as a reshape.
  */
 function parseIdentityScopes(win: string): string[] {
-  const quoted = `"${SESSIONS_SCOPE}"`;
-  const hit = win.indexOf(quoted);
-  if (hit < 0) {
+  const aliasRe = /([A-Za-z_$][\w$]*)="(user:[^"]+)"/g;
+  const aliasDefs: { name: string; value: string; at: number }[] = [];
+  for (let m = aliasRe.exec(win); m; m = aliasRe.exec(win)) {
+    aliasDefs.push({ name: m[1], value: m[2], at: m.index });
+  }
+  const sessionsNamed = (token: string): boolean =>
+    token === `"${SESSIONS_SCOPE}"` || aliasDefs.some((a) => a.name === token && a.value === SESSIONS_SCOPE);
+  if (!aliasDefs.some((a) => a.value === SESSIONS_SCOPE) && !win.includes(`"${SESSIONS_SCOPE}"`)) {
     throw new OAuthHarvestError(`"${SESSIONS_SCOPE}" not found next to TOKEN_URL — oauth module reshaped`);
   }
-  const open = win.lastIndexOf("[", hit);
-  const close = win.indexOf("]", hit);
-  if (open < 0 || close < 0 || close < open) {
-    throw new OAuthHarvestError("could not find the identity-scope array around user:sessions:claude_code");
-  }
-  const aliases = new Map<string, string>();
-  const aliasRe = /([A-Za-z_$][\w$]*)="(user:[^"]+)"/g;
-  const before = win.slice(0, open);
-  let m: RegExpExecArray | null = aliasRe.exec(before);
-  while (m) {
-    aliases.set(m[1], m[2]);
-    m = aliasRe.exec(before);
-  }
-  const scopes: string[] = [];
-  for (const raw of win.slice(open + 1, close).split(",")) {
-    const token = raw.trim();
-    if (!token) continue;
-    const lit = /^"([^"]+)"$/.exec(token);
-    if (lit) {
-      scopes.push(lit[1]);
-      continue;
+
+  const candidates: string[][] = [];
+  const arrayRe = /\[([^[\]]*)\]/g;
+  for (let m = arrayRe.exec(win); m; m = arrayRe.exec(win)) {
+    const tokens = m[1].split(",").map((t) => t.trim());
+    if (!tokens.some(sessionsNamed)) continue;
+    // Aliases resolve from assignments before the array; the last one wins.
+    const aliases = new Map<string, string>();
+    for (const a of aliasDefs) if (a.at < m.index) aliases.set(a.name, a.value);
+    const scopes: string[] = [];
+    for (const token of tokens) {
+      if (!token) continue;
+      const lit = /^"([^"]+)"$/.exec(token);
+      const resolved = lit ? lit[1] : aliases.get(token);
+      if (!resolved) {
+        throw new OAuthHarvestError(`unresolved identity-scope element "${token}" — oauth module reshaped`);
+      }
+      scopes.push(resolved);
     }
-    const resolved = aliases.get(token);
-    if (!resolved) {
-      throw new OAuthHarvestError(`unresolved identity-scope element "${token}" — oauth module reshaped`);
-    }
-    scopes.push(resolved);
+    if (scopes.includes(SESSIONS_SCOPE) && scopes.includes(INFERENCE_SCOPE)) candidates.push(scopes);
   }
-  if (!scopes.includes(SESSIONS_SCOPE)) {
-    throw new OAuthHarvestError("parsed scope array did not contain user:sessions:claude_code");
+
+  const distinct = [...new Map(candidates.map((c) => [c.join(" "), c])).values()];
+  if (distinct.length === 0) {
+    throw new OAuthHarvestError(
+      `no identity-scope array holding ${SESSIONS_SCOPE} and ${INFERENCE_SCOPE} — oauth module reshaped`,
+    );
   }
+  if (distinct.length > 1) {
+    throw new OAuthHarvestError(`ambiguous identity-scope arrays (${distinct.length}) — oauth module reshaped`);
+  }
+  const scopes = distinct[0];
   if (scopes.length < 3) {
     throw new OAuthHarvestError(`identity-scope array too short (${scopes.length})`);
   }
