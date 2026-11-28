@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { $ } from "bun";
 
 // Isolated runtime state — set before any subprocess spawn so the compiled
@@ -36,7 +37,6 @@ const MCPCTL = resolve("dist/mcpctl");
 const SMOKE_ALIAS = "_smoke-test";
 const SMOKE_SCRIPT = `
 import { defineAlias, z } from "mcp-cli";
-import { tmpDir } from "am-i-done/tmp";
 export default defineAlias({
   name: "${SMOKE_ALIAS}",
   description: "Smoke test alias",
