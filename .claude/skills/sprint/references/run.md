@@ -830,9 +830,10 @@ save minutes of quota. [#1597])
 ## Gate admission — the lease is the baton
 
 Only one `am-i-done` gate runs on the box at a time, and **the code already
-enforces this**. `scripts/am-i-done.ts` marks its `TEST_CHANGED` step
-`lease: true`; admission goes through the flock-based, crash-safe lease in
-`packages/core/src/gate-lease.ts` (#2690). Every hook path reaches it:
+enforces this**. the `test-changed` stage
+(`scripts/stages/test-changed.stage.ts`) takes the lease through
+`scripts/stages/_lib/lease.ts`; admission goes through the flock-based,
+crash-safe lease in `packages/core/src/gate-lease.ts` (#2690). Every hook path reaches it:
 pre-commit runs `am-i-done --pre-commit` (static gate only — typecheck, lint,
 rules; ~20s) and pre-push runs `am-i-done --pre-push`.
 
