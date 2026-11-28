@@ -22,3 +22,6 @@ test-timings.json
 
 # Sprint-active sentinel (pre-commit guard, #1443)
 .claude/sprints/.active
+
+# am-i-done run logs and caches
+.am-i-done/

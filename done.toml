@@ -1,0 +1,31 @@
+# am-i-done: this project's definition of done.
+# Reference: https://github.com/theshadow27/am-i-done#configuration
+
+[run]
+# The whole run. The test stages wait for the host-wide gate lease (#2690) inside their own time,
+# for up to 400s (MCX_GATE_LEASE_WAIT_MS is capped there), on top of the 600s liveness ceiling the
+# gate has always had (#3261, #3332). The package cannot credit that wait back to the deadline, so
+# the ceiling is the sum.
+deadline_seconds = 1000
+timeout_seconds = 300
+rerun = "diagnose"
+
+[stages]
+recommended = true
+dirs = ["scripts/stages"]
+
+[rules]
+recommended = true
+dirs = ["scripts/rules"]
+# What the rules have always scanned: the workspace packages, scripts and tests.
+include = ["packages/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}", "test/**/*.{ts,tsx}"]
+# Declarations are not source; rule files document the very shapes they flag.
+exclude = ["**/*.d.ts", "scripts/rules/*.rule.ts"]
+# typescript here is 7.x, which has no standalone parser (see CLAUDE.md), so the rules parse with oxc.
+parser = "oxc"
+
+[suppression]
+require_issue = true
+
+[cache]
+skip = true

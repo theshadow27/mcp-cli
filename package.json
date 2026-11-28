@@ -6,6 +6,7 @@
   "version": "2.0.0",
   "description": "MCP CLI — call MCP server tools from the command line with zero context overhead",
   "type": "module",
+  "packageManager": "bun@1.4.5",
   "workspaces": ["packages/*", "agent-grid"],
   "bin": {
     "mcx": "bin/mcx.js",
@@ -25,8 +26,8 @@
     "typecheck": "bun install && bun check --all",
     "lint": "bun install && bunx biome check --write .",
     "lint:check": "bun install && bunx biome check .",
-    "am-i-done": "bun scripts/am-i-done.ts",
-    "doing-it-wrong": "bun scripts/doing-it-wrong.ts",
+    "am-i-done": "bun install --frozen-lockfile --silent && am-i-done",
+    "doing-it-wrong": "doing-it-wrong",
     "guards": "bun scripts/guards/run-guards.ts",
     "test": "bun install && bun test --parallel=4 --no-orphans --path-ignore-patterns='packages/control/**' --path-ignore-patterns='test/stress.spec.ts' && bun test --no-orphans packages/control && bun test test/stress.spec.ts",
     "test:phases": "cd .claude/phases && bun test --no-orphans",
@@ -44,6 +45,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "latest",
     "@types/react": "^18.3.28",
+    "am-i-done": "^0.4.2",
     "typescript": "^7.0.2",
     "typescript-5": "npm:typescript@5.9.3"
   },
