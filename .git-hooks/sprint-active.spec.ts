@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { type TmpDir, tmpDir } from "am-i-done/tmp";
 
 const SPRINT_ACTIVE_SH = resolve(import.meta.dir, "sprint-active.sh");
 
@@ -50,12 +50,14 @@ async function sh(cwd: string, cmd: string[]): Promise<void> {
 }
 
 describe("sprint_active_check", () => {
+  let rootDir: TmpDir;
   let root: string;
   let main: string;
   let worktree: string;
 
   beforeEach(async () => {
-    root = mkdtempSync(join(tmpdir(), "sprint-active-"));
+    rootDir = tmpDir("sprint-active-");
+    root = rootDir.path;
     main = join(root, "main");
     worktree = join(root, "wt");
     mkdirSync(main, { recursive: true });
@@ -71,7 +73,7 @@ describe("sprint_active_check", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rootDir[Symbol.dispose]();
   });
 
   test("allows commit on main when no sentinel exists", async () => {
@@ -118,13 +120,9 @@ describe("sprint_active_check", () => {
   });
 
   test("no-ops outside a git repo", async () => {
-    const nonRepo = mkdtempSync(join(tmpdir(), "non-repo-"));
-    try {
-      const result = await runCheck(nonRepo);
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("ALLOW");
-    } finally {
-      rmSync(nonRepo, { recursive: true, force: true });
-    }
+    using nonRepo = tmpDir("non-repo-");
+    const result = await runCheck(nonRepo.path);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("ALLOW");
   });
 });

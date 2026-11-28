@@ -1864,7 +1864,9 @@ export class ClaudeWsServer {
               genuineEof = false;
               // Cancel to resolve the outstanding parked read and free the lock; the
               // flush below then releases cleanly (releaseLock throws on a pending read).
-              await reader.cancel().catch(() => {});
+              await reader.cancel().catch(() => {
+                /* best effort: the reader may already be closed or errored; the flush below handles the lock */
+              });
               break;
             }
             chunk = settled;

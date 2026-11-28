@@ -10,10 +10,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type IpcMethod, NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { McxDb } from "../db/state";
 import { WorkItemDb } from "../db/work-items";
 import { createDomainResolver, createMcxDbDomainSource } from "../domain-resolver";
@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 function tempRoot(): string {
-  const d = mkdtempSync(join(tmpdir(), "mcx-domain-state-"));
+  const d = tmpDir("mcx-domain-state-").path;
   tempDirs.push(d);
   return d;
 }

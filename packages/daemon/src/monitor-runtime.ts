@@ -91,7 +91,11 @@ export class MonitorRuntime {
 
   async restartMonitor(name: string): Promise<void> {
     const prev = this.restartLocks.get(name) ?? Promise.resolve();
-    const current = prev.catch(() => {}).then(() => this.doRestartMonitor(name));
+    const current = prev
+      .catch(() => {
+        /* a previous restart's failure is reported to its own caller; this one only waits for it to settle */
+      })
+      .then(() => this.doRestartMonitor(name));
     this.restartLocks.set(name, current);
     try {
       await current;

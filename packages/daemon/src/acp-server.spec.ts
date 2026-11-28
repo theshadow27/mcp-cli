@@ -177,7 +177,7 @@ describe("AcpServer", () => {
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
       type: "db:upsert",
-      session: { sessionId: "acp-s1", state: "active", cwd: "/tmp" },
+      session: { sessionId: "acp-s1", state: "active", cwd: "/work" },
     });
 
     const row = db.getSession("acp-s1");

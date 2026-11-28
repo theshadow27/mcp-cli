@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DisallowedTransitionError,
@@ -25,6 +24,7 @@ import {
   parseManifestText,
   validateManifest,
 } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import {
   type AdvanceChainEntry,
   type AdvanceResult,
@@ -79,7 +79,7 @@ phases:
 
 let dir: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "mcx-phase-"));
+  dir = tmpDir("mcx-phase-").path;
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -216,7 +216,9 @@ phases:
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     expect(errs.some((e) => e.includes("no .mcx.yaml or .mcx.json"))).toBe(true);
@@ -315,7 +317,9 @@ defineAlias(({ z }) => ({
         code = c;
         throw new Error("exit");
       }) as (c: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes("--arg requires"))).toBe(true);
   });
@@ -335,7 +339,9 @@ defineAlias(({ z }) => ({
         code = c;
         throw new Error("exit");
       }) as (c: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes("key=val"))).toBe(true);
   });
@@ -355,7 +361,9 @@ defineAlias(({ z }) => ({
         code = c;
         throw new Error("exit");
       }) as (c: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes('unknown phase "nope"'))).toBe(true);
   });
@@ -389,7 +397,9 @@ defineAlias(({ z }) => ({
         code = c;
         throw new Error("exit");
       }) as (c: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes('phase "implement" threw') && e.includes("boom from handler"))).toBe(true);
   }, 15_000);
@@ -449,7 +459,9 @@ defineAlias(({ z }) => ({
         code = c;
         throw new Error("exit");
       }) as (c: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     // simpleManifest has initial: implement — transition is valid from initial state
     expect(code).toBeUndefined();
     expect(errs.some((e) => e.includes("approved") && e.includes("implement"))).toBe(true);
@@ -468,7 +480,9 @@ defineAlias(({ z }) => ({
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     const joined = errs.join("\n");
@@ -496,7 +510,9 @@ phases:
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     expect(errs.join("\n")).toContain("remote sources not yet supported");
@@ -522,7 +538,9 @@ phases:
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     expect(errs.join("\n")).toContain("remote sources not yet supported");
@@ -548,7 +566,9 @@ phases:
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     expect(errs.join("\n")).toContain("insecure http://");
@@ -574,7 +594,9 @@ phases:
         exitCode = code;
         throw new Error("exit");
       }) as (code: number) => never,
-    }).catch(() => {});
+    }).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBe(1);
     expect(errs.join("\n")).toContain("escapes manifest directory");
@@ -678,7 +700,7 @@ describe("phaseRun", () => {
   });
 
   test("missing manifest throws a clear error", () => {
-    const empty = mkdtempSync(join(tmpdir(), "mcx-phase-empty-"));
+    const empty = tmpDir("mcx-phase-empty-").path;
     try {
       expect(() =>
         phaseRun({ target: "qa", from: null, workItemId: null, forceMessage: null }, { cwd: empty }),
@@ -760,7 +782,7 @@ describe("cmdPhase dispatch", () => {
   });
 
   test("list exits 1 when no manifest", async () => {
-    const empty = mkdtempSync(join(tmpdir(), "mcx-phase-cmd-empty-"));
+    const empty = tmpDir("mcx-phase-cmd-empty-").path;
     try {
       const { code, err } = await catchExit(() => cmdPhase(["list"], { cwd: () => empty }));
       expect(code).toBe(1);
@@ -859,7 +881,7 @@ describe("cmdPhase dispatch", () => {
   });
 
   test("run with no lockfile exits 1", async () => {
-    const empty = mkdtempSync(join(tmpdir(), "mcx-phase-cmd-empty2-"));
+    const empty = tmpDir("mcx-phase-cmd-empty2-").path;
     try {
       const { code, err } = await catchExit(() => cmdPhase(["run", "qa"], { cwd: () => empty }));
       expect(code).toBe(1);
@@ -1220,7 +1242,7 @@ describe("cmdPhase working-tree root resolution from a worktree (#2737)", () => 
     writeFileSync(join(dir, ".mcx.lock"), serializeLockfile(staleMain));
 
     // Worktree checkout: identical sources with a FRESH, in-sync lock.
-    const worktree = mkdtempSync(join(tmpdir(), "mcx-phase-wt-"));
+    const worktree = tmpDir("mcx-phase-wt-").path;
     try {
       writeFileSync(join(worktree, ".mcx.yaml"), simpleManifest);
       writeFileSync(join(worktree, "impl.ts"), simpleAlias);
@@ -1256,7 +1278,7 @@ describe("cmdPhase working-tree root resolution from a worktree (#2737)", () => 
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
 
-    const worktree = mkdtempSync(join(tmpdir(), "mcx-phase-wt-install-"));
+    const worktree = tmpDir("mcx-phase-wt-install-").path;
     try {
       writeFileSync(join(worktree, ".mcx.yaml"), simpleManifest);
       writeFileSync(join(worktree, "impl.ts"), simpleAlias);
@@ -1304,7 +1326,7 @@ describe("phase check treats git-unavailable as a warning, not a hard fail (#286
   test("still runs drift detection when git resolves the root (not-a-repo falls through)", async () => {
     // A not-a-repo result must NOT short-circuit — it falls through to drift
     // detection, which reports `no .mcx.lock` for a dir without one.
-    const bare = mkdtempSync(join(tmpdir(), "mcx-phase-norepo-"));
+    const bare = tmpDir("mcx-phase-norepo-").path;
     try {
       const res = await catchExit(() =>
         cmdPhase(["check"], {
@@ -1761,7 +1783,9 @@ describe("cmdPhase check", () => {
     writeFileSync(join(dir, "impl.ts"), `${simpleAlias}\n// drift\n`);
 
     const { deps, errs, getExitCode } = makeDriftDeps(dir);
-    await cmdPhase(["check"], deps).catch(() => {});
+    await cmdPhase(["check"], deps).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(getExitCode()).toBe(1);
     const joined = errs.join("\n");
     expect(joined).toContain("out of date");
@@ -1785,7 +1809,9 @@ describe("cmdPhase check", () => {
     writeFileSync(join(dir, ".mcx.yaml"), simpleManifest);
     writeFileSync(join(dir, "impl.ts"), simpleAlias);
     const { deps, errs, getExitCode } = makeDriftDeps(dir);
-    await cmdPhase(["check"], deps).catch(() => {});
+    await cmdPhase(["check"], deps).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(getExitCode()).toBe(1);
     expect(errs.some((e) => e.includes("no .mcx.lock"))).toBe(true);
   });
@@ -2039,7 +2065,9 @@ phases:
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes("phases only run from branch"))).toBe(true);
@@ -2103,7 +2131,9 @@ phases:
         now: ex.now,
         readCliConfig: () => ({ phase: { allowBranchOverride: ["main"] } }),
       },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes("runsOn branch"))).toBe(true);
@@ -2129,7 +2159,9 @@ phases:
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes('work item "#999" not found'))).toBe(true);
@@ -2165,7 +2197,9 @@ defineAlias(({ z }) => ({
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(code).toBe(1);
     expect(errs.some((e) => e.includes('phase "implement" failed'))).toBe(true);
@@ -2219,7 +2253,9 @@ defineAlias(({ z }) => ({
           }) as (code: number) => never,
         },
         { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-      ).catch(() => {});
+      ).catch(() => {
+        /* the exit stub throws to halt the command; the outcome is asserted below */
+      });
       return { logs, errs, code };
     };
 
@@ -2304,7 +2340,9 @@ defineAlias(({ z }) => ({
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     // Must succeed: work_items.phase="impl" provides the implicit --from
     expect(exitCode).toBeUndefined();
@@ -2502,7 +2540,9 @@ phases:
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     // Before the fix this threw DisallowedTransitionError: triage → done
     expect(exitCode).toBeUndefined();
@@ -2685,7 +2725,9 @@ defineAlias(({ z }) => ({
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     // Before the fix this threw DisallowedTransitionError: triage → done
     expect(exitCode).toBeUndefined();
@@ -2732,7 +2774,9 @@ defineAlias(({ z }) => ({
         }) as (code: number) => never,
       },
       { ipcCall: ex.ipcCall, exec: ex.exec, findGitRoot: ex.findGitRoot, now: ex.now },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
 
     expect(exitCode).toBeUndefined();
     expect(errs.some((e) => e.includes("approved") && e.includes("qa") && e.includes("done"))).toBe(true);
@@ -3188,7 +3232,7 @@ phases:
     const jsonLog = logs.find((l) => {
       try {
         return JSON.parse(l).repoRoot !== undefined;
-        // dotw-ignore test-empty-catch: parse-probe — fallback on expected parse failure
+        // doing-it-wrong-ignore test-empty-catch: parse-probe — fallback on expected parse failure (#3465)
       } catch {
         return false;
       }
@@ -3457,7 +3501,7 @@ phases:
     err = [];
     spawnCalls = [];
     stateSetArgs = [];
-    advDir = mkdtempSync(join(tmpdir(), "mcx-advance-"));
+    advDir = tmpDir("mcx-advance-").path;
     writeFileSync(join(advDir, ".mcx.yaml"), advManifestYaml);
     for (const [file, name] of [
       ["impl.ts", "impl"],
@@ -3666,7 +3710,9 @@ phases:
       }
       return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
     }) as unknown as typeof import("@mcp-cli/core").ipcCall;
-    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(capturedKey).toBe("session_id");
   });
 
@@ -3699,7 +3745,9 @@ phases:
       }
       return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
     }) as unknown as typeof import("@mcp-cli/core").ipcCall;
-    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(capturedKey).toBe("qa_session_id");
   });
 
@@ -3716,7 +3764,9 @@ phases:
       }
       return (origIpc as (m: string, p?: unknown) => Promise<unknown>)(method, params);
     }) as unknown as typeof import("@mcp-cli/core").ipcCall;
-    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {});
+    await cmdPhaseAdvance(["--work-item", "#42"], deps, execDeps).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(capturedKey).toBe("custom_session_id");
   });
 
@@ -3849,7 +3899,9 @@ phases:
         now: () => new Date(),
         readCliConfig: () => ({}),
       },
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     expect(code as unknown as number).toBe(1);
     expect(errs.some((m) => m.includes("Usage"))).toBe(true);
   });
@@ -3925,7 +3977,9 @@ phases:
         },
       },
       execDeps,
-    ).catch(() => {});
+    ).catch(() => {
+      /* the exit stub throws to halt the command; the outcome is asserted below */
+    });
     const logIdx = events.findIndex((e) => e.type === "log");
     const stateSetIdx = events.findIndex((e) => e.type === "state_set");
     expect(logIdx).not.toBe(-1);

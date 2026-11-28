@@ -1,8 +1,8 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Domain } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { type FC } from "react";
@@ -126,7 +126,7 @@ describe("useDomains", () => {
 describe("detect", () => {
   // realpath'd: `detect` canonicalizes the cwd it is given, so a symlinked temp root
   // (`/tmp` → `/private/tmp` on macOS) would otherwise never match the fixture's path.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "use-domains-")));
+  const dir = realpathSync(tmpDir("use-domains-").path);
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   test("cwd inside a domain selects it", () => {

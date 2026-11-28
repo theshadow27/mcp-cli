@@ -76,7 +76,9 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
   if (aliasInfo.expiresAt) {
     const config = d.readCliConfig();
     const ttlMs = config.ephemeralAliases?.ttlMs ?? coreOptions.EPHEMERAL_ALIAS_TTL_MS;
-    d.ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch(() => {});
+    d.ipcCall("touchAlias", { name: aliasName, expiresAt: Date.now() + ttlMs }).catch(() => {
+      /* best effort: failing to extend the alias TTL must not block the run */
+    });
   }
 
   // Record run and maybe suggest promotion (returned for testability)
@@ -94,7 +96,9 @@ export async function cmdRun(args: string[], deps?: Partial<CmdRunDeps>): Promis
         }
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      /* best effort: run-count tracking and the promotion hint are advisory */
+    });
 
   await d.runAlias(aliasInfo.filePath, cliArgs, jsonInput);
 
@@ -113,7 +117,7 @@ export function parseRunArgs(args: string[]): { jsonInput: string | undefined; c
     const arg = args[i];
     if (arg.startsWith("--")) {
       if (i + 1 < args.length) {
-        cliArgs[arg.slice(2)] = args[++i]; // dotw-ignore no-manual-arg-parsing: pass-through — alias flag schema is dynamic, not statically known at parse time
+        cliArgs[arg.slice(2)] = args[++i]; // doing-it-wrong-ignore no-manual-arg-parsing: pass-through — alias flag schema is dynamic, not statically known at parse time (#3465)
       }
       // Orphan flags (no following value) are silently ignored
     } else if (jsonInput === undefined) {

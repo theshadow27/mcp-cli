@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionInfo } from "@mcp-cli/core";
 import { options, silentLogger } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../test/test-options";
 import {
   handlePrompt,
@@ -124,7 +124,7 @@ describe("handlePrompt spawn failure (#1836)", () => {
     (globalThis as Record<string, unknown>).postMessage = (msg: unknown) => messages.push(msg);
 
     // handlePrompt re-throws after cleanup so the IPC layer can return an error response
-    await expect(handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" })).rejects.toThrow("spawn failed");
+    await expect(handlePrompt(server, { prompt: "hello", cwd: "/work/wt" })).rejects.toThrow("spawn failed");
 
     // Ghost must be removed from the in-memory sessions map
     expect(server.listSessions()).toHaveLength(0);
@@ -591,7 +591,7 @@ describe("refreshClaudeResolutionIfDisabled (#3013)", () => {
   let tlsMaterial: { cert: string; key: string } | undefined;
   function tls(): { cert: string; key: string } {
     if (!tlsMaterial) {
-      const { cert, key } = ensureSelfSignedCert({ dir: mkdtempSync(join(tmpdir(), "worker-refresh-tls-")) });
+      const { cert, key } = ensureSelfSignedCert({ dir: tmpDir("worker-refresh-tls-").path });
       tlsMaterial = { cert, key };
     }
     return tlsMaterial;
@@ -661,7 +661,7 @@ describe("refreshClaudeResolutionIfDisabled (#3013)", () => {
     // re-enters the refresh with the real resolver, which short-circuits now
     // that spawning is enabled — so no `claude --version` runs here.
     (globalThis as Record<string, unknown>).postMessage = () => {};
-    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    await handlePrompt(server, { prompt: "hello", cwd: "/work/wt" });
     expect(recording.lastCmd()[0]).toBe("/store/2.1.235.patched");
   });
 
@@ -732,7 +732,7 @@ describe("refreshClaudeResolutionIfDisabled (#3013)", () => {
     });
 
     (globalThis as Record<string, unknown>).postMessage = () => {};
-    await handlePrompt(server, { prompt: "hello", cwd: "/tmp/wt" });
+    await handlePrompt(server, { prompt: "hello", cwd: "/work/wt" });
     expect(recording.lastCmd()[0]).toBe("/store/2.1.234.patched");
   });
 

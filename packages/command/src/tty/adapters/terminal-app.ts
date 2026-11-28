@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: adapters import TerminalAdapter from adapter.ts; type-only back-edge
 /**
  * Terminal.app adapter.
  * Uses AppleScript to open tabs/windows in macOS's built-in Terminal.

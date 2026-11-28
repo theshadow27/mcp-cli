@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { NdjsonRecorder, type RecordingEntry, classifyMessageKind } from "./recording";
 
 describe("classifyMessageKind", () => {
@@ -79,7 +79,7 @@ describe("classifyMessageKind", () => {
 });
 
 describe("NdjsonRecorder", () => {
-  const dir = join(tmpdir(), `recording-test-${process.pid}`);
+  const dir = tmpDir("recording-test-").path;
   const paths: string[] = [];
 
   afterEach(async () => {

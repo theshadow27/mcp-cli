@@ -106,6 +106,7 @@ function linuxChildrenByStatusScan(parent: number): number[] {
 
 function pgrepChildren(pid: number): number[] {
   // Lazy import avoids a cycle: subprocess.ts imports this module.
+  // doing-it-wrong-ignore no-import-cycles: lazy, so the cycle never runs at load; still a cycle (#3468)
   const { spawnCaptureSync } = require("./subprocess") as typeof import("./subprocess");
   const result = spawnCaptureSync("pgrep", ["-P", String(pid)], { timeoutMs: PGREP_TIMEOUT_MS });
   if (!result.ok || !result.stdout) return [];

@@ -443,17 +443,17 @@ async function main(): Promise<void> {
         await cmdPr(cleanArgs.slice(1));
         break;
 
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "codex":
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "acp":
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "copilot":
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "gemini":
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "opencode":
-      // dotw-ignore cli-surface-registered: deprecated; use `mcx agent <provider>`
+      // doing-it-wrong-ignore cli-surface-registered: deprecated; use `mcx agent <provider>` (#3465)
       case "grok":
         console.error(`Warning: "mcx ${command}" is deprecated. Use "mcx agent ${command}" instead.`);
         await cmdAgent([command, ...cleanArgs.slice(1)]);
@@ -470,7 +470,7 @@ async function main(): Promise<void> {
       // Retired in v2.0.0 — domains supersede scopes (#3042). A tombstone dispatches but
       // is deliberately absent from SUBCOMMANDS: completing a command whose only job is to
       // fail would advertise it to the shell as if it still worked.
-      // dotw-ignore cli-surface-registered: tombstone — must dispatch, must not complete
+      // doing-it-wrong-ignore cli-surface-registered: tombstone — must dispatch, must not complete (#3465)
       case "scope":
         process.exit(cmdRetired("scope"));
         break;

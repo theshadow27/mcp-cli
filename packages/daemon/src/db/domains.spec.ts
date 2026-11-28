@@ -1,16 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir as osTmpdir } from "node:os";
+import { realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpDir } from "am-i-done/tmp";
 
-/**
- * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
- * symlink, so the raw value is not what the code under test stores: domain paths go
- * through `canonicalizeExistingDomainPath`, so a fixture built on the unresolved spelling
- * asserts against a path production never writes. Resolving once here keeps the only
- * symlink in a fixture the one a test creates on purpose.
- */
-const tmpdir = (): string => realpathSync(osTmpdir());
 import { basename, join, resolve } from "node:path";
 import { NO_DOMAIN_ID, listPartitionedTables, options } from "@mcp-cli/core";
 import { migrateDerivedCursor } from "../derived-events";
@@ -53,14 +45,14 @@ const SURROGATE_KEYED_TABLES: Record<string, string> = {
 };
 
 function tmpDbPath(): string {
-  return join(tmpdir(), `mcp-cli-domains-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return join(tmpDir("t-").path, `mcp-cli-domains-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* ignore */
     }
@@ -498,8 +490,8 @@ describe("domain schema", () => {
 
     test("resolveDomain matches through a symlinked path", () => {
       const state = createMcxDb();
-      const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
-      const link = join(tmpdir(), `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+      const real = tmpDir("mcx-dom-real-").path;
+      const link = join(tmpDir("t-").path, `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
       symlinkSync(real, link);
       try {
         const d = state.createDomain("proj", real);

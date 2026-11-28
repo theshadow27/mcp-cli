@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
 import { resolveBuildCommit } from "./build-commit";
@@ -209,7 +209,8 @@ const SMOKE_DEADLINE_MS = 60_000;
  * the native target of release builds).
  */
 async function smokeDaemonWorkers(mcpdPath: string): Promise<void> {
-  const stateDir = mkdtempSync(join(tmpdir(), "mcpd-smoke-"));
+  // Short prefix: the dir holds mcpd.sock (Unix socket paths stay under 104 bytes).
+  const stateDir = tmpDir("s-").path;
   // Ephemeral WS port so the smoke never collides with a real running daemon.
   writeFileSync(join(stateDir, "config.json"), JSON.stringify({ wsPort: 0 }));
 
@@ -352,7 +353,9 @@ if (releaseMode) {
   for (const p of bundleCleanup) {
     try {
       unlinkSync(p);
-    } catch {} // dotw-ignore prod-empty-catch: best-effort cleanup of temp files
+    } catch {
+      /* best effort: cleanup of temp files */
+    }
   }
   console.log("Release build complete.");
 } else {
@@ -373,7 +376,9 @@ if (releaseMode) {
   for (const p of bundleCleanup) {
     try {
       unlinkSync(p);
-    } catch {} // dotw-ignore prod-empty-catch: best-effort cleanup of temp files
+    } catch {
+      /* best effort: cleanup of temp files */
+    }
   }
   console.log("Built: dist/mcpd, dist/mcx, dist/mcpctl");
 }

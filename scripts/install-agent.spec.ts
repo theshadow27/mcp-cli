@@ -9,8 +9,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import {
   type InstallDeps,
   findVersionEntry,
@@ -68,7 +68,7 @@ describe("loadGrid", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `install-agent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("install-agent-test-").path;
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -215,7 +215,7 @@ describe("sha256File", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `sha256-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("sha256-test-").path;
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -235,7 +235,7 @@ describe("readSidecarChecksum", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `sidecar-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("sidecar-test-").path;
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -277,7 +277,7 @@ describe("installFromArchive", () => {
   let destDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `archive-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("archive-test-").path;
     gridDir = join(tmpDir, "agent-grid");
     destDir = join(tmpDir, "dest");
     mkdirSync(join(gridDir, "binaries"), { recursive: true });
@@ -422,7 +422,7 @@ describe("installFromArchive", () => {
             if (code === 0) {
               const extracted = join(symlinkDestDir, "linkprov-1.0.0");
               rmSync(extracted, { force: true });
-              symlinkSync("/tmp/evil-target", extracted);
+              symlinkSync("/nonexistent/evil-target", extracted);
             }
             return code;
           }),
@@ -459,7 +459,7 @@ describe("installFromRegistry", () => {
   let destDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("registry-test-").path;
     gridDir = join(tmpDir, "agent-grid");
     destDir = join(tmpDir, "dest");
     mkdirSync(join(gridDir, "binaries"), { recursive: true });
@@ -608,7 +608,7 @@ describe("installAgent", () => {
   let agentsDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `install-full-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("install-full-").path;
     gridDir = join(tmpDir, "agent-grid");
     agentsDir = join(tmpDir, "agents");
     mkdirSync(join(gridDir, "binaries"), { recursive: true });

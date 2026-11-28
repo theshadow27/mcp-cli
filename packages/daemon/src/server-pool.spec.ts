@@ -485,7 +485,7 @@ describe("buildChildEnv", () => {
     LANG: "en_US.UTF-8",
     SHELL: "/bin/zsh",
     USER: "testuser",
-    TMPDIR: "/tmp",
+    TMPDIR: "/scratch",
     XDG_RUNTIME_DIR: "/run/user/1000",
     DISPLAY: ":0",
     WAYLAND_DISPLAY: "wayland-0",
@@ -1674,7 +1674,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
     try {
       process.kill(pid, 0);
       return true;
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       return false;
     }
@@ -1684,7 +1684,7 @@ describe("disconnect kills stdio child processes (#940)", () => {
   function forceKill(pid: number): void {
     try {
       process.kill(pid, "SIGKILL");
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // already dead
     }

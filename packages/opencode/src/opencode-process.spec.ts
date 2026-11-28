@@ -109,7 +109,7 @@ describe("discoverUrl", () => {
 describe("OpenCodeProcess", () => {
   test("spawn() discovers URL and sets baseUrl", async () => {
     const { spawnFn } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     const url = await proc.spawn();
     expect(url).toBe("http://127.0.0.1:8888");
@@ -118,7 +118,7 @@ describe("OpenCodeProcess", () => {
 
   test("spawn() exposes pid", async () => {
     const { spawnFn } = mockSpawn({ pid: 42, hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     await proc.spawn();
     expect(proc.pid).toBe(42);
@@ -126,7 +126,7 @@ describe("OpenCodeProcess", () => {
 
   test("spawn() sets alive=true before exit", async () => {
     const { spawnFn } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     await proc.spawn();
     expect(proc.alive).toBe(true);
@@ -135,7 +135,7 @@ describe("OpenCodeProcess", () => {
 
   test("spawn() throws on double call", async () => {
     const { spawnFn } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     await proc.spawn();
     await expect(proc.spawn()).rejects.toThrow("OpenCodeProcess already spawned");
@@ -143,14 +143,14 @@ describe("OpenCodeProcess", () => {
 
   test("spawn() throws when stdout is null", async () => {
     const { spawnFn } = mockSpawn({ stdout: null, hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     await expect(proc.spawn()).rejects.toThrow("stdout not available");
   });
 
   test("kill() sends SIGTERM", async () => {
     const { spawnFn, killSignals } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     await proc.spawn();
     proc.kill();
@@ -159,7 +159,7 @@ describe("OpenCodeProcess", () => {
 
   test("kill() is a no-op before spawn", () => {
     const { spawnFn, killSignals } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     proc.kill(); // should not throw
     expect(killSignals).toEqual([]);
@@ -169,7 +169,7 @@ describe("OpenCodeProcess", () => {
     let exitCode: unknown = null;
     const { spawnFn, result } = mockSpawn({ exitCode: 0 });
     const proc = new OpenCodeProcess({
-      cwd: "/tmp",
+      cwd: "/work",
       spawnFn,
       onExit: (code) => {
         exitCode = code;
@@ -206,7 +206,7 @@ describe("OpenCodeProcess", () => {
     };
 
     const proc = new OpenCodeProcess({
-      cwd: "/tmp",
+      cwd: "/work",
       spawnFn: () => result,
       onExit: () => {
         callCount++;
@@ -226,7 +226,7 @@ describe("OpenCodeProcess", () => {
 
   test("getters return defaults before spawn", () => {
     const { spawnFn } = mockSpawn({ hang: true });
-    const proc = new OpenCodeProcess({ cwd: "/tmp", spawnFn });
+    const proc = new OpenCodeProcess({ cwd: "/work", spawnFn });
 
     expect(proc.baseUrl).toBeNull();
     expect(proc.pid).toBeUndefined();

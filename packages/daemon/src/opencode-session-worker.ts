@@ -482,7 +482,9 @@ async function handleWait(args: Record<string, unknown>): Promise<{
     // Cancel losing waiters to prevent timer/reference leaks
     for (const p of waiters) {
       if (typeof p.cancel === "function") p.cancel();
-      p.catch(() => {});
+      p.catch(() => {
+        /* losing waiters are cancelled and abandoned; mark their rejection handled */
+      });
     }
   }
 }

@@ -16,8 +16,7 @@
  * Exits 0 if all checks pass, 1 if any fail.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
 
@@ -25,7 +24,8 @@ import { $ } from "bun";
 // binaries (which read MCP_CLI_DIR from the env) never touch real user state.
 // wsPort: 0 lets the daemon pick an ephemeral WS port instead of colliding
 // with a real running daemon on the well-known port.
-const STATE_DIR = mkdtempSync(join(tmpdir(), "mcx-smoke-"));
+// Short prefix: the dir holds mcpd.sock (Unix socket paths stay under 104 bytes).
+const STATE_DIR = tmpDir("s-").path;
 writeFileSync(join(STATE_DIR, "config.json"), JSON.stringify({ wsPort: 0 }));
 process.env.MCP_CLI_DIR = STATE_DIR;
 
@@ -36,6 +36,7 @@ const MCPCTL = resolve("dist/mcpctl");
 const SMOKE_ALIAS = "_smoke-test";
 const SMOKE_SCRIPT = `
 import { defineAlias, z } from "mcp-cli";
+import { tmpDir } from "am-i-done/tmp";
 export default defineAlias({
   name: "${SMOKE_ALIAS}",
   description: "Smoke test alias",

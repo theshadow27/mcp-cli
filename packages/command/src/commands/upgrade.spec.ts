@@ -11,10 +11,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CheckForUpdateDeps, FetchReleaseDeps, ReleaseInfo, UpdateCheckResult } from "@mcp-cli/core";
 import { _restoreOptions, options, readInstallMarker } from "@mcp-cli/core";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { cmdUpgrade, parseUpgradeArgs } from "./upgrade";
 
 describe("parseUpgradeArgs", () => {
@@ -330,7 +330,7 @@ describe("cmdUpgrade full flow", () => {
   let origMcpCliDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `mcx-upgrade-flow-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("mcx-upgrade-flow-").path;
     origMcpCliDir = options.MCP_CLI_DIR;
     options.MCP_CLI_DIR = join(tmpDir, ".mcp-cli");
     mkdirSync(options.MCP_CLI_DIR, { recursive: true });

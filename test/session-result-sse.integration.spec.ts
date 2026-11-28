@@ -89,7 +89,7 @@ describe("session.result via /events — cross-thread integration (#1681)", () =
           if (ev.event === "session.result" || ev.event === "session.idle") {
             received.push(ev);
           }
-          // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
+          // doing-it-wrong-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected (#3465)
         } catch {
           // non-JSON line (heartbeat, etc.) — ignore
         }

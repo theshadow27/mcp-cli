@@ -113,7 +113,7 @@ describe("OpenCodeSse", () => {
               try {
                 controller.enqueue('event: ping\ndata: {"n":2}\n\n');
                 controller.close();
-                // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+                // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
               } catch {
                 // Controller may be closed by abort
               }
@@ -140,7 +140,7 @@ describe("OpenCodeSse", () => {
 
     const sse = new OpenCodeSse({
       baseUrl,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: (e) => events.push(e),
       onClose: () => {
         closed = true;
@@ -166,7 +166,7 @@ describe("OpenCodeSse", () => {
     let closed = false;
     const sse = new OpenCodeSse({
       baseUrl,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: () => {},
       onClose: () => {
         closed = true;
@@ -192,7 +192,7 @@ describe("OpenCodeSse", () => {
     // Override baseUrl to hit the error endpoint by using a custom URL structure
     const sse = new OpenCodeSse({
       baseUrl: `${baseUrl}/error-status?x=1`,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: () => {},
       onError: (e) => {
         error = e;
@@ -213,7 +213,7 @@ describe("OpenCodeSse", () => {
     let closed = false;
     const sse = new OpenCodeSse({
       baseUrl: `${baseUrl}/slow?x=1`,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: () => {},
       onClose: () => {
         closed = true;
@@ -236,7 +236,7 @@ describe("OpenCodeSse", () => {
 
     const sse = new OpenCodeSse({
       baseUrl: `${baseUrl}/slow?x=1`,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: (e) => events.push(e),
       onClose: () => {
         closed = true;
@@ -268,7 +268,7 @@ describe("OpenCodeSse", () => {
 
     const sse = new OpenCodeSse({
       baseUrl,
-      cwd: "/tmp",
+      cwd: "/work",
       onEvent: () => {},
       onClose: () => {
         closed = true;

@@ -368,6 +368,7 @@ export function defaultDeps(): MemoryDeps {
       };
     },
     writeTempFile: (content) => {
+      // doing-it-wrong-ignore no-raw-temp: shipped code cannot import the am-i-done devDependency (#3467)
       const path = join(tmpdir(), `memory-audit-response-${Date.now()}.txt`);
       writeFileSync(path, content, "utf-8");
       return path;

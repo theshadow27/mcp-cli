@@ -7,10 +7,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { createDomainResolver, createMcxDbDomainSource } from "../domain-resolver";
 import { EventLog } from "../event-log";
 import { adoptUnassignedDomains } from "./adopt-domains";
@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 function setup() {
-  const home = mkdtempSync(join(tmpdir(), "mcx-adopt-"));
+  const home = tmpDir("mcx-adopt-").path;
   dirs.push(home);
   const inside = join(home, "myrepo");
   const outside = join(home, "elsewhere");

@@ -258,7 +258,7 @@ describe("ClaudeServer", () => {
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
       type: "db:upsert",
-      session: { sessionId: "s1", pid: 999, state: "active", model: "claude-sonnet-4-6", cwd: "/tmp" },
+      session: { sessionId: "s1", pid: 999, state: "active", model: "claude-sonnet-4-6", cwd: "/work" },
     });
 
     const row = db.getSession("s1");

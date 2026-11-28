@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { missingPath, tmpDir, tmpFile } from "am-i-done/tmp";
 import { _restoreOptions, options } from "./constants";
 import {
   type ExecutableIdentity,
@@ -86,7 +86,7 @@ describe("update check cache", () => {
 
   beforeEach(() => {
     origDir = options.MCP_CLI_DIR;
-    const tmp = join(tmpdir(), `mcp-cli-upgrade-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const tmp = tmpDir("mcp-cli-upgrade-test-").path;
     mkdirSync(tmp, { recursive: true });
     options.MCP_CLI_DIR = tmp;
   });
@@ -168,7 +168,7 @@ describe("checkForUpdate", () => {
 
   beforeEach(() => {
     origDir = options.MCP_CLI_DIR;
-    const tmp = join(tmpdir(), `mcp-cli-check-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const tmp = tmpDir("mcp-cli-check-test-").path;
     mkdirSync(tmp, { recursive: true });
     options.MCP_CLI_DIR = tmp;
   });
@@ -384,7 +384,7 @@ describe("install marker", () => {
 
   beforeEach(() => {
     origDir = options.MCP_CLI_DIR;
-    const tmp = join(tmpdir(), `mcp-cli-marker-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const tmp = tmpDir("mcp-cli-marker-test-").path;
     mkdirSync(tmp, { recursive: true });
     options.MCP_CLI_DIR = tmp;
   });
@@ -518,7 +518,8 @@ describe("currentExecutable", () => {
   });
 
   test("hashes the file's contents on demand", () => {
-    const path = join(tmpdir(), `mcp-cli-exe-hash-${process.pid}`);
+    using file = tmpFile("mcp-cli-exe-hash");
+    const path = file.path;
     writeFileSync(path, "0123456789", "utf-8");
     try {
       expect(currentExecutable(path)?.sha256()).toBe(createHash("sha256").update("0123456789").digest("hex"));
@@ -528,7 +529,8 @@ describe("currentExecutable", () => {
   });
 
   test("hashing returns null when the file goes away underneath it", () => {
-    const path = join(tmpdir(), `mcp-cli-exe-vanish-${process.pid}`);
+    using file = tmpFile("mcp-cli-exe-vanish");
+    const path = file.path;
     writeFileSync(path, "0123456789", "utf-8");
     const exe = currentExecutable(path);
     rmSync(path, { force: true });
@@ -536,6 +538,7 @@ describe("currentExecutable", () => {
   });
 
   test("returns null for a path that doesn't exist", () => {
-    expect(currentExecutable(join(tmpdir(), "definitely-not-a-binary-3260"))).toBeNull();
+    using missing = missingPath("definitely-not-a-binary-3260");
+    expect(currentExecutable(missing.path)).toBeNull();
   });
 });

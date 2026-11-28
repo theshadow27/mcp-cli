@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: transitive member of catalog.ts ↔ seeds.ts cycle
 /**
  * Site configuration loader.
  *

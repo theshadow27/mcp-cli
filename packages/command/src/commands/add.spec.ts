@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpConfigFile, ServerConfig } from "@mcp-cli/core";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../../test/test-options";
 import { buildServerConfig, cmdAdd, cmdAddJson, parseAddArgs } from "./add";
 import {
@@ -357,7 +357,7 @@ describe("config file operations", () => {
   let serversPath: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = makeTmpDir("mcp-cli-test-").path;
     mkdirSync(tmpDir, { recursive: true });
     serversPath = join(tmpDir, "servers.json");
   });

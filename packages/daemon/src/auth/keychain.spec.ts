@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { readClaudeSessionToken, readCredentialsFileToken, readKeychainTokens } from "./keychain";
 
 // Save original so we can restore after platform override tests
@@ -223,34 +223,34 @@ describe("readCredentialsFileToken", () => {
   });
 
   test("returns null when the file does not exist", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     const result = await readCredentialsFileToken(envFor(dir));
     expect(result).toBeNull();
   });
 
   test("returns null on malformed JSON", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeCredentials(dir, "not-valid-json{{{");
     const result = await readCredentialsFileToken(envFor(dir));
     expect(result).toBeNull();
   });
 
   test("returns null when claudeAiOauth is absent", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeCredentials(dir, { somethingElse: true });
     const result = await readCredentialsFileToken(envFor(dir));
     expect(result).toBeNull();
   });
 
   test("returns null when accessToken is missing", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeCredentials(dir, { claudeAiOauth: { expiresAt: Date.now() + 3_600_000 } });
     const result = await readCredentialsFileToken(envFor(dir));
     expect(result).toBeNull();
   });
 
   test("returns null when the token is expired", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeCredentials(dir, {
       claudeAiOauth: { accessToken: "expired-tok", expiresAt: Date.now() - 1000 },
     });
@@ -259,7 +259,7 @@ describe("readCredentialsFileToken", () => {
   });
 
   test("returns the token when present and unexpired", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeCredentials(dir, {
       claudeAiOauth: {
         accessToken: "live-tok",
@@ -277,8 +277,8 @@ describe("readCredentialsFileToken", () => {
   });
 
   test("CLAUDE_SECURESTORAGE_CONFIG_DIR takes precedence over CLAUDE_CONFIG_DIR", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
-    const secureDir = mkdtempSync(join(tmpdir(), "mcx-creds-secure-"));
+    dir = tmpDir("mcx-creds-").path;
+    const secureDir = tmpDir("mcx-creds-secure-").path;
     try {
       writeCredentials(dir, { claudeAiOauth: { accessToken: "wrong-dir-tok" } });
       writeCredentials(secureDir, { claudeAiOauth: { accessToken: "secure-dir-tok" } });
@@ -304,7 +304,7 @@ describe("readClaudeSessionToken", () => {
 
   test("falls back to the credentials file off-darwin", async () => {
     setPlatform("linux");
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeFileSync(
       join(dir, ".credentials.json"),
       JSON.stringify({ claudeAiOauth: { accessToken: "file-tok", expiresAt: Date.now() + 3_600_000 } }),
@@ -316,14 +316,14 @@ describe("readClaudeSessionToken", () => {
 
   test("returns null off-darwin when neither source has a token", async () => {
     setPlatform("linux");
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     const result = await readClaudeSessionToken({ CLAUDE_CONFIG_DIR: dir });
     expect(result).toBeNull();
   });
 
   test("prefers the Keychain over the credentials file on darwin", async () => {
     if (originalPlatform !== "darwin") return;
-    dir = mkdtempSync(join(tmpdir(), "mcx-creds-"));
+    dir = tmpDir("mcx-creds-").path;
     writeFileSync(
       join(dir, ".credentials.json"),
       JSON.stringify({ claudeAiOauth: { accessToken: "file-tok", expiresAt: Date.now() + 3_600_000 } }),

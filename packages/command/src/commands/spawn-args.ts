@@ -86,9 +86,9 @@ export function parseSharedSpawnArgs(
         sawAllowOnly = true;
         allowOnly = true;
       }
-      // dotw-ignore no-manual-arg-parsing: greedy multi-value consume with looksLikeToolName heuristic cannot be expressed in parseFlags
+      // doing-it-wrong-ignore no-manual-arg-parsing: greedy multi-value consume with looksLikeToolName heuristic cannot be expressed in parseFlags (#3465)
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        rawAllow.push(args[++i]);
       }
       if (rawAllow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else {

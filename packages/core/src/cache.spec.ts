@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { missingPath, tmpDir as scratchDir } from "am-i-done/tmp";
 import { createAliasCache, pruneExpiredCache } from "./cache";
 import { _restoreOptions, options } from "./constants";
 
@@ -9,7 +9,7 @@ const EXPIRY_WAIT_MS = 5;
 const TICK_MS = 1;
 
 function tmpDir(): string {
-  const dir = join(tmpdir(), `mcp-cli-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = scratchDir("mcp-cli-cache-test-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -113,7 +113,8 @@ describe("pruneExpiredCache", () => {
 
   test("returns 0 when cache dir does not exist", () => {
     // Point to non-existent dir
-    options.CACHE_DIR = join(tmpdir(), `nonexistent-${Math.random().toString(36).slice(2)}`);
+    using missing = missingPath("nonexistent");
+    options.CACHE_DIR = missing.path;
     expect(pruneExpiredCache()).toBe(0);
   });
 

@@ -546,7 +546,9 @@ describe("`stopped` is terminal at every writer", () => {
 
     closes[0]?.(); // now let the crash path run on to giveUp
     // Bounded negative assertion: give the wrong outcome its chance to appear.
-    await pollUntil(() => failures.length > 0 || h.server.state === "failed", 400).catch(() => {});
+    await pollUntil(() => failures.length > 0 || h.server.state === "failed", 400).catch(() => {
+      /* only a bounded wait; timing out is the expected outcome */
+    });
 
     expect(failures).toEqual([]);
     expect(h.server.state).toBe("stopped");

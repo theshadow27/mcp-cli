@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   DEFAULT_RUNS_ON,
   MANIFEST_FILENAMES,
@@ -24,7 +24,7 @@ import {
 
 let dir: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "mcx-manifest-"));
+  dir = tmpDir("mcx-manifest-").path;
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });

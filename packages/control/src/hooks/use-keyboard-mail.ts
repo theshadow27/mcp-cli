@@ -79,7 +79,9 @@ export function handleMailInput(input: string, key: Key, nav: MailNav): boolean 
       nav.setScrollOffset(() => 0);
       // Auto-mark as read when expanding (only for human-addressed mail)
       if (!msg.read && (msg.recipient === "human" || msg.recipient === "*")) {
-        callFn("markRead", { id: msg.id, ...controlMailScope() }).catch(() => {});
+        callFn("markRead", { id: msg.id, ...controlMailScope() }).catch(() => {
+          /* best effort: an unread flag is retried on the next view and must not interrupt navigation */
+        });
       }
     }
     return true;
@@ -89,7 +91,9 @@ export function handleMailInput(input: string, key: Key, nav: MailNav): boolean 
   if (input === "m") {
     const msg = messages[selectedIndex];
     if (msg && !msg.read && (msg.recipient === "human" || msg.recipient === "*")) {
-      callFn("markRead", { id: msg.id, ...controlMailScope() }).catch(() => {});
+      callFn("markRead", { id: msg.id, ...controlMailScope() }).catch(() => {
+        /* best effort: an unread flag is retried on the next view and must not interrupt navigation */
+      });
     }
     return true;
   }

@@ -57,7 +57,7 @@ function openEventStream(
         if (!trimmed) continue;
         try {
           yield JSON.parse(trimmed) as MonitorEvent;
-          // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
+          // doing-it-wrong-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected (#3465)
         } catch {
           // Skip malformed lines
         }
@@ -68,7 +68,7 @@ function openEventStream(
     if (trailing.trim()) {
       try {
         yield JSON.parse(trailing.trim()) as MonitorEvent;
-        // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
+        // doing-it-wrong-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected (#3465)
       } catch {
         // Ignore incomplete trailing data
       }
@@ -177,7 +177,9 @@ describe("defineMonitor → event stream integration (#1724)", () => {
       expect(stoppedEvent?.category).toBe("heartbeat");
     } finally {
       abort();
-      await collect.catch(() => {}); // suppress AbortError from stream close
+      await collect.catch(() => {
+        /* AbortError from the stream close is expected */
+      }); // suppress AbortError from stream close
     }
   });
 });

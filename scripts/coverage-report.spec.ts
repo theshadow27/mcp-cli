@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   RAN_FILES_RE,
   checkSpecCountFloor,
@@ -40,7 +40,7 @@ describe("parseDiscoveredFileCount", () => {
 
 describe("countExpectedSpecFiles", () => {
   function makeFixture(): string {
-    const root = mkdtempSync(join(tmpdir(), "cov-report-"));
+    const root = tmpDir("cov-report-").path;
     mkdirSync(join(root, "pkg/src/nested"), { recursive: true });
     mkdirSync(join(root, "other"), { recursive: true });
     writeFileSync(join(root, "pkg/src/a.spec.ts"), "");

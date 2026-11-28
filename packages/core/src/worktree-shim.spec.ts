@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { missingPath, tmpDir as scratchDir } from "am-i-done/tmp";
 import { WORKTREE_CONFIG_FILENAME } from "./worktree-config";
 import type { WorktreeShimDeps } from "./worktree-shim";
 import {
@@ -30,7 +30,7 @@ function makeDeps(overrides?: Partial<WorktreeShimDeps>): WorktreeShimDeps {
 
 /** Create a temp directory for test isolation. */
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `worktree-shim-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = scratchDir("worktree-shim-test-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -842,8 +842,8 @@ describe("isSquashMerged (real git)", () => {
 
   test("returns false (fail-closed) when git plumbing fails", () => {
     // Nonexistent repo path → merge-base fails → no reclaim on uncertainty.
-    const missing = join(tmpdir(), `no-such-repo-${Date.now()}`);
-    expect(isSquashMerged(missing, "feat", "main", deps)).toBe(false);
+    using missing = missingPath("no-such-repo");
+    expect(isSquashMerged(missing.path, "feat", "main", deps)).toBe(false);
   });
 });
 

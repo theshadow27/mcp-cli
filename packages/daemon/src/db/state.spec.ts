@@ -1,34 +1,34 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { McxDb } from "./state";
 
 /** The unassigned mail partition — what every pre-#3038 mail test was implicitly using. */
 const D0 = NO_DOMAIN_ID;
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return join(tmpDir("t-").path, `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function cleanup(path: string): void {
   try {
     unlinkSync(path);
-    // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+    // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
   } catch {
     // ignore
   }
   try {
     unlinkSync(`${path}-wal`);
-    // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+    // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
   } catch {
     // ignore
   }
   try {
     unlinkSync(`${path}-shm`);
-    // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+    // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
   } catch {
     // ignore
   }
@@ -626,7 +626,7 @@ describe("McxDb", () => {
 
     test("pruneExpiredAliases cleans up alias files", () => {
       const db = createDb();
-      const tmpFile = join(tmpdir(), `mcp-cli-test-prune-${Date.now()}.ts`);
+      const tmpFile = join(tmpDir("t-").path, `mcp-cli-test-prune-${Date.now()}.ts`);
       // Create a real file so unlinkSync has something to delete
       const { writeFileSync } = require("node:fs");
       const { existsSync } = require("node:fs");
@@ -1247,7 +1247,7 @@ describe("McxDb", () => {
   // and predicated on none: every read below would have returned the other domain's row.
   describe("mail domain partitioning", () => {
     function twoDomains(db: McxDb): { alpha: number; beta: number } {
-      const root = mkdtempSync(join(tmpdir(), "mcx-mail-domains-"));
+      const root = tmpDir("mcx-mail-domains-").path;
       mkdirSync(join(root, "alpha"), { recursive: true });
       mkdirSync(join(root, "beta"), { recursive: true });
       return {
@@ -1399,7 +1399,7 @@ describe("McxDb", () => {
         pid: 1234,
         state: "active",
         model: "opus",
-        cwd: "/tmp",
+        cwd: "/work",
         worktree: "wt-1",
       });
 
@@ -1410,7 +1410,7 @@ describe("McxDb", () => {
       expect(session?.pid).toBe(1234);
       expect(session?.state).toBe("active");
       expect(session?.model).toBe("opus");
-      expect(session?.cwd).toBe("/tmp");
+      expect(session?.cwd).toBe("/work");
       expect(session?.worktree).toBe("wt-1");
       expect(session?.totalCost).toBe(0);
       expect(session?.totalTokens).toBe(0);
@@ -2095,8 +2095,8 @@ describe("McxDb", () => {
 
       // Create a real dir and a symlink to it. Use mkdtempSync for a unique base
       // to avoid collisions when tests run in parallel.
-      const realDir = mkdtempSync(join(tmpdir(), "mcp-cli-real-"));
-      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const realDir = tmpDir("mcp-cli-real-").path;
+      const symlinkDir = join(tmpDir("t-").path, `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       symlinkSync(realDir, symlinkDir);
 
       try {
@@ -2129,7 +2129,7 @@ describe("McxDb", () => {
       } finally {
         try {
           unlinkSync(symlinkDir);
-          // dotw-ignore test-empty-catch: best-effort cleanup — symlink may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — symlink may already be gone (#3465)
         } catch {
           // ignore
         }
@@ -2141,8 +2141,8 @@ describe("McxDb", () => {
       const p = tmpDb();
       paths.push(p);
 
-      const realDir = mkdtempSync(join(tmpdir(), "mcp-cli-real-"));
-      const symlinkDir = join(tmpdir(), `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      const realDir = tmpDir("mcp-cli-real-").path;
+      const symlinkDir = join(tmpDir("t-").path, `mcp-cli-link-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       symlinkSync(realDir, symlinkDir);
 
       try {
@@ -2189,7 +2189,7 @@ describe("McxDb", () => {
       } finally {
         try {
           unlinkSync(symlinkDir);
-          // dotw-ignore test-empty-catch: best-effort cleanup — symlink may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — symlink may already be gone (#3465)
         } catch {
           // ignore
         }

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { CapturedResponse } from "./browser/engine";
 import { CredentialVault } from "./credentials";
 import { Sniffer } from "./sniffer";
@@ -54,7 +54,7 @@ describe("Sniffer", () => {
 describe("Sniffer binary sidecars", () => {
   let tmp: string;
   beforeEach(() => {
-    tmp = join(tmpdir(), `mcp-cli-sniffer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tmp = tmpDir("mcp-cli-sniffer-").path;
     mkdirSync(tmp, { recursive: true });
     options.SITES_DIR = join(tmp, "sites");
   });

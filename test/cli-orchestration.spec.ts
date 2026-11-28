@@ -1,3 +1,7 @@
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 /**
  * CLI→daemon orchestration smoke tests using the mock agent provider.
  *
@@ -7,11 +11,7 @@
  *
  * @see https://github.com/theshadow27/mcp-cli/issues/1007
  */
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import type { TestDaemon } from "./harness";
 import { pollUntil, rpc, startTestDaemon } from "./harness";
 
@@ -309,7 +309,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
     const gitSafeEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined };
 
     beforeAll(() => {
-      gitDir = mkdtempSync(join(tmpdir(), "mcp-wt-test-"));
+      gitDir = tmpDir("mcp-wt-test-").path;
       execSync(
         'git init && git -c user.email="test@test.com" -c user.name="Test" commit --allow-empty -m test-fixture-init',
         { cwd: gitDir, stdio: "pipe", env: gitSafeEnv },
@@ -320,7 +320,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
     afterAll(() => {
       try {
         execSync("git worktree prune", { cwd: gitDir, stdio: "pipe", env: gitSafeEnv });
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
       } catch {
         // best-effort
       }
@@ -672,7 +672,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
     let holdScript: string;
 
     beforeAll(() => {
-      holdDir = mkdtempSync(join(tmpdir(), "mcx-3140-"));
+      holdDir = tmpDir("mcx-3140-").path;
       // A script that never reaches its last entry keeps the session live.
       holdScript = writeScript(daemon.dir, "hold", [{ delay: 600_000, text: "holding" }]);
     });
@@ -765,7 +765,7 @@ describe("CLI→daemon orchestration (mock provider)", () => {
       // runner while passing on an idle box. Deterministic coverage of the
       // in-flight branch specifically lives in worktree-holder.spec.ts, where
       // `check()` is driven directly and the ordering is not a wall clock.
-      const raceDir = mkdtempSync(join(tmpdir(), "mcx-3140-race-"));
+      const raceDir = tmpDir("mcx-3140-race-").path;
       try {
         const [a, b] = await Promise.all([
           rpc(daemon.socketPath, "callTool", {

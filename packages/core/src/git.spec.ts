@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   type ExecFn,
   type GitSpawnFn,
@@ -34,14 +34,14 @@ function spawnResult(overrides: Partial<SpawnResult>): SpawnResult {
 
 /** Create a temp dir with a .git file (like a worktree) */
 function makeFakeWorktree(): string {
-  const dir = mkdtempSync(join(tmpdir(), "git-test-"));
+  const dir = tmpDir("git-test-").path;
   writeFileSync(join(dir, ".git"), "gitdir: /some/repo\n");
   return dir;
 }
 
 /** Create a temp dir WITHOUT a .git entry (simulates a bare repo root) */
 function makeFakeBareRepo(): string {
-  return mkdtempSync(join(tmpdir(), "git-bare-"));
+  return tmpDir("git-bare-").path;
 }
 
 describe("fixCoreBare", () => {
@@ -269,7 +269,7 @@ describe("findGitRoot", () => {
   const gitOpts = { env: cleanEnv, stdout: "ignore" as const, stderr: "ignore" as const };
 
   test("returns the repo root from a subdirectory inside a real repo", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-root-"));
+    const repo = tmpDir("git-root-").path;
     try {
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
       const sub = join(repo, "nested", "deeper");
@@ -283,7 +283,7 @@ describe("findGitRoot", () => {
   });
 
   test("returns null outside any git repository", () => {
-    const dir = mkdtempSync(join(tmpdir(), "git-no-root-"));
+    const dir = tmpDir("git-no-root-").path;
     try {
       expect(findGitRoot(dir)).toBeNull();
     } finally {
@@ -292,7 +292,7 @@ describe("findGitRoot", () => {
   });
 
   test("returns main checkout root from inside a linked worktree", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-wt-main-"));
+    const repo = tmpDir("git-wt-main-").path;
     const wt = join(repo, "linked-wt");
     try {
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], gitOpts);
@@ -317,7 +317,7 @@ describe("findGitRoot", () => {
   });
 
   test("returns git directory for a bare repo", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-bare-"));
+    const repo = tmpDir("git-bare-").path;
     try {
       Bun.spawnSync(["git", "-C", repo, "init", "--bare", "-q"], gitOpts);
       const got = findGitRoot(repo);
@@ -328,7 +328,7 @@ describe("findGitRoot", () => {
   });
 
   test("caches result: repeated calls for the same path return identical value", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-cache-"));
+    const repo = tmpDir("git-cache-").path;
     try {
       clearFindGitRootCache();
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
@@ -341,7 +341,7 @@ describe("findGitRoot", () => {
   });
 
   test("caches null for directories outside a git repo", () => {
-    const dir = mkdtempSync(join(tmpdir(), "git-cache-null-"));
+    const dir = tmpDir("git-cache-null-").path;
     try {
       clearFindGitRootCache();
       const first = findGitRoot(dir);
@@ -354,7 +354,7 @@ describe("findGitRoot", () => {
   });
 
   test("clearFindGitRootCache resets the cache", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-cache-clear-"));
+    const repo = tmpDir("git-cache-clear-").path;
     try {
       clearFindGitRootCache();
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
@@ -380,7 +380,7 @@ describe("findWorktreeRoot (#2737)", () => {
   };
 
   test("returns the worktree's OWN toplevel, not the main checkout, from a linked worktree", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-wt-local-"));
+    const repo = tmpDir("git-wt-local-").path;
     const wt = join(repo, "linked-wt");
     try {
       clearFindWorktreeRootCache();
@@ -400,7 +400,7 @@ describe("findWorktreeRoot (#2737)", () => {
   });
 
   test("returns the repo root from a subdirectory of a normal checkout", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-wt-sub-"));
+    const repo = tmpDir("git-wt-sub-").path;
     try {
       clearFindWorktreeRootCache();
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
@@ -414,7 +414,7 @@ describe("findWorktreeRoot (#2737)", () => {
   });
 
   test("returns null outside any git repository", () => {
-    const dir = mkdtempSync(join(tmpdir(), "git-wt-none-"));
+    const dir = tmpDir("git-wt-none-").path;
     try {
       clearFindWorktreeRootCache();
       expect(findWorktreeRoot(dir)).toBeNull();
@@ -424,7 +424,7 @@ describe("findWorktreeRoot (#2737)", () => {
   });
 
   test("clearFindWorktreeRootCache resets the cache", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-wt-cache-"));
+    const repo = tmpDir("git-wt-cache-").path;
     try {
       clearFindWorktreeRootCache();
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
@@ -505,7 +505,7 @@ describe("git-unavailable vs not-a-repo distinction (#2862)", () => {
 
 describe("gitDiscoverEnv strip reaches --show-toplevel (#2862 secondary gap)", () => {
   test("findWorktreeRoot resolves the correct toplevel even with GIT_DIR/GIT_WORK_TREE injected", () => {
-    const repo = mkdtempSync(join(tmpdir(), "git-envstrip-"));
+    const repo = tmpDir("git-envstrip-").path;
     const priorGitDir = process.env.GIT_DIR;
     const priorWorkTree = process.env.GIT_WORK_TREE;
     try {

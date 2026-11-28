@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import type { GitRootResult } from "./git";
 import {
   RESERVED_SPAWN_ENV_KEYS,
@@ -29,7 +29,7 @@ beforeAll(() => {
   // `tmpdir()` is `/var/folders/...` and `/var` is a symlink, so an un-resolved fixture
   // root makes the `rootedAt` stub answer "not-a-repo" for its own repo and the ascent
   // stops at the start directory.
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "mcx-profile-")));
+  dir = realpathSync(tmpDir("mcx-profile-").path);
 });
 
 afterAll(() => {

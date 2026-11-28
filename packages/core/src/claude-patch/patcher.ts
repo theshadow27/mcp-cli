@@ -350,6 +350,7 @@ function readConfigClaudeBinary(configPath: string): string | null {
  */
 async function resignStagedBinary(deps: PatcherDeps, sourcePath: string, stagingPath: string): Promise<void> {
   const entitlements = await deps.extractEntitlements(sourcePath);
+  // doing-it-wrong-ignore no-raw-temp: shipped code cannot import the am-i-done devDependency; removed in the finally below (#3467)
   const entPath = join(tmpdir(), `mcx-entitlements-${process.pid}-${Date.now()}.plist`);
   writeFileSync(entPath, entitlements, { mode: 0o600 });
   try {

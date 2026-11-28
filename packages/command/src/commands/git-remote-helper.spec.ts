@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { isGitRemoteHelperInvocation, parseRemoteUrl, runGitRemoteHelper } from "./git-remote-helper";
 
 describe("isGitRemoteHelperInvocation", () => {
@@ -73,7 +73,7 @@ describe("runGitRemoteHelper", () => {
   let gitDir: string;
 
   beforeEach(() => {
-    gitDir = mkdtempSync(join(tmpdir(), "mcx-grh-test-"));
+    gitDir = tmpDir("mcx-grh-test-").path;
   });
 
   afterEach(() => {

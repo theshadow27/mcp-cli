@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMethod } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { RequestHandler } from "../handler-types";
 import { AliasHandlers } from "./alias";
 
@@ -13,7 +13,7 @@ function invoke(map: Map<IpcMethod, RequestHandler>, method: IpcMethod): Request
 }
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `alias-spec-${Math.random().toString(36).slice(2)}`);
+  const dir = tmpDir("alias-spec-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }

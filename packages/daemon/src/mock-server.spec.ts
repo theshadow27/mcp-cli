@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AGENT_PROTOCOL_VERSION,
@@ -11,6 +10,7 @@ import {
   silentLogger,
 } from "@mcp-cli/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { tmpDir } from "am-i-done/tmp";
 import { pollUntil } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
 import { McxDb } from "./db/state";
@@ -189,7 +189,7 @@ describe("MockServer", () => {
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
       type: "db:upsert",
-      session: { sessionId: "s1", state: "active", model: "mock", cwd: "/tmp" },
+      session: { sessionId: "s1", state: "active", model: "mock", cwd: "/work" },
     });
 
     const row = db.getSession("s1");
@@ -723,7 +723,7 @@ describe("Mock script DSL (extended entries)", () => {
 // ── NDJSON recording integration ──
 
 describe("MockServer NDJSON recording", () => {
-  const recDir = join(tmpdir(), `rec-test-${process.pid}`);
+  const recDir = join(tmpDir("t-").path, `rec-test-${process.pid}`);
   let server: MockServer | undefined;
   let db: McxDb | undefined;
   let recorder: NdjsonRecorder | undefined;

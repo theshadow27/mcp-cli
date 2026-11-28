@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../test/test-options";
 import {
   createCard,
@@ -30,7 +30,7 @@ describe("resolveCardsDir", () => {
 
   test("acceptance: unconfigured outside a git repo lands in ~/.mcp-cli/cards/<domain>/", () => {
     using opts = testOptions();
-    const plainDir = mkdtempSync(join(tmpdir(), "cards-nongit-"));
+    const plainDir = tmpDir("cards-nongit-").path;
     try {
       expect(existsSync(join(plainDir, ".git"))).toBe(false);
       const dir = resolveCardsDir({ configuredDir: undefined, domain: "phoenix", root: plainDir });
@@ -43,7 +43,7 @@ describe("resolveCardsDir", () => {
 
   test("acceptance: unconfigured stays out of a tracked directory even when root IS a git repo", () => {
     using opts = testOptions();
-    const repoDir = mkdtempSync(join(tmpdir(), "cards-git-"));
+    const repoDir = tmpDir("cards-git-").path;
     try {
       // Strip inherited GIT_DIR/GIT_WORK_TREE/etc — this spec can itself run inside a git
       // hook (am-i-done's own pre-commit/pre-push), and without stripping them `git init`

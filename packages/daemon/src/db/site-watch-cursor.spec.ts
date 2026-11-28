@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "./state";
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-watch-cursor-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return tmpFile("mcp-cli-watch-cursor.db").path;
 }
 
 const paths: string[] = [];
@@ -20,7 +20,7 @@ afterEach(() => {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-        // dotw-ignore test-empty-catch: best-effort cleanup
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup (#3465)
       } catch {
         // ignore
       }

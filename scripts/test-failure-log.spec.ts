@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   type TestFailureEntry,
   appendFailures,
@@ -14,7 +14,7 @@ import {
 } from "./test-failure-log";
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `test-failure-log-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = tmpDir("test-failure-log-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }

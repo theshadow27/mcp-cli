@@ -70,13 +70,13 @@ describe("buildSessionScope", () => {
     const s = buildSessionScope({
       domain: undefined,
       all: false,
-      cwd: "/tmp/x",
+      cwd: "/work/x",
       repoScoped: true,
       getGitRoot: () => lookupFailure("git exploded"),
       printError: (m) => messages.push(m),
     });
     expect(messages).toEqual(["git exploded"]);
-    expect(s.args).toEqual({ domainCwd: "/tmp/x" });
+    expect(s.args).toEqual({ domainCwd: "/work/x" });
   });
 
   test("the label names domains alone only when -d was explicit", () => {

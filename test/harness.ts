@@ -4,11 +4,11 @@
  * Spawns real daemon processes in isolated temp directories
  * via the MCP_CLI_DIR env var override.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { IpcResponse, ManagedHandle, ServerConfig, ServerConfigMap } from "@mcp-cli/core";
 import { spawnManaged } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 
 export interface MockServer {
   handle: ManagedHandle;
@@ -27,7 +27,8 @@ export interface TestDaemon {
 
 /** Create an isolated temp directory for a test daemon */
 export function createTestDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "mcp-test-"));
+  // Short prefix: the dir holds mcpd.sock, and a Unix socket path must stay under 104 bytes.
+  const dir = tmpDir("t-").path;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }

@@ -5,7 +5,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -14,9 +13,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaRateLimitError, flockUnlock, tryFlockExclusive } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { restoreEnv } from "../../../test/env";
 import { testOptions } from "../../../test/test-options";
 import {
@@ -94,7 +93,7 @@ function sandbox(opts?: {
   claudeConfig?: Record<string, unknown> | null;
   policy?: Record<string, unknown> | null;
 }): Sandbox {
-  const root = mkdtempSync(join(tmpdir(), "mcx-auth-"));
+  const root = tmpDir("mcx-auth-").path;
   const claudeHome = join(root, ".claude");
   mkdirSync(claudeHome, { recursive: true });
 

@@ -658,6 +658,7 @@ export async function validateFreeformTsc(
     };
   }
 
+  // doing-it-wrong-ignore no-raw-temp: shipped code cannot import the am-i-done devDependency; removed in the finally below (#3467)
   const tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-tsc-"));
   const scriptName = basename(sourcePath);
 

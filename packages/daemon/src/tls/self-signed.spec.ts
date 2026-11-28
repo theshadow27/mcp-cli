@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   certPaths,
   ensureSelfSignedCert,
@@ -16,7 +16,7 @@ import {
 const POLL_MS = 20;
 
 function freshDir(): string {
-  return mkdtempSync(join(tmpdir(), "tls-test-"));
+  return tmpDir("tls-test-").path;
 }
 
 describe("certPaths", () => {

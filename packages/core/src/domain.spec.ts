@@ -1,15 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir as osTmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { missingPath, tmpDir } from "am-i-done/tmp";
 
-/**
- * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
- * symlink, so a fixture path built on the raw value already contains an unresolved
- * ancestor — and these tests assert on exactly how much of a path canonicalization
- * leaves alone. Resolving the root once keeps the only symlink in a fixture the one the
- * test creates on purpose.
- */
-const tmpdir = (): string => realpathSync(osTmpdir());
 import { isAbsolute, join } from "node:path";
 import {
   type Domain,
@@ -200,8 +192,8 @@ describe("rejections are INVALID_PARAMS, never INTERNAL_ERROR (#3246)", () => {
   });
 
   test("a domain path that does not exist yet", () => {
-    const absent = join(tmpdir(), "mcx-3246-does-not-exist", "nested");
-    expectInvalidParams(() => canonicalizeExistingDomainPath(absent));
+    using absent = missingPath("mcx-3246-does-not-exist");
+    expectInvalidParams(() => canonicalizeExistingDomainPath(join(absent.path, "nested")));
   });
 
   test("expandLocalDomainPath's four refusals", () => {
@@ -294,7 +286,7 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
     for (const p of made) {
       try {
         rmSync(p, { recursive: true, force: true });
-        // dotw-ignore test-empty-catch: best-effort cleanup
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup (#3465)
       } catch {
         /* ignore */
       }
@@ -302,9 +294,9 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
   });
 
   test("resolves a symlinked directory to its real path", () => {
-    const real = mkdtempSync(join(tmpdir(), "mcx-domain-real-"));
+    const real = tmpDir("mcx-domain-real-").path;
     made.push(real);
-    const link = join(tmpdir(), `mcx-domain-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const link = join(tmpDir("mcx-domain-links-").path, "link");
     symlinkSync(real, link);
     try {
       expect(canonicalizeDomainPath(link)).toBe(realpathSync(real));
@@ -316,9 +308,9 @@ describe("canonicalizeDomainPath — symlinks (#3034 review 8)", () => {
   });
 
   test("a symlinked path and its real path resolve to the same domain", () => {
-    const real = mkdtempSync(join(tmpdir(), "mcx-domain-real2-"));
+    const real = tmpDir("mcx-domain-real2-").path;
     made.push(real);
-    const link = join(tmpdir(), `mcx-domain-link2-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const link = join(tmpDir("mcx-domain-links-").path, "link");
     symlinkSync(real, link);
     try {
       const d = domain("proj", canonicalizeDomainPath(real));
@@ -343,7 +335,7 @@ describe("canonicalizeExistingDomainPath — the registration-time rule (#3210)"
     for (const p of made) {
       try {
         rmSync(p, { recursive: true, force: true });
-        // dotw-ignore test-empty-catch: best-effort cleanup
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup (#3465)
       } catch {
         /* ignore */
       }
@@ -357,10 +349,10 @@ describe("canonicalizeExistingDomainPath — the registration-time rule (#3210)"
   });
 
   test("accepts an existing path and resolves it, so the answer cannot change later", () => {
-    const real = mkdtempSync(join(tmpdir(), "mcx-domain-exists-"));
+    const real = tmpDir("mcx-domain-exists-").path;
     made.push(real);
     mkdirSync(join(real, "sub"));
-    const link = join(tmpdir(), `mcx-domain-exists-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const link = join(tmpDir("mcx-domain-links-").path, "link");
     symlinkSync(real, link);
     try {
       // Both spellings collapse to the same fully-resolved path — nothing lexical is left
@@ -373,9 +365,9 @@ describe("canonicalizeExistingDomainPath — the registration-time rule (#3210)"
   });
 
   test("this is the drift #3210 describes: the two spellings agree only once the path exists", () => {
-    const real = mkdtempSync(join(tmpdir(), "mcx-domain-drift-"));
+    const real = tmpDir("mcx-domain-drift-").path;
     made.push(real);
-    const link = join(tmpdir(), `mcx-domain-drift-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const link = join(tmpDir("mcx-domain-links-").path, "link");
     const viaLink = join(link, "sub");
 
     // Before the path exists, the tolerant form answers with the un-resolved spelling...
@@ -402,7 +394,7 @@ describe("canonicalizeExistingDomainPath — the registration-time rule (#3210)"
   test("an existing FILE is accepted: a fully resolved realpath is the whole invariant", () => {
     // Deliberately not a directory check. Requiring one would be a separate policy about
     // what a domain may be bound to, and it is not what closes the drift class.
-    const real = mkdtempSync(join(tmpdir(), "mcx-domain-file-"));
+    const real = tmpDir("mcx-domain-file-").path;
     made.push(real);
     const file = join(real, "a-file");
     writeFileSync(file, "");

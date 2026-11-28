@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliConfig } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { ExitError } from "../test-helpers";
 import type { TerminalAdapter } from "../tty/adapter";
 import { TERMINAL_NAMES, getAdapter } from "../tty/adapter";
@@ -258,7 +258,7 @@ describe("spawnHeadless", () => {
   let testDir: string;
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `mcp-tty-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = tmpDir("mcp-tty-test-").join("work");
   });
 
   afterEach(() => {

@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: transitive member of use-keyboard-claude.ts ↔ use-keyboard.ts cycle
 import type { ServerStatus } from "@mcp-cli/core";
 import type { Key } from "ink";
 import type { LogsNav } from "./use-keyboard";

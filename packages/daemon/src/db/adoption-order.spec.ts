@@ -14,10 +14,10 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { EventLog } from "../event-log";
 import { importLegacyState } from "./import-legacy";
 import { McxDb } from "./state";
@@ -37,7 +37,7 @@ describe("adoption order (#3039)", () => {
    * `mcx scope` sidecar naming that root — i.e. exactly the box of a user upgrading.
    */
   function makeWorkspace() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-adopt-order-"));
+    const dir = tmpDir("mcx-adopt-order-").path;
     dirs.push(dir);
     const projectRoot = join(dir, "project");
     mkdirSync(join(projectRoot, "wt"), { recursive: true });

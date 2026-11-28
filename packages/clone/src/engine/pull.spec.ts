@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync, execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, resolveRealpath } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { TruncatedChangesError } from "../providers/confluence";
 import type { ChangeEvent, RemoteEntry, RemoteProvider, ResolvedScope } from "../providers/provider";
 import { CloneCache } from "./cache";
@@ -78,7 +78,7 @@ function initGitRepo(): void {
 }
 
 beforeEach(() => {
-  TMP = mkdtempSync(join(tmpdir(), "mcx-pull-spec-"));
+  TMP = tmpDir("mcx-pull-spec-").path;
   repoDir = join(TMP, `repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(repoDir, { recursive: true });
   mkdirSync(join(repoDir, ".clone"), { recursive: true });

@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 
 type FileContent = string | Buffer | object;
 
@@ -23,7 +23,8 @@ function writeFile(path: string, content: FileContent): void {
 
 export function testOptions(input?: TestOptionsInput) {
   const { files, ...overrides } = input ?? {};
-  const dir = mkdtempSync(join(tmpdir(), "mcp-test-"));
+  // Short prefix: the dir holds mcpd.sock, and a Unix socket path must stay under 104 bytes.
+  const dir = tmpDir("t-").path;
 
   options.MCP_CLI_DIR = dir;
   options.DB_PATH = join(dir, "mcx.db");

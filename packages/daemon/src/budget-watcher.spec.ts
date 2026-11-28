@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MonitorEvent, MonitorEventInput } from "@mcp-cli/core";
 import {
@@ -12,6 +11,7 @@ import {
   SESSION_IDLE,
   SESSION_RESULT,
 } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { BudgetWatcher } from "./budget-watcher";
 import { McxDb } from "./db/state";
 import { EventBus } from "./event-bus";
@@ -21,7 +21,7 @@ import type { QuotaPoller, QuotaStatus } from "./quota";
 const dbPaths: string[] = [];
 
 function tmpDbPath(): string {
-  const p = join(tmpdir(), `mcp-budget-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const p = tmpFile("mcp-budget-test.db").path;
   dbPaths.push(p);
   return p;
 }
@@ -31,7 +31,7 @@ function cleanupDbs(): void {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
       } catch {
         /* ignore */
       }

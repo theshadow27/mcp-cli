@@ -1,15 +1,15 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { bundleAlias } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 
 setDefaultTimeout(10_000);
 
 const EXECUTOR_PATH = resolve("packages/daemon/src/monitor-executor.ts");
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `monitor-executor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = tmpDir("monitor-executor-test-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }

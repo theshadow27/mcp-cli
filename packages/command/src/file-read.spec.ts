@@ -75,7 +75,7 @@ describe("path containment guard", () => {
     const link = join(TMP, "escape-link");
     try {
       rmSync(link);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* may not exist */
     }

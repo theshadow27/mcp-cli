@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { closeSync, openSync, unlinkSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { flockUnlock, resolveLinuxLibPath, tryFlockExclusive } from "./flock";
 
-const dir = mkdtempSync(join(tmpdir(), "flock-test-"));
+const dir = tmpDir("flock-test-").path;
 
 describe("tryFlockExclusive", () => {
   let fd1: number | null = null;
@@ -16,7 +15,7 @@ describe("tryFlockExclusive", () => {
     if (fd1 !== null) {
       try {
         closeSync(fd1);
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be released
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be released (#3465)
       } catch {
         /* already closed */
       }
@@ -24,7 +23,7 @@ describe("tryFlockExclusive", () => {
     if (fd2 !== null) {
       try {
         closeSync(fd2);
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be released
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be released (#3465)
       } catch {
         /* already closed */
       }
@@ -33,7 +32,7 @@ describe("tryFlockExclusive", () => {
     fd2 = null;
     try {
       unlinkSync(file);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be released
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be released (#3465)
     } catch {
       /* already gone */
     }
@@ -91,7 +90,7 @@ describe("cross-process flock", () => {
   afterEach(() => {
     try {
       unlinkSync(file);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be released
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be released (#3465)
     } catch {
       /* already gone */
     }

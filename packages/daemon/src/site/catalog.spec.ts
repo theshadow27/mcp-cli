@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { loadCatalog, normalizeRetryOn, removeCall, upsertCall } from "./catalog";
 
 let tmp: string;
 
 beforeEach(() => {
-  tmp = join(tmpdir(), `mcp-cli-site-cat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  tmp = tmpDir("mcp-cli-site-cat-").path;
   mkdirSync(tmp, { recursive: true });
   options.SITES_DIR = join(tmp, "sites");
 });

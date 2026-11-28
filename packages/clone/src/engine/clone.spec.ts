@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED, resolveRealpath } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { RemoteEntry, RemoteProvider, ResolvedScope, Scope } from "../providers/provider";
 import { CloneCache } from "./cache";
 import { clone, computeDepth } from "./clone";
 import { stripFrontmatter } from "./frontmatter";
 import type { VfsProgressEvent } from "./progress";
 
-const TMP = join(tmpdir(), `clone-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const TMP = tmpDir("clone-test-").path;
 
 /** Build env without GIT_* vars so git commands target the test repo, not the parent. */
 function cleanEnv(): Record<string, string> {
@@ -545,7 +545,7 @@ describe("clone progress reporting (#1249)", () => {
 });
 
 describe("clone with --depth", () => {
-  const DEPTH_TMP = join(tmpdir(), `clone-depth-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const DEPTH_TMP = tmpDir("clone-depth-test-").path;
 
   function entry(id: string, title: string, parentId?: string, content?: string): RemoteEntry {
     return {

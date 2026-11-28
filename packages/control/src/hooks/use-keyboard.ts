@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: type-only back-edge with use-keyboard-claude.ts (ClaudeNav type)
 import type { AgentSessionInfo, ServerStatus } from "@mcp-cli/core";
 import { ipcCall, options } from "@mcp-cli/core";
 import { useApp, useInput } from "ink";
@@ -194,7 +193,7 @@ export function useKeyboard({
       }
       process.stdout.write("\x1b[?1049l"); // exit alt screen
       try {
-        // dotw-ignore no-raw-spawn: interactive pager needs inherited stdin/stdout/stderr — cannot use spawnCapture
+        // doing-it-wrong-ignore no-raw-spawn: interactive pager needs inherited stdin/stdout/stderr — cannot use spawnCapture (#3465)
         Bun.spawnSync([...pagerArgs, tmpFile], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       } finally {
         process.stdout.write("\x1b[?1049h"); // re-enter alt screen
@@ -246,7 +245,9 @@ export function useKeyboard({
 
     // Global: shutdown daemon
     if (input === "s") {
-      ipcCall("shutdown").catch(() => {});
+      ipcCall("shutdown").catch(() => {
+        /* the TUI is exiting; there is nobody left to report a failed shutdown to */
+      });
       exit();
       return;
     }

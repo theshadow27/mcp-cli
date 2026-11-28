@@ -217,7 +217,9 @@ export function App() {
             setConfigInfo(info);
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          /* best effort: config info is cosmetic and is refetched on the next interval tick */
+        });
     };
     fetchConfig();
     const interval = setInterval(fetchConfig, CONFIG_REFRESH_INTERVAL_MS);

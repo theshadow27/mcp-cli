@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: adapters import the TerminalAdapter interface from this module; type-only back-edge
 /**
  * TerminalAdapter — common interface for launching commands in terminal emulators.
  *

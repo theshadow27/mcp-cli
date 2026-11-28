@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PatchedMeta } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { SelfSignedMaterial } from "../tls/self-signed";
 import { isResolved, resolveClaudeForSpawn } from "./binary-resolver";
 import type { ResolverDeps } from "./binary-resolver";
@@ -111,7 +111,7 @@ describe("resolveClaudeForSpawn", () => {
   });
 
   test("patched binary file missing → patched-binary-missing error", async () => {
-    const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+    const storeDir = tmpDir("binary-resolver-").path;
     // meta exists but file doesn't
     const meta: PatchedMeta = {
       version: "2.1.121",
@@ -134,7 +134,7 @@ describe("resolveClaudeForSpawn", () => {
   });
 
   test("patched binary present → resolved with TLS", async () => {
-    const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+    const storeDir = tmpDir("binary-resolver-").path;
     const patchedPath = join(storeDir, "2.1.121.patched");
     writeFileSync(patchedPath, "stub patched binary", { mode: 0o755 });
     const meta: PatchedMeta = {
@@ -201,7 +201,7 @@ describe("resolveClaudeForSpawn", () => {
     });
 
     test("patched-binary-missing still carries TLS material", async () => {
-      const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+      const storeDir = tmpDir("binary-resolver-").path;
       const r = await resolveClaudeForSpawn(
         makeDeps({
           versionResolver: async () => "2.1.121",
@@ -254,7 +254,7 @@ describe("resolveClaudeForSpawn", () => {
     });
 
     test("a cert failure on the RESOLVED path still throws — plain ws would silently break the patched binary", async () => {
-      const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+      const storeDir = tmpDir("binary-resolver-").path;
       const patchedPath = join(storeDir, "2.1.121.patched");
       writeFileSync(patchedPath, "stub patched binary", { mode: 0o755 });
       await expect(
@@ -311,7 +311,7 @@ describe("resolveClaudeForSpawn", () => {
     });
 
     test("a patched claude needs wss", async () => {
-      const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+      const storeDir = tmpDir("binary-resolver-").path;
       writeFileSync(join(storeDir, "2.1.121.patched"), "stub", { mode: 0o755 });
       const r = await resolveClaudeForSpawn(
         makeDeps({ versionResolver: async () => "2.1.121", readPatchedMeta: () => meta, patchedStoreDir: storeDir }),
@@ -331,7 +331,7 @@ describe("resolveClaudeForSpawn", () => {
         makeDeps({
           versionResolver: async () => "2.1.121",
           readPatchedMeta: () => meta,
-          patchedStoreDir: mkdtempSync(join(tmpdir(), "binary-resolver-")),
+          patchedStoreDir: tmpDir("binary-resolver-").path,
         }),
       );
       for (const r of [missing, stale, gone]) {
@@ -390,7 +390,7 @@ describe("resolveClaudeForSpawn", () => {
     };
 
     test("resolving a patched binary loads no cert, and still reports the wss requirement", async () => {
-      const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+      const storeDir = tmpDir("binary-resolver-").path;
       writeFileSync(join(storeDir, "2.1.121.patched"), "stub", { mode: 0o755 });
       let certCalls = 0;
       const r = await resolveClaudeForSpawn(
@@ -416,7 +416,7 @@ describe("resolveClaudeForSpawn", () => {
       // The resolved path is loud about a cert failure when a listener is
       // about to be bound. Here there is no listener to bind, so an unusable
       // openssl must not turn a perfectly good binary resolution into a throw.
-      const storeDir = mkdtempSync(join(tmpdir(), "binary-resolver-"));
+      const storeDir = tmpDir("binary-resolver-").path;
       writeFileSync(join(storeDir, "2.1.121.patched"), "stub", { mode: 0o755 });
       const r = await resolveClaudeForSpawn(
         makeDeps({

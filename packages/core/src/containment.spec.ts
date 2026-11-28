@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { ContainmentGuard } from "./containment";
 
 const WORKTREE = "/Users/test/repo/.claude/worktrees/my-worktree";
@@ -659,7 +660,7 @@ describe("ContainmentGuard — git clone and worktree add", () => {
 
 describe("ContainmentGuard — symlink path traversal", () => {
   test("denies Write via symlink escaping worktree", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const worktree = join(base, "worktree");
     const outside = join(base, "outside");
     mkdirSync(worktree, { recursive: true });
@@ -680,7 +681,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
   });
 
   test("denies Edit via symlink escaping worktree", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const worktree = join(base, "worktree");
     const outside = join(base, "outside");
     mkdirSync(worktree, { recursive: true });
@@ -699,7 +700,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
   });
 
   test("allows Write to real path inside worktree (not a symlink escape)", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const worktree = join(base, "worktree");
     const subdir = join(worktree, "src");
     mkdirSync(subdir, { recursive: true });
@@ -714,7 +715,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
   });
 
   test("denies Write via symlink + non-existent subdir (multi-segment missing path)", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const worktree = join(base, "worktree");
     const outside = join(base, "outside");
     mkdirSync(worktree, { recursive: true });
@@ -736,7 +737,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
   });
 
   test("resolves symlink in worktreeRoot itself", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const realWorktree = join(base, "real-worktree");
     const symlinkWorktree = join(base, "link-worktree");
     mkdirSync(realWorktree, { recursive: true });
@@ -753,7 +754,7 @@ describe("ContainmentGuard — symlink path traversal", () => {
   });
 
   test("denies symlink escape when resolved and unresolved roots diverge (platform-independent)", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-containment-"));
+    const base = tmpDir("mcp-containment-").path;
     const realRoot = join(base, "real-root");
     const aliasRoot = join(base, "alias-root");
     const outside = join(base, "outside");

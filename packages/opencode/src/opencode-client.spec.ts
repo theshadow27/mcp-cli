@@ -14,7 +14,10 @@ describe("OpenCodeClient", () => {
       async fetch(req) {
         const url = new URL(req.url);
         const path = url.pathname;
-        const body = req.method === "POST" ? await req.json().catch(() => undefined) : undefined;
+        const body =
+          req.method === "POST"
+            ? await req.json().catch(() => /* a missing or non-JSON body is recorded as undefined */ undefined)
+            : undefined;
         lastRequest = { method: req.method, path, body };
 
         const json = (value: unknown) =>
@@ -62,9 +65,9 @@ describe("OpenCodeClient", () => {
   });
 
   test("createSession posts to /session and returns the session", async () => {
-    const session = await client.createSession({ cwd: "/tmp/work" });
+    const session = await client.createSession({ cwd: "/work/work" });
     expect(session).toEqual({ id: "sess-1", status: "idle" });
-    expect(lastRequest).toMatchObject({ method: "POST", path: "/session", body: { cwd: "/tmp/work" } });
+    expect(lastRequest).toMatchObject({ method: "POST", path: "/session", body: { cwd: "/work/work" } });
   });
 
   test("createSession works with no opts", async () => {

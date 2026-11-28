@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { tmpDir } from "am-i-done/tmp";
 import { spawnCapture, spawnCaptureSync, spawnManaged } from "./subprocess";
 
 const POLL_INTERVAL_MS = 10;
@@ -52,9 +53,10 @@ describe("spawnCapture", () => {
   });
 
   it("respects cwd option", async () => {
-    const r = await spawnCapture("pwd", [], { cwd: "/tmp" });
+    using dir = tmpDir("subprocess-cwd-");
+    const r = await spawnCapture("pwd", [], { cwd: dir.path });
     expect(r.ok).toBe(true);
-    expect(r.stdout.trim()).toMatch(/\/tmp/);
+    expect(r.stdout.trim()).toBe(dir.path);
   });
 
   it("truncates stdout when output exceeds maxBuffer", async () => {
@@ -110,9 +112,10 @@ describe("spawnCaptureSync", () => {
   });
 
   it("respects cwd option", () => {
-    const r = spawnCaptureSync("pwd", [], { cwd: "/tmp" });
+    using dir = tmpDir("subprocess-cwd-");
+    const r = spawnCaptureSync("pwd", [], { cwd: dir.path });
     expect(r.ok).toBe(true);
-    expect(r.stdout.trim()).toMatch(/\/tmp/);
+    expect(r.stdout.trim()).toBe(dir.path);
   });
 
   it("truncates stdout when output exceeds maxBuffer", () => {
@@ -247,7 +250,7 @@ describe("spawnManaged", () => {
       try {
         process.kill(pid, 0);
         return true;
-        // dotw-ignore test-empty-catch: process.kill(pid, 0) throws ESRCH when already dead
+        // doing-it-wrong-ignore test-empty-catch: process.kill(pid, 0) throws ESRCH when already dead (#3465)
       } catch {
         return false;
       }
@@ -315,12 +318,13 @@ describe("spawnManaged", () => {
   });
 
   it("respects cwd option", async () => {
-    const r = spawnManaged("pwd", [], { cwd: "/tmp" });
+    using dir = tmpDir("subprocess-cwd-");
+    const r = spawnManaged("pwd", [], { cwd: dir.path });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
 
     const text = await new Response(r.handle.stdout as ReadableStream).text();
-    expect(text.trim()).toMatch(/\/tmp/);
+    expect(text.trim()).toBe(dir.path);
     await r.handle.exited;
   });
 

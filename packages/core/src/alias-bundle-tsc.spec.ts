@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { resolveTscBin, validateFreeformTsc } from "./alias-bundle";
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `alias-bundle-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = tmpDir("alias-bundle-test-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }

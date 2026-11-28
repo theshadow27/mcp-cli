@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: claude.ts dynamically imports agent.ts to share the dispatch loop; already broken at load time
 /**
  * `mcx claude` commands — manage Claude Code sessions via the _claude virtual server.
  *
@@ -368,7 +367,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--worktree" || arg === "-w") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (next && !next.startsWith("-")) {
         worktree = next;
         return 1;
@@ -379,17 +378,17 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--resume") {
-      resume = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      resume = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (!resume) extraError = "--resume requires a session ID";
       return 1;
     }
     if (arg === "--name" || arg === "-n") {
-      name = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      name = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (!name) extraError = "--name requires a value";
       return 1;
     }
     if (arg === "--work-item") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (next && !next.startsWith("-")) {
         workItemId = next;
         return 1;
@@ -403,7 +402,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--claude-binary") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (next && !next.startsWith("-")) {
         claudeBinary = next;
         return 1;
@@ -416,7 +415,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 0;
     }
     if (arg === "--profile") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       const parsed = parseProfileFlagValue(next);
       if (parsed.error) {
         extraError = parsed.error;
@@ -427,7 +426,7 @@ export function parseSpawnArgs(args: string[]): SpawnArgs {
       return 1;
     }
     if (arg === "--transport") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs in pre-processing phase before parseFlags delegation (#3465)
       if (next === "stdio" || next === "sdk-url") {
         transport = next;
         return 1;
@@ -844,13 +843,13 @@ export function parseResumeArgs(args: string[]): ResumeArgs {
         sawAllowOnly = true;
         allowOnly = true;
       }
-      // dotw-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags
+      // doing-it-wrong-ignore no-manual-arg-parsing: greedy multi-value consume (no heuristic) cannot be expressed in parseFlags (#3465)
       while (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: greedy multi-value loop
+        rawAllow.push(args[++i]);
       }
       if (rawAllow.length === 0) allowError = `${arg} requires at least one tool pattern`;
     } else if (arg === "--model" || arg === "-m") {
-      const val = args[++i]; // dotw-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values
+      const val = args[++i]; // doing-it-wrong-ignore no-manual-arg-parsing: unconditional consume required for compat — parseFlags rejects flag-looking values (#3465)
       if (!val) {
         modelError = "--model requires a value";
       } else {

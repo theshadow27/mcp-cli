@@ -22,8 +22,6 @@
  * developer's shell exporting a real `MCP_CLI_DIR` for other work must not
  * leak into `bun test`.
  */
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 
-process.env.MCP_CLI_DIR = mkdtempSync(join(tmpdir(), "mcp-cli-test-preload-"));
+process.env.MCP_CLI_DIR = tmpDir("preload-").path;

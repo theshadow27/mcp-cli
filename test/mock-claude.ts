@@ -63,7 +63,7 @@ async function run(): Promise<void> {
             ndjson({
               type: "system",
               subtype: "init",
-              cwd: "/tmp",
+              cwd: "/work",
               session_id: sessionId,
               tools: [],
               mcp_servers: [],

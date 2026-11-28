@@ -1,15 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir as osTmpdir } from "node:os";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpDir } from "am-i-done/tmp";
 
-/**
- * A **canonical** temp root. `tmpdir()` is `/var/folders/...` on macOS and `/var` is a
- * symlink, so the raw value is not what the code under test stores: domain paths go
- * through `canonicalizeExistingDomainPath`, so a fixture built on the unresolved spelling
- * asserts against a path production never writes. Resolving once here keeps the only
- * symlink in a fixture the one a test creates on purpose.
- */
-const tmpdir = (): string => realpathSync(osTmpdir());
 import { join } from "node:path";
 import {
   type Domain,
@@ -57,7 +49,7 @@ describe("DomainHandlers", () => {
   });
 
   function workspace(): string {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-domain-handlers-"));
+    const dir = tmpDir("mcx-domain-handlers-").path;
     dirs.push(dir);
     return dir;
   }
@@ -502,7 +494,7 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
   });
 
   function setup2(): { db: McxDb; handlers: Map<IpcMethod, RequestHandler>; dir: string } {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-domain-race-"));
+    const dir = tmpDir("mcx-domain-race-").path;
     dirs2.push(dir);
     const db = new McxDb(join(dir, "mcx.db"));
     open2.push(db);
@@ -588,9 +580,9 @@ describe("DomainHandlers — rm concurrency (#3160 review finding 6)", () => {
     // conflict, and fall through to the raw UNIQUE error it exists to prevent. A symlink
     // makes canonicalization load-bearing, so this test fails if the two rules diverge.
     const { handlers } = setup2();
-    const real = mkdtempSync(join(tmpdir(), "mcx-dom-real-"));
+    const real = tmpDir("mcx-dom-real-").path;
     dirs2.push(real);
-    const link = join(tmpdir(), `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const link = join(tmpDir("t-").path, `mcx-dom-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
     symlinkSync(real, link);
     try {
       await invoke(handlers, "domainAdd")({ name: "byreal", path: real }, ctx2);

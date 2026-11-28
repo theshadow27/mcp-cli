@@ -363,7 +363,9 @@ export class ServerPool {
             // When the timeout wins the race, connectFn's promise may later reject
             // (e.g. when transport.close() triggers an error in client.connect()).
             // Without this, each timed-out attempt leaks a promise + unhandled rejection.
-            connectPromise.catch(() => {});
+            connectPromise.catch(() => {
+              /* abandoned connect attempt; its late rejection is intentionally dropped, see above */
+            });
           }
           const { client, transport, childPid: connectFnPid } = result;
 

@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, type WorkItem } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import {
   type DomainWorkItems,
   StaleUpdateError,
@@ -14,14 +14,14 @@ import {
 } from "./work-items";
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return tmpFile("mcp-cli-wi-test.db").path;
 }
 
 function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* ignore */
     }

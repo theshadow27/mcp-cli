@@ -1,9 +1,9 @@
 import { type Mock, afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, isCommitted, readTransitionHistory } from "@mcp-cli/core";
 import { WORKTREE_CONFIG_FILENAME } from "@mcp-cli/core/worktree-config";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { _resetJqStateForTesting } from "../jq/index";
 import { ExitError } from "../test-helpers";
 import type { ClaudeDeps } from "./claude";
@@ -84,7 +84,7 @@ const SESSION_LIST = [
     sessionId: "abc12345-1111-2222-3333-444444444444",
     state: "active",
     model: "opus-4",
-    cwd: "/tmp",
+    cwd: "/work",
     cost: 0.05,
     tokens: 1000,
     numTurns: 3,
@@ -668,7 +668,7 @@ describe("cmdClaude spawn --claude-binary validation", () => {
 
   test("rejects a directory path with a named error before dispatch (#2714)", async () => {
     const deps = makeDeps();
-    const tmpDir = mkdtempSync(join(tmpdir(), "mcx-test-"));
+    const tmpDir = makeTmpDir("mcx-test-").path;
     try {
       await expect(cmdClaude(["spawn", "--task", "x", "--claude-binary", tmpDir], deps)).rejects.toThrow(ExitError);
       expect(deps.printError).toHaveBeenCalledWith(expect.stringContaining("is not an executable file"));
@@ -1014,7 +1014,7 @@ describe("mcx claude spawn", () => {
   });
 
   test("writes null→initial transition when --work-item provided (#1623)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "spawn-transition-"));
+    const dir = makeTmpDir("spawn-transition-").path;
     try {
       // Minimal manifest so loadManifest can find the initial phase
       writeFileSync(
@@ -1046,7 +1046,7 @@ describe("mcx claude spawn", () => {
   });
 
   test("transition write is idempotent — second spawn does not corrupt log (#1623)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "spawn-transition-idem-"));
+    const dir = makeTmpDir("spawn-transition-idem-").path;
     try {
       writeFileSync(
         join(dir, ".mcx.yaml"),
@@ -1131,7 +1131,7 @@ describe("mcx claude spawn", () => {
     const getAgentSession = mock(async () => ({
       sessionId: "daemon-ended",
       state: "ended",
-      cwd: "/tmp/worktree",
+      cwd: "/work/worktree",
       claudeSessionId: "claude-abc123",
     }));
     const deps = makeDeps({ callTool, getAgentSession });
@@ -1143,7 +1143,7 @@ describe("mcx claude spawn", () => {
       expect(callTool).toHaveBeenCalledWith("claude_prompt", {
         prompt: "continue",
         resumeSessionId: "claude-abc123",
-        cwd: "/tmp/worktree",
+        cwd: "/work/worktree",
       });
     } finally {
       console.log = origLog;
@@ -1178,7 +1178,7 @@ describe("mcx claude spawn", () => {
     const getAgentSession = mock(async () => ({
       sessionId: "daemon-ended",
       state: "ended",
-      cwd: "/tmp/worktree",
+      cwd: "/work/worktree",
       claudeSessionId: null,
     }));
     const deps = makeDeps({ callTool, getAgentSession });
@@ -1193,7 +1193,7 @@ describe("mcx claude spawn", () => {
     const getAgentSession = mock(async () => ({
       sessionId: "daemon-ended",
       state: "ended",
-      cwd: "/tmp/worktree",
+      cwd: "/work/worktree",
       claudeSessionId: "claude-abc123",
     }));
     const deps = makeDeps({ callTool, getAgentSession });
@@ -1212,7 +1212,7 @@ describe("mcx claude spawn", () => {
     const getAgentSession = mock(async () => ({
       sessionId: "daemon-active",
       state: "idle",
-      cwd: "/tmp/worktree",
+      cwd: "/work/worktree",
       claudeSessionId: "claude-abc",
     }));
     const deps = makeDeps({ callTool, getAgentSession });
@@ -1396,7 +1396,7 @@ describe("mcx claude spawn --headed", () => {
   });
 
   test("headed --worktree skips prefix when branchPrefix: false", async () => {
-    const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
+    const fakeRoot = makeTmpDir("mcx-claude-wt-").path;
     try {
       writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const ttyOpen = mock(async () => {});
@@ -1423,7 +1423,7 @@ describe("mcx claude spawn --headed", () => {
 
 describe("mcx claude spawn --worktree branchPrefix", () => {
   test("headless --worktree pre-creates worktree without prefix when branchPrefix: false", async () => {
-    const fakeRoot = mkdtempSync(join(tmpdir(), "mcx-claude-wt-"));
+    const fakeRoot = makeTmpDir("mcx-claude-wt-").path;
     try {
       writeFileSync(join(fakeRoot, WORKTREE_CONFIG_FILENAME), JSON.stringify({ worktree: { branchPrefix: false } }));
       const exec = mock(() => ({ stdout: "", stderr: "", exitCode: 0 }));
@@ -4074,7 +4074,7 @@ describe("mcx claude lifecycle (spawn → ls → send → log → bye)", () => {
               sessionId,
               state: "active",
               model: "opus-4",
-              cwd: "/tmp",
+              cwd: "/work",
               cost: 0.01,
               tokens: 500,
               numTurns: 1,

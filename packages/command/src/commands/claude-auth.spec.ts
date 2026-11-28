@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { QuotaRateLimitError, type QuotaStatus } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { type AuthPaths, AuthProfileError } from "../claude-auth-store";
 import { ExitError } from "../test-helpers";
 import { type AuthCliDeps, type AuthEnvDeps, claudeAuth, formatProfileTable } from "./claude-auth";
@@ -42,7 +42,7 @@ interface Harness {
 }
 
 function harness(opts?: { env?: Record<string, string | undefined>; platform?: string }): Harness {
-  const root = mkdtempSync(join(tmpdir(), "mcx-authcli-"));
+  const root = tmpDir("mcx-authcli-").path;
   mkdirSync(join(root, ".claude"), { recursive: true });
   const paths: AuthPaths = {
     profilesDir: join(root, ".mcp-cli", "auth-profiles"),
