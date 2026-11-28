@@ -1,0 +1,10 @@
+// @expect 1
+// spec lacks session_info_update
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

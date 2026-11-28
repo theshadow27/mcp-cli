@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "./db/state";
 import { SPEND_SOURCE_DAEMON, UNASSIGNED_DOMAIN, queryDomainSpend } from "./metrics-domain-spend";
 
 const dbPaths: string[] = [];
 
 function tmpDbPath(): string {
-  const p = join(tmpdir(), `mcp-domain-spend-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const p = tmpFile("mcp-domain-spend-test.db").path;
   dbPaths.push(p);
   return p;
 }
@@ -19,7 +19,7 @@ afterEach(() => {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
       } catch {
         /* ignore */
       }

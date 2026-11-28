@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { findModelInSprintPlan, parseModelFromSprintTable } from "./sprint-plan";
 
 const SPRINT_TABLE = `# Sprint 38
@@ -95,7 +95,7 @@ describe("findModelInSprintPlan", () => {
   let sprintDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "sprint-plan-test-"));
+    tmpDir = makeTmpDir("sprint-plan-test-").path;
     sprintDir = join(tmpDir, ".claude", "sprints");
     mkdirSync(sprintDir, { recursive: true });
   });

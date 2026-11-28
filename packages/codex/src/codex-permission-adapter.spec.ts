@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentPermissionRequest } from "@mcp-cli/core";
 import { ContainmentGuard } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { buildRules, evaluateApproval, gateApprovalContainment } from "./codex-permission-adapter";
 
 function bashRequest(command: string): AgentPermissionRequest {
@@ -141,7 +141,7 @@ describe("gateApprovalContainment", () => {
   });
 
   test("multi-file patch fully inside the worktree → allow", () => {
-    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    const wt = tmpDir("codex-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const perm = writeRequest(join(wt, "a.ts"), [join(wt, "a.ts"), join(wt, "b.ts")]);
@@ -153,7 +153,7 @@ describe("gateApprovalContainment", () => {
   });
 
   test("multi-file patch escaping only in a LATER file → deny", () => {
-    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    const wt = tmpDir("codex-contract-").path;
     const events: string[] = [];
     try {
       const guard = new ContainmentGuard(wt);
@@ -168,7 +168,7 @@ describe("gateApprovalContainment", () => {
   });
 
   test("empty change set fails closed (no synthesized path)", () => {
-    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    const wt = tmpDir("codex-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const result = gateApprovalContainment(guard, writeRequest("unknown", []), () => {});
@@ -179,7 +179,7 @@ describe("gateApprovalContainment", () => {
   });
 
   test("command-execution approval (no files[]) gates via the Bash path", () => {
-    const wt = mkdtempSync(join(tmpdir(), "codex-contract-"));
+    const wt = tmpDir("codex-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const result = gateApprovalContainment(guard, bashRequest("git -C /etc commit -m pwned"), () => {});

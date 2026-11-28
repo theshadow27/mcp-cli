@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "../db/state";
 import type { KeychainTokens } from "./keychain";
 import { DEFAULT_OAUTH_SCOPE, McpOAuthProvider, getBrowserCommand } from "./oauth-provider";
@@ -18,14 +18,14 @@ function restorePlatform(): void {
 }
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return tmpFile("mcp-cli-test.db").path;
 }
 
 function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // ignore
     }

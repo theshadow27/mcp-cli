@@ -9,9 +9,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { McxDb } from "./state";
 
 describe("aliases.scope column", () => {
@@ -19,7 +19,7 @@ describe("aliases.scope column", () => {
   let db: McxDb;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "mcp-alias-scope-"));
+    tmpDir = makeTmpDir("mcp-alias-scope-").path;
     db = new McxDb(join(tmpDir, "mcx.db"));
   });
 

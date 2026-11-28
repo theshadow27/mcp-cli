@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 
 import {
   WORKTREE_CONFIG_FILENAME,
@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "wt-config-"));
+  return tmpDir("wt-config-").path;
 }
 
 describe("readWorktreeConfig", () => {

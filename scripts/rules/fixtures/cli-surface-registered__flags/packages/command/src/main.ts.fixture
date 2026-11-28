@@ -1,0 +1,9 @@
+// @expect 0
+// Outside commands/ the flag check does not apply, and with no switch cases there is no dispatch
+// to check either.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose"]);
+export const quiet = args[i] === "--quiet";

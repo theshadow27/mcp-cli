@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { AcpSession } from "./acp-session";
 
 // Kiro host-auth callback (`_kiro/auth/getAccessToken`) tests.
@@ -129,7 +129,7 @@ describe("AcpSession (kiro host-auth callback)", () => {
     // Kiro sends `command: "echo hi && ls"` with no `args`; copilot/gemini send the
     // exec form (`command:"git"`, `args:["status"]`). Without the sh -c fallback the
     // whole string is exec'd as argv[0] and every kiro run_command silently fails.
-    const dir = mkdtempSync(join(tmpdir(), "acp-shell-"));
+    const dir = tmpDir("acp-shell-").path;
     const probe = join(dir, "probe.txt");
     try {
       const { session } = makeSession({

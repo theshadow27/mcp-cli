@@ -1,0 +1,10 @@
+// @expect 1
+// spec has session_info_update but asserts only totalTokens
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

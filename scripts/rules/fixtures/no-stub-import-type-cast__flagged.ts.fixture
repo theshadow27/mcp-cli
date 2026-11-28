@@ -1,0 +1,6 @@
+// @expect 1
+// @path scripts/_runner/example.spec.ts
+// Suppressive `as ReturnType<typeof import(...)>` cast in a test stub — flagged.
+
+const emptyCache = (): ReturnType<typeof import("./file-cache").readFileCache> =>
+  ({ entries: {} }) as ReturnType<typeof import("./file-cache").readFileCache>;

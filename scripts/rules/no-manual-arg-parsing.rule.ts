@@ -15,14 +15,21 @@
  * unknown-flag detection.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const ARG_ARRAY_NAMES = new Set(["args", "allArgs", "argv"]);
 
-const rule: CheckRule = {
+function isArgArray(node: TSESTree.Node): boolean {
+  return node.type === "Identifier" && ARG_ARRAY_NAMES.has(node.name);
+}
+
+export default {
   id: "no-manual-arg-parsing",
-  kind: "check",
+  type: "check",
+  category: "conventions",
+  ast: true,
+  tests: "exclude",
   scold: "manual args[++i] / args[i+1] / allArgs[...] / argv.shift() flag parsing — use parseFlags() instead",
   guidance: [
     "use parseFlags(argv, specs) from packages/command/src/flags.ts",
@@ -30,42 +37,42 @@ const rule: CheckRule = {
     "for complex multi-value flags, consider the repeatable option in FlagSpec",
   ],
   documentation: "#2250",
-  appliesToTests: false,
-  check({ file, violated, ast }) {
-    if (!file.relPath.startsWith("packages/command/src/commands/")) return;
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/command/src/commands/")) return ctx.skipped();
 
     const lines = file.content.split("\n");
+    const report = (node: TSESTree.Node) => {
+      const line = node.loc.start.line;
+      ctx.violated(line, node.loc.start.column + 1, lines[line - 1]?.trim() ?? "");
+    };
 
-    for (const node of ast.find(ts.isElementAccessExpression)) {
-      if (!ts.isIdentifier(node.expression)) continue;
-      if (!ARG_ARRAY_NAMES.has(node.expression.text)) continue;
-
-      const arg = node.argumentExpression;
-      if (!arg) continue;
-
-      const isPreIncrement = ts.isPrefixUnaryExpression(arg) && arg.operator === ts.SyntaxKind.PlusPlusToken;
-
-      const isIndexPlusOne =
-        ts.isBinaryExpression(arg) &&
-        arg.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-        ts.isIdentifier(arg.left) &&
-        ts.isNumericLiteral(arg.right) &&
-        arg.right.text === "1";
-
-      if (isPreIncrement || isIndexPlusOne) {
-        const pos = ast.positionOf(node);
-        violated(pos.line, pos.column, lines[pos.line - 1]?.trim() ?? "");
+    walk(ctx.ast().program, (node) => {
+      if (node.type === "MemberExpression" && node.computed && isArgArray(node.object)) {
+        const arg = node.property;
+        const isPreIncrement = arg.type === "UpdateExpression" && arg.operator === "++" && arg.prefix;
+        const isIndexPlusOne =
+          arg.type === "BinaryExpression" &&
+          arg.operator === "+" &&
+          arg.left.type === "Identifier" &&
+          arg.right.type === "Literal" &&
+          arg.right.value === 1;
+        if (isPreIncrement || isIndexPlusOne) report(node);
       }
-    }
 
-    for (const node of ast.callsTo("shift")) {
-      if (!ts.isPropertyAccessExpression(node.expression)) continue;
-      if (!ts.isIdentifier(node.expression.expression)) continue;
-      if (!ARG_ARRAY_NAMES.has(node.expression.expression.text)) continue;
-      const pos = ast.positionOf(node);
-      violated(pos.line, pos.column, lines[pos.line - 1]?.trim() ?? "");
-    }
+      if (node.type === "CallExpression") {
+        const callee = node.callee;
+        if (
+          callee.type === "MemberExpression" &&
+          !callee.computed &&
+          callee.property.type === "Identifier" &&
+          callee.property.name === "shift" &&
+          isArgArray(callee.object)
+        ) {
+          report(node);
+        }
+      }
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

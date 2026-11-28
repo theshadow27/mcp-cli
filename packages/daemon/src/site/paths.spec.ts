@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { siteBrowserProfileDir } from "./paths";
 
 beforeEach(() => {
-  const tmp = join(tmpdir(), `mcp-cli-paths-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const tmp = tmpDir("mcp-cli-paths-").path;
   options.SITES_DIR = join(tmp, "sites");
 });
 

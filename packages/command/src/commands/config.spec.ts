@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GetConfigResult, McpConfigFile, ServerConfig } from "@mcp-cli/core";
 import { options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../../test/test-options";
 import type { BudgetIpc, ConfigDeps } from "./config";
 import {
@@ -29,7 +29,7 @@ let testDir: string;
 let configPath: string;
 
 beforeEach(() => {
-  testDir = join(tmpdir(), `mcp-config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  testDir = tmpDir("mcp-config-test-").path;
   mkdirSync(testDir, { recursive: true });
   configPath = join(testDir, "config.json");
 });
@@ -998,7 +998,7 @@ function readConfigFrom(path: string): Record<string, unknown> {
   try {
     const text = readFileSync(path, "utf-8");
     return JSON.parse(text);
-    // dotw-ignore test-empty-catch: helper utility — graceful fallback, not testing error path
+    // doing-it-wrong-ignore test-empty-catch: helper utility — graceful fallback, not testing error path (#3465)
   } catch {
     return {};
   }

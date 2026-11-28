@@ -1,0 +1,49 @@
+// @expect 4
+// @path packages/daemon/src/example-variants.spec.ts
+// A literal on the left, an `if` with an `else`, a boolean discriminant and a discriminant asserted
+// with a different literal are all flagged.
+// `==` is not a strict comparison, so it is not examined.
+
+import { expect, it } from "bun:test";
+
+type Result = { ok: true; value: number } | { ok: false; message: string };
+declare function getResult(): Result;
+
+it("literal on the left", () => {
+  const result = getResult();
+  if ("done" === (result as { kind: string }).kind) {
+    expect((result as { kind: string }).kind).toBe("done");
+  }
+});
+
+it("literal first, field read inside", () => {
+  const r = getResult() as { kind: string; value: number };
+  if ("done" === r.kind) {
+    expect(r.value).toBe(1);
+  }
+});
+
+it("with else and a boolean", () => {
+  const r = getResult();
+  if (r.ok === true) {
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(1);
+  } else {
+    expect(r.message).toBe("x");
+  }
+});
+
+it("asserted with another literal", () => {
+  const r = getResult();
+  expect(r.ok).toBe(false);
+  if (r.ok === true) {
+    expect(r.value).toBe(1);
+  }
+});
+
+it("loose equality is not examined", () => {
+  const r = getResult();
+  if (r.ok == true) {
+    expect(r.value).toBe(1);
+  }
+});

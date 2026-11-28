@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 
 const SEED_FILE = "README.md";
 const SEED_CONTENT = "# agent-grid test seed\n";
@@ -57,7 +57,8 @@ export interface IsolatedEnv {
  * #2586 SIGTERM-immortality bug).
  */
 export function createIsolatedEnv(): IsolatedEnv {
-  const dir = mkdtempSync(join(tmpdir(), "agent-grid-"));
+  const handle = tmpDir("agent-grid-");
+  const dir = handle.path;
 
   activeEnvs.add(dir);
 
@@ -68,13 +69,13 @@ export function createIsolatedEnv(): IsolatedEnv {
     git(dir, ["commit", "-m", SEED_MESSAGE]);
   } catch (e) {
     activeEnvs.delete(dir);
-    rmSync(dir, { recursive: true, force: true });
+    handle[Symbol.dispose]();
     throw e;
   }
 
   const cleanup = () => {
     activeEnvs.delete(dir);
-    rmSync(dir, { recursive: true, force: true });
+    handle[Symbol.dispose]();
   };
 
   return {

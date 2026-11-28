@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   type TimingCache,
   type TimingCacheFile,
@@ -31,7 +31,7 @@ describe("loadTimings / saveTimings", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "test-timings-"));
+    dir = tmpDir("test-timings-").path;
   });
 
   afterEach(() => {
@@ -117,7 +117,7 @@ describe("findChangedFiles", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "test-timings-changed-"));
+    dir = tmpDir("test-timings-changed-").path;
   });
 
   afterEach(() => {

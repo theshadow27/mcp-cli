@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { maybeShowFirstRunPrompt } from "./first-run";
 
 let tmpDir: string;
 let configDir: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `first-run-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = makeTmpDir("first-run-test-").path;
   mkdirSync(tmpDir, { recursive: true });
 
   configDir = join(tmpDir, "mcp-cli");

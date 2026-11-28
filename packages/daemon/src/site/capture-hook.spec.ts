@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { CapturedResponse } from "./browser/engine";
 import {
   type CaptureHookFn,
@@ -16,7 +16,7 @@ import { Sniffer } from "./sniffer";
 
 let tmp: string;
 beforeEach(() => {
-  tmp = join(tmpdir(), `mcp-cli-hook-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  tmp = tmpDir("mcp-cli-hook-").path;
   mkdirSync(tmp, { recursive: true });
   options.SITES_DIR = join(tmp, "sites");
 });

@@ -63,8 +63,8 @@ describe("resolveCallerDomain", () => {
    * row orphaned the entire mail history — including the operator mailbox.
    */
   test("a cwd outside every domain is partition 0 — whether or not domains exist", () => {
-    expect(resolveCallerDomain(EMPTY, { cwd: "/tmp/elsewhere" })).toEqual(unassigned);
-    expect(resolveCallerDomain(BOTH, { cwd: "/tmp/elsewhere" })).toEqual(unassigned);
+    expect(resolveCallerDomain(EMPTY, { cwd: "/work/elsewhere" })).toEqual(unassigned);
+    expect(resolveCallerDomain(BOTH, { cwd: "/work/elsewhere" })).toEqual(unassigned);
     // The specific shape of the regression: one unrelated domain registered, caller far away.
     expect(
       resolveCallerDomain(fakeDb([domain(1, "gerald", "/home/u/github/gerald")]), { cwd: "/home/u/other" }),

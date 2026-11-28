@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { OpenCodeSession } from "./opencode-session";
 import type { OpenCodeSseEvent } from "./opencode-sse";
 
@@ -403,7 +403,7 @@ describe("OpenCodeSession with injected client", () => {
 
 describe("OpenCodeSession worktree containment (#2519)", () => {
   test("denies a write that escapes the worktree root before permission rules", () => {
-    const worktree = mkdtempSync(join(tmpdir(), "opencode-containment-"));
+    const worktree = tmpDir("opencode-containment-").path;
     const events: AgentSessionEvent[] = [];
     try {
       const session = new OpenCodeSession("test-session", { cwd: worktree, prompt: "hello", worktree }, (e) =>
@@ -421,7 +421,7 @@ describe("OpenCodeSession worktree containment (#2519)", () => {
   });
 
   test("a write inside the worktree is not gated by containment", () => {
-    const worktree = mkdtempSync(join(tmpdir(), "opencode-containment-"));
+    const worktree = tmpDir("opencode-containment-").path;
     const events: AgentSessionEvent[] = [];
     try {
       const session = new OpenCodeSession("test-session", { cwd: worktree, prompt: "hello", worktree }, (e) =>

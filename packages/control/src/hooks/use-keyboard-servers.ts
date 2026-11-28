@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: transitive member of use-keyboard-claude.ts ↔ use-keyboard.ts cycle
 import { addServerToConfig, ipcCall, removeServerFromConfig } from "@mcp-cli/core";
 import type { ServeInstanceInfo } from "@mcp-cli/core";
 import type { ServerConfig } from "@mcp-cli/core";
@@ -123,7 +122,9 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     if (input === "y") {
       ipcCall("killServe", { all: true })
         .then(refresh)
-        .catch(() => {});
+        .catch(() => {
+          /* fire-and-forget keypress action; if the daemon call fails the server list simply stays unchanged */
+        });
       setConfirmKillServe(false);
       return true;
     }
@@ -150,7 +151,9 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
         // Force daemon to reload config
         ipcCall("reloadConfig")
           .then(refresh)
-          .catch(() => {});
+          .catch(() => {
+            /* fire-and-forget keypress action; if the daemon call fails the server list simply stays unchanged */
+          });
       }
       setConfirmRemove(false);
       return true;
@@ -229,7 +232,9 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
     if (server) {
       ipcCall("restartServer", { server: server.name })
         .then(refresh)
-        .catch(() => {});
+        .catch(() => {
+          /* fire-and-forget keypress action; if the daemon call fails the server list simply stays unchanged */
+        });
     }
     return true;
   }
@@ -238,7 +243,9 @@ export function handleServersInput(input: string, key: Key, nav: ServersNav): bo
   if (input === "R") {
     ipcCall("restartServer", {})
       .then(refresh)
-      .catch(() => {});
+      .catch(() => {
+        /* fire-and-forget keypress action; if the daemon call fails the server list simply stays unchanged */
+      });
     return true;
   }
 
@@ -388,7 +395,9 @@ function handleAddServerInput(input: string, key: Key, nav: ServersNav): boolean
       // Force daemon to reload config
       ipcCall("reloadConfig")
         .then(refresh)
-        .catch(() => {});
+        .catch(() => {
+          /* fire-and-forget keypress action; if the daemon call fails the server list simply stays unchanged */
+        });
       setAddServerMode(false);
       return true;
     }

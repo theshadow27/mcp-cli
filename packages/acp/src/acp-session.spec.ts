@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { AcpSession, WATCHDOG_TIMEOUT_MS } from "./acp-session";
 
 const FAKE_AGENT = join(import.meta.dirname, "fake-acp-agent.ts");
@@ -362,7 +362,7 @@ describe("AcpSession server requests", () => {
         await Bun.write(probePath, ""); // cleanup
         const { unlinkSync } = await import("node:fs");
         unlinkSync(probePath);
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
       } catch {
         // ignore cleanup errors
       }
@@ -402,7 +402,7 @@ describe("AcpSession server requests", () => {
     } finally {
       try {
         unlinkSync(probePath);
-        // dotw-ignore test-empty-catch: best-effort cleanup — probe should never exist
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — probe should never exist (#3465)
       } catch {
         // ignore cleanup errors
       }
@@ -437,7 +437,7 @@ describe("AcpSession worktree containment (#2519)", () => {
     events: AgentSessionEvent[];
     worktree: string;
   } {
-    const worktree = mkdtempSync(join(tmpdir(), "acp-containment-"));
+    const worktree = tmpDir("acp-containment-").path;
     const { session, events } = makeSession({ agent, cwd: worktree, worktree });
     return { session, events, worktree };
   }
@@ -461,7 +461,7 @@ describe("AcpSession worktree containment (#2519)", () => {
   test("fs/read of an in-cwd symlink escaping the worktree emits a containment_warning (#2722)", async () => {
     const { session, events, worktree } = makeWorktreeSession("fs-read-symlink");
     // An out-of-worktree target the symlink points at (warn-only read).
-    const target = mkdtempSync(join(tmpdir(), "acp-symlink-target-"));
+    const target = tmpDir("acp-symlink-target-").path;
     const secret = join(target, "secret.txt");
     try {
       await Bun.write(secret, "out-of-scope secret");

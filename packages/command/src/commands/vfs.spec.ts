@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { CloneCache, VfsError } from "@mcp-cli/clone";
 import { VFS_COMPLETED, VFS_FAILED, VFS_PROGRESS, VFS_STARTED } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { pollUntil } from "../../../../test/harness";
 import type { VfsDeps } from "./vfs";
 import {
@@ -739,7 +739,7 @@ describe("resolveProviderFromCache", () => {
   }
 
   test("exits when directory is not a cloned repo", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "vfs-spec-"));
+    const tmp = tmpDir("vfs-spec-").path;
     try {
       expect(() => resolveProviderFromCache(tmp, neverExit)).toThrow("exit(1)");
     } finally {
@@ -748,7 +748,7 @@ describe("resolveProviderFromCache", () => {
   });
 
   test("exits when cache has no provider scope", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "vfs-spec-"));
+    const tmp = tmpDir("vfs-spec-").path;
     try {
       mkdirSync(join(tmp, ".clone"));
       const cache = new CloneCache(join(tmp, ".clone", "cache.sqlite"));
@@ -761,7 +761,7 @@ describe("resolveProviderFromCache", () => {
   });
 
   test("returns provider and name when cache has a scope", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "vfs-spec-"));
+    const tmp = tmpDir("vfs-spec-").path;
     try {
       mkdirSync(join(tmp, ".clone"));
       const cache = new CloneCache(join(tmp, ".clone", "cache.sqlite"));

@@ -24,98 +24,40 @@
  *    outer const are not falsely flagged.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
+
+/** The name a call is made through: `name()`, `obj.name()` or `obj["name"]()`. */
+function calleeName(call: TSESTree.CallExpression): string | undefined {
+  const callee = call.callee;
+  if (callee.type === "Identifier") return callee.name;
+  if (callee.type !== "MemberExpression") return undefined;
+  if (!callee.computed && callee.property.type === "Identifier") return callee.property.name;
+  if (callee.computed && callee.property.type === "Literal" && typeof callee.property.value === "string") {
+    return callee.property.value;
+  }
+  return undefined;
+}
 
 const SLASH = "/";
 const UNC_PREFIX = "\\\\";
 const MAP_METHODS = new Set(["get", "set", "has", "delete"]);
 
-const rule: CheckRule = {
-  id: "no-raw-path-handling",
-  kind: "check",
-  scold: "raw path handling — use path.isAbsolute / pathEq / canonicalCwd instead",
-  guidance: [
-    'replace `s.startsWith("/")` with `path.isAbsolute(s)` (handles both Unix and Windows paths)',
-    "replace `a === process.cwd()` with `pathEq(a, canonicalCwd())`",
-    'import { pathEq, canonicalCwd } from "@mcp-cli/core" for realpath-normalized comparisons',
-    "variable-bound form (`const dir = process.cwd(); dir === x`) is caught — use `canonicalCwd()` at the assignment site",
-    "Map lookups with raw CWD as key (`cache.get(process.cwd())`) are caught — normalize with `canonicalCwd()` first",
-  ],
-  documentation: "#2251",
-  appliesToTests: false,
-  check({ file, violated, ast }) {
-    if (!file.relPath.startsWith("packages/")) return;
-
-    const lines = file.content.split("\n");
-
-    // Detection 1: .startsWith("/") or .startsWith("\\\\") as abs-path check.
-    // callsTo("startsWith") matches by method name only, not receiver type — any
-    // object method named startsWith with a "/" arg will be flagged. In practice
-    // all such calls in this codebase are string operations, but use dotw-ignore
-    // with a reason if you have a legitimate non-path startsWith("/") call.
-    for (const call of ast.callsTo("startsWith")) {
-      if (call.arguments.length < 1) continue;
-      const arg = call.arguments[0];
-      if (!ts.isStringLiteral(arg)) continue;
-      if (arg.text !== SLASH && arg.text !== UNC_PREFIX) continue;
-      const pos = ast.positionOf(call);
-      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
-    }
-
-    // Detections 2–4 are daemon-scoped only.
-    if (!file.relPath.startsWith("packages/daemon/src/")) return;
-
-    // Detection 2: process.cwd() as direct operand of === / !==
-    for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
-      const op = bin.operatorToken.kind;
-      if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
-      if (!isProcessCwd(bin.left) && !isProcessCwd(bin.right)) continue;
-      const pos = ast.positionOf(bin);
-      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
-    }
-
-    // Detection 3: process.cwd() as the *key* argument (position 0) to Map-like
-    // method calls. Only position 0 matters — `.set(key, process.cwd())` puts
-    // the cwd in the value position and is not a lookup-key normalization bug.
-    for (const call of ast.findByKind(ts.SyntaxKind.CallExpression) as ts.CallExpression[]) {
-      if (!ts.isPropertyAccessExpression(call.expression)) continue;
-      if (!MAP_METHODS.has(call.expression.name.text)) continue;
-      if (call.arguments.length === 0) continue;
-      if (!isProcessCwd(call.arguments[0])) continue;
-      const pos = ast.positionOf(call);
-      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
-    }
-
-    // Detection 4: identifier compared with === / !== that resolves (by JS
-    // scope rules) to a `const` declaration bound to `process.cwd()`. Walks
-    // up from each comparison identifier through enclosing scopes so a
-    // shadowing parameter or local of the same name is *not* falsely flagged.
-    for (const bin of ast.findByKind(ts.SyntaxKind.BinaryExpression) as ts.BinaryExpression[]) {
-      const op = bin.operatorToken.kind;
-      if (op !== ts.SyntaxKind.EqualsEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
-      const leftHit = ts.isIdentifier(bin.left) && resolvesToCwdConst(bin.left);
-      const rightHit = ts.isIdentifier(bin.right) && resolvesToCwdConst(bin.right);
-      if (!leftHit && !rightHit) continue;
-      const pos = ast.positionOf(bin);
-      violated(pos.line, pos.column, (lines[pos.line - 1] ?? "").trim());
-    }
-  },
-};
-
-/** Match `process.cwd()` optionally wrapped in parentheses — no recursive descent. */
-function isProcessCwd(node: ts.Node): boolean {
-  let n = node;
-  while (ts.isParenthesizedExpression(n)) n = n.expression;
+/** Match `process.cwd()` — no recursive descent. */
+function isProcessCwd(node: TSESTree.Node): boolean {
   return (
-    ts.isCallExpression(n) &&
-    n.arguments.length === 0 &&
-    ts.isPropertyAccessExpression(n.expression) &&
-    ts.isIdentifier(n.expression.expression) &&
-    n.expression.expression.text === "process" &&
-    n.expression.name.text === "cwd"
+    node.type === "CallExpression" &&
+    node.arguments.length === 0 &&
+    node.callee.type === "MemberExpression" &&
+    !node.callee.computed &&
+    node.callee.object.type === "Identifier" &&
+    node.callee.object.name === "process" &&
+    node.callee.property.type === "Identifier" &&
+    node.callee.property.name === "cwd"
   );
 }
+
+type Declaration = TSESTree.VariableDeclarator | "parameter";
 
 /**
  * Resolve an identifier to the nearest enclosing declaration (parameter or
@@ -124,46 +66,46 @@ function isProcessCwd(node: ts.Node): boolean {
  * short-circuit the walk — they're the binding the identifier refers to, so
  * the outer `const cwd = process.cwd()` is not consulted.
  */
-function resolvesToCwdConst(id: ts.Identifier): boolean {
-  const decl = lookupName(id.text, id);
-  if (!decl || !ts.isVariableDeclaration(decl)) return false;
-  const declList = decl.parent;
-  if (!ts.isVariableDeclarationList(declList)) return false;
-  if (!(declList.flags & ts.NodeFlags.Const)) return false;
-  return !!decl.initializer && isProcessCwd(decl.initializer);
+function resolvesToCwdConst(id: TSESTree.Identifier): boolean {
+  const decl = lookupName(id.name, id);
+  if (!decl || decl === "parameter") return false;
+  const list = decl.parent;
+  if (list?.type !== "VariableDeclaration" || list.kind !== "const") return false;
+  return !!decl.init && isProcessCwd(decl.init);
 }
 
-function lookupName(name: string, from: ts.Node): ts.Declaration | undefined {
-  let current: ts.Node = from;
+function paramBindsName(param: TSESTree.Node, name: string): boolean {
+  if (param.type === "AssignmentPattern") return paramBindsName(param.left, name);
+  return param.type === "Identifier" && param.name === name;
+}
+
+function lookupName(name: string, from: TSESTree.Node): Declaration | undefined {
+  let current: TSESTree.Node = from;
   while (current.parent) {
-    const parent: ts.Node = current.parent;
+    const parent: TSESTree.Node = current.parent;
 
     if (
-      ts.isFunctionDeclaration(parent) ||
-      ts.isFunctionExpression(parent) ||
-      ts.isArrowFunction(parent) ||
-      ts.isMethodDeclaration(parent) ||
-      ts.isConstructorDeclaration(parent)
+      parent.type === "FunctionDeclaration" ||
+      parent.type === "FunctionExpression" ||
+      parent.type === "ArrowFunctionExpression"
     ) {
-      for (const p of parent.parameters) {
-        if (ts.isIdentifier(p.name) && p.name.text === name) return p;
-      }
+      if (parent.params.some((p) => paramBindsName(p, name))) return "parameter";
     }
 
     // for-loop bindings (`for (const x = ...; ...)`, `for (const x of ...)`) are
     // block-scoped to the loop including its body, so check them when ascending
     // out of the body but before the enclosing function/block scope.
-    if (ts.isForStatement(parent) || ts.isForInStatement(parent) || ts.isForOfStatement(parent)) {
-      const init = parent.initializer;
-      if (init && ts.isVariableDeclarationList(init)) {
+    if (parent.type === "ForStatement" || parent.type === "ForInStatement" || parent.type === "ForOfStatement") {
+      const init = parent.type === "ForStatement" ? parent.init : parent.left;
+      if (init?.type === "VariableDeclaration") {
         for (const decl of init.declarations) {
-          if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
+          if (decl.id.type === "Identifier" && decl.id.name === name) return decl;
         }
       }
     }
 
-    if (ts.isBlock(parent) || ts.isSourceFile(parent) || ts.isModuleBlock(parent)) {
-      const found = findConstDeclInScope(parent, name);
+    if (parent.type === "BlockStatement" || parent.type === "Program" || parent.type === "TSModuleBlock") {
+      const found = findDeclInScope(parent.body, name);
       if (found) return found;
     }
 
@@ -174,21 +116,83 @@ function lookupName(name: string, from: ts.Node): ts.Declaration | undefined {
 
 /**
  * Look up a `const`/`let`/`var` declaration of `name` in the *direct* statement
- * list of `scope`. Walking all descendants would leak nested-block bindings
+ * list of a scope. Walking all descendants would leak nested-block bindings
  * (e.g. `if (cond) { const x = ... }`) into outer scopes, violating JS lexical
  * scope and producing both false positives and false negatives.
  */
-function findConstDeclInScope(
-  scope: ts.Block | ts.SourceFile | ts.ModuleBlock,
-  name: string,
-): ts.VariableDeclaration | undefined {
-  for (const stmt of scope.statements) {
-    if (!ts.isVariableStatement(stmt)) continue;
-    for (const decl of stmt.declarationList.declarations) {
-      if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl;
+function findDeclInScope(statements: TSESTree.Node[], name: string): TSESTree.VariableDeclarator | undefined {
+  for (const raw of statements) {
+    const stmt = raw.type === "ExportNamedDeclaration" && raw.declaration ? raw.declaration : raw;
+    if (stmt.type !== "VariableDeclaration") continue;
+    for (const decl of stmt.declarations) {
+      if (decl.id.type === "Identifier" && decl.id.name === name) return decl;
     }
   }
   return undefined;
 }
 
-export default rule;
+export default {
+  id: "no-raw-path-handling",
+  type: "check",
+  category: "architecture",
+  ast: true,
+  scold: "raw path handling — use path.isAbsolute / pathEq / canonicalCwd instead",
+  guidance: [
+    'replace `s.startsWith("/")` with `path.isAbsolute(s)` (handles both Unix and Windows paths)',
+    "replace `a === process.cwd()` with `pathEq(a, canonicalCwd())`",
+    'import { pathEq, canonicalCwd } from "@mcp-cli/core" for realpath-normalized comparisons',
+    "variable-bound form (`const dir = process.cwd(); dir === x`) is caught — use `canonicalCwd()` at the assignment site",
+    "Map lookups with raw CWD as key (`cache.get(process.cwd())`) are caught — normalize with `canonicalCwd()` first",
+  ],
+  documentation: "#2251",
+  tests: "exclude",
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/")) return ctx.skipped();
+
+    const lines = file.content.split("\n");
+    const daemon = file.relativePath.startsWith("packages/daemon/src/");
+    const report = (node: TSESTree.Node) =>
+      ctx.violated(node.loc.start.line, node.loc.start.column + 1, (lines[node.loc.start.line - 1] ?? "").trim());
+
+    walk(ctx.ast().program, (node) => {
+      if (node.type === "CallExpression") {
+        // Detection 1: .startsWith("/") or .startsWith("\\\\") as abs-path check.
+        // Matches by method name only, not receiver type — any object method named
+        // startsWith with a "/" arg is flagged. Use a doing-it-wrong-ignore with a
+        // reason for a legitimate non-path startsWith("/") call.
+        if (calleeName(node) === "startsWith") {
+          const arg = node.arguments[0];
+          if (arg?.type === "Literal" && (arg.value === SLASH || arg.value === UNC_PREFIX)) report(node);
+        }
+
+        // Detection 3 (daemon only): process.cwd() as the *key* argument (position 0)
+        // to Map-like method calls. Only position 0 matters — `.set(key, process.cwd())`
+        // puts the cwd in the value position and is not a lookup-key normalization bug.
+        if (
+          daemon &&
+          node.callee.type === "MemberExpression" &&
+          !node.callee.computed &&
+          node.callee.property.type === "Identifier" &&
+          MAP_METHODS.has(node.callee.property.name) &&
+          node.arguments[0] &&
+          isProcessCwd(node.arguments[0])
+        ) {
+          report(node);
+        }
+      }
+
+      if (daemon && node.type === "BinaryExpression" && (node.operator === "===" || node.operator === "!==")) {
+        // Detection 2: process.cwd() as direct operand of === / !==
+        if (isProcessCwd(node.left) || isProcessCwd(node.right)) report(node);
+
+        // Detection 4: identifier compared with === / !== that resolves (by JS
+        // scope rules) to a `const` declaration bound to `process.cwd()`.
+        const leftHit = node.left.type === "Identifier" && resolvesToCwdConst(node.left);
+        const rightHit = node.right.type === "Identifier" && resolvesToCwdConst(node.right);
+        if (leftHit || rightHit) report(node);
+      }
+    });
+    return ctx.checked();
+  },
+} satisfies Rule;

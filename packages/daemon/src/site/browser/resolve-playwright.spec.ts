@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { restoreEnv, unsetEnv } from "../../../../../test/env";
 import { testOptions } from "../../../../../test/test-options";
 import {
@@ -115,9 +115,13 @@ describe("resolvePlaywright", () => {
       },
     };
 
-    await resolvePlaywright(opts).catch(() => {});
+    await resolvePlaywright(opts).catch(() => {
+      /* only the call count is asserted; resolution is expected to fail */
+    });
     _resetCache();
-    await resolvePlaywright(opts).catch(() => {});
+    await resolvePlaywright(opts).catch(() => {
+      /* only the call count is asserted; resolution is expected to fail */
+    });
     expect(calls).toBe(2);
   });
 
@@ -150,7 +154,7 @@ describe("_resolveBunBinary", () => {
   let vendorDir: string;
 
   beforeEach(() => {
-    vendorDir = mkdtempSync(join(tmpdir(), "mcx-playwright-test-"));
+    vendorDir = tmpDir("mcx-playwright-test-").path;
   });
 
   afterEach(() => {
@@ -167,7 +171,7 @@ describe("_resolveBunBinary", () => {
   test("falls back to BUN_INSTALL/bin/bun when PATH returns nothing", () => {
     // Synthetic layout — do not derive BUN_INSTALL from the real Bun.which("bun")
     // path, which is not `<prefix>/bin/bun` on pnpm/nvm/nix shims (#3011, #3459).
-    const bunInstallDir = mkdtempSync(join(tmpdir(), "mcx-bun-install-"));
+    const bunInstallDir = tmpDir("mcx-bun-install-").path;
     mkdirSync(join(bunInstallDir, "bin"), { recursive: true });
     const placeholder = join(bunInstallDir, "bin", "bun");
     writeFileSync(placeholder, "");
@@ -188,7 +192,7 @@ describe("_resolveBunBinary", () => {
     // Synthetic ~/.bun/bin/bun — the real Bun.which("bun") layout is not
     // assumed (pnpm shims live at /usr/local/bin/bun, official installs at
     // ~/.bun/bin/bun). #3011, #3459
-    const fakeHome = mkdtempSync(join(tmpdir(), "mcx-bun-home-"));
+    const fakeHome = tmpDir("mcx-bun-home-").path;
     mkdirSync(join(fakeHome, ".bun", "bin"), { recursive: true });
     const placeholder = join(fakeHome, ".bun", "bin", "bun");
     writeFileSync(placeholder, "");
@@ -227,7 +231,7 @@ describe("_defaultInstall", () => {
   let vendorDir: string;
 
   beforeEach(() => {
-    vendorDir = mkdtempSync(join(tmpdir(), "mcx-playwright-test-"));
+    vendorDir = tmpDir("mcx-playwright-test-").path;
   });
 
   afterEach(() => {

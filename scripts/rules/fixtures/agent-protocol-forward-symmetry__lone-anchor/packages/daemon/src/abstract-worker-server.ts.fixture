@@ -1,0 +1,4 @@
+// @expect 0
+// no worker files at all: no provider class forms
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

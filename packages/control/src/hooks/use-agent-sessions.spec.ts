@@ -21,7 +21,7 @@ function session(id: string, provider: "claude" | "codex" = "claude"): AgentSess
     provider,
     state: "active",
     model: "opus",
-    cwd: "/tmp",
+    cwd: "/work",
     cost: provider === "claude" ? 0 : null,
     tokens: 0,
     reasoningTokens: 0,

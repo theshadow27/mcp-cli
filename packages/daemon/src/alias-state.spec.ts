@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { silentLogger } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { installDaemonLogCapture } from "./daemon-log";
 import { McxDb } from "./db/state";
 import { IpcServer } from "./ipc-server";
@@ -11,18 +11,18 @@ import { IpcServer } from "./ipc-server";
 installDaemonLogCapture();
 
 function tmpSocket(): string {
-  return join(tmpdir(), `mcp-alias-state-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+  return join(tmpDir("s-").path, "a.sock");
 }
 
 function tmpDbPath(): string {
-  return join(tmpdir(), `mcp-alias-state-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return join(tmpDir("t-").path, `mcp-alias-state-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function cleanupDb(p: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(p + suffix);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* ignore */
     }
@@ -68,7 +68,7 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
     server = undefined;
     try {
       unlinkSync(socketPath);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* ignore */
     }
@@ -201,7 +201,7 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
 
   test("symlink repoRoot is canonicalized — symlink and real path resolve to same row", async () => {
     const { rpc } = start();
-    const base = mkdtempSync(join(tmpdir(), "mcp-alias-state-symlink-"));
+    const base = tmpDir("mcp-alias-state-symlink-").path;
     const real = join(base, "real-repo");
     const link = join(base, "link-repo");
     mkdirSync(real);
@@ -228,7 +228,7 @@ describe("aliasState IPC handlers — repoRoot canonicalization", () => {
 
   test("symlink repoRoot is canonicalized — real path and symlink resolve to same row (inverse)", async () => {
     const { rpc } = start();
-    const base = mkdtempSync(join(tmpdir(), "mcp-alias-state-symlink-inv-"));
+    const base = tmpDir("mcp-alias-state-symlink-inv-").path;
     const real = join(base, "real-repo");
     const link = join(base, "link-repo");
     mkdirSync(real);

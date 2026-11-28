@@ -1,0 +1,10 @@
+// @expect 1
+// @path packages/command/src/main.ts
+// Cases with no SUBCOMMANDS anywhere: the anchor is gone, which is itself reported.
+
+declare let command: string;
+
+switch (command) {
+  case "ls":
+    break;
+}

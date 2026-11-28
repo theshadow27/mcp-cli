@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { type TmpDir, tmpDir } from "am-i-done/tmp";
 
 setDefaultTimeout(15_000);
 
@@ -27,6 +27,7 @@ async function sh(cwd: string, cmd: string[]): Promise<void> {
 }
 
 describe("pre-commit hook tiers", () => {
+  let rootDir: TmpDir;
   let root: string;
   let repo: string;
   let stubDir: string;
@@ -55,7 +56,8 @@ describe("pre-commit hook tiers", () => {
   }
 
   beforeEach(async () => {
-    root = mkdtempSync(join(tmpdir(), "pre-commit-"));
+    rootDir = tmpDir("pre-commit-");
+    root = rootDir.path;
     repo = join(root, "repo");
     stubDir = join(root, "stub");
     callLog = join(root, "bun-calls.txt");
@@ -71,7 +73,7 @@ describe("pre-commit hook tiers", () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rootDir[Symbol.dispose]();
   });
 
   // #3344: the hook used to run `bun run test:coverage` on any source change —

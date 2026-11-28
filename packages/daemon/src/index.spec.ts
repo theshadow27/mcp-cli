@@ -21,6 +21,7 @@ import {
   silentLogger,
 } from "@mcp-cli/core";
 import { _restoreOptions } from "@mcp-cli/core";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { restoreEnv } from "../../../test/env";
 import { pollUntil, rpc } from "../../../test/harness";
 import { testOptions } from "../../../test/test-options";
@@ -135,7 +136,9 @@ describe("daemon index.ts", () => {
       // into the next test as unhandled exceptions (#960).
       if (opts) {
         const socketPath = join(opts.dir, "mcpd.sock");
-        await pollUntil(() => !existsSync(socketPath), 2_000).catch(() => {});
+        await pollUntil(() => !existsSync(socketPath), 2_000).catch(() => {
+          /* only a bounded drain; timing out is acceptable */
+        });
         // Suppress expected post-shutdown socket errors during drain
         const suppress = (err: Error) => {
           const code = (err as NodeJS.ErrnoException).code;
@@ -569,7 +572,7 @@ describe("daemon index.ts", () => {
         try {
           const pidAfter = JSON.parse(readFileSync(pidFile, "utf-8"));
           return pidAfter.configHash !== hashBefore;
-          // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
         } catch {
           return false;
         }
@@ -627,7 +630,7 @@ describe("pruneOrphanedWorktrees", () => {
     opts = testOptions();
     const db = new McxDb(opts.DB_PATH);
     try {
-      db.upsertSession({ sessionId: "test-no-wt", pid: 12345, model: "sonnet", cwd: "/tmp/test" });
+      db.upsertSession({ sessionId: "test-no-wt", pid: 12345, model: "sonnet", cwd: "/work/test" });
       db.endSession("test-no-wt");
       pruneOrphanedWorktrees(db, silentLogger, mockGitOps());
     } finally {
@@ -643,14 +646,14 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "active-1",
         pid: process.pid,
         model: "sonnet",
-        cwd: "/tmp/test",
+        cwd: "/work/test",
         worktree: "my-worktree",
       });
       db.upsertSession({
         sessionId: "ended-1",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/test",
+        cwd: "/work/test",
         worktree: "my-worktree",
       });
       db.endSession("ended-1");
@@ -682,7 +685,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "active-repo-a",
         pid: process.pid,
         model: "sonnet",
-        cwd: "/tmp/repo-a",
+        cwd: "/work/repo-a",
         worktree: "feature-x",
       });
       // Ended session with same worktree name "feature-x" but in repo B
@@ -690,7 +693,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-repo-b",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/repo-b",
+        cwd: "/work/repo-b",
         worktree: "feature-x",
       });
       db.endSession("ended-repo-b");
@@ -711,7 +714,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-gone",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/nonexistent-repo",
+        cwd: "/work/nonexistent-repo",
         worktree: "gone-worktree",
       });
       db.endSession("ended-gone");
@@ -729,7 +732,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-dirty",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/repo",
+        cwd: "/work/repo",
         worktree: "dirty-wt",
       });
       db.endSession("ended-dirty");
@@ -762,7 +765,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-clean",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/repo",
+        cwd: "/work/repo",
         worktree: "clean-wt",
       });
       db.endSession("ended-clean");
@@ -801,7 +804,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-bad-git",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/fake",
+        cwd: "/work/fake",
         worktree: "test-wt",
       });
       db.endSession("ended-bad-git");
@@ -880,7 +883,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "ended-legacy",
         pid: 99999,
         model: "sonnet",
-        cwd: "/tmp/repo",
+        cwd: "/work/repo",
         worktree: "legacy-wt",
       });
       db.endSession("ended-legacy");
@@ -898,8 +901,8 @@ describe("pruneOrphanedWorktrees", () => {
           removeWorktree: () => ({ exitCode: 0 }),
         }),
       );
-      // Should resolve via cwd: /tmp/repo/.claude/worktrees/legacy-wt
-      expect(pathsChecked[0]).toBe(join("/tmp/repo", ".claude", "worktrees", "legacy-wt"));
+      // Should resolve via cwd: /work/repo/.claude/worktrees/legacy-wt
+      expect(pathsChecked[0]).toBe(join("/work/repo", ".claude", "worktrees", "legacy-wt"));
     } finally {
       db.close();
     }
@@ -913,7 +916,7 @@ describe("pruneOrphanedWorktrees", () => {
         sessionId: "old-ended",
         pid: 12345,
         model: "sonnet",
-        cwd: "/tmp/test",
+        cwd: "/work/test",
         worktree: "old-wt",
       });
       db.endSession("old-ended");
@@ -1505,7 +1508,7 @@ describe("resolveHeadBranch", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(require("node:os").tmpdir(), `resolve-head-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = join(makeTmpDir("resolve-head-").path, "repo");
     mkdirSync(tmpDir, { recursive: true });
   });
 

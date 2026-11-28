@@ -1,146 +1,99 @@
+import { type Rule, type TSESTree, walk } from "am-i-done";
+
 /**
- * Rule: test-unguarded-narrowing
+ * Flag tests that check a discriminated-union sub-field inside an `if (x.disc === lit)` guard
+ * without first asserting the discriminant. `if (result.kind === "ok") { expect(result.value)... }`
+ * asserts nothing when the guard is false: a regression that returns the wrong variant silently
+ * skips the block and the test passes vacuously. Make the discriminant itself an assertion,
+ * `expect(result.kind).toBe("ok")`, outside the guard (an assertion inside the guard is skipped
+ * along with everything else in it, so it does not count). Sources: #1990 (x3), #2049.
  *
- * Flag tests that check a discriminated-union sub-field inside an
- * `if (x.disc === lit)` guard without first asserting the discriminant.
- * A regression that returns the wrong variant silently skips the block
- * and the test passes vacuously.
- *
- * Uses the TS AST matcher from #2267 for reliable detection.
- *
- * Sources: #1990 (×3), #2049.
+ * Flagged: an `if` (with or without `else`) whose condition is `member === literal` (string,
+ * number, `true` or `false`, either order) and whose consequent holds an `expect(obj.field)` on the
+ * same object, when the enclosing function has no `expect(obj.disc)` with `toBe`, `toEqual` or
+ * `toStrictEqual` of that same literal outside the guard. Deliberately not caught: guards on a bare
+ * identifier or a call result, `&&` conditions, `==`, and `switch` narrowing.
  */
+const isFunction = (node: TSESTree.Node): boolean =>
+  node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression";
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+const isExpectCall = (node: TSESTree.Node): node is TSESTree.CallExpression =>
+  node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "expect";
 
-function isLiteralNode(node: ts.Node): boolean {
-  return (
-    ts.isStringLiteral(node) ||
-    ts.isNumericLiteral(node) ||
-    node.kind === ts.SyntaxKind.TrueKeyword ||
-    node.kind === ts.SyntaxKind.FalseKeyword
-  );
-}
+const isPropertyAccess = (node: TSESTree.Node): node is TSESTree.MemberExpression =>
+  node.type === "MemberExpression" && !node.computed && node.property.type === "Identifier";
 
-function literalText(node: ts.Node): string {
-  if (ts.isStringLiteral(node)) return node.text;
-  if (ts.isNumericLiteral(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.TrueKeyword) return "true";
-  if (node.kind === ts.SyntaxKind.FalseKeyword) return "false";
-  return "";
-}
+const isLiteral = (node: TSESTree.Node): node is TSESTree.Literal =>
+  node.type === "Literal" &&
+  (typeof node.value === "string" || typeof node.value === "number" || typeof node.value === "boolean");
 
-function collectAll<T extends ts.Node>(root: ts.Node, guard: (n: ts.Node) => n is T): T[] {
-  const results: T[] = [];
-  function walk(n: ts.Node): void {
-    if (guard(n)) results.push(n);
-    ts.forEachChild(n, walk);
-  }
-  walk(root);
-  return results;
-}
+const literalText = (node: TSESTree.Node): string => (node.type === "Literal" ? String(node.value) : "");
 
-function isInsideNode(inner: ts.Node, outer: ts.Node, sf: ts.SourceFile): boolean {
-  return outer.getStart(sf) <= inner.getStart(sf) && outer.getEnd() >= inner.getEnd();
-}
+const propName = (member: TSESTree.MemberExpression): string =>
+  member.property.type === "Identifier" ? member.property.name : "";
 
-function isDiscAssertCall(
-  call: ts.CallExpression,
-  objText: string,
-  discProp: string,
-  litVal: string,
-  sf: ts.SourceFile,
-): boolean {
-  // expect(obj.disc).toBe(lit), .toEqual(lit), or .toStrictEqual(lit)
-  if (!ts.isPropertyAccessExpression(call.expression)) return false;
-  const method = call.expression.name.text;
-  if (method !== "toBe" && method !== "toEqual" && method !== "toStrictEqual") return false;
-
-  const receiver = call.expression.expression;
-  if (!ts.isCallExpression(receiver)) return false;
-  if (!ts.isIdentifier(receiver.expression) || receiver.expression.text !== "expect") return false;
-
-  const expectArg = receiver.arguments[0];
-  if (!expectArg || !ts.isPropertyAccessExpression(expectArg)) return false;
-  if (expectArg.expression.getText(sf) !== objText) return false;
-  if (expectArg.name.text !== discProp) return false;
-
-  const assertArg = call.arguments[0];
-  if (!assertArg) return false;
-  return literalText(assertArg) === litVal;
-}
-
-const rule: CheckRule = {
+export default {
   id: "test-unguarded-narrowing",
-  kind: "check",
+  type: "check",
+  category: "testing",
+  ast: true,
+  tests: "only",
   scold:
     "expect() inside if-guard without asserting the discriminant — test passes vacuously if the wrong variant is returned",
   guidance: [
     'assert the discriminant first: expect(result.kind).toBe("expected") before narrowing',
     'or remove the if-guard and assert directly: expect(result).toEqual({ kind: "expected", ... })',
+    'TypeScript still needs the guard to narrow: keep it, or use `if (result.kind !== "ok") throw new Error(...)`',
   ],
   documentation: "#2247",
-  appliesToTests: true,
-  check({ file, violated, ast }) {
-    const sf = ast.sourceFile;
-    const ifStmts = ast.find(ts.isIfStatement);
+  check(ctx) {
+    const code = ctx.file.content;
+    const lines = code.split("\n");
+    const text = (node: TSESTree.Node): string => code.slice(node.range[0], node.range[1]);
+    walk(ctx.ast().program, (guard) => {
+      if (guard.type !== "IfStatement") return;
+      const cond = guard.test;
+      if (cond.type !== "BinaryExpression" || cond.operator !== "===") return;
+      let member: TSESTree.MemberExpression | undefined;
+      let lit: TSESTree.Node | undefined;
+      if (isPropertyAccess(cond.left) && isLiteral(cond.right)) [member, lit] = [cond.left, cond.right];
+      else if (isPropertyAccess(cond.right) && isLiteral(cond.left)) [member, lit] = [cond.right, cond.left];
+      if (member === undefined || lit === undefined) return;
 
-    for (const ifStmt of ifStmts) {
-      const cond = ifStmt.expression;
-      if (!ts.isBinaryExpression(cond)) continue;
-      if (cond.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) continue;
+      const objText = text(member.object);
+      const discProp = propName(member);
+      const litVal = literalText(lit);
 
-      let propAccess: ts.PropertyAccessExpression | undefined;
-      let litNode: ts.Node | undefined;
-
-      if (ts.isPropertyAccessExpression(cond.left) && isLiteralNode(cond.right)) {
-        propAccess = cond.left;
-        litNode = cond.right;
-      } else if (ts.isPropertyAccessExpression(cond.right) && isLiteralNode(cond.left)) {
-        propAccess = cond.right;
-        litNode = cond.left;
-      }
-
-      if (!propAccess || !litNode) continue;
-
-      const objText = propAccess.expression.getText(sf);
-      const discProp = propAccess.name.text;
-      const litVal = literalText(litNode);
-
-      const thenBlock = ifStmt.thenStatement;
-      const thenCalls = collectAll(thenBlock, ts.isCallExpression);
-
-      const hasSubFieldExpect = thenCalls.some((call) => {
-        if (!ts.isIdentifier(call.expression) || call.expression.text !== "expect") return false;
-        const arg = call.arguments[0];
-        if (!arg || !ts.isPropertyAccessExpression(arg)) return false;
-        return arg.expression.getText(sf) === objText;
+      let hasSubFieldExpect = false;
+      walk(guard.consequent, (inner) => {
+        if (!isExpectCall(inner)) return;
+        const arg = inner.arguments[0];
+        if (arg && isPropertyAccess(arg) && text(arg.object) === objText) hasSubFieldExpect = true;
       });
+      if (!hasSubFieldExpect) return;
 
-      if (!hasSubFieldExpect) continue;
+      let fn: TSESTree.Node | undefined = guard.parent;
+      while (fn !== undefined && !isFunction(fn)) fn = fn.parent;
+      if (fn === undefined) return;
 
-      const encFn = ts.findAncestor(
-        ifStmt,
-        (n) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n),
-      );
-      if (!encFn) continue;
-
-      const fnCalls = collectAll(encFn, ts.isCallExpression);
-      const hasDiscAssertOutsideGuard = fnCalls.some((call) => {
-        if (!isDiscAssertCall(call, objText, discProp, litVal, sf)) return false;
-        // Assertion inside the if-guard body is vacuous — already guarded by
-        // the same condition. Only assertions outside the if count.
-        return !isInsideNode(call, ifStmt, sf);
+      let hasDiscAssertOutsideGuard = false;
+      walk(fn, (call) => {
+        if (call.type !== "CallExpression" || call.callee.type !== "MemberExpression") return;
+        if (call.range[0] >= guard.range[0] && call.range[1] <= guard.range[1]) return;
+        const method = propName(call.callee);
+        if (method !== "toBe" && method !== "toEqual" && method !== "toStrictEqual") return;
+        const receiver = call.callee.object;
+        if (!isExpectCall(receiver)) return;
+        const arg = receiver.arguments[0];
+        if (!arg || !isPropertyAccess(arg) || text(arg.object) !== objText || propName(arg) !== discProp) return;
+        const assertArg = call.arguments[0];
+        if (assertArg && literalText(assertArg) === litVal) hasDiscAssertOutsideGuard = true;
       });
+      if (hasDiscAssertOutsideGuard) return;
 
-      if (!hasDiscAssertOutsideGuard) {
-        const pos = ast.positionOf(ifStmt);
-        const condText = cond.getText(sf);
-        violated(pos.line, pos.column, `if (${condText}) { expect(${objText}.…)… }`);
-      }
-    }
+      const { line, column } = guard.loc.start;
+      ctx.violated(line, column + 1, `if (${text(cond)}) { expect(${objText}.…)… }`);
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

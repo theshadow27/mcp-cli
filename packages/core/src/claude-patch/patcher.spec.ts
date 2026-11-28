@@ -1,17 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { sha256Hex } from "../manifest-lock";
 import {
   DEFAULT_DEPS,
@@ -85,7 +76,7 @@ describe("updatePatchedClaude", () => {
   let storeDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "patcher-test-"));
+    tmpDir = makeTmpDir("patcher-test-").path;
     storeDir = join(tmpDir, "store");
   });
 
@@ -276,7 +267,7 @@ describe("Mach-O signing platform gate (#2982)", () => {
   let plistScratch: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "patcher-platform-"));
+    tmpDir = makeTmpDir("patcher-platform-").path;
     storeDir = join(tmpDir, "store");
     plistScratch = join(tmpDir, "tmp");
     mkdirSync(plistScratch);
@@ -404,12 +395,12 @@ describe("Mach-O signing platform gate (#2982)", () => {
 
 describe("readCurrentPatchedMeta", () => {
   test("returns null when store is missing", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-meta-test-"));
+    const tmp = makeTmpDir("patcher-meta-test-").path;
     expect(readCurrentPatchedMeta(join(tmp, "missing"))).toBeNull();
   });
 
   test("returns metadata after a successful update", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-meta-test-"));
+    const tmp = makeTmpDir("patcher-meta-test-").path;
     const sourcePath = makeFakeClaudeBinary(tmp, "2.1.121");
     const storeDir = join(tmp, "store");
     await updatePatchedClaude({ sourcePath, storeDir }, makeFakeDeps());
@@ -421,7 +412,7 @@ describe("readCurrentPatchedMeta", () => {
   });
 
   test("ignores malformed meta.json (returns null)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-meta-test-"));
+    const tmp = makeTmpDir("patcher-meta-test-").path;
     // Write a current symlink/pointer that targets a nonsense meta path.
     const link = join(tmp, "current");
     writeFileSync(link, join(tmp, "ghost.patched"), { mode: 0o644 });
@@ -430,7 +421,7 @@ describe("readCurrentPatchedMeta", () => {
   });
 
   test("resolves a pointer-file fallback (non-symlink current)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-meta-test-"));
+    const tmp = makeTmpDir("patcher-meta-test-").path;
     // Write a pointer file (plain file) as `current` instead of a symlink.
     writeFileSync(join(tmp, "1.2.3.patched"), "stub", { mode: 0o755 });
     writeFileSync(
@@ -450,7 +441,7 @@ describe("readCurrentPatchedMeta", () => {
   });
 
   test("resolves a relative symlink target", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-meta-test-"));
+    const tmp = makeTmpDir("patcher-meta-test-").path;
     writeFileSync(join(tmp, "2.0.0.patched"), "stub", { mode: 0o755 });
     writeFileSync(
       join(tmp, "2.0.0.meta.json"),
@@ -482,7 +473,7 @@ describe("default subprocess wrappers", () => {
 
   test("defaultVersionResolver throws on unparseable output", async () => {
     // /bin/sh -c 'echo hello' exits 0 but emits no version.
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-ver-test-"));
+    const tmp = makeTmpDir("patcher-ver-test-").path;
     const stub = join(tmp, "stub");
     writeFileSync(stub, "#!/bin/sh\necho 'hello world'\n", { mode: 0o755 });
     expect(defaultVersionResolver(stub)).rejects.toThrow(/parse version/);
@@ -547,7 +538,7 @@ describe("default subprocess wrappers", () => {
   test("resolveSourceClaudePath honors claudeBinary from the config file when env is unset", () => {
     const prev = process.env.MCX_CLAUDE_BINARY;
     unsetEnv("MCX_CLAUDE_BINARY");
-    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    const cfgPath = join(makeTmpDir("rsc-cfg-").path, "config.json");
     writeFileSync(cfgPath, JSON.stringify({ claudeBinary: process.execPath }));
     try {
       expect(resolveSourceClaudePath(cfgPath)).toBe(process.execPath);
@@ -559,7 +550,7 @@ describe("default subprocess wrappers", () => {
   test("resolveSourceClaudePath: env wins over config file", () => {
     const prev = process.env.MCX_CLAUDE_BINARY;
     process.env.MCX_CLAUDE_BINARY = process.execPath;
-    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    const cfgPath = join(makeTmpDir("rsc-cfg-").path, "config.json");
     writeFileSync(cfgPath, JSON.stringify({ claudeBinary: "/this/should/be/ignored" }));
     try {
       // env wins → returns process.execPath, not the (nonexistent) config path
@@ -572,7 +563,7 @@ describe("default subprocess wrappers", () => {
   test("resolveSourceClaudePath throws when config claudeBinary points at a missing file", () => {
     const prev = process.env.MCX_CLAUDE_BINARY;
     unsetEnv("MCX_CLAUDE_BINARY");
-    const cfgPath = join(mkdtempSync(join(tmpdir(), "rsc-cfg-")), "config.json");
+    const cfgPath = join(makeTmpDir("rsc-cfg-").path, "config.json");
     writeFileSync(cfgPath, JSON.stringify({ claudeBinary: "/nonexistent/path/to/claude" }));
     try {
       expect(() => resolveSourceClaudePath(cfgPath)).toThrow(/does not exist/);
@@ -584,7 +575,7 @@ describe("default subprocess wrappers", () => {
   test("resolveSourceClaudePath silently falls through when config file is missing or malformed", () => {
     const prev = process.env.MCX_CLAUDE_BINARY;
     unsetEnv("MCX_CLAUDE_BINARY");
-    const dir = mkdtempSync(join(tmpdir(), "rsc-cfg-"));
+    const dir = makeTmpDir("rsc-cfg-").path;
     const missingPath = join(dir, "this-file-does-not-exist.json");
     const malformedPath = join(dir, "malformed-cfg.json");
     writeFileSync(malformedPath, "{ not valid json");
@@ -603,7 +594,7 @@ describe("default subprocess wrappers", () => {
 
 // codesign-dependent tests run only on macOS (where codesign exists and bun is signed).
 const isDarwin = process.platform === "darwin";
-const macOnly = isDarwin ? describe : describe.skip;
+const macOnly = describe.skipIf(!isDarwin);
 
 macOnly("codesign integration (macOS only)", () => {
   test("defaultExtractEntitlements returns a plist or empty string", async () => {
@@ -614,7 +605,7 @@ macOnly("codesign integration (macOS only)", () => {
   });
 
   test("defaultResignBinary signs a copy of bun successfully", async () => {
-    const tmp = mkdtempSync(join(tmpdir(), "patcher-codesign-test-"));
+    const tmp = makeTmpDir("patcher-codesign-test-").path;
     const copy = join(tmp, "bun-copy");
     copyFileSync(process.execPath, copy);
     const entPath = join(tmp, "entitlements.plist");

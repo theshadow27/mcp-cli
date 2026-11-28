@@ -1,110 +1,91 @@
+import { type Rule, type TSESTree, walk } from "am-i-done";
+
 /**
- * Rule: no-hardcoded-test-port
+ * A fixed port in a test is a global resource. Two spec files running in parallel, or a leftover
+ * server from the last run, collide on it and fail in ways that are hard to reproduce (#2013:
+ * `wsPort: 19275`, ~94s of contention; also #2005, #1670, #1915, #1099). Bind port 0 and read the
+ * real port back (`server.port`, `address().port`).
  *
- * Test files must not hard-code port numbers. A hardcoded port creates a
- * global resource that any concurrently running test suite can collide with,
- * causing spurious failures that are extremely difficult to reproduce or
- * diagnose. The canonical fix is `port: 0` — the OS assigns a free ephemeral
- * port and the server reports it back via `server.port` / `address().port`.
- *
- * Two patterns are flagged (test files only):
- *
- *   1. A `port:` property in an ObjectLiteralExpression that is a **direct
- *      argument** to a known server-construction call (serve/listen/
- *      createServer). Plain data objects, mock structs, and assertion arguments
- *      are excluded.
- *
- *   2. A variable whose name contains "port" as a **whole word** (splits on
- *      camelCase and underscore boundaries) initialised to a non-zero numeric
- *      literal. This catches `wsPort = 8080` but not `transport = 8080` or
- *      `reportCount = 3`.
- *
- * Suppression: `// dotw-ignore no-hardcoded-test-port: <reason>` on the
- * preceding line (e.g. OAuth callback mock where the port matches the URL).
- *
- * Prior incidents: #2013 (wsPort: 19275, ~94s of contention), #2005, #1670,
- * #1915, #1099.
+ * Flags, in test files only:
+ *   1. a nonzero literal `port` property in an object passed straight to `serve`, `listen` or
+ *      `createServer` (as a call or a `new`);
+ *   2. a nonzero literal first argument to `.listen(...)`;
+ *   3. any variable initialised to a nonzero literal when its name has `port` as a whole word
+ *      (`port`, `wsPort`, `port2`, `myHTTPPort`, `HTTP_PORT`). `transport = 8080` and
+ *      `reportCount = 3` do not count.
+ * A `port` field in a plain data object, a mock, an assertion argument or a client dial
+ * (`connect({ port: 6379 })`) is left alone: that is a value being described, not a socket being
+ * bound.
  */
+const SERVER_CALLS: ReadonlySet<string> = new Set(["serve", "listen", "createServer"]);
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+const isFixedPort = (node: TSESTree.Node | null | undefined): node is TSESTree.NumberLiteral =>
+  node?.type === "Literal" && typeof node.value === "number" && node.value !== 0;
 
-// Call/constructor names whose first object-literal argument is a server config.
-const SERVER_CALL_NAMES = new Set(["serve", "listen", "createServer"]);
+/** `serve`, or the property of `Bun.serve` and `server.listen`. */
+const calleeName = (callee: TSESTree.Node): string | undefined => {
+  if (callee.type === "Identifier") return callee.name;
+  if (callee.type === "MemberExpression" && !callee.computed && callee.property.type === "Identifier") {
+    return callee.property.name;
+  }
+  return undefined;
+};
 
-const rule: CheckRule = {
+/** Does `name` contain `port` as a whole word, splitting on case changes (`myHTTPPort`), underscores and digits? */
+const hasPortWord = (name: string): boolean =>
+  name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([A-Za-z])([0-9])|([0-9])([A-Za-z])/g, "$1$3 $2$4")
+    .split(/[\s_]+/)
+    .some((word) => word.toLowerCase() === "port");
+
+const isPortProperty = (node: TSESTree.Node): node is TSESTree.Property =>
+  node.type === "Property" &&
+  ((node.key.type === "Identifier" && node.key.name === "port") ||
+    (node.key.type === "Literal" && node.key.value === "port"));
+
+/** The values a server call binds: `port` properties of an object argument, and `listen`'s first argument. */
+function boundValues(call: TSESTree.CallExpression | TSESTree.NewExpression): TSESTree.Node[] {
+  const name = calleeName(call.callee);
+  if (name === undefined || !SERVER_CALLS.has(name)) return [];
+  const found: TSESTree.Node[] = [];
+  for (const arg of call.arguments) {
+    if (arg.type !== "ObjectExpression") continue;
+    for (const prop of arg.properties) if (isPortProperty(prop)) found.push(prop.value);
+  }
+  const [first] = call.arguments;
+  if (name === "listen" && call.type === "CallExpression" && first) found.push(first);
+  return found;
+}
+
+export default {
   id: "no-hardcoded-test-port",
-  kind: "check",
-  appliesToTests: true,
+  type: "check",
+  category: "testing",
+  ast: true,
+  tests: "only",
   scold: "hardcoded port number in test — use port: 0 and read the OS-assigned port from the server handle",
   guidance: [
     "pass port: 0 to serve()/listen() — the OS picks a free ephemeral port",
     "read the assigned port back: `server.port` (Bun), `server.address().port` (net.Server)",
     "never invent a random-port helper — they reintroduce collision risk (Bun's guide bans them)",
-    "if a fixed port is truly required (e.g. OAuth redirect-URI), add: // dotw-ignore no-hardcoded-test-port: <reason>",
+    "if a fixed port is truly required (e.g. OAuth redirect-URI), add: // doing-it-wrong-ignore no-hardcoded-test-port: <reason> (#issue)",
   ],
   documentation: "#2272",
-  check({ file, violated, ast }) {
-    // Pattern 1: `port: <nonzero>` as a direct property of an object literal
-    // passed to a known server-construction call/constructor.
-    // Excludes: mock structs, return objects, assertion arguments.
-    for (const node of ast.find(ts.isPropertyAssignment)) {
-      if (!isPortPropertyName(node.name)) continue;
-      if (!ts.isNumericLiteral(node.initializer)) continue;
-      if (Number(node.initializer.text) === 0) continue;
-      if (!isDirectServerCallArg(node)) continue;
-      const { line, column } = ast.positionOf(node.initializer);
-      violated(line, column, node.initializer.text);
-    }
-
-    // Pattern 2: variable named *port* (as a whole word) initialised to a
-    // non-zero numeric literal. Word-splits camelCase and SCREAMING_SNAKE so
-    // `transport`, `report`, `support` are not matched.
-    for (const node of ast.find(ts.isVariableDeclaration)) {
-      if (!ts.isIdentifier(node.name)) continue;
-      if (!isPortWordInName(node.name.text)) continue;
-      if (!node.initializer || !ts.isNumericLiteral(node.initializer)) continue;
-      if (Number(node.initializer.text) === 0) continue;
-      const { line, column } = ast.positionOf(node.initializer);
-      violated(line, column, node.initializer.text);
-    }
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
+    const report = (node: TSESTree.Node) => {
+      const { line, column } = node.loc.start;
+      ctx.violated(line, column + 1, (lines[line - 1] ?? "").trim());
+    };
+    walk(ctx.ast().program, (node) => {
+      if (node.type === "CallExpression" || node.type === "NewExpression") {
+        for (const value of boundValues(node)) if (isFixedPort(value)) report(value);
+      } else if (node.type === "VariableDeclarator" && node.id.type === "Identifier") {
+        if (hasPortWord(node.id.name) && isFixedPort(node.init)) report(node.init);
+      }
+    });
+    return ctx.checked();
   },
-};
-
-function isPortPropertyName(name: ts.PropertyName): boolean {
-  return (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "port";
-}
-
-/**
- * Return true when the PropertyAssignment's object literal is a direct
- * argument to a known server-construction call or `new` expression.
- * Requires parent nodes (setParentNodes=true, enabled since #2308).
- */
-function isDirectServerCallArg(node: ts.PropertyAssignment): boolean {
-  if (node.parent === undefined) {
-    throw new Error("no-hardcoded-test-port: parent nodes not set — ensure setParentNodes=true in createAstHelper");
-  }
-  if (!ts.isObjectLiteralExpression(node.parent)) return false;
-  const callOrNew = node.parent.parent;
-  if (!ts.isCallExpression(callOrNew) && !ts.isNewExpression(callOrNew)) return false;
-  const expr = callOrNew.expression;
-  const callee = ts.isIdentifier(expr) ? expr.text : ts.isPropertyAccessExpression(expr) ? expr.name.text : null;
-  return callee !== null && SERVER_CALL_NAMES.has(callee);
-}
-
-/**
- * Return true when "port" is a whole word inside `name` after splitting
- * on camelCase and underscore/SCREAMING_SNAKE boundaries.
- * Examples that match:   port, PORT, wsPort, WS_PORT, httpPort, portNumber
- * Examples that don't:   transport, report, support, reportCount
- */
-function isPortWordInName(name: string): boolean {
-  const words = name
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2") // ABCDef → ABC_Def
-    .replace(/([a-z])([A-Z])/g, "$1_$2") // wsPort → ws_Port
-    .toLowerCase()
-    .split("_");
-  return words.includes("port");
-}
-
-export default rule;
+} satisfies Rule;

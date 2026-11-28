@@ -170,6 +170,7 @@ function extractText(sessionPath: string): string {
 }
 
 // Process each date
+// doing-it-wrong-ignore no-raw-temp: extracts must outlive this process; the diary skill reads them after it exits (#3467)
 const outputDir = join(tmpdir(), "session_extracts");
 mkdirSync(outputDir, { recursive: true });
 

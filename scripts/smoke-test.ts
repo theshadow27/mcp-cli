@@ -16,16 +16,17 @@
  * Exits 0 if all checks pass, 1 if any fail.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { $ } from "bun";
 
 // Isolated runtime state — set before any subprocess spawn so the compiled
 // binaries (which read MCP_CLI_DIR from the env) never touch real user state.
 // wsPort: 0 lets the daemon pick an ephemeral WS port instead of colliding
 // with a real running daemon on the well-known port.
-const STATE_DIR = mkdtempSync(join(tmpdir(), "mcx-smoke-"));
+// Short prefix: the dir holds mcpd.sock (Unix socket paths stay under 104 bytes).
+const STATE_DIR = tmpDir("s-").path;
 writeFileSync(join(STATE_DIR, "config.json"), JSON.stringify({ wsPort: 0 }));
 process.env.MCP_CLI_DIR = STATE_DIR;
 

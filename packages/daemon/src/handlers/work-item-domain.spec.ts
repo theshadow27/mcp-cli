@@ -79,10 +79,10 @@ describe("work-item domain scoping", () => {
 
   test("a named domain reads the same partition it wrote", async () => {
     const { map } = buildHandlers();
-    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/tmp", domain: "phoenix" }, ctx);
+    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/work", domain: "phoenix" }, ctx);
 
-    expect(await listedIn(map, { cwd: "/tmp", domain: "phoenix" })).toEqual(["d7:#42"]);
-    const got = (await invoke(map, "getWorkItem")({ number: 42, cwd: "/tmp", domain: "phoenix" }, ctx)) as {
+    expect(await listedIn(map, { cwd: "/work", domain: "phoenix" })).toEqual(["d7:#42"]);
+    const got = (await invoke(map, "getWorkItem")({ number: 42, cwd: "/work", domain: "phoenix" }, ctx)) as {
       id: string;
     } | null;
     expect(got?.id).toBe("d7:#42");
@@ -127,13 +127,13 @@ describe("work-item domain scoping", () => {
     await invoke(map, "trackWorkItem")({ number: 42, cwd: "/srv/phoenix", domain: "_" }, ctx);
 
     expect(await listedIn(map, { cwd: "/srv/phoenix" })).toEqual([]);
-    expect(await listedIn(map, { cwd: "/tmp" })).toEqual(["#42"]);
+    expect(await listedIn(map, { cwd: "/work" })).toEqual(["#42"]);
     expect(await listedIn(map, { cwd: "/srv/phoenix", domain: "_" })).toEqual(["#42"]);
   });
 
   test("a cwd outside every domain still resolves to the unassigned partition", async () => {
     const { map } = buildHandlers();
-    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/tmp" }, ctx);
+    await invoke(map, "trackWorkItem")({ number: 42, cwd: "/work" }, ctx);
     expect(await listedIn(map, { cwd: "/var/empty" })).toEqual(["#42"]);
   });
 });

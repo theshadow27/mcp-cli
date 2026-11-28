@@ -1,0 +1,29 @@
+// @expect 7
+// @path packages/daemon/src/example-variants.spec.ts
+// Further shapes: quoted key, `.listen(N)`, `new` of a server, createServer through a namespace,
+// port-word variable names (digit and acronym forms), and what must stay clean.
+
+declare function listen(port: number, cb: () => void): void;
+declare const server: { listen(port: number): void };
+declare const http: { createServer(opts: { port: number }): unknown };
+declare class serve {
+  constructor(opts: { port: number });
+}
+declare function connect(opts: { port: number }): void;
+
+Bun.serve({ "port": 8081 });
+server.listen(3000);
+listen(3001, () => {});
+http.createServer({ port: 3002 });
+new serve({ port: 3003 });
+const port2 = 4001;
+const HTTP_PORT = 4002;
+
+// Clean: ephemeral ports, client dials, non-port words, unrelated values.
+Bun.serve({ port: 0 });
+server.listen(0);
+connect({ port: 5432 });
+const transport = 4003;
+const portfolio = 1;
+const myHTTPPort = 0;
+void [transport, portfolio, myHTTPPort];

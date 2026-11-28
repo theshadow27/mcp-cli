@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { formatMarksFile, generateFastImport, parseMarksFile } from "./fast-import-writer";
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -210,7 +210,7 @@ describe("generateFastImport", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-sp-"));
+    const dir = tmpDir("mcx-fast-import-sp-").path;
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
@@ -233,7 +233,7 @@ describe("generateFastImport", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-q-"));
+    const dir = tmpDir("mcx-fast-import-q-").path;
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
@@ -256,7 +256,7 @@ describe("generateFastImport", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-"));
+    const dir = tmpDir("mcx-fast-import-").path;
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
 
@@ -292,7 +292,7 @@ describe("generateFastImport", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-p-"));
+    const dir = tmpDir("mcx-fast-import-p-").path;
     const marksOut = join(dir, "marks");
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
@@ -369,7 +369,7 @@ describe("generateFastImport", () => {
     if (!gitOk) return;
 
     const binary = new Uint8Array([0xc0, 0x80, 0xff, 0xfe, 0x00, 0x01, 0x7f, 0x80]);
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-bin-"));
+    const dir = tmpDir("mcx-fast-import-bin-").path;
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
@@ -393,7 +393,7 @@ describe("generateFastImport", () => {
     if (!gitOk) return;
 
     const binary = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-mix-"));
+    const dir = tmpDir("mcx-fast-import-mix-").path;
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
       const { stream } = generateFastImport({
@@ -508,7 +508,7 @@ describe("generateFastImport incremental mode", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-inc-"));
+    const dir = tmpDir("mcx-fast-import-inc-").path;
     const marksOut = join(dir, "marks");
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
@@ -563,7 +563,7 @@ describe("generateFastImport incremental mode", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-del-"));
+    const dir = tmpDir("mcx-fast-import-del-").path;
     const marksOut = join(dir, "marks");
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });
@@ -614,7 +614,7 @@ describe("generateFastImport incremental mode", () => {
     const gitOk = spawnSync("git", ["--version"]).status === 0;
     if (!gitOk) return;
 
-    const dir = mkdtempSync(join(tmpdir(), "mcx-fast-import-upd-"));
+    const dir = tmpDir("mcx-fast-import-upd-").path;
     const marksOut = join(dir, "marks");
     try {
       spawnSync("git", ["init", "--bare", "--initial-branch=main", dir], { stdio: "ignore", env: cleanGitEnv() });

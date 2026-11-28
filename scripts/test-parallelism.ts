@@ -26,7 +26,7 @@
  * local and CI code paths identical (the whole point of `am-i-done --ci`).
  *
  * Deliberately a standalone const-only module (mirrors `orphan-tolerant-tests.ts`)
- * so the value can't drift across its call sites (am-i-done.ts, ci-steps.ts,
+ * so the value can't drift across its call sites (scripts/stages/,
  * check-coverage.ts) and so importing it never drags un-exercised function
  * bodies into the coverage per-file floor.
  *

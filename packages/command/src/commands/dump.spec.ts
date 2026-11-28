@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DaemonStatus, MetricsSnapshot } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import {
   type DumpDeps,
   type GatherError,
@@ -50,7 +50,7 @@ const fakeSessions = [
     sessionId: "sess-1",
     state: "active",
     model: "opus",
-    cwd: "/tmp",
+    cwd: "/work",
     cost: 0.5,
     tokens: 1000,
     numTurns: 3,
@@ -63,7 +63,7 @@ const fakeSessions = [
 ];
 
 function makeDeps(overrides?: Partial<DumpDeps>): DumpDeps {
-  const dumpsDir = join(tmpdir(), `mcx-dump-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dumpsDir = tmpDir("mcx-dump-test-").join("dumps");
   return {
     ipcCall: mock(async (method: string, params?: unknown) => {
       if (method === "status") return fakeDaemonStatus;
@@ -95,7 +95,7 @@ describe("cmdDump", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = join(tmpdir(), `mcx-dump-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tempDir = tmpDir("mcx-dump-test-").join("dumps");
   });
 
   afterEach(() => {

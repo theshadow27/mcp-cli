@@ -1,0 +1,4 @@
+// @expect 0
+// same set in a different order: symmetric
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

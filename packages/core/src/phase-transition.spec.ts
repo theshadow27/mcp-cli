@@ -5,15 +5,14 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { pollUntil } from "../../../test/harness";
 import type { Manifest } from "./manifest";
 import type { MigrationReport } from "./phase-transition";
@@ -245,7 +244,7 @@ describe("validateTransition — regression", () => {
 describe("transition log I/O", () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-log-"));
+    dir = tmpDir("mcx-phase-log-").path;
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -327,7 +326,7 @@ describe("bounded reads and filter pushdown (#1375)", () => {
   let log: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-tail-"));
+    dir = tmpDir("mcx-phase-tail-").path;
     log = join(dir, "transitions.jsonl");
     for (let i = 0; i < 10; i++) {
       appendTransitionLog(log, {
@@ -397,7 +396,7 @@ describe("bounded reads and filter pushdown (#1375)", () => {
 describe("journal mode (#1372)", () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-journal-"));
+    dir = tmpDir("mcx-phase-journal-").path;
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -429,7 +428,7 @@ describe("legacy jsonl migration (#1328)", () => {
   const jsonlLine = (e: Record<string, unknown>) => `${JSON.stringify(e)}\n`;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-migrate-"));
+    dir = tmpDir("mcx-phase-migrate-").path;
     log = join(dir, "transitions.jsonl");
   });
   afterEach(() => {
@@ -625,7 +624,7 @@ describe("import hardening: a bad record must never wedge or double the store", 
     jsonlLine({ ts, workItemId: "#7", from, to, status: "committed" });
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-import-"));
+    dir = tmpDir("mcx-phase-import-").path;
     log = join(dir, "transitions.jsonl");
   });
   afterEach(() => {
@@ -924,7 +923,7 @@ describe("option sanitising reaches SQLite as a bounded integer", () => {
   let log: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-sanitise-"));
+    dir = tmpDir("mcx-phase-sanitise-").path;
     log = join(dir, "transitions.jsonl");
     appendTransitionLog(log, { ts: "t1", workItemId: "#7", from: null, to: "impl", status: "committed" });
     appendTransitionLog(log, { ts: "t2", workItemId: "#7", from: "impl", to: "qa", status: "committed" });
@@ -988,7 +987,7 @@ describe("option sanitising reaches SQLite as a bounded integer", () => {
 describe("commitTransition / withTransitionWriter (issue #1328)", () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-phase-commit-"));
+    dir = tmpDir("mcx-phase-commit-").path;
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -1244,7 +1243,7 @@ describe("pruneStaleHistory (#2463)", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "prune-"));
+    dir = tmpDir("prune-").path;
   });
 
   afterEach(() => {

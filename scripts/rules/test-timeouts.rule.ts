@@ -1,111 +1,49 @@
+import { type Rule, type TSESTree, walk } from "am-i-done";
+
 /**
- * Rule: test-timeouts
+ * Flag `setTimeout` and `Bun.sleep` calls with literal numeric delays in `*.spec.ts(x)` files.
+ * Fixed-delay waits in tests are flaky and environment-dependent: they pass on a fast laptop and
+ * fail in CI, or vice-versa. A literal delay is a guess about how long the code under test takes;
+ * it wastes time on a fast machine and races the thing it waits for on a loaded one.
  *
- * Flag `setTimeout` and `Bun.sleep` calls with literal numeric delays in
- * *.spec.ts(x) files. Fixed-delay waits in tests are flaky and
- * environment-dependent — they pass on a fast laptop and fail in CI, or
- * vice-versa. Standalone parity: the original `check-test-timeouts.ts`
- * globbed `**\/*.spec.ts` only, so `.test.ts` files are intentionally
- * not scanned by this rule (broaden in a separate PR if desired).
+ * Owns delays written inside code with a whole-number literal: `setTimeout`'s second argument
+ * (`setTimeout(fn, 50, extra)` is flagged: the delay is the second argument, not the last; a
+ * member call such as `globalThis.setTimeout` counts) and `Bun.sleep`'s first.
+ * `0` is flagged too. Named constants, variables and other expressions are fine, since a name can
+ * be tuned in one place. The options slot of `test()` is `no-per-test-timeout`'s, not this rule's.
  *
- * Detection tracks parenthesis depth across the whole file content so
- * multi-line calls (`setTimeout(\n  r,\n  50,\n)`) are matched correctly.
- * For `setTimeout`, the *second* positional argument is the delay (not
- * the last) — `setTimeout(fn, 50, extra)` is flagged.
+ * Only `*.spec.ts(x)` files are scanned. The standalone `check-test-timeouts.ts` this came from
+ * globbed `**\/*.spec.ts` only, so `.test.ts` files (e.g. scripts/bun-segfault-repro/repro.test.ts)
+ * are intentionally not scanned (broaden in a separate PR if desired).
  *
- * Safe alternatives:
- *   - poll with a deadline (e.g. pollUntil / expect.poll)
- *   - inject a FakeClock for timer-dependent behavior
- *   - pass a named constant or parameter delay (e.g. `Bun.sleep(intervalMs)`)
- *
- * Suppression: `// dotw-ignore test-timeouts: <reason>` on the call line
- * or the line immediately above (handled by the engine boundary).
- *
- * Migrated from the standalone `scripts/check-test-timeouts.ts`.
+ * Not caught: `Bun.sleepSync` (a synchronous spin, used in cross-process polling loops), `sleep` imported from `timers/promises`, `setInterval`, and a delay hidden behind a
+ * local helper (`const wait = () => Bun.sleep(100)` is caught only at its `Bun.sleep`).
  */
+const WHOLE_NUMBER = /^[0-9][0-9_]*$/;
 
-import type { CheckRule } from "./_engine/rule";
+const isWholeNumber = (node: TSESTree.Node | undefined): boolean =>
+  node?.type === "Literal" && typeof node.value === "number" && WHOLE_NUMBER.test(node.raw);
 
-function extractDelayArg(args: string): string | null {
-  let depth = 0;
-  let firstComma = -1;
-  let secondComma = -1;
-  for (let j = 0; j < args.length; j++) {
-    const c = args[j];
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
-    else if (c === "," && depth === 0) {
-      if (firstComma === -1) firstComma = j;
-      else {
-        secondComma = j;
-        break;
-      }
-    }
-  }
-  if (firstComma === -1) return null;
-  return args.slice(firstComma + 1, secondComma === -1 ? undefined : secondComma).trim();
+const memberName = (callee: TSESTree.MemberExpression): string | undefined =>
+  !callee.computed && callee.property.type === "Identifier" ? callee.property.name : undefined;
+
+/** The delay argument of `setTimeout(fn, delay)` or `Bun.sleep(delay)`, if `call` is one. */
+function delayOf(call: TSESTree.CallExpression): TSESTree.Node | undefined {
+  const { callee, arguments: args } = call;
+  if (callee.type === "Identifier" && callee.name === "setTimeout") return args[1];
+  if (callee.type !== "MemberExpression") return undefined;
+  const name = memberName(callee);
+  if (name === "setTimeout") return args[1];
+  const isBun = callee.object.type === "Identifier" && callee.object.name === "Bun";
+  return isBun && name === "sleep" ? args[0] : undefined;
 }
 
-interface RawViolation {
-  line: number;
-  text: string;
-}
-
-export function findSetTimeoutViolations(content: string): RawViolation[] {
-  const results: RawViolation[] = [];
-  const lines = content.split("\n");
-  const re = /\bsetTimeout\s*\(/g;
-
-  for (let match = re.exec(content); match !== null; match = re.exec(content)) {
-    const parenOpen = match.index + match[0].length - 1;
-    let depth = 1;
-    let i = parenOpen + 1;
-    while (i < content.length && depth > 0) {
-      if (content[i] === "(") depth++;
-      else if (content[i] === ")") depth--;
-      i++;
-    }
-    if (depth !== 0) continue;
-
-    const args = content.slice(parenOpen + 1, i - 1);
-    const delayArg = extractDelayArg(args);
-    if (delayArg === null || !/^[0-9][0-9_]*$/.test(delayArg)) continue;
-
-    const lineNum = content.slice(0, match.index).split("\n").length;
-    results.push({ line: lineNum, text: (lines[lineNum - 1] ?? "").trim() });
-  }
-  return results;
-}
-
-export function findBunSleepViolations(content: string): RawViolation[] {
-  const results: RawViolation[] = [];
-  const lines = content.split("\n");
-  const re = /\bBun\.sleep\s*\(/g;
-
-  for (let match = re.exec(content); match !== null; match = re.exec(content)) {
-    const parenOpen = match.index + match[0].length - 1;
-    let depth = 1;
-    let i = parenOpen + 1;
-    while (i < content.length && depth > 0) {
-      if (content[i] === "(") depth++;
-      else if (content[i] === ")") depth--;
-      i++;
-    }
-    if (depth !== 0) continue;
-
-    const arg = content.slice(parenOpen + 1, i - 1).trim();
-    if (!/^[0-9][0-9_]*$/.test(arg)) continue;
-
-    const lineNum = content.slice(0, match.index).split("\n").length;
-    results.push({ line: lineNum, text: (lines[lineNum - 1] ?? "").trim() });
-  }
-  return results;
-}
-
-const rule: CheckRule = {
+export default {
   id: "test-timeouts",
-  kind: "check",
-  appliesToTests: true,
+  type: "check",
+  category: "testing",
+  ast: true,
+  tests: "only",
   scold: "setTimeout / Bun.sleep with a fixed numeric delay in a test — flaky, environment-dependent wait",
   guidance: [
     "Bad:   await new Promise((r) => setTimeout(r, 50))",
@@ -115,19 +53,15 @@ const rule: CheckRule = {
     "named constants and parameters are fine: setTimeout(r, POLL_INTERVAL), Bun.sleep(remaining)",
   ],
   documentation: "test/CLAUDE.md flaky-test prevention",
-  check({ file, violated }) {
-    // Standalone parity: original check-test-timeouts.ts globbed **/*.spec.ts only,
-    // so .test.ts files (e.g. scripts/bun-segfault-repro/repro.test.ts) were never
-    // scanned. Preserve that exact surface here — broaden in a separate PR if desired.
-    if (!file.relPath.endsWith(".spec.ts") && !file.relPath.endsWith(".spec.tsx")) return;
-
-    for (const v of findSetTimeoutViolations(file.content)) {
-      violated(v.line, 1, v.text);
-    }
-    for (const v of findBunSleepViolations(file.content)) {
-      violated(v.line, 1, v.text);
-    }
+  check(ctx) {
+    const path = ctx.file.relativePath;
+    if (!path.endsWith(".spec.ts") && !path.endsWith(".spec.tsx")) return ctx.skipped();
+    const lines = ctx.file.content.split("\n");
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "CallExpression" || !isWholeNumber(delayOf(node))) return;
+      const { line, column } = node.loc.start;
+      ctx.violated(line, column + 1, (lines[line - 1] ?? "").trim());
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

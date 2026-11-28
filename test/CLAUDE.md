@@ -120,7 +120,7 @@ S1's `afterEach` is the reference usage; copy it for the next test that genuinel
 this exception. The corresponding `--no-orphans` scoping lives in
 `scripts/orphan-tolerant-tests.ts` (single source of truth for which files are exempt)
 and is mirrored at every `bun test` call site that would otherwise apply the flag
-suite-wide (`package.json`, `scripts/am-i-done.ts`, `scripts/_runner/ci-steps.ts`,
+suite-wide (`package.json`, the test stages in `scripts/stages/`,
 `scripts/check-coverage.ts`, `scripts/test-timing.ts`) — adding a new orphan-tolerant
 file means updating that constant, not re-deriving the exclusion at each site.
 

@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: seeds.ts imports type { Catalog } from catalog.ts; type-only back-edge
 /**
  * Statically-imported seed data — embedded in the compiled binary by Bun's bundler.
  *
@@ -20,9 +19,7 @@ import teamsConfig from "./seeds/teams/config.json";
 
 // ── Wiggle scripts (bundled as text so they survive compilation) ──
 
-// @ts-expect-error — Bun import attribute; tsc doesn't resolve { type: "text" }
 import owaWiggleSrc from "./seeds/owa/wiggle.js" with { type: "text" };
-// @ts-expect-error — Bun import attribute; tsc doesn't resolve { type: "text" }
 import teamsWiggleSrc from "./seeds/teams/wiggle.js" with { type: "text" };
 
 // Fail at startup (not at wiggle time) if Bun's text loader didn't apply.

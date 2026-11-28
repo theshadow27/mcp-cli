@@ -31,7 +31,7 @@
  * long-lived-subprocess helper (`packages/core/src/subprocess.ts`) most
  * production call sites use to launch the daemon, agent-provider
  * processes, and worker subprocesses. Test files are exempt
- * (`appliesToTests: false`) — `subprocess.spec.ts`'s own unit tests spawn
+ * (`tests: "exclude"`) — `subprocess.spec.ts`'s own unit tests spawn
  * generic system binaries (`echo`, `sleep`, `cat`, ...) to exercise
  * `spawnManaged`'s plumbing itself, not anything MCP_CLI_DIR-sensitive.
  *
@@ -39,7 +39,7 @@
  * unless the call site has its own reason to (see `acp-process.ts`,
  * `codex-process.ts` for `{ ...process.env, ...opts.env }` examples).
  *
- * Suppression: `// dotw-ignore spawn-managed-explicit-env: <reason>` —
+ * Suppression: `// doing-it-wrong-ignore spawn-managed-explicit-env: <reason> (#issue)` —
  * expected to be rare; a `spawnManaged` call that genuinely wants a
  * process with a Bun-startup-time (not live) environment snapshot is
  * unusual enough to deserve a comment explaining why.
@@ -47,50 +47,59 @@
  * See #3233.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
-const rule: CheckRule = {
+/** The name a call is made through: `name()`, `obj.name()` or `obj["name"]()`. */
+function calleeName(call: TSESTree.CallExpression): string | undefined {
+  const callee = call.callee;
+  if (callee.type === "Identifier") return callee.name;
+  if (callee.type !== "MemberExpression") return undefined;
+  if (!callee.computed && callee.property.type === "Identifier") return callee.property.name;
+  if (callee.computed && callee.property.type === "Literal" && typeof callee.property.value === "string") {
+    return callee.property.value;
+  }
+  return undefined;
+}
+
+export default {
   id: "spawn-managed-explicit-env",
-  kind: "check",
+  type: "check",
+  category: "architecture",
+  ast: true,
   scold:
     "calls spawnManaged() without an explicit `env` — Bun's implicit-inherit fallback snapshots the environment at Bun startup, not the live process.env, so post-startup mutations (test isolation, MCP_CLI_DIR overrides) silently don't reach the child — see #3233",
   guidance: [
     "pass `env: process.env` explicitly in the spawnManaged() options object — reads the CURRENT process.env at spawn time, unlike the implicit fallback",
     "if the call site needs extra/overridden vars, merge them: `env: { ...process.env, ...extra }`",
-    "suppress with // dotw-ignore spawn-managed-explicit-env: <reason> only if this spawn genuinely wants a Bun-startup-time environment snapshot rather than the live one",
+    "suppress with // doing-it-wrong-ignore spawn-managed-explicit-env: <reason> (#issue) only if this spawn genuinely wants a Bun-startup-time environment snapshot rather than the live one",
   ],
   documentation: "#3233",
-  appliesToTests: false,
-  check({ violated, checked, ast }) {
-    checked();
+  tests: "exclude",
+  check(ctx) {
+    const report = (call: TSESTree.CallExpression) =>
+      ctx.violated(
+        call.loc.start.line,
+        call.loc.start.column + 1,
+        ctx.file.content.slice(call.range[0], call.range[1]).slice(0, 100),
+      );
 
-    for (const call of ast.callsTo("spawnManaged")) {
-      const optsArg = call.arguments[2];
-      if (!optsArg || !ts.isObjectLiteralExpression(optsArg)) {
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "CallExpression" || calleeName(node) !== "spawnManaged") return;
+      const optsArg = node.arguments[2];
+      if (!optsArg || optsArg.type !== "ObjectExpression") {
         // No options object (or a non-literal, e.g. a spread/variable) at
         // all — can't tell statically whether env is set. Flag the missing
         // literal case (arguments.length < 3); leave a non-literal 3rd arg
         // (rare) alone rather than risk a false positive.
-        if (call.arguments.length < 3) {
-          const pos = ast.positionOf(call);
-          violated(pos.line, pos.column, call.getText(ast.sourceFile).slice(0, 100));
-        }
-        continue;
+        if (node.arguments.length < 3) report(node);
+        return;
       }
       const hasEnv = optsArg.properties.some(
-        (p) =>
-          (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-          p.name &&
-          ts.isIdentifier(p.name) &&
-          p.name.text === "env",
+        (p) => p.type === "Property" && !p.computed && !p.method && p.key.type === "Identifier" && p.key.name === "env",
       );
-      if (!hasEnv) {
-        const pos = ast.positionOf(call);
-        violated(pos.line, pos.column, call.getText(ast.sourceFile).slice(0, 100));
-      }
-    }
+      if (!hasEnv) report(node);
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

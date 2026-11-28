@@ -1,0 +1,8 @@
+// @expect 0
+// Evidence context: the rule scans this spec for the cost assertion.
+
+test('session_info_update tracks cost', () => {
+  const state = createAcpEventMapState();
+  mapSessionUpdate({ update: { sessionUpdate: 'session_info_update', cost: 0.005 } }, state);
+  expect(state.cost).toBe(0.005);
+});

@@ -9,7 +9,7 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-    // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+    // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
   } catch {
     return false;
   }
@@ -28,7 +28,7 @@ async function awaitDeath(pid: number, deadlineMs = 5_000): Promise<void> {
 function forceKill(pid: number): void {
   try {
     process.kill(pid, "SIGKILL");
-    // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+    // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
   } catch {
     // already dead
   }
@@ -191,7 +191,7 @@ describe("findProcessesByCwd", () => {
       forceKill(proc.pid);
       try {
         rmdirSync(tmpDir);
-        // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — dir may already be gone (#3465)
       } catch {
         /* noop */
       }
@@ -255,7 +255,7 @@ describe("findProcessesByCwd", () => {
         forceKill(proc.pid);
         try {
           rmdirSync(tmpDir);
-          // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — dir may already be gone (#3465)
         } catch {
           /* noop */
         }
@@ -302,7 +302,7 @@ describe("reapWorktreeProcesses", () => {
       forceKill(proc2.pid);
       try {
         rmdirSync(tmpDir);
-        // dotw-ignore test-empty-catch: best-effort cleanup — dir may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — dir may already be gone (#3465)
       } catch {
         /* noop */
       }

@@ -1,15 +1,16 @@
 import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RecordingEntry } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { parseRecording, replayThroughMock, validateRecording } from "./replay";
 
 setDefaultTimeout(15_000);
 
 const tmpFiles: string[] = [];
+const replayDir = tmpDir("replay-test-").path;
 function tmpFile(suffix: string): string {
-  const path = join(tmpdir(), `replay-test-${process.pid}-${Date.now()}-${suffix}`);
+  const path = join(replayDir, `${Date.now()}-${suffix}`);
   tmpFiles.push(path);
   return path;
 }
@@ -67,7 +68,7 @@ describe("validateRecording", () => {
       mcp("worker->daemon", { id: 1, result: { tools: [] } }),
       db("db:upsert", { session: { sessionId: "s1", state: "connecting" } }),
       db("db:state", { sessionId: "s1", state: "active" }),
-      db("db:upsert", { session: { sessionId: "s1", state: "init", model: "mock", cwd: "/tmp" } }),
+      db("db:upsert", { session: { sessionId: "s1", state: "init", model: "mock", cwd: "/work" } }),
       db("db:cost", { sessionId: "s1", cost: 0.01, tokens: 100 }),
       db("db:state", { sessionId: "s1", state: "idle" }),
       db("db:end", { sessionId: "s1" }),

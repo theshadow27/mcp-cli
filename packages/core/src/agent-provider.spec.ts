@@ -251,7 +251,7 @@ describe("buildSpawnArgs", () => {
     const args = claude.buildSpawnArgs({
       task: "implement feature",
       model: "opus",
-      cwd: "/tmp",
+      cwd: "/work",
       allowedTools: ["read"],
       disallowedTools: ["write"],
       wait: true,
@@ -260,7 +260,7 @@ describe("buildSpawnArgs", () => {
     });
     expect(args.task).toBe("implement feature");
     expect(args.model).toBe("opus");
-    expect(args.cwd).toBe("/tmp");
+    expect(args.cwd).toBe("/work");
     expect(args.allowedTools).toEqual(["read"]);
     expect(args.wait).toBe(true);
     expect(args.custom).toBe("value");

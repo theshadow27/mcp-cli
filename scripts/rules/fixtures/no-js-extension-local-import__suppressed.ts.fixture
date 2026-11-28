@@ -1,0 +1,6 @@
+// @expect 0
+// @path packages/command/src/example-suppressed.ts
+// A doing-it-wrong-ignore comment on the preceding line suppresses the violation.
+
+// doing-it-wrong-ignore no-js-extension-local-import: transitional — migrating post bundle-rewrite (#3465)
+import { legacyHelper } from "./legacy-helper.js";

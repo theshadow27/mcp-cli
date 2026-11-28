@@ -86,6 +86,7 @@ export async function runGridForProvider(
   opts: { version: string | null; record: string | null; offline: boolean; timeoutMs?: number },
 ): Promise<ProviderReport> {
   const outcomes: TestOutcome[] = [];
+  // doing-it-wrong-ignore no-raw-temp: shipped code cannot import the am-i-done devDependency; removed in the finally below (#3467)
   const cwd = mkdtempSync(resolve(tmpdir(), `agent-grid-${provider.name}-`));
 
   try {
@@ -107,7 +108,9 @@ export async function runGridForProvider(
             cleanupFns.push(fn);
           },
         });
-        testPromise.catch(() => {});
+        testPromise.catch(() => {
+          /* the race below observes this promise's outcome; this only stops a late rejection after the timeout wins from going unhandled */
+        });
         const result = await Promise.race([
           testPromise,
           new Promise<never>((_, reject) => {
@@ -119,7 +122,9 @@ export async function runGridForProvider(
       } catch (err) {
         clearTimeout(timer);
         for (let i = cleanupFns.length - 1; i >= 0; i--) {
-          await cleanupFns[i]().catch(() => {});
+          await cleanupFns[i]().catch(() => {
+            /* best effort: a failing cleanup must not mask the test failure being recorded */
+          });
         }
         outcomes.push({
           test: test.name,

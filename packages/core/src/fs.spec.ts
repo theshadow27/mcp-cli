@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../test/test-options";
 import { options } from "./constants";
 import {
@@ -41,7 +41,7 @@ describe("isPathContained", () => {
 
 describe("resolveRealpath", () => {
   test("returns real path for existing file", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const file = join(base, "real.txt");
       writeFileSync(file, "x");
@@ -53,7 +53,7 @@ describe("resolveRealpath", () => {
   });
 
   test("resolves symlink to its real path", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const real = join(base, "real-dir");
       mkdirSync(real);
@@ -66,7 +66,7 @@ describe("resolveRealpath", () => {
   });
 
   test("handles non-existent path by walking to existing ancestor", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const realBase = realpathSync(base);
       const missing = join(base, "does-not-exist", "nested");
@@ -78,7 +78,7 @@ describe("resolveRealpath", () => {
   });
 
   test("resolves symlink ancestor for non-existent tail", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const real = join(base, "real-dir");
       mkdirSync(real);
@@ -95,7 +95,7 @@ describe("resolveRealpath", () => {
 
 describe("pathEq", () => {
   test("returns true for identical paths", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const file = join(base, "a.txt");
       writeFileSync(file, "x");
@@ -106,7 +106,7 @@ describe("pathEq", () => {
   });
 
   test("returns true when one path goes through a symlink", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const real = join(base, "real-dir");
       mkdirSync(real);
@@ -119,7 +119,7 @@ describe("pathEq", () => {
   });
 
   test("returns false for different paths", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     try {
       const a = join(base, "a");
       const b = join(base, "b");
@@ -141,7 +141,7 @@ describe("canonicalCwd", () => {
   });
 
   test("resolves symlinked cwd to the real directory, not the symlink path", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-fs-test-"));
+    const base = tmpDir("mcp-fs-test-").path;
     const real = join(base, "real-dir");
     mkdirSync(real);
     const link = join(base, "link-dir");

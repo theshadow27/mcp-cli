@@ -1,11 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { testRule } from "am-i-done";
 
-import type { FileMeta } from "./_engine/file-loader";
-import { loadFiles } from "./_engine/file-loader";
-import { evaluateRule, validateAnchors } from "./_engine/rule";
+import { loadScenario } from "./_spec-harness";
 import rule, { appendixTypes, setLiteralValues } from "./agent-protocol-appendix-sync.rule";
-
-const repoRoot = process.cwd();
 
 describe("setLiteralValues", () => {
   it("extracts string members of a typed Set literal", () => {
@@ -24,6 +21,11 @@ describe("setLiteralValues", () => {
 
   it("returns [] when the const is not a Set", () => {
     expect(setLiteralValues(`const X = ["a", "b"];`, "X")).toEqual([]);
+  });
+
+  it("ignores literals in comments", () => {
+    const src = `const X = new Set([\n  "a", // "b"\n  /* "c" */ "d",\n]);`;
+    expect(setLiteralValues(src, "X")).toEqual(["a", "d"]);
   });
 });
 
@@ -54,35 +56,22 @@ describe("appendixTypes", () => {
   });
 });
 
-describe("agent-protocol-appendix-sync rule", () => {
-  it("passes on the real repo — spec Appendix A covers all code types", async () => {
-    const files = await loadFiles({ repoRoot });
-    validateAnchors(rule, files);
-    const anchor = [...files.values()].find((f) => f.relPath === "packages/daemon/src/abstract-worker-server.ts");
-    if (!anchor) throw new Error("anchor file not loaded");
-    const violations = evaluateRule(rule, anchor, files);
-    expect(violations).toEqual([]);
-  });
-
-  it("flags a code worker-event type that the spec Appendix A omits", () => {
-    // Real anchor path (so the spec resolves from disk) but content with a
-    // bogus extra type the real Appendix A cannot list.
-    const anchor: FileMeta = {
-      path: `${repoRoot}/packages/daemon/src/abstract-worker-server.ts`,
-      relPath: "packages/daemon/src/abstract-worker-server.ts",
-      content: `const BASE_WORKER_EVENT_TYPES = new Set<Foo["type"]>(["ready", "bogus:type"]);`,
-      pkg: "packages/daemon",
-      isTest: false,
-    };
-    const violations = evaluateRule(rule, anchor, new Map([[anchor.path, anchor]]));
-    expect(violations).toHaveLength(1);
-    expect(violations[0].snippet).toContain("bogus:type");
-  });
-
-  it("does not run on non-anchor files", async () => {
-    const files = await loadFiles({ repoRoot });
-    const other = [...files.values()].find((f) => f.relPath === "packages/daemon/src/claude-server.ts");
-    if (!other) throw new Error("claude-server.ts not loaded");
-    expect(evaluateRule(rule, other, files)).toEqual([]);
-  });
+describe("check over its scenario fixtures", () => {
+  for (const scenario of [
+    "clean",
+    "commented-out",
+    "empty-base",
+    "flagged",
+    "flagged-control",
+    "flagged-extension",
+    "missing-spec",
+  ]) {
+    it(scenario, async () => {
+      const { files, expected } = loadScenario(rule.id, scenario);
+      const found = await testRule(rule, files);
+      const counts = Object.fromEntries(Object.keys(expected).map((path) => [path, 0]));
+      for (const f of found) counts[f.file] = (counts[f.file] ?? 0) + 1;
+      expect(counts).toEqual(expected);
+    });
+  }
 });

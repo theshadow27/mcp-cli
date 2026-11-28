@@ -18,11 +18,11 @@ round.
 
 ## Context
 
-This repo has a custom rule engine at `scripts/rules/*.rule.ts`, run by
-`bun run doing-it-wrong` (pre-commit). A rule is worth writing only if a
+This repo has a rule engine (the `am-i-done` package) with its own rules at
+`scripts/rules/*.rule.ts`, run by `bun run doing-it-wrong` (pre-commit). A rule is worth writing only if a
 mistake is (1) **mechanically detectable** without human judgment,
 (2) **generalizable** beyond one PR, and (3) **recurring**. Existing rules:
-`shell-injection` (no template interpolation into execSync) and
+`shell-injection` (built in: no template interpolation into execSync) and
 `no-js-extension-local-import` (relative imports must be extensionless).
 
 Reviews come mostly from **Copilot inline threads** and Claude **"QA

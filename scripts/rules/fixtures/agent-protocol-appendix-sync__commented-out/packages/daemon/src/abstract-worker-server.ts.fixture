@@ -1,0 +1,4 @@
+// @expect 0
+// a type inside a comment in a Set is not a type
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready", /* "bogus:type" */ "db:end"]);

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isLookupFailure } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { defaultGetDiffStats, defaultGetPrStatus, getGitRoot, parseDiffShortstat } from "./session-deps";
 
 const {
@@ -60,7 +60,7 @@ describe("getGitRoot", () => {
   });
 
   test("resolves symlinked cwd to the real repo root, not the symlink path", () => {
-    const base = mkdtempSync(join(tmpdir(), "mcp-session-deps-test-"));
+    const base = tmpDir("mcp-session-deps-test-").path;
     const real = join(base, "real-dir");
     mkdirSync(real);
     const link = join(base, "link-dir");
@@ -93,7 +93,7 @@ describe("defaultGetDiffStats", () => {
   });
 
   test("returns null when no changes", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-diff-test-"));
+    dir = tmpDir("mcp-diff-test-").path;
     Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: GIT_ENV });
     Bun.spawnSync(["git", "-C", dir, "commit", "--allow-empty", "-m", "init"], { env: GIT_ENV });
     const result = await defaultGetDiffStats(dir);
@@ -101,7 +101,7 @@ describe("defaultGetDiffStats", () => {
   });
 
   test("returns diff summary for unstaged changes", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-diff-test-"));
+    dir = tmpDir("mcp-diff-test-").path;
     Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: GIT_ENV });
     writeFileSync(join(dir, "a.txt"), "hello\n");
     Bun.spawnSync(["git", "-C", dir, "add", "."], { env: GIT_ENV });
@@ -114,7 +114,7 @@ describe("defaultGetDiffStats", () => {
   });
 
   test("returns LookupFailure for non-git directory", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-diff-test-"));
+    dir = tmpDir("mcp-diff-test-").path;
     const result = await defaultGetDiffStats(dir);
     expect(isLookupFailure(result)).toBe(true);
   });
@@ -135,7 +135,7 @@ describe("defaultGetPrStatus", () => {
   });
 
   test("returns null for detached HEAD (no branch)", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-pr-test-"));
+    dir = tmpDir("mcp-pr-test-").path;
     Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: GIT_ENV });
     Bun.spawnSync(["git", "-C", dir, "commit", "--allow-empty", "-m", "init"], { env: GIT_ENV });
     Bun.spawnSync(["git", "-C", dir, "checkout", "--detach"], { env: GIT_ENV });
@@ -144,7 +144,7 @@ describe("defaultGetPrStatus", () => {
   });
 
   test("returns LookupFailure or null for local-only branch (no remote)", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-pr-test-"));
+    dir = tmpDir("mcp-pr-test-").path;
     Bun.spawnSync(["git", "init", "-q"], { cwd: dir, env: GIT_ENV });
     Bun.spawnSync(["git", "-C", dir, "commit", "--allow-empty", "-m", "init"], { env: GIT_ENV });
     const result = await defaultGetPrStatus(dir);
@@ -158,7 +158,7 @@ describe("defaultGetPrStatus", () => {
   });
 
   test("returns LookupFailure for non-git directory", async () => {
-    dir = mkdtempSync(join(tmpdir(), "mcp-pr-test-"));
+    dir = tmpDir("mcp-pr-test-").path;
     const result = await defaultGetPrStatus(dir);
     expect(isLookupFailure(result)).toBe(true);
   });

@@ -7,18 +7,28 @@ MCP CLI — Model Context Preservation - call MCP server tools from the command 
 ### Validation: `bun run am-i-done`
 
 `bun run am-i-done` is the **single command** for checking whether work is done — run it
-before committing. It runs typecheck, lint, the standalone arch checks (args-bounds,
-timeouts, teardown, phase-drift), and the full `doing-it-wrong` rule sweep, then tests and
-the coverage ratchet — in the optimal order, silent-first with clear output on failure. It
-is the **same command the pre-commit hook and CI both run**, so a local pass means a green
-PR; running a subset is how violations slip through. In a Claude/agent context it captures
-step output to `build/am-i-done-<ts>.txt` and surfaces only the path on failure (protects
-context budget).
+before committing. It is the [`am-i-done`](https://github.com/theshadow27/am-i-done) package,
+configured by `done.toml`, with this repo's stages in `scripts/stages/*.stage.ts` and rules in
+`scripts/rules/*.rule.ts`. It runs typecheck, lint, the `doing-it-wrong` rules, agent-grid and
+phase-lock checks, then the tests and the coverage ratchet. It is the **same command the hooks
+and CI run**, so a local pass means a green PR; running a subset is how violations slip through.
+In an agent context it prints one line per stage and keeps the detail in `.am-i-done/run-*.log`,
+whose path it prints on failure (protects context budget). A local rerun of a state that already
+passed in the last hour is skipped (`--no-cache` runs it anyway).
 
 ```bash
 bun run am-i-done              # full check: typecheck → lint → rules → tests → coverage
 bun run am-i-done --pre-commit # fast static subset (no tests/coverage) — what the hook runs
+bun run am-i-done --pre-push   # static + diff-aware tests (bun test --changed) — the pre-push hook
+bun run am-i-done --ci         # what CI runs: the sequential partitions + coverage
+bun run am-i-done --list       # the stages a mode runs, in order
+bun run am-i-done --only <stage> # rerun one stage; a failure prints the exact command
 ```
+
+- Never loosen the gate to get past it: no `.skip`, no suppression without a reason and an
+  issue, no raised timeouts. If a rule is wrong, say so and propose changing the rule.
+- Temp files come from `am-i-done/tmp` (`using dir = tmpDir("x-")`), never `mkdtemp` or `/tmp`
+  (rule `no-raw-temp`).
 
 Run the individual steps **only to diagnose a specific `am-i-done` failure** or iterate on
 one concern — not as a substitute for the full check:
@@ -27,7 +37,7 @@ one concern — not as a substitute for the full check:
 bun install                  # install deps
 bun typecheck                # bun check --all (Bun's native TS7-compatible checker; don't call tsc directly)
 bun lint                     # biome check + format (may reformat files — re-read after)
-bun run doing-it-wrong       # architecture rule sweep only (see Rules below)
+bun run doing-it-wrong       # rule sweep only (--list, --rule <id>; see Rules below)
 bun test                     # run tests
 bun build                    # compile binaries to dist/
 
@@ -81,8 +91,8 @@ packages/
 - **Coverage ratchet**: never lower thresholds or add exclusions in `scripts/check-coverage.ts`. If new code drops coverage, add tests to bring it back up.
 - **Flaky test prevention**: see `test/CLAUDE.md` for required patterns. The core philosophy (adopted from Bun's upstream guidelines) is **test the CONDITION, not TIME PASSING** — never use `setTimeout` for waiting, never hardcode ports, always poll with deadlines instead of fixed delays. Per-test `{ timeout: N }` overrides are a code smell; use file-level `setDefaultTimeout()` instead so the time-budget profiler can see the slowness. Rules `poll-until-headroom`, `no-hardcoded-test-port`, and the pollUntil 1500ms default mechanize this.
 - **No shell interpolation**: never pass template literals with `${}` to `execSync` or `execFileSync` — use `spawnSync("cmd", [...args])` instead.
-- **Two TypeScript packages, on purpose**: `typescript` is 7.x (the native Go compiler) for editors and ad-hoc `tsc -b`; `bun typecheck` and the gate use `bun check`, Bun's own TS7-compatible checker (its built-in TS version: `process.versions.typescript`). `typescript-5` is an npm alias for `typescript@5.9.3` and backs everything that parses source as an AST — `scripts/rules/**` and `.claude/skills/estimate/**`. TS7 ships no standalone parser (`createSourceFile`/`forEachChild` are gone; the `unstable/*` API needs a Project), and the rule engine is deliberately program-free. `import ts from "typescript-5"` in those trees is correct — do not "fix" it to `"typescript"`.
-- **Architectural rules**: `scripts/rules/*.rule.ts`, swept by `bun run doing-it-wrong` and run as part of `bun run am-i-done` — wired into both the pre-commit hook and CI. Permanent exception: `// dotw-ignore <rule-id>: <reason>`. Temporary: `// dotw-todo <rule-id>: <desc> — fix in #NNN`. Rule sources are the canonical "what the rule means" docs. See `scripts/ROADMAP.md` for migration status.
+- **Two TypeScript packages, on purpose**: `typescript` is 7.x (the native Go compiler) for editors and ad-hoc `tsc -b`; `bun typecheck` and the gate use `bun check`, Bun's own TS7-compatible checker (its built-in TS version: `process.versions.typescript`). `typescript-5` is an npm alias for `typescript@5.9.3` and backs `.claude/skills/estimate/**`, which parses source as an AST. TS7 ships no standalone parser (`createSourceFile`/`forEachChild` are gone; the `unstable/*` API needs a Project). `import ts from "typescript-5"` there is correct — do not "fix" it to `"typescript"`. The rules in `scripts/rules/` use the am-i-done package's syntax tree (`ctx.ast()`, TSESTree), parsed by oxc (the package's `auto` parser picks oxc, since `typescript` here is 7.x).
+- **Architectural rules**: `scripts/rules/*.rule.ts` plus the package's built-in rules, swept by `bun run doing-it-wrong` and run as part of `bun run am-i-done` — wired into both the pre-commit hook and CI. Every rule has fixtures in `scripts/rules/fixtures/` that run on every sweep. An exception says why and cites the issue that tracks it: `// doing-it-wrong-ignore <rule-id>: <reason> (#NNN)` (its own line and the two below; `doing-it-wrong-ignore-file` for a whole file). A suppression that no longer suppresses anything fails the sweep, and CI's `stale-todos` stage fails on one whose issue is closed. Rule sources are the canonical "what the rule means" docs; see `scripts/rules/README.md`.
 - **Duplication & abstraction**: choose the seam that fits the maintainer — **abstract the nouns (shared data contracts), duplicate the verbs (behavior); abstract what changes together, duplicate what changes independently.** Independently-evolving copies are fine; the cost to watch is an invariant drifting across mirrors. Rules should mechanize a real invariant rather than de-duplication on its own. See `docs/architecture/duplication.md`.
 - **Test time budget**: no single test file should take >5s in isolation. If it does, extract pure logic into unit tests or split the file. `scripts/check-coverage.ts` profiles every test file and warns on overages (does not block commits — see #812 for the replacement plan).
 - **No implementation code in index files**: `index.ts` is for barrel exports only. Entry points go in `main.ts` (or `main.tsx`). This keeps testable code separate from untestable process boilerplate.

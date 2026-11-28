@@ -1,0 +1,34 @@
+// @expect 0
+// @path packages/daemon/src/handlers/domain-accepted.ts
+// Shapes that are covered: a resolver-named receiver invalidating after, in the same function.
+
+declare const db: { createDomain(a: string, b: string): void };
+declare const domains: { invalidate(): void };
+declare const domainResolver: { invalidate(): void };
+declare const createDomain: (a: string, b: string) => void;
+declare const self: { domains: { invalidate(): void }; deps: { domains: { invalidate(): void } } };
+
+export function viaDomains(): void {
+  db.createDomain("a", "b");
+  domains.invalidate();
+}
+export function viaResolver(): void {
+  db.createDomain("a", "b");
+  domainResolver.invalidate();
+}
+export function viaMember(): void {
+  db.createDomain("a", "b");
+  self.domains.invalidate();
+}
+// A nested resolver receiver is accepted via its final segment.
+export function viaNested(): void {
+  db.createDomain("a", "b");
+  self.deps.domains.invalidate();
+}
+// A destructured mutation paired with a proper invalidate.
+export function destructured(): void {
+  createDomain("a", "b");
+  domains.invalidate();
+}
+// A file that never writes the domains table.
+export const id = self.domains;

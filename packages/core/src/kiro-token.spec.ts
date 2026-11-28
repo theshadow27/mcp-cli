@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { kiroDataDir, kiroDbPath, resolveKiroToken } from "./kiro-token";
 
 /**
@@ -22,7 +22,7 @@ interface SeedOpts {
 
 /** Create a temp kiro data dir with a seeded auth store; returns an env pointing at it. */
 function seedStore(opts: SeedOpts): { env: NodeJS.ProcessEnv; dir: string } {
-  const base = mkdtempSync(join(tmpdir(), "kiro-token-"));
+  const base = tmpDir("kiro-token-").path;
   const env: NodeJS.ProcessEnv = { MCX_KIRO_DATA_DIR: base };
   const dataDir = kiroDataDir(env);
   mkdirSync(dataDir, { recursive: true });
@@ -98,7 +98,7 @@ describe("resolveKiroToken (on-disk store)", () => {
   });
 
   test("returns null when no store exists", () => {
-    const empty = mkdtempSync(join(tmpdir(), "kiro-empty-"));
+    const empty = tmpDir("kiro-empty-").path;
     try {
       expect(resolveKiroToken({ MCX_KIRO_DATA_DIR: empty }, NO_KEYCHAIN)).toBeNull();
     } finally {

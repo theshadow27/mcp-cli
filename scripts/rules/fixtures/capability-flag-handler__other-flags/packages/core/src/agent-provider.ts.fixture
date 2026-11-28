@@ -1,0 +1,12 @@
+// @expect 0
+// flags outside the evidence map are ignored
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "headless",
+	serverName: "_headless",
+	toolPrefix: "headless",
+	buildSpawnArgs: () => ({}),
+	native: { headed: true, worktree: true, resume: true },
+});

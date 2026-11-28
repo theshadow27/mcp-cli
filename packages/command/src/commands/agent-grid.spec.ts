@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GridTest } from "@mcp-cli/agent-grid";
 import { gateTest } from "@mcp-cli/agent-grid";
 import { type AgentProvider, getProvider } from "@mcp-cli/core";
+import { tmpDir, tmpFile } from "am-i-done/tmp";
 import {
   type GridRunReport,
   type RunOptions,
@@ -561,7 +561,7 @@ describe("cmdAgentGrid replay", () => {
   });
 
   test("replay with valid recording outputs pass", async () => {
-    const path = join(tmpdir(), `grid-replay-test-${process.pid}-${Date.now()}.ndjson`);
+    const path = tmpFile("grid-replay-test.ndjson").path;
     const lines = [
       JSON.stringify({ t: 1000, dir: "daemon->worker", kind: "control", payload: { type: "init" } }),
       JSON.stringify({ t: 1001, dir: "worker->daemon", kind: "control", payload: { type: "ready" } }),
@@ -575,7 +575,7 @@ describe("cmdAgentGrid replay", () => {
   });
 
   test("replay --json outputs valid JSON", async () => {
-    const path = join(tmpdir(), `grid-replay-json-${process.pid}-${Date.now()}.ndjson`);
+    const path = tmpFile("grid-replay-json.ndjson").path;
     const lines = [
       JSON.stringify({ t: 1000, dir: "daemon->worker", kind: "control", payload: { type: "init" } }),
       JSON.stringify({ t: 1001, dir: "worker->daemon", kind: "control", payload: { type: "ready" } }),

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { options } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { closeDaemonLogFile, getDaemonLogLines, installDaemonLogCapture, installDaemonLogFile } from "./daemon-log";
 
 // installDaemonLogCapture is a one-time singleton, so install once for all tests.
@@ -85,7 +85,7 @@ describe("daemon-log", () => {
 });
 
 describe("daemon-log file", () => {
-  const testDir = join(tmpdir(), `mcpd-log-test-${process.pid}`);
+  const testDir = tmpDir("mcpd-log-test-").path;
   const logPath = join(testDir, "mcpd.log");
   const backupPath = join(testDir, "mcpd.log.1");
 
@@ -93,7 +93,7 @@ describe("daemon-log file", () => {
     closeDaemonLogFile();
     try {
       rmSync(testDir, { recursive: true });
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // already gone
     }
@@ -137,7 +137,7 @@ describe("daemon-log file", () => {
     try {
       readFileSync(backupPath);
       backupExists = true;
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // no backup
     }

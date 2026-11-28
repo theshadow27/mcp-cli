@@ -1,0 +1,4 @@
+// @expect 1
+// BASE_WORKER_EVENT_TYPES empty: cannot verify coverage
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>([]);

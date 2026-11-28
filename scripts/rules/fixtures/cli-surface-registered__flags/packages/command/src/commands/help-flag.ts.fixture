@@ -1,0 +1,9 @@
+// @expect 0
+// --help is excluded from the set difference.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose"]);
+export const wantsHelp = args.includes("--help");
+export const verbose = args[i] === "--verbose";

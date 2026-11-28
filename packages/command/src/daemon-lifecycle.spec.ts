@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BUILD_VERSION, PID_MAX_AGE_MS, PROTOCOL_VERSION } from "@mcp-cli/core";
 import { DaemonStartCooldownError } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { unsetEnv } from "../../../test/env";
 import { testOptions } from "../../../test/test-options";
 import {
@@ -298,14 +298,14 @@ describe("resolveDaemonCommand", () => {
 
 // -- Startup lock file mechanics --
 
-const TEST_DIR = join(tmpdir(), `mcp-ipc-test-${Date.now()}`);
+const TEST_DIR = tmpDir("mcp-ipc-test-").path;
 const LOCK_FILE = join(TEST_DIR, "test.lock");
 
 describe("startup lock file", () => {
   afterEach(() => {
     try {
       unlinkSync(LOCK_FILE);
-      // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
     } catch {
       /* already gone */
     }
@@ -344,7 +344,7 @@ describe("startup lock file", () => {
     expect(() => {
       try {
         unlinkSync(LOCK_FILE);
-        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
       } catch {
         /* already gone — this is the expected path */
       }
@@ -356,7 +356,7 @@ describe("concurrent daemon startup simulation", () => {
   afterEach(() => {
     try {
       unlinkSync(LOCK_FILE);
-      // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
     } catch {
       /* already gone */
     }
@@ -372,7 +372,7 @@ describe("concurrent daemon startup simulation", () => {
           new Promise<number>((resolve, reject) => {
             try {
               resolve(openSync(LOCK_FILE, "wx"));
-              // dotw-ignore test-empty-catch: structural — translates throw into promise rejection
+              // doing-it-wrong-ignore test-empty-catch: structural — translates throw into promise rejection (#3465)
             } catch (e) {
               reject(e);
             }
@@ -613,7 +613,7 @@ describe("getSourceStalenessWarning", () => {
 
   it("returns warning when source is newer than build epoch", () => {
     // Create a mock workspace with a source file newer than epoch
-    const root = join(tmpdir(), `mcp-stale-test-${Date.now()}`);
+    const root = tmpDir("mcp-stale-test-").path;
     const srcDir = join(root, "packages", "daemon", "src");
     mkdirSync(srcDir, { recursive: true });
     // Write a file — its mtime will be "now"
@@ -631,14 +631,14 @@ describe("getSourceStalenessWarning", () => {
     // Clean up
     try {
       unlinkSync(join(srcDir, "test.ts"));
-      // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
     } catch {
       /* ignore */
     }
   });
 
   it("returns null when workspaceRoot has no packages dir", () => {
-    const root = join(tmpdir(), `mcp-stale-empty-${Date.now()}`);
+    const root = tmpDir("mcp-stale-empty-").path;
     mkdirSync(root, { recursive: true });
     // Dev mode — returns null
     expect(getSourceStalenessWarning(root)).toBeNull();

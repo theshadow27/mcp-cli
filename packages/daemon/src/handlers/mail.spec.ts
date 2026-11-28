@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_ERROR, type IpcMethod, type MailMessage } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { McxDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { MailHandlers } from "./mail";
@@ -33,7 +33,7 @@ interface Fixture {
 }
 
 function fixture(opts: { domains?: boolean; isDraining?: () => boolean } = {}): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "mcx-mail-handlers-"));
+  const root = tmpDir("mcx-mail-handlers-").path;
   dirs.push(root);
   const db = new McxDb(join(root, "mcx.db"));
 

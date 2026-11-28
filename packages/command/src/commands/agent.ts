@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: claude.ts dynamically imports agent.ts to share the dispatch loop; already broken at load time
 /**
  * `mcx agent <provider> <subcommand>` — unified command for all agent providers.
  *
@@ -65,6 +64,7 @@ import {
   resolvePermissionTarget,
   resolveSessionId,
   resolveWorktree,
+  // doing-it-wrong-ignore no-import-cycles: claude.ts imports agent.ts back to share the dispatch loop (#3468)
 } from "./claude";
 import { defaultGetDiffStats, defaultGetPrStatus, getGitRoot } from "./session-deps";
 import {
@@ -371,7 +371,7 @@ export function parseAgentSpawnArgs(
       return 0;
     }
     if (arg === "--worktree" || arg === "-w") {
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (next && !next.startsWith("-")) {
         worktree = next;
         return 1;
@@ -393,7 +393,7 @@ export function parseAgentSpawnArgs(
         return 0;
       }
       if (agentOverride) return 1; // Already set by wrapper
-      const val = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const val = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (!val || val.startsWith("-")) {
         extraError = "--agent requires a value (e.g. copilot, gemini, grok, kiro)";
         return 0;
@@ -406,7 +406,7 @@ export function parseAgentSpawnArgs(
         extraError = `--provider is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
-      const val = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const val = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (!val || val.startsWith("-")) {
         extraError = "--provider requires a value (e.g. anthropic, openai, google)";
         return 0;
@@ -419,7 +419,7 @@ export function parseAgentSpawnArgs(
         extraError = `--resume is not supported by ${providerDisplayName(providerConfig)}`;
         return 1;
       }
-      resume = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      resume = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (!resume) {
         extraError = "--resume requires a session ID";
       }
@@ -430,7 +430,7 @@ export function parseAgentSpawnArgs(
         extraError = `--claude-binary is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (next && !next.startsWith("-")) {
         claudeBinary = next;
         return 1;
@@ -451,7 +451,7 @@ export function parseAgentSpawnArgs(
         extraError = `--profile is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       const parsedProfile = parseProfileFlagValue(next);
       if (parsedProfile.error) {
         extraError = parsedProfile.error;
@@ -466,7 +466,7 @@ export function parseAgentSpawnArgs(
         extraError = `--transport is not supported by ${providerDisplayName(providerConfig)}`;
         return 0;
       }
-      const next = allArgs[i + 1]; // dotw-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation
+      const next = allArgs[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: extra callback runs outside parseFlags context, consumes args before delegation (#3465)
       if (next === "stdio" || next === "sdk-url") {
         transport = next;
         return 1;
@@ -698,8 +698,8 @@ running without MCX_RECORD_SESSION, this command will stop it first.`);
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
     if ((tok === "--save" || tok === "-s") && i + 1 < args.length) {
-      // dotw-ignore no-manual-arg-parsing: pass-through command — parseFlags rejects the unknown spawn flags we must forward
-      savePath = args[++i]; // dotw-ignore args-bounds: guarded by i + 1 < args.length above
+      // doing-it-wrong-ignore no-manual-arg-parsing: pass-through command — parseFlags rejects the unknown spawn flags we must forward (#3465)
+      savePath = args[++i];
     } else if (tok.startsWith("--save=")) {
       savePath = tok.slice("--save=".length);
     } else {
@@ -1476,9 +1476,9 @@ export function parseAgentResumeArgs(args: string[]): AgentResumeArgs {
         sawAllowOnly = true;
         allowOnly = true;
       }
-      // dotw-ignore no-manual-arg-parsing: greedy multi-value --allow must run before parseFlags; parseFlags has no multi-value-with-heuristic mode
+      // doing-it-wrong-ignore no-manual-arg-parsing: greedy multi-value --allow must run before parseFlags; parseFlags has no multi-value-with-heuristic mode (#3465)
       while (i + 1 < args.length && looksLikeToolName(args[i + 1])) {
-        rawAllow.push(args[++i]); // dotw-ignore no-manual-arg-parsing: see above — greedy consume in pre-processing phase
+        rawAllow.push(args[++i]);
       }
       if (rawAllow.length === 0) allowError = `${args[i]} requires at least one tool pattern`;
     } else {

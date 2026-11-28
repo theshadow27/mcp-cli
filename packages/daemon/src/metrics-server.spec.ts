@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUILD_COMMIT, BUILD_VERSION, METRICS_SERVER_NAME, PROTOCOL_VERSION } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "./db/state";
 import { MetricsCollector } from "./metrics";
 import { MetricsServer, buildInfo } from "./metrics-server";
@@ -10,7 +10,7 @@ import { MetricsServer, buildInfo } from "./metrics-server";
 const dbPaths: string[] = [];
 
 function tmpDbPath(): string {
-  const p = join(tmpdir(), `mcp-metrics-server-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const p = tmpFile("mcp-metrics-server-test.db").path;
   dbPaths.push(p);
   return p;
 }
@@ -20,7 +20,7 @@ afterEach(() => {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
       } catch {
         /* ignore */
       }

@@ -1,0 +1,14 @@
+// @expect 0
+// @path packages/command/src/commands/example-suppressed.ts
+// A doing-it-wrong-ignore comment suppresses the violation while migration is in
+// progress.
+
+export function legacyParser(args: string[]): void {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--name") {
+      // doing-it-wrong-ignore no-manual-arg-parsing: migrate to parseFlags (#2283)
+      const val = args[++i];
+      console.log(val);
+    }
+  }
+}

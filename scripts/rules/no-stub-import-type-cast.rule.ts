@@ -1,4 +1,4 @@
-import type { PatternRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 /**
  * Rule: no-stub-import-type-cast
@@ -19,20 +19,18 @@ import type { PatternRule } from "./_engine/rule";
  * structurally.
  */
 
-const rule: PatternRule = {
+export default {
   id: "no-stub-import-type-cast",
-  kind: "pattern",
-  appliesToTests: true,
+  type: "pattern",
+  category: "testing",
+  tests: "only",
   scold:
     "Suppressive 'as ReturnType<typeof import(...)>' cast in test stub — use a direct return-type annotation or 'satisfies' instead",
-  pattern: /\bas\s+ReturnType\s*<\s*typeof\s+import\s*\(/,
-  except: ["// dotw-ignore no-stub-import-type-cast:", "// dotw-todo no-stub-import-type-cast:"],
+  pattern: /\bas\s+ReturnType\s*<\s*typeof\s+import\s*\(/g,
   guidance: [
     'import the type and annotate the return directly: `import type { T } from "..."; const stub = (): T => ({...})`',
     "or use `satisfies T` so the stub is still checked structurally",
     "the cast compiles even when T gains a new required field — that is the blind spot this rule closes",
   ],
   documentation: "#2555",
-};
-
-export default rule;
+} satisfies Rule;

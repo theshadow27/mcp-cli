@@ -25,7 +25,7 @@
  * have opted into the partition and cannot be satisfied by removing scoping from both.
  */
 
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 /** The daemon-injected filter every worker reads through the one shared helper. */
 const READS_FILTER = "domainFilterArg(args)";
@@ -55,7 +55,7 @@ function functionRegion(source: string, name: string): string | null {
 
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (startsFn(lines[i])) {
+    if (startsFn(lines[i] ?? "")) {
       end = i;
       break;
     }
@@ -80,9 +80,10 @@ function interfaceRegion(source: string, name: string): string | null {
   return null;
 }
 
-const rule: CheckRule = {
+export default {
   id: "session-wait-domain-scoped",
-  kind: "check",
+  type: "check",
+  category: "architecture",
   scold:
     "this worker scopes handleSessionList but does not honour the partition in handleWait — a scoped wait will wake on another domain's session, or lose its own after one ends",
   guidance: [
@@ -93,25 +94,24 @@ const rule: CheckRule = {
     "see packages/daemon/src/session-domain-roundtrip.spec.ts for what this protects",
   ],
   documentation: "#3039",
-  check({ file, violated, checked }) {
-    if (!file.relPath.startsWith("packages/daemon/src/")) return;
-    if (!file.relPath.endsWith("-session-worker.ts")) return;
-
-    checked();
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/daemon/src/")) return ctx.skipped();
+    if (!file.relativePath.endsWith("-session-worker.ts")) return ctx.skipped();
 
     const listBody = functionRegion(file.content, "handleSessionList");
     // Not scoped (or no such function) — this worker has not opted into the partition,
     // and the rule has nothing to say about it.
-    if (!listBody?.includes(READS_FILTER)) return;
+    if (!listBody?.includes(READS_FILTER)) return ctx.checked();
 
     const lines = file.content.split("\n");
     const waitBody = functionRegion(file.content, "handleWait");
-    if (waitBody === null) return;
+    if (waitBody === null) return ctx.checked();
 
     if (!waitBody.includes(READS_FILTER)) {
       const idx = lines.findIndex((l) => /^(?:export\s+)?(?:async\s+)?function\s+handleWait\b/.test(l));
-      violated(idx + 1, 1, (lines[idx] ?? "handleWait").trim());
-      return;
+      ctx.violated(idx + 1, 1, (lines[idx] ?? "handleWait").trim());
+      return ctx.checked();
     }
 
     // Second half of the invariant. Reading the filter is not honouring it: a worker
@@ -120,13 +120,12 @@ const rule: CheckRule = {
     // worker passed while all four lost a scoped `wait --after` its own events the
     // moment a session ended — the buffer outlives the live `sessions` map, so a
     // domain re-derived from that map at read time is gone exactly when it is needed.
-    if (!file.content.includes("interface BufferedEvent")) return;
+    if (!file.content.includes("interface BufferedEvent")) return ctx.checked();
     const buffered = interfaceRegion(file.content, "BufferedEvent");
     if (buffered !== null && !/\bdomainId\b/.test(buffered)) {
       const idx = lines.findIndex((l) => /interface\s+BufferedEvent\b/.test(l));
-      violated(idx + 1, 1, (lines[idx] ?? "interface BufferedEvent").trim());
+      ctx.violated(idx + 1, 1, (lines[idx] ?? "interface BufferedEvent").trim());
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

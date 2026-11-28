@@ -1,10 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { getProvider } from "@mcp-cli/core";
 import type { AgentProvider } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { gateTest } from "../capability-gate";
 import { makeEditFileTest } from "./edit-file";
 import { makeFixTypescriptTest } from "./fix-typescript";
@@ -27,7 +26,7 @@ function requireProvider(name: string): AgentProvider {
 
 const tmpDirs: string[] = [];
 function makeTmpDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "grid-test-spec-"));
+  const dir = tmpDir("grid-test-spec-").path;
   tmpDirs.push(dir);
   return dir;
 }
@@ -109,31 +108,31 @@ describe("promptAndWait", () => {
 
   test("extracts sessionId from JSON response", async () => {
     const callTool: CallToolFn = async () => mcpPromptResult("abc-123", "hello");
-    const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
+    const result = await promptAndWait(claude, { task: "test", cwd: "/work", callTool });
     expect(result.sessionId).toBe("abc-123");
     expect(result.text).toContain("abc-123");
   });
 
   test("throws on error result", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("something broke", true);
-    expect(promptAndWait(claude, { task: "test", cwd: "/tmp", callTool })).rejects.toThrow("prompt failed");
+    expect(promptAndWait(claude, { task: "test", cwd: "/work", callTool })).rejects.toThrow("prompt failed");
   });
 
   test("extracts sessionId from regex fallback", async () => {
     const callTool: CallToolFn = async () => mcpTextResult('some preamble "sessionId": "fallback-id" and more');
-    const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
+    const result = await promptAndWait(claude, { task: "test", cwd: "/work", callTool });
     expect(result.sessionId).toBe("fallback-id");
   });
 
   test("extracts sessionId from Python repr response", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("{'sessionId': 'py-sess-1', 'success': True}");
-    const result = await promptAndWait(claude, { task: "test", cwd: "/tmp", callTool });
+    const result = await promptAndWait(claude, { task: "test", cwd: "/work", callTool });
     expect(result.sessionId).toBe("py-sess-1");
   });
 
   test("throws when no sessionId found", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("no session info here");
-    expect(promptAndWait(claude, { task: "test", cwd: "/tmp", callTool })).rejects.toThrow("no sessionId");
+    expect(promptAndWait(claude, { task: "test", cwd: "/work", callTool })).rejects.toThrow("no sessionId");
   });
 
   test("calls correct tool with correct args", async () => {
@@ -162,18 +161,18 @@ describe("promptNoWait", () => {
 
   test("extracts sessionId", async () => {
     const callTool: CallToolFn = async () => mcpTextResult(JSON.stringify({ sessionId: "nw-1", seq: 0 }));
-    const result = await promptNoWait(claude, { task: "test", cwd: "/tmp", callTool });
+    const result = await promptNoWait(claude, { task: "test", cwd: "/work", callTool });
     expect(result.sessionId).toBe("nw-1");
   });
 
   test("throws on error result", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("error", true);
-    expect(promptNoWait(claude, { task: "test", cwd: "/tmp", callTool })).rejects.toThrow("prompt failed");
+    expect(promptNoWait(claude, { task: "test", cwd: "/work", callTool })).rejects.toThrow("prompt failed");
   });
 
   test("throws when no sessionId returned", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("plain text no session");
-    expect(promptNoWait(claude, { task: "test", cwd: "/tmp", callTool })).rejects.toThrow("no sessionId");
+    expect(promptNoWait(claude, { task: "test", cwd: "/work", callTool })).rejects.toThrow("no sessionId");
   });
 
   test("does not send wait flag", async () => {
@@ -182,7 +181,7 @@ describe("promptNoWait", () => {
       capturedArgs = args;
       return mcpTextResult(JSON.stringify({ sessionId: "nw-2", seq: 0 }));
     };
-    await promptNoWait(claude, { task: "test", cwd: "/tmp", callTool });
+    await promptNoWait(claude, { task: "test", cwd: "/work", callTool });
     expect(capturedArgs.wait).toBeUndefined();
   });
 });
@@ -198,7 +197,7 @@ describe("promptFollowUp", () => {
       capturedArgs = args;
       return mcpPromptResult("fu-1", "response");
     };
-    const result = await promptFollowUp(claude, { sessionId: "fu-1", task: "follow", cwd: "/tmp", callTool });
+    const result = await promptFollowUp(claude, { sessionId: "fu-1", task: "follow", cwd: "/work", callTool });
     expect(result.sessionId).toBe("fu-1");
     expect(capturedArgs.sessionId).toBe("fu-1");
     expect(capturedArgs.wait).toBe(true);
@@ -206,7 +205,7 @@ describe("promptFollowUp", () => {
 
   test("throws on error result", async () => {
     const callTool: CallToolFn = async () => mcpTextResult("bad", true);
-    expect(promptFollowUp(claude, { sessionId: "fu-1", task: "test", cwd: "/tmp", callTool })).rejects.toThrow(
+    expect(promptFollowUp(claude, { sessionId: "fu-1", task: "test", cwd: "/work", callTool })).rejects.toThrow(
       "follow-up prompt failed",
     );
   });

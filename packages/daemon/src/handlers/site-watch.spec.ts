@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMethod } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "../db/state";
 import type { RequestHandler } from "../handler-types";
 import { SiteWatchHandlers } from "./site-watch";
 
 const paths: string[] = [];
 function openDb(): McxDb {
-  const p = join(tmpdir(), `mcp-cli-swh-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const p = tmpFile("mcp-cli-swh.db").path;
   paths.push(p);
   return new McxDb(p);
 }
@@ -19,7 +19,7 @@ afterEach(() => {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${p}${suffix}`);
-        // dotw-ignore test-empty-catch: best-effort cleanup
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup (#3465)
       } catch {
         // ignore
       }

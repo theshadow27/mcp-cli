@@ -1,11 +1,11 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import type { RegistryResponse } from "../registry/client";
 import { _setCacheDir } from "../registry/client";
 
-const testCacheDir = mkdtempSync(join(tmpdir(), "mcp-regcmd-test-"));
+const testCacheDir = tmpDir("mcp-regcmd-test-").path;
 
 const MOCK_RESPONSE: RegistryResponse = {
   servers: [

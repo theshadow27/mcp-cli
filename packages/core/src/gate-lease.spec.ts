@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 
 import { type GateLease, type GateLeaseOptions, acquireGateLease } from "./gate-lease";
 
 const dirs: string[] = [];
 function freshDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "gate-lease-test-"));
+  const d = tmpDir("gate-lease-test-").path;
   dirs.push(d);
   return d;
 }

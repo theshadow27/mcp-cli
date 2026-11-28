@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
+import { writeFileSync, readFileSync } from "fs";
 import { join } from "path";
-import { tmpdir } from "os";
+import { tmpDir as makeTmpDir, type TmpDir } from "am-i-done/tmp";
 import { parseArgs, updatePackageJson, recoveryCommands } from "./release.ts";
 
 describe("parseArgs", () => {
@@ -29,11 +29,13 @@ describe("parseArgs", () => {
 });
 
 describe("updatePackageJson", () => {
+  let tmp: TmpDir;
   let tmpDir: string;
   let origCwd: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "release-test-"));
+    tmp = makeTmpDir("release-test-");
+    tmpDir = tmp.path;
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test", version: "0.1.0" }, null, 2) + "\n");
     origCwd = process.cwd();
     process.chdir(tmpDir);
@@ -41,7 +43,7 @@ describe("updatePackageJson", () => {
 
   afterEach(() => {
     process.chdir(origCwd);
-    rmSync(tmpDir, { recursive: true });
+    tmp[Symbol.dispose]();
   });
 
   it("updates the version field", () => {

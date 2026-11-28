@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { GLOBAL_STATE_NAMESPACE, createAliasState, createEphemeralState, workItemStateRoot } from "./alias-state";
 import { resolveRealpath } from "./fs";
 import { clearFindGitRootCache } from "./git";
@@ -120,7 +120,7 @@ describe("workItemStateRoot", () => {
   }
 
   async function withRepo(run: (repo: string) => void | Promise<void>): Promise<void> {
-    const repo = mkdtempSync(join(tmpdir(), "state-root-"));
+    const repo = tmpDir("state-root-").path;
     clearFindGitRootCache();
     try {
       Bun.spawnSync(["git", "-C", repo, "init", "-q"], { env: cleanGitEnv() });
@@ -164,7 +164,7 @@ describe("workItemStateRoot", () => {
   });
 
   test("outside any git repository it is NO_REPO_ROOT, never the cwd", () => {
-    const dir = mkdtempSync(join(tmpdir(), "state-no-root-"));
+    const dir = tmpDir("state-no-root-").path;
     clearFindGitRootCache();
     try {
       expect(workItemStateRoot(dir)).toBe(NO_REPO_ROOT);
@@ -244,7 +244,7 @@ describe("normalizeStateRoot / isValidStateRoot — the sentinel survives the wi
   });
 
   test("an absolute path is realpathed and trailing-slash-normalized", () => {
-    const dir = mkdtempSync(join(tmpdir(), "state-root-norm-"));
+    const dir = tmpDir("state-root-norm-").path;
     try {
       expect(normalizeStateRoot(`${dir}/`)).toBe(resolveRealpath(dir));
       expect(normalizeStateRoot(dir)).toBe(normalizeStateRoot(`${dir}/`));
@@ -257,7 +257,7 @@ describe("normalizeStateRoot / isValidStateRoot — the sentinel survives the wi
     // A client that derives its own root and a client that sends one must land on the
     // same row. That is the whole invariant; assert it directly rather than by
     // inspection of two call sites.
-    const dir = mkdtempSync(join(tmpdir(), "state-root-agree-"));
+    const dir = tmpDir("state-root-agree-").path;
     try {
       const derived = workItemStateRoot(dir, () => dir);
       expect(normalizeStateRoot(derived)).toBe(derived);

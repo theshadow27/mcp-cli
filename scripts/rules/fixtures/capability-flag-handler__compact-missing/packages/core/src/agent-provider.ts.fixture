@@ -1,0 +1,12 @@
+// @expect 1
+// compactLog true but no compact code in the session
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "bad",
+	serverName: "_bad",
+	toolPrefix: "bad",
+	buildSpawnArgs: () => ({}),
+	native: { compactLog: true },
+});

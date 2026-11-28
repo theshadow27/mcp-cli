@@ -1,3 +1,4 @@
+// doing-it-wrong-ignore-file no-skipped-tests: t5801 cases still to write; the issues they waited on are closed (#3469)
 /**
  * Integration tests — git t5801 test suite ported to bun:test.
  *

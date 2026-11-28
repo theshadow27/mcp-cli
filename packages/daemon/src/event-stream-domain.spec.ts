@@ -76,7 +76,9 @@ async function drain(res: Response, want: number): Promise<Record<string, unknow
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    await reader.cancel().catch(() => {
+      /* cleanup: the stream may already be closed */
+    });
   }
   return out;
 }
@@ -94,7 +96,9 @@ describe("GET /events domain scoping", () => {
     const { server } = setup();
     const res = server.handleEventsNDJSON(new URL("http://localhost/events?domain=phoenix"));
     expect(res.status).toBe(200);
-    await res.body?.cancel().catch(() => {});
+    await res.body?.cancel().catch(() => {
+      /* cleanup: the stream may already be closed */
+    });
   });
 
   test("replay with ?domain= returns only that domain's events", async () => {

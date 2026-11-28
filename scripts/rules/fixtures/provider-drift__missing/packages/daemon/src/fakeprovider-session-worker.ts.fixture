@@ -1,0 +1,4 @@
+// @expect 1
+// `fakeprovider` has a session worker but is absent from PROVIDER_NAMES.
+
+export const worker = "fakeprovider";

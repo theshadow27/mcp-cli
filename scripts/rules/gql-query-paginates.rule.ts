@@ -1,6 +1,5 @@
-import ts from "typescript-5";
-
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
+import { walk } from "am-i-done";
 
 /**
  * Advance past the closing ')' of the GQL field's argument list.
@@ -60,9 +59,11 @@ function hasPageInfoInBlock(text: string, fromIndex: number): boolean {
   return false;
 }
 
-const rule: CheckRule = {
+export default {
   id: "gql-query-paginates",
-  kind: "check",
+  type: "check",
+  category: "architecture",
+  ast: true,
   scold:
     "GraphQL query uses first: connection argument without selecting pageInfo { hasNextPage } — results may be silently truncated",
   guidance: [
@@ -72,22 +73,26 @@ const rule: CheckRule = {
     "`last:` connections (head/tail queries) are not flagged — only forward-paginating `first:` connections are checked",
   ],
   documentation: "#2266",
-  appliesToTests: false,
-  check({ ast, violated }) {
-    const templates = [...ast.find(ts.isNoSubstitutionTemplateLiteral), ...ast.find(ts.isTemplateExpression)];
+  tests: "exclude",
+  check(ctx) {
+    const { content } = ctx.file;
+    if (!/\bfirst\s*:\s*\d+/.test(content)) return ctx.skipped();
 
-    for (const node of templates) {
-      const text = node.getText(ast.sourceFile);
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "TemplateLiteral") return;
+      const text = content.slice(...node.range);
       for (const match of text.matchAll(/\bfirst\s*:\s*\d+/g)) {
         if (!hasPageInfoInBlock(text, match.index ?? 0)) {
-          const { line, column } = ast.positionOf(node);
           const firstLine = (text.split("\n")[0] ?? "").trim();
-          violated(line, column, firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine);
+          ctx.violated(
+            node.loc.start.line,
+            node.loc.start.column + 1,
+            firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine,
+          );
           break;
         }
       }
-    }
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

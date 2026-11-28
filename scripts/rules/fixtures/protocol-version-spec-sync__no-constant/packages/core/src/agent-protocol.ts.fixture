@@ -1,0 +1,4 @@
+// @expect 1
+// The constant was renamed or removed.
+
+export const PROTOCOL_REV = 1;

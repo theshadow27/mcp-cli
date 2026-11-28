@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { parseFastImport } from "./fast-import-parser";
 
 const dec = new TextDecoder();
@@ -287,7 +287,7 @@ describe("parseFastImport", () => {
   });
 
   test("round-trip: real git fast-export", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fast-import-parser-"));
+    const dir = tmpDir("fast-import-parser-").path;
     // Strip GIT_* env vars so git commands can't escape the scratch repo via
     // an inherited GIT_DIR / GIT_WORK_TREE and scribble on the parent.
     const env: Record<string, string> = {};

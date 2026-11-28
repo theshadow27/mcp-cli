@@ -14,9 +14,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 
 import { BranchGuardError, checkRunsOn, currentBranch } from "./branch-guard";
 import type { ExecFn } from "./git";
@@ -57,7 +57,7 @@ describe("branch-guard against a real git repo (concrete)", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "branch-guard-concrete-"));
+    dir = tmpDir("branch-guard-concrete-").path;
     initRepo(dir);
   });
 

@@ -1,4 +1,3 @@
-// dotw-ignore no-import-cycles: type-only back-edge (ClaudeNav type from use-keyboard.ts); extract to shared types module to break
 import { ipcCall } from "@mcp-cli/core";
 import type { Key } from "ink";
 import { entryKey } from "../components/agent-session-detail";
@@ -49,7 +48,9 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
           requestId: perm.requestId,
         };
         if (denyReasonText) args.message = denyReasonText;
-        ipcCall("callTool", { server, tool, arguments: args }).catch(() => {});
+        ipcCall("callTool", { server, tool, arguments: args }).catch(() => {
+          /* fire-and-forget keypress action; the session list refresh shows the resulting state */
+        });
       }
       setDenyReasonText("");
       setDenyReasonMode(false);
@@ -81,7 +82,9 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
           server,
           tool,
           arguments: { sessionId: session.sessionId, prompt: promptText },
-        }).catch(() => {});
+        }).catch(() => {
+          /* fire-and-forget keypress action; the session list refresh shows the resulting state */
+        });
       }
       setPromptText("");
       setPromptMode(false);
@@ -203,7 +206,9 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
         server,
         tool,
         arguments: { sessionId: selectedSession.sessionId, requestId: perm.requestId },
-      }).catch(() => {});
+      }).catch(() => {
+        /* fire-and-forget keypress action; the session list refresh shows the resulting state */
+      });
     }
     return true;
   }
@@ -234,7 +239,9 @@ export function handleClaudeInput(input: string, key: Key, nav: ClaudeNav): bool
         server,
         tool,
         arguments: { sessionId: selectedSession.sessionId },
-      }).catch(() => {});
+      }).catch(() => {
+        /* fire-and-forget keypress action; the session list refresh shows the resulting state */
+      });
       setExpandedSession(null);
     }
     return true;

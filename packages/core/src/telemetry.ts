@@ -205,5 +205,5 @@ export function recordCommand(
       body,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
-    .catch(() => undefined);
+    .catch(() => /* telemetry is best effort and must never affect the CLI */ undefined);
 }

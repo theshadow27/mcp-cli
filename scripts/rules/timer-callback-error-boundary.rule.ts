@@ -13,10 +13,12 @@
  * different error propagation models.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const TIMER_NAMES = new Set(["setTimeout", "setInterval"]);
+
+type Callback = TSESTree.ArrowFunctionExpression | TSESTree.FunctionExpression;
 
 /**
  * A callback body is "fully wrapped" if every statement is a try/catch.
@@ -25,10 +27,8 @@ const TIMER_NAMES = new Set(["setTimeout", "setInterval"]);
  * try/catch can propagate an unhandled throw; use safeSetTimeout/safeSetInterval
  * instead of relying on this shape check for callbacks with setup code.
  */
-function isCallbackFullyWrapped(body: ts.Block): boolean {
-  const stmts = body.statements;
-  if (stmts.length === 0) return true;
-  return stmts.every((s) => s !== undefined && ts.isTryStatement(s) && s.catchClause !== undefined);
+function isCallbackFullyWrapped(body: TSESTree.BlockStatement): boolean {
+  return body.body.every((s) => s.type === "TryStatement" && s.handler !== null);
 }
 
 /**
@@ -43,26 +43,22 @@ function isCallbackFullyWrapped(body: ts.Block): boolean {
  * context — the constructor's synchronous try/catch does not protect
  * callbacks scheduled by setTimeout/setInterval.
  */
-function isExpressionBodyInsidePromiseConstructor(
-  call: ts.Node,
-  callback: ts.ArrowFunction | ts.FunctionExpression,
-): boolean {
-  if (ts.isBlock(callback.body)) return false;
+function isExpressionBodyInsidePromiseConstructor(call: TSESTree.Node, callback: Callback): boolean {
+  const body = callback.body;
+  if (body.type === "BlockStatement") return false;
   // Only a direct identifier call is safe: () => reject(...) / () => resolve(...)
-  if (!ts.isCallExpression(callback.body) || !ts.isIdentifier(callback.body.expression)) {
-    return false;
+  if (body.type !== "CallExpression" || body.callee.type !== "Identifier") return false;
+  for (let n: TSESTree.Node | undefined = call; n; n = n.parent) {
+    if (n.type === "NewExpression" && n.callee.type === "Identifier" && n.callee.name === "Promise") return true;
   }
-  return (
-    ts.findAncestor(call, (n) => {
-      if (!ts.isNewExpression(n)) return false;
-      return ts.isIdentifier(n.expression) && n.expression.text === "Promise";
-    }) !== undefined
-  );
+  return false;
 }
 
-const rule: CheckRule = {
+export default {
   id: "timer-callback-error-boundary",
-  kind: "check",
+  type: "check",
+  category: "architecture",
+  ast: true,
   scold:
     "setTimeout/setInterval callback in daemon code has no error boundary — an unhandled throw can crash the process",
   guidance: [
@@ -70,40 +66,35 @@ const rule: CheckRule = {
     "or wrap the callback body in try { … } catch (e) { console.error(…) }",
   ],
   documentation: "#2265",
-  check({ file, ast, violated }) {
-    if (!file.relPath.startsWith("packages/daemon/src/")) return;
-    if (file.isTest) return;
+  tests: "exclude",
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/daemon/src/")) return ctx.skipped();
 
-    const calls = ast.find(ts.isCallExpression);
-    for (const call of calls) {
-      const expr = call.expression;
+    const lines = file.content.split("\n");
+    walk(ctx.ast().program, (call) => {
+      if (call.type !== "CallExpression") return;
+      const expr = call.callee;
       let name: string | undefined;
-      if (ts.isIdentifier(expr)) {
-        name = expr.text;
-      } else if (ts.isPropertyAccessExpression(expr)) {
-        name = expr.name.text;
+      if (expr.type === "Identifier") name = expr.name;
+      else if (expr.type === "MemberExpression" && !expr.computed && expr.property.type === "Identifier") {
+        name = expr.property.name;
       }
-
-      if (!name || !TIMER_NAMES.has(name)) continue;
+      if (!name || !TIMER_NAMES.has(name)) return;
 
       const callback = call.arguments[0];
-      if (!callback) continue;
+      if (!callback) return;
+      if (callback.type !== "ArrowFunctionExpression" && callback.type !== "FunctionExpression") return;
 
-      if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) continue;
+      if (isExpressionBodyInsidePromiseConstructor(call, callback)) return;
 
-      if (isExpressionBodyInsidePromiseConstructor(call, callback)) continue;
-
-      if (ts.isBlock(callback.body)) {
-        if (isCallbackFullyWrapped(callback.body)) continue;
-      }
+      if (callback.body.type === "BlockStatement" && isCallbackFullyWrapped(callback.body)) return;
       // Expression-bodied arrows (e.g. `setTimeout(() => doThing(), ms)`)
       // have no try/catch — flag them.
 
-      const pos = ast.positionOf(call);
-      const line = file.content.split("\n")[pos.line - 1] ?? "";
-      violated(pos.line, pos.column, line.trim());
-    }
+      const { line, column } = call.loc.start;
+      ctx.violated(line, column + 1, (lines[line - 1] ?? "").trim());
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

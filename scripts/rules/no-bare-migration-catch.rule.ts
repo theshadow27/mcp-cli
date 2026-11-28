@@ -11,39 +11,54 @@
  * narrow to the duplicate-column error and re-throw everything else.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const ALTER_ADD_COL = /alter\s+table\s+\S+\s+add\s+column\s+/i;
 
-function containsThrow(block: ts.Block): boolean {
+/**
+ * Does `block` contain a throw? Nested function and class bodies do not count: a throw inside
+ * one does not synchronously re-throw the catch variable (false negative otherwise).
+ */
+function containsThrow(block: TSESTree.BlockStatement): boolean {
   let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (ts.isThrowStatement(node)) {
+  let skipUntil = 0;
+  walk(block, (node) => {
+    if (found || node.range[0] < skipUntil) return;
+    if (node.type === "ThrowStatement") {
       found = true;
-      return;
+    } else if (
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression" ||
+      node.type === "ClassDeclaration" ||
+      node.type === "ClassExpression"
+    ) {
+      skipUntil = node.range[1];
     }
-    // Stop at function/class boundaries — a throw inside a nested function does
-    // not synchronously re-throw the catch variable (false negative otherwise).
-    if (
-      ts.isFunctionDeclaration(node) ||
-      ts.isFunctionExpression(node) ||
-      ts.isArrowFunction(node) ||
-      ts.isClassDeclaration(node) ||
-      ts.isClassExpression(node)
-    )
-      return;
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(block, visit);
+  });
   return found;
 }
 
-const rule: CheckRule = {
+/**
+ * Every string and template in `node`, as source text. A template keeps its `${}` holes, which
+ * ALTER_ADD_COL's `\S+` reads as an ordinary table name.
+ */
+function sqlTexts(node: TSESTree.Node, content: string): string[] {
+  const texts: string[] = [];
+  walk(node, (n) => {
+    if (n.type === "TemplateLiteral") texts.push(content.slice(...n.range));
+    else if (n.type === "Literal" && typeof n.value === "string") texts.push(n.value);
+  });
+  return texts;
+}
+
+export default {
   id: "no-bare-migration-catch",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "architecture",
+  ast: true,
+  tests: "exclude",
   scold: "ALTER TABLE … ADD COLUMN wrapped in a bare catch — use addColumnIfMissing() or re-throw non-duplicate errors",
   guidance: [
     "use addColumnIfMissing(db, table, column, ddl) — idempotent by PRAGMA table_info, no catch needed",
@@ -51,35 +66,18 @@ const rule: CheckRule = {
     "a bare catch silently swallows SQLITE_BUSY, disk-full, and corruption",
   ],
   documentation: "#2263",
-  check({ file, violated, ast }) {
-    if (!file.relPath.startsWith("packages/")) return;
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/")) return ctx.skipped();
 
-    const tryStmts = ast.find(ts.isTryStatement);
-    for (const stmt of tryStmts) {
-      if (!stmt.catchClause) continue;
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "TryStatement" || !node.handler) return;
+      if (!sqlTexts(node.block, file.content).some((text) => ALTER_ADD_COL.test(text))) return;
+      if (containsThrow(node.handler.body)) return;
 
-      const sqlStrings = ast.stringLiterals(stmt.tryBlock);
-      // stringLiterals() covers StringLiteral + NoSubstitutionTemplateLiteral but not
-      // TemplateExpression (backtick strings with ${} interpolations). Collect their raw
-      // source text separately — ALTER_ADD_COL's \S+ matches ${varName} as non-whitespace.
-      const templateTexts: string[] = [];
-      const collectTemplates = (node: ts.Node): void => {
-        if (ts.isTemplateExpression(node)) {
-          templateTexts.push(node.getText(ast.sourceFile));
-          return;
-        }
-        ts.forEachChild(node, collectTemplates);
-      };
-      ts.forEachChild(stmt.tryBlock, collectTemplates);
-      if (![...sqlStrings, ...templateTexts].some((s) => ALTER_ADD_COL.test(s))) continue;
-
-      if (!containsThrow(stmt.catchClause.block)) {
-        const { line, column } = ast.positionOf(stmt.catchClause);
-        const snippet = file.content.split("\n")[line - 1]?.trim() ?? "";
-        violated(line, column, snippet);
-      }
-    }
+      const { line, column } = node.handler.loc.start;
+      ctx.violated(line, column + 1, file.content.split("\n")[line - 1]?.trim() ?? "");
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

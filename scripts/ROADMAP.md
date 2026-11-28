@@ -1,5 +1,11 @@
 # am-i-done / doing-it-wrong roadmap
 
+> **Historical.** The runner and rule engine this file describes (`scripts/am-i-done.ts`,
+> `scripts/_runner/`, `scripts/rules/_engine/`) were replaced by the published
+> [`am-i-done`](https://github.com/theshadow27/am-i-done) package, which grew out of them. The
+> gate is now `done.toml`, `scripts/stages/*.stage.ts` and `scripts/rules/*.rule.ts`; see
+> `scripts/rules/README.md`. What follows is the record of how the old gate got here.
+
 Status of the rule-engine migration. Phase 1 (scaffolding), Phase 2 (rule
 migrations), Phase 3 (pre-commit consolidation), Phase 4 (meta-rule for
 unreferenced suppressions), and Phase 5 (context-aware tiering for CI's

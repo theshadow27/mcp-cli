@@ -92,14 +92,14 @@ describe("CodexRpcClient", () => {
       jsonrpc: "2.0",
       id: 42,
       method: "item/commandExecution/requestApproval",
-      params: { command: "npm test", cwd: "/tmp" },
+      params: { command: "npm test", cwd: "/work" },
     });
 
     expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({
       id: 42,
       method: "item/commandExecution/requestApproval",
-      params: { command: "npm test", cwd: "/tmp" },
+      params: { command: "npm test", cwd: "/work" },
     });
   });
 

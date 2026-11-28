@@ -1,0 +1,19 @@
+// @expect 0
+// @path packages/command/src/commands/example-suppressed.ts
+// A suppression comment applies to its own line and the lines just below it.
+// Both placements should silence the rule.
+
+declare const args: string[];
+
+export function trailingSuppression(): void {
+  let i = 0;
+  // doing-it-wrong-ignore args-bounds: helper verifies bounds internally (#3465)
+  const val = args[++i];
+  console.log(val);
+}
+
+export function leadingSuppression(): void {
+  let i = 0;
+  const val = args[++i]; // doing-it-wrong-ignore args-bounds: helper verifies bounds internally (#3465)
+  console.log(val);
+}

@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   GH_CREDENTIAL_ENV_KEYS,
   GH_TOKEN_SOURCE_ENV_KEYS,
@@ -377,7 +377,7 @@ describe("isPrivateFileMode / formatFileMode", () => {
 });
 
 describe("readGhTokensFile / loadGhTokens — the on-disk path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mcx-gh-tokens-"));
+  const dir = tmpDir("mcx-gh-tokens-").path;
   let seq = 0;
 
   /** Write a tokens file at an explicit mode and return its path. */
@@ -470,7 +470,7 @@ describe("readGhTokensFile / loadGhTokens — the on-disk path", () => {
 });
 
 describe("the env source fails closed, exactly as the file does", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mcx-gh-env-"));
+  const dir = tmpDir("mcx-gh-env-").path;
   const ABSENT = join(dir, "no-tokens.json");
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));

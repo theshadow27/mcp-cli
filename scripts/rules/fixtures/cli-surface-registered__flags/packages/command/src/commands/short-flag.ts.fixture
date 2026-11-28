@@ -1,0 +1,9 @@
+// @expect 1
+// A parsed short flag missing from KNOWN_FLAGS.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose"]);
+export const verbose = args[i] === "--verbose";
+export const quiet = args[i] === "-q";

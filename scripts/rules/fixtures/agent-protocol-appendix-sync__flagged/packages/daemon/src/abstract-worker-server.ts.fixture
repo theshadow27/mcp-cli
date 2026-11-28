@@ -1,0 +1,4 @@
+// @expect 1
+// `bogus:type` is a worker event type Appendix A cannot list (`ready` is documented)
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready", "bogus:type"]);

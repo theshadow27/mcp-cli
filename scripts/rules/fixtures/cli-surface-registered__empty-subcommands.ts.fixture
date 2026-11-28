@@ -1,0 +1,12 @@
+// @expect 1
+// @path packages/command/src/main.ts
+// An empty SUBCOMMANDS leaves every case unregistered.
+
+declare let command: string;
+
+const SUBCOMMANDS = [] as const;
+
+switch (command) {
+  case "ls":
+    break;
+}

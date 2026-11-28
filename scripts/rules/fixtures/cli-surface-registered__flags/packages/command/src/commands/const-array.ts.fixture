@@ -1,0 +1,8 @@
+// @expect 0
+// KNOWN_FLAGS as a const array, in sync.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = ["--verbose"] as const;
+export const verbose = args[i] === "--verbose";

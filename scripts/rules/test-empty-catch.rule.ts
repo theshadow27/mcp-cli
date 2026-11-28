@@ -1,55 +1,43 @@
+import { type Rule, type TSESTree, walk } from "am-i-done";
+
 /**
- * Rule: test-empty-catch
+ * Flag catch blocks in test files whose body contains no `expect(` call. An empty or
+ * assertion-free catch swallows the failure the test claims to verify: the test passes vacuously
+ * when the code throws. `try { await run(); } catch (error) { log(error); }` passes whether or not
+ * `run` throws. `no-empty-catch` covers an empty block anywhere; this one covers any catch in a
+ * test file that makes no `expect(...)` call, wherever it sits (a test body, a hook, a helper)
+ * and including one that rethrows or only records the error. Sources: #2194, #1879.
  *
- * Flag catch blocks in test files whose body contains no `expect(` call.
- * An empty or assertion-free catch swallows the failure the test claims
- * to verify — the test passes vacuously when the code throws.
- *
- * Uses AST CatchClause nodes (#2308 parent pointers) for scope-correct
- * detection — avoids regex scope-blindness on same-line or nested catches.
- *
- * Sources: #2194, #1879.
+ * Deliberately not caught: `.catch(...)` handlers on promises, and a helper that asserts for you
+ * (a call other than `expect` is not recognized as an assertion).
  */
-
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
-
-function containsExpectCall(node: ts.Node): boolean {
-  let found = false;
-  function walk(n: ts.Node): void {
-    if (found) return;
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "expect") {
-      found = true;
-      return;
-    }
-    ts.forEachChild(n, walk);
-  }
-  walk(node);
-  return found;
-}
-
-const rule: CheckRule = {
+export default {
   id: "test-empty-catch",
-  kind: "check",
+  type: "check",
+  category: "testing",
+  ast: true,
+  tests: "only",
   scold: "catch block in test has no expect() — swallows the failure the test should verify",
   guidance: [
     "assert the caught error: expect(e).toBeInstanceOf(SomeError) or expect((e as Error).message).toContain(...)",
-    "or replace try/catch with expect(fn).toThrow(...)",
+    "or replace try/catch with expect(fn).toThrow(...) / await expect(run()).rejects.toThrow(...)",
+    "put `expect.assertions(1)` first, or fail after the `try` body, so a call that does not throw fails the test too",
   ],
   documentation: "#2247",
-  appliesToTests: true,
-  check({ file, violated, ast }) {
-    const sf = ast.sourceFile;
-    const catchClauses = ast.find(ts.isCatchClause);
-
-    for (const clause of catchClauses) {
-      if (!containsExpectCall(clause.block)) {
-        const pos = ast.positionOf(clause);
-        const line = file.content.split("\n")[pos.line - 1] ?? "";
-        violated(pos.line, pos.column, line.trim());
-      }
-    }
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
+    walk(ctx.ast().program, (clause) => {
+      if (clause.type !== "CatchClause") return;
+      let asserts = false;
+      walk(clause.body, (node) => {
+        if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "expect") {
+          asserts = true;
+        }
+      });
+      if (asserts) return;
+      const { line, column } = clause.loc.start;
+      ctx.violated(line, column + 1, (lines[line - 1] ?? "").trim());
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

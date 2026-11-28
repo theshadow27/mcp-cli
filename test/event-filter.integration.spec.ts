@@ -1,3 +1,9 @@
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { WaitTimeoutError, createWaitForEvent } from "@mcp-cli/core";
+import { silentLogger } from "@mcp-cli/core";
+import type { MonitorEvent } from "@mcp-cli/core";
 /**
  * Integration tests for createWaitForEvent against a real IPC server + EventBus.
  *
@@ -7,19 +13,14 @@
  *
  * Acceptance criterion from #1584, filed as #1720.
  */
-import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { WaitTimeoutError, createWaitForEvent } from "@mcp-cli/core";
-import { silentLogger } from "@mcp-cli/core";
-import type { MonitorEvent } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { EventBus } from "../packages/daemon/src/event-bus";
 import { IpcServer } from "../packages/daemon/src/ipc-server";
 import { pollUntil } from "./harness";
 
 function tmpSocket(): string {
-  return join(tmpdir(), `mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+  // Short name: a unix socket path must stay under 104 bytes on macOS.
+  return join(tmpDir("s-").path, "e.sock");
 }
 
 function mockPool() {
@@ -122,7 +123,7 @@ function createOpenStream(socketPath: string) {
           if (!trimmed) continue;
           try {
             yield JSON.parse(trimmed) as MonitorEvent;
-            // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
+            // doing-it-wrong-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected (#3465)
           } catch {
             // Skip malformed lines
           }
@@ -132,7 +133,7 @@ function createOpenStream(socketPath: string) {
       if (trailing.trim()) {
         try {
           yield JSON.parse(trailing.trim()) as MonitorEvent;
-          // dotw-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected
+          // doing-it-wrong-ignore test-empty-catch: best-effort parse — non-JSON lines (heartbeats) are expected (#3465)
         } catch {
           // Ignore incomplete trailing data
         }

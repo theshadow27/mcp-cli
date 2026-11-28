@@ -21,19 +21,20 @@
  * allowed — the rule never forces the spec to drop documentation for things
  * outside these Set constants.
  *
- * docs/ is outside the file-loader scan roots, so the spec is read from disk
- * directly (same approach as protocol-version-spec-sync).
+ * Neither the spec nor the worker files are read from disk: the rule's `files`
+ * include docs/agent-protocol.md and the daemon sources, and it reads them from
+ * `ctx.files`. The Set constants of the other daemon files are read with the
+ * lexical scanner in `_text-scan.ts` (`ctx.ast()` only parses the file under check).
  *
  * Source: #2553 item 6, from the #2540 / PR #2546 adversarial review.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import ts from "typescript-5";
-import type { CheckRule, RuleContext } from "./_engine/rule";
+import type { Rule, RuleContext, Verdict } from "am-i-done";
+import { maskComments, matchingClose, stringLiteralValues } from "./_text-scan";
 
 const ANCHOR = "packages/daemon/src/abstract-worker-server.ts";
 const SPEC_REL_PATH = "docs/agent-protocol.md";
+const DAEMON_DIR = "packages/daemon/";
 
 const WORKER_TABLE_HEADING = "Worker → Daemon"; // "Worker → Daemon"
 const CONTROL_TABLE_HEADING = "Daemon → Worker"; // "Daemon → Worker"
@@ -45,28 +46,25 @@ const CONTROL_TABLE_HEADING = "Daemon → Worker"; // "Daemon → Worker"
  * const is absent or is not initialized from a Set.
  */
 export function setLiteralValues(source: string, constName: string): string[] {
-  const sf = ts.createSourceFile("x.ts", source, ts.ScriptTarget.Latest, true);
+  const code = maskComments(source);
+  const declaration = new RegExp(`\\b(?:const|let|var)\\s+${constName}\\b[^=;]*=\\s*new\\s+Set\\b`, "g");
   const out: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === constName &&
-      node.initializer &&
-      ts.isNewExpression(node.initializer) &&
-      ts.isIdentifier(node.initializer.expression) &&
-      node.initializer.expression.text === "Set"
-    ) {
-      const walkLiterals = (n: ts.Node): void => {
-        if (ts.isStringLiteralLike(n)) out.push(n.text);
-        ts.forEachChild(n, walkLiterals);
-      };
-      const arg = node.initializer.arguments?.[0];
-      if (arg) walkLiterals(arg);
+  for (const m of code.matchAll(declaration)) {
+    // Skip the optional type arguments, then take the constructor's argument list.
+    let i = m.index + m[0].length;
+    let angle = 0;
+    for (; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === "<") angle++;
+      else if (ch === ">") angle--;
+      else if (ch === "(" && angle === 0) break;
+      else if (ch === ";" && angle === 0) break;
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
+    if (code[i] !== "(") continue; // `new Set` with no argument list
+    const close = matchingClose(code, i);
+    if (close === -1) continue;
+    out.push(...stringLiteralValues(code.slice(i + 1, close)));
+  }
   return out;
 }
 
@@ -88,47 +86,37 @@ export function appendixTypes(specContent: string, heading: string): Set<string>
     if (!inSection) continue;
     if (!line.trimStart().startsWith("|")) continue;
     const m = /`([^`]+)`/.exec(line);
-    if (m) types.add(m[1]);
+    if (m?.[1] !== undefined) types.add(m[1]);
   }
   return types;
 }
 
-function readSpec(anchorPath: string): string | undefined {
-  const repoRoot = resolve(anchorPath, "../../../..");
-  try {
-    return readFileSync(resolve(repoRoot, SPEC_REL_PATH), "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-function check(ctx: RuleContext): void {
-  if (ctx.file.relPath !== ANCHOR) return;
-  ctx.checked();
+function check(ctx: RuleContext): Verdict {
+  if (ctx.file.relativePath !== ANCHOR) return ctx.skipped();
 
   // Worker → daemon events: BASE plus any provider WORKER_EVENT_TYPES extension.
   const workerEvents = new Set(setLiteralValues(ctx.file.content, "BASE_WORKER_EVENT_TYPES"));
   // Daemon → worker control messages: union across every worker file.
   const controlTypes = new Set<string>();
   for (const f of ctx.files.values()) {
-    if (f.pkg !== "packages/daemon") continue;
+    if (!f.relativePath.startsWith(DAEMON_DIR)) continue;
     for (const t of setLiteralValues(f.content, "WORKER_EVENT_TYPES")) workerEvents.add(t);
     for (const t of setLiteralValues(f.content, "CONTROL_MESSAGE_TYPES")) controlTypes.add(t);
   }
 
   if (workerEvents.size === 0) {
-    ctx.violated(1, 1, "BASE_WORKER_EVENT_TYPES not found or empty — cannot verify Appendix A coverage");
-    return;
+    ctx.violated(1, 1, "BASE_WORKER_EVENT_TYPES not found or empty: cannot verify Appendix A coverage");
+    return ctx.checked();
   }
 
-  const spec = readSpec(ctx.file.path);
+  const spec = ctx.files.get(SPEC_REL_PATH);
   if (spec === undefined) {
-    ctx.violated(1, 1, `${SPEC_REL_PATH} not found on disk — cannot verify Appendix A coverage`);
-    return;
+    ctx.violated(1, 1, `${SPEC_REL_PATH} not found: cannot verify Appendix A coverage`);
+    return ctx.checked();
   }
 
-  const specWorker = appendixTypes(spec, WORKER_TABLE_HEADING);
-  const specControl = appendixTypes(spec, CONTROL_TABLE_HEADING);
+  const specWorker = appendixTypes(spec.content, WORKER_TABLE_HEADING);
+  const specControl = appendixTypes(spec.content, CONTROL_TABLE_HEADING);
 
   for (const t of [...workerEvents].sort()) {
     if (!specWorker.has(t)) {
@@ -140,12 +128,15 @@ function check(ctx: RuleContext): void {
       ctx.violated(1, 1, `Appendix A (Daemon → Worker) omits control message type \`${t}\``);
     }
   }
+  return ctx.checked();
 }
 
-const rule: CheckRule = {
+export default {
   id: "agent-protocol-appendix-sync",
-  kind: "check",
-  anchors: [ANCHOR],
+  type: "check",
+  category: "architecture",
+  files: ["packages/daemon/**/*.ts", SPEC_REL_PATH],
+  anchors: [(files) => files.has(ANCHOR), (files) => files.has(SPEC_REL_PATH)],
   scold: "Appendix A of docs/agent-protocol.md is missing a message type that exists in code",
   guidance: [
     "Appendix A must list every worker→daemon event type (BASE_WORKER_EVENT_TYPES + provider WORKER_EVENT_TYPES extensions) and every daemon→worker control type (union of CONTROL_MESSAGE_TYPES).",
@@ -154,6 +145,4 @@ const rule: CheckRule = {
   ],
   documentation: "docs/agent-protocol.md Appendix A; #2553 item 6",
   check,
-};
-
-export default rule;
+} satisfies Rule;

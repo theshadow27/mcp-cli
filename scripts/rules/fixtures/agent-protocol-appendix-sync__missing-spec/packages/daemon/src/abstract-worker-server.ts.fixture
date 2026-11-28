@@ -1,0 +1,4 @@
+// @expect 1
+// the spec is not in the file set: coverage cannot be verified
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready"]);

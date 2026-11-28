@@ -9,7 +9,7 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-    // dotw-ignore test-empty-catch: process.kill(pid, 0) throws ESRCH when already dead
+    // doing-it-wrong-ignore test-empty-catch: process.kill(pid, 0) throws ESRCH when already dead (#3465)
   } catch {
     return false;
   }
@@ -70,7 +70,7 @@ describe("signalProcessTree", () => {
         for (const pid of still) {
           try {
             process.kill(pid, "SIGKILL");
-            // dotw-ignore test-empty-catch: best-effort cleanup — process may already be gone
+            // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — process may already be gone (#3465)
           } catch {
             // already gone
           }

@@ -1,0 +1,36 @@
+# am-i-done: this project's definition of done.
+# Reference: https://github.com/theshadow27/am-i-done#configuration
+
+[run]
+# The whole run. The test stages wait for the host-wide gate lease (#2690) inside their own time,
+# for up to 400s (MCX_GATE_LEASE_WAIT_MS is capped there), on top of the 600s liveness ceiling the
+# gate has always had (#3261, #3332). The package cannot credit that wait back to the deadline, so
+# the ceiling is the sum.
+deadline_seconds = 1000
+timeout_seconds = 300
+rerun = "diagnose"
+
+[stages]
+recommended = true
+dirs = ["scripts/stages"]
+
+[rules]
+recommended = true
+dirs = ["scripts/rules"]
+# What the rules have always scanned: the TypeScript of the workspace packages, scripts and
+# tests. A rule that reads a doc or a schema names it in its own `files`.
+include = ["packages/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}", "test/**/*.{ts,tsx}"]
+# Declarations are not source, and rule files document the very shapes they flag.
+exclude = ["**/*.d.ts", "scripts/rules/*.rule.ts"]
+
+[suppression]
+require_issue = true
+
+[[suppression.waive]]
+rule = "no-raw-temp"
+file = ".claude/phases/phase-types.ts"
+match = "STATE_DIR=$(mktemp -d)"
+reason = "shell steps in an agent prompt, which removes the dir itself; text, not code that runs here (#3467)"
+
+[cache]
+skip = true

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { tmpDir } from "am-i-done/tmp";
 import { findPidsByCwdLinux, getPortHolderLinux, parseListenInodes } from "./proc-fs";
 
 const POLL_INTERVAL_MS = 10;
@@ -22,10 +23,9 @@ describe("parseListenInodes", () => {
 
 describe("findPidsByCwdLinux", () => {
   test.skipIf(process.platform !== "linux")("finds a process whose cwd is under the given directory", async () => {
-    const { mkdirSync, mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
+    const { mkdirSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "mcx-proc-cwd-"));
+    const dir = tmpDir("mcx-proc-cwd-").path;
     mkdirSync(dir, { recursive: true });
     const proc = Bun.spawn(["sleep", "60"], { stdout: "ignore", stderr: "ignore", cwd: dir });
     try {
@@ -41,7 +41,7 @@ describe("findPidsByCwdLinux", () => {
     } finally {
       try {
         process.kill(proc.pid, "SIGKILL");
-        // dotw-ignore test-empty-catch: best-effort cleanup — process may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — process may already be gone (#3465)
       } catch {
         // already gone
       }

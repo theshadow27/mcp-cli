@@ -1,0 +1,9 @@
+// @expect 0
+// Flags and KNOWN_FLAGS agree, via indexOf.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--sprint", "--since"]);
+export const sprintIdx = args.indexOf("--sprint");
+export const sinceIdx = args.indexOf("--since");

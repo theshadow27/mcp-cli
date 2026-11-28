@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "../db/state";
 import { metrics } from "../metrics";
 import { OAuthCallbackTimeoutError } from "./callback-server";
@@ -11,14 +11,14 @@ import type { KeychainTokens } from "./keychain";
 import { AuthFlowInProgressError, _resetActiveAuthFlows, runOAuthFlowWithDcrRetry } from "./oauth-retry";
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-retry-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return tmpFile("mcp-cli-retry-test.db").path;
 }
 
 function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${path}${suffix}`);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // ignore
     }

@@ -102,18 +102,18 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     issueNumber: row.issue_number,
     branch: row.branch,
     prNumber: row.pr_number,
-    // dotw-todo no-db-ipc-cast: unguarded pr_state restore cast — fix in #2742
+    // doing-it-wrong-ignore no-db-ipc-cast: unguarded pr_state restore cast (#2742)
     prState: row.pr_state as PrState,
     prUrl: row.pr_url,
-    // dotw-todo no-db-ipc-cast: unguarded ci_status restore cast — fix in #2742
+    // doing-it-wrong-ignore no-db-ipc-cast: unguarded ci_status restore cast (#2742)
     ciStatus: row.ci_status as CiStatus,
     ciRunId: row.ci_run_id,
     ciSummary: row.ci_summary,
-    // dotw-todo no-db-ipc-cast: unguarded review_status restore cast — fix in #2742
+    // doing-it-wrong-ignore no-db-ipc-cast: unguarded review_status restore cast (#2742)
     reviewStatus: row.review_status as ReviewStatus,
-    // dotw-todo no-db-ipc-cast: cast bypasses the ?? null fallback for non-null garbage — fix in #2742
+    // doing-it-wrong-ignore no-db-ipc-cast: cast bypasses the ?? null fallback for non-null garbage (#2742)
     mergeStateStatus: (row.merge_state_status as MergeStateStatus) ?? null,
-    // dotw-todo no-db-ipc-cast: unguarded phase restore cast (load-bearing for sprint pipeline) — fix in #2742
+    // doing-it-wrong-ignore no-db-ipc-cast: unguarded phase restore cast (load-bearing for sprint pipeline) (#2742)
     phase: row.phase as WorkItemPhase,
     automationOverrides: row.automation_overrides ?? null,
     createdAt: row.created_at,
@@ -453,7 +453,7 @@ export class WorkItemDb {
    * **This is a deliberate cross-domain read, not a forgotten `WHERE`.** That distinction is
    * the entire reason this lives behind a named method instead of a bare query: an unscoped
    * read that merely *looks* unscoped is exactly what the next scoping sweep will "fix" back
-   * into the bug above. Every statement here also carries a `dotw-ignore` naming the reason,
+   * into the bug above. Every statement here also carries a `doing-it-wrong-ignore` naming the reason,
    * so the rule that enforces partitioning cannot be silently satisfied by accident.
    *
    * Reads are cross-domain; **writes are not**. Every row carries its `domainId`, so a caller
@@ -522,7 +522,7 @@ export class CrossDomainWorkItems {
     if (filter?.phase) {
       return (
         this.db
-          // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+          // doing-it-wrong-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains) (#3465)
           .query<WorkItemRow, [string]>(`SELECT * FROM work_items WHERE phase = ?${archiveClause} ORDER BY created_at`)
           .all(filter.phase)
           .map(rowToWorkItem)
@@ -530,7 +530,7 @@ export class CrossDomainWorkItems {
     }
     return (
       this.db
-        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains) (#3465)
         .query<WorkItemRow, []>(`SELECT * FROM work_items WHERE 1 = 1${archiveClause} ORDER BY created_at`)
         .all()
         .map(rowToWorkItem)
@@ -540,7 +540,7 @@ export class CrossDomainWorkItems {
   /** By global primary key. Unambiguous: `id` is unique across the whole table. */
   getWorkItem(id: string): WorkItem | null {
     const row = this.db
-      // dotw-ignore domain-scoped-queries: ring 0 — id is the global primary key (see WorkItemDb.acrossDomains)
+      // doing-it-wrong-ignore domain-scoped-queries: ring 0 — id is the global primary key (see WorkItemDb.acrossDomains) (#3465)
       .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE id = ?")
       .get(id);
     return row ? rowToWorkItem(row) : null;
@@ -550,7 +550,7 @@ export class CrossDomainWorkItems {
   findByPr(prNumber: number): WorkItem[] {
     return (
       this.db
-        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains) (#3465)
         .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE pr_number = ? ORDER BY domain_id")
         .all(prNumber)
         .map(rowToWorkItem)
@@ -561,7 +561,7 @@ export class CrossDomainWorkItems {
   findByBranch(branch: string): WorkItem[] {
     return (
       this.db
-        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains) (#3465)
         .query<WorkItemRow, [string]>("SELECT * FROM work_items WHERE branch = ? ORDER BY domain_id")
         .all(branch)
         .map(rowToWorkItem)
@@ -572,7 +572,7 @@ export class CrossDomainWorkItems {
   findByIssue(issueNumber: number): WorkItem[] {
     return (
       this.db
-        // dotw-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — returns every domain's match, not an arbitrary one (see WorkItemDb.acrossDomains) (#3465)
         .query<WorkItemRow, [number]>("SELECT * FROM work_items WHERE issue_number = ? ORDER BY domain_id")
         .all(issueNumber)
         .map(rowToWorkItem)
@@ -596,7 +596,7 @@ export class CrossDomainWorkItems {
     };
     const rows = this.db
       .query<CiRunStateRow, []>(
-        // dotw-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — daemon-internal readers span every domain by design (see WorkItemDb.acrossDomains) (#3465)
         "SELECT domain_id, pr_number, suite_id, started_at, emitted_started, emitted_finished FROM ci_run_states",
       )
       .all();
@@ -622,7 +622,7 @@ export class CrossDomainWorkItems {
   countActiveWorkItems(): number {
     return (
       this.db
-        // dotw-ignore domain-scoped-queries: ring 0 — daemon-wide idle-shutdown check spans every domain by design (see WorkItemDb.acrossDomains)
+        // doing-it-wrong-ignore domain-scoped-queries: ring 0 — daemon-wide idle-shutdown check spans every domain by design (see WorkItemDb.acrossDomains) (#3465)
         .query<{ n: number }, []>("SELECT COUNT(*) as n FROM work_items WHERE phase != 'done'")
         .get()?.n ?? 0
     );

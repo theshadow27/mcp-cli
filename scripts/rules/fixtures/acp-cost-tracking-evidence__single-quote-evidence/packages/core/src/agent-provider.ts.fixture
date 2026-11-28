@@ -1,0 +1,10 @@
+// @expect 0
+// single-quoted session_info_update still counts
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

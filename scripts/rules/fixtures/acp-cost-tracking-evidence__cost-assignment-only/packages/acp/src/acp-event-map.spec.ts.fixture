@@ -1,0 +1,11 @@
+// @expect 0
+// Evidence context: the rule scans this spec for the cost assertion.
+
+describe("buildTurnResult", () => {
+  test("maps cost", () => {
+    const state = createAcpEventMapState();
+    state.cost = 0.01;
+    mapSessionUpdate({ update: { sessionUpdate: "session_info_update" } }, state);
+    expect(state.totalTokens).toBe(0);
+  });
+});

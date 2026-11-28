@@ -1,0 +1,25 @@
+<!-- @expect 0 -->
+# Agent Protocol
+
+## Appendix A: Complete Message Type Reference
+
+### Daemon → Worker
+
+| Type | Providers | Section |
+|---|---|---|
+| `init` | all | §2.1 |
+| `tools_changed` | all | §2.2 |
+
+### Worker → Daemon
+
+| Type | Providers | Section |
+|---|---|---|
+| `ready` | all | §3.1 |
+| `db:end` | all | §4.6 |
+| `monitor:event` | claude | §4.9 |
+
+### Bidirectional
+
+| Type | Section |
+|---|---|
+| MCP JSON-RPC 2.0 | §5 |

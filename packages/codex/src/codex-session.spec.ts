@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { CodexSession, WATCHDOG_TIMEOUT_MS } from "./codex-session";
 
 const FAKE_SERVER = join(import.meta.dirname, "fake-codex-server.ts");
@@ -402,7 +402,7 @@ describe("CodexSession worktree containment", () => {
   }
 
   test("denies out-of-worktree write BEFORE the auto_approve short-circuit", async () => {
-    const worktree = mkdtempSync(join(tmpdir(), "codex-containment-"));
+    const worktree = tmpDir("codex-containment-").path;
     try {
       // auto_approve would normally accept everything — containment must still deny.
       const { session, events } = makeWorktreeSession(worktree, {
@@ -426,7 +426,7 @@ describe("CodexSession worktree containment", () => {
     // files[0] is inside the worktree; a later file targets /etc. Validating
     // only files[0] would approve the whole patch — the guard must check every
     // path (#2519).
-    const worktree = mkdtempSync(join(tmpdir(), "codex-containment-"));
+    const worktree = tmpDir("codex-containment-").path;
     try {
       const { session, events } = makeWorktreeSession(worktree, {
         command: fakeCommand("filechange-escape"),

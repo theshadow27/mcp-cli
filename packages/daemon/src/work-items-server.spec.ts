@@ -1,23 +1,23 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID, NO_REPO_ROOT, WORK_ITEMS_SERVER_NAME, workItemStateNamespace } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { McxDb } from "./db/state";
 import { type DomainWorkItems, WorkItemDb } from "./db/work-items";
 import { DOMAIN_META_KEY } from "./domain-scope";
 import { WorkItemsServer, buildWorkItemsToolCache } from "./work-items-server";
 
 function tmpDbPath(): string {
-  return join(tmpdir(), `mcp-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return join(tmpDir("t-").path, `mcp-wi-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 function cleanupDb(p: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(p + suffix);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* ignore */
     }
@@ -1318,7 +1318,7 @@ describe("phase_state tools", () => {
     server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
-    const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-"));
+    const base = tmpDir("mcp-wi-symlink-").path;
     const real = join(base, "real-repo");
     const link = join(base, "link-repo");
     mkdirSync(real);
@@ -1351,7 +1351,7 @@ describe("phase_state tools", () => {
     server = new WorkItemsServer(workItemDb, { phaseState: { store: mcxDb, domainIdFor: () => NO_DOMAIN_ID } });
     const { client } = await server.start();
 
-    const base = mkdtempSync(join(tmpdir(), "mcp-wi-symlink-inv-"));
+    const base = tmpDir("mcp-wi-symlink-inv-").path;
     const real = join(base, "real-repo");
     const link = join(base, "link-repo");
     mkdirSync(real);

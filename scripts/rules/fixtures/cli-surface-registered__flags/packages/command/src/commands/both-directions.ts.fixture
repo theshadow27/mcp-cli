@@ -1,0 +1,9 @@
+// @expect 2
+// One flag parsed but unregistered, one registered but unparsed.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--keep", "--dead"]);
+export const keep = args[i] === "--keep";
+export const added = args[i] === "--new";

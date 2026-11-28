@@ -1,0 +1,40 @@
+// @expect 1
+// @path packages/daemon/src/example-other-calls.ts
+// A call that is not a known exhaustiveness helper is not a runtime guard: this still silently
+// falls through. A throw anywhere in the branch at its own depth (even in a nested switch) is
+// a guard, and the `const _: never = x` spelling is not a proof this rule recognizes.
+
+type Shape = { kind: "square" } | { kind: "circle" };
+declare function log(message: string): void;
+
+export function logged(shape: Shape): void {
+  switch (shape.kind) {
+    case "square":
+      break;
+    default:
+      log("unhandled");
+      shape satisfies never;
+  }
+}
+
+export function nested(shape: Shape, other: Shape): void {
+  switch (shape.kind) {
+    case "square":
+      break;
+    default:
+      shape satisfies never;
+      switch (other.kind) {
+        default:
+          throw new Error("belongs to the inner switch");
+      }
+  }
+}
+
+export function otherSpelling(shape: Shape): void {
+  switch (shape.kind) {
+    default: {
+      const _exhaustive: never = shape;
+      void _exhaustive;
+    }
+  }
+}

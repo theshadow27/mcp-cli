@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bundleAlias } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 
 function makeTmpDir(): string {
-  const dir = join(tmpdir(), `alias-executor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = tmpDir("alias-executor-test-").path;
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -111,7 +111,7 @@ describe("alias-executor subprocess protocol", () => {
 
   test("cache() writes to disk and returns cached value on second call", async () => {
     // Isolated MCP_CLI_DIR per test run — no real ~/.mcp-cli touched, safe under --parallel
-    const mcpCliDir = join(tmpdir(), `alias-executor-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const mcpCliDir = tmpDir("alias-executor-cache-test-").path;
     mkdirSync(mcpCliDir, { recursive: true });
 
     try {

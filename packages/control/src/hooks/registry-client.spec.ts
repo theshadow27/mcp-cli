@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import type { RegistryEntry, RegistryResponse } from "./registry-client";
 import { _setCacheDir, listRegistry, searchRegistry, selectTransport } from "./registry-client";
 
@@ -170,7 +170,7 @@ describe("searchRegistry / listRegistry", () => {
   let tmpCacheDir: string;
 
   beforeEach(() => {
-    tmpCacheDir = join(tmpdir(), `registry-test-${Math.random().toString(36).slice(2)}`);
+    tmpCacheDir = tmpDir("registry-test-").path;
     mkdirSync(tmpCacheDir, { recursive: true });
     _setCacheDir(tmpCacheDir);
   });
@@ -179,8 +179,10 @@ describe("searchRegistry / listRegistry", () => {
     _setCacheDir(null);
     try {
       rmSync(tmpCacheDir, { recursive: true });
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
-    } catch {}
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
+    } catch {
+      /* cleanup: the cache dir may already be gone */
+    }
   });
 
   it("searchRegistry fetches and caches results", async () => {

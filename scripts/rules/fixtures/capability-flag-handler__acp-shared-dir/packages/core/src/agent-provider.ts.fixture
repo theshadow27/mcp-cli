@@ -1,0 +1,12 @@
+// @expect 0
+// ACP variants share the acp session dir via serverName
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "grok",
+	serverName: "_acp",
+	toolPrefix: "grok",
+	buildSpawnArgs: () => ({}),
+	native: { costTracking: true },
+});

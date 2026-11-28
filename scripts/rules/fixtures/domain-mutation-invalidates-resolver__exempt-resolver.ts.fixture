@@ -1,0 +1,4 @@
+// @expect 0
+// @path packages/daemon/src/domain-resolver.ts
+declare const db: { createDomain(a: string, b: string): void };
+db.createDomain("a", "b");

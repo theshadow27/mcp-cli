@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { silentLogger } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { ensureSelfSignedCert } from "../tls/self-signed";
 import type { SpawnFn } from "./ws-server";
 import { ClaudeWsServer } from "./ws-server";
@@ -54,7 +54,7 @@ describe("ClaudeWsServer (TLS mode, #1808)", () => {
   });
 
   test("isTls reports true when tlsConfig is provided", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ws-tls-"));
+    const dir = tmpDir("ws-tls-").path;
     const { cert, key } = ensureSelfSignedCert({ dir, validityDays: 7 });
     server = new ClaudeWsServer({
       spawn: mockSpawn().spawn,
@@ -79,7 +79,7 @@ describe("ClaudeWsServer (TLS mode, #1808)", () => {
   });
 
   test("TLS mode emits wss://[::1] sdk-url and sets NODE_TLS_REJECT_UNAUTHORIZED=0", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ws-tls-"));
+    const dir = tmpDir("ws-tls-").path;
     const { cert, key } = ensureSelfSignedCert({ dir, validityDays: 7 });
     const ms = mockSpawn();
     server = new ClaudeWsServer({
@@ -125,7 +125,7 @@ describe("ClaudeWsServer (TLS mode, #1808)", () => {
   });
 
   test("TLS mode binds on [::1] and accepts a wss:// upgrade", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ws-tls-"));
+    const dir = tmpDir("ws-tls-").path;
     const { cert, key } = ensureSelfSignedCert({ dir, validityDays: 7 });
     server = new ClaudeWsServer({
       spawn: mockSpawn().spawn,
@@ -176,7 +176,7 @@ process.stdout.write('OK');
   test("TLS mode rejects plain ws:// upgrade attempts", async () => {
     // Sanity: a plain ws client cannot connect to a TLS server. Keeps the
     // expectation explicit so a misconfigured deployment fails loud.
-    const dir = mkdtempSync(join(tmpdir(), "ws-tls-"));
+    const dir = tmpDir("ws-tls-").path;
     const { cert, key } = ensureSelfSignedCert({ dir, validityDays: 7 });
     server = new ClaudeWsServer({
       spawn: mockSpawn().spawn,

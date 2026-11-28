@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { silentLogger } from "@mcp-cli/core";
+import { tmpDir as makeTmpDir } from "am-i-done/tmp";
 import { pollUntil } from "../../../../test/harness";
 import type { SpawnFn } from "./ws-server";
 import { ClaudeWsServer } from "./ws-server";
@@ -124,7 +124,7 @@ describe("ClaudeWsServer — stdio multi-session load/drain (#2739)", () => {
     // so a stalled drain blocks the child before its trailing result line.
     const LINE_BYTES = 8 * 1024;
 
-    tmpDir = mkdtempSync(join(tmpdir(), "mcx-stdio-load-"));
+    tmpDir = makeTmpDir("mcx-stdio-load-").path;
     const transcriptPath = join(tmpDir, "burst.ndjson");
     writeFileSync(transcriptPath, burstTranscript(LINES, LINE_BYTES));
 

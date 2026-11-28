@@ -1,0 +1,3 @@
+// @expect 0
+// Session code context: the rule searches it for handler evidence.
+export function handleCompact() {}

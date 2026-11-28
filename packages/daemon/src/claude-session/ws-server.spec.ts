@@ -208,7 +208,9 @@ describe("ClaudeWsServer", () => {
       await pollUntil(() => server?.reclaimed, 3_000);
       expect(server.port).toBe(wellKnownPort);
     } finally {
-      await blocker.stop().catch(() => {});
+      await blocker.stop().catch(() => {
+        /* best effort: the blocker may already be stopped */
+      });
     }
   });
 
@@ -240,7 +242,9 @@ describe("ClaudeWsServer", () => {
       await closed;
       await server2.stop();
     } finally {
-      await blocker.stop().catch(() => {});
+      await blocker.stop().catch(() => {
+        /* best effort: the blocker may already be stopped */
+      });
     }
   });
 
@@ -287,7 +291,9 @@ describe("ClaudeWsServer", () => {
       existingWs.close();
       newWs.close();
     } finally {
-      await blocker.stop().catch(() => {});
+      await blocker.stop().catch(() => {
+        /* best effort: the blocker may already be stopped */
+      });
     }
   });
 
@@ -1375,10 +1381,11 @@ describe("ClaudeWsServer", () => {
     await pollUntil(() => server?.listSessions().some((s) => s.state === "disconnected"));
 
     const transcriptCalls: Array<[string, string, unknown]> = [];
-    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
-    const origAddTranscript = (server as any).addTranscript.bind(server);
-    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
-    (server as any).addTranscript = (session: unknown, direction: string, message: unknown) => {
+    const patchable = server as unknown as {
+      addTranscript: (session: unknown, direction: string, message: unknown) => void;
+    };
+    const origAddTranscript = patchable.addTranscript.bind(server);
+    patchable.addTranscript = (session: unknown, direction: string, message: unknown) => {
       transcriptCalls.push([direction, JSON.stringify(message), session as string]);
       return origAddTranscript(session, direction, message);
     };
@@ -2056,7 +2063,7 @@ describe("ClaudeWsServer", () => {
     server.prepareSession("hook-session", {
       prompt: "Hello",
       worktree: "my-tree",
-      cwd: "/tmp/worktrees/my-tree",
+      cwd: "/work/worktrees/my-tree",
     });
     server.spawnClaude("hook-session");
 
@@ -3123,10 +3130,11 @@ describe("ClaudeWsServer", () => {
 
     // Make handleSessionEvent throw on session:init but delegate normally for all other events.
     // This simulates an unexpected exception in the event handler for one event type.
-    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
-    const original = (server as any).handleSessionEvent.bind(server);
-    // biome-ignore lint/suspicious/noExplicitAny: testing private method via monkeypatching
-    (server as any).handleSessionEvent = (sessionId: string, session: unknown, event: { type: string }) => {
+    const patchable = server as unknown as {
+      handleSessionEvent: (sessionId: string, session: unknown, event: { type: string }) => void;
+    };
+    const original = patchable.handleSessionEvent.bind(server);
+    patchable.handleSessionEvent = (sessionId: string, session: unknown, event: { type: string }) => {
       if (event.type === "session:init") {
         throw new Error("simulated handleSessionEvent failure on session:init");
       }
@@ -3559,7 +3567,7 @@ describe("readJsonlTranscript", () => {
   afterEach(() => {
     try {
       rmSync(testDir, { recursive: true });
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // ignore
     }
@@ -3687,7 +3695,7 @@ describe("getTranscript JSONL fallback", () => {
     server?.stop();
     try {
       rmSync(testDir, { recursive: true });
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // ignore
     }
@@ -5284,7 +5292,7 @@ describe("parallel spawn (#1836)", () => {
     server = new ClaudeWsServer({ spawn: ms.spawn, logger: silentLogger });
     await server.start();
 
-    server.prepareSession("dead-session", { prompt: "Hello", cwd: "/tmp/wt" });
+    server.prepareSession("dead-session", { prompt: "Hello", cwd: "/work/wt" });
     expect(server.listSessions()).toHaveLength(1);
 
     server.removeUnspawnedSession("dead-session");
@@ -5384,7 +5392,7 @@ describe("parallel spawn (#1836)", () => {
     server = new ClaudeWsServer({ spawn: failingSpawn, logger: silentLogger });
     await server.start();
 
-    server.prepareSession("fail-session", { prompt: "Hello", cwd: "/tmp/wt" });
+    server.prepareSession("fail-session", { prompt: "Hello", cwd: "/work/wt" });
     expect(server.listSessions()).toHaveLength(1);
 
     // spawnClaude should throw — caller (handlePrompt) catches and cleans up

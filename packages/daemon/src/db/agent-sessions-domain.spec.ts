@@ -9,14 +9,14 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { McxDb } from "./state";
 
 function tmpDbPath(): string {
-  return join(tmpdir(), `mcp-cli-sessions-domain-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return join(tmpDir("t-").path, `mcp-cli-sessions-domain-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
 describe("agent_sessions domain persistence", () => {
@@ -37,7 +37,7 @@ describe("agent_sessions domain persistence", () => {
       for (const suffix of ["", "-wal", "-shm"]) {
         try {
           unlinkSync(`${path}${suffix}`);
-          // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
         } catch {
           /* ignore */
         }
@@ -136,7 +136,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
       for (const suffix of ["", "-wal", "-shm"]) {
         try {
           unlinkSync(`${path}${suffix}`);
-          // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
         } catch {
           /* ignore */
         }
@@ -151,7 +151,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
     // `mcx claude ls` goes empty on a box full of live sessions — and so does
     // `mcx claude bye --all`, so the daemon can be shut down on top of them.
     const db = open();
-    const root = mkdtempSync(join(tmpdir(), "mcx-adopt-"));
+    const root = tmpDir("mcx-adopt-").path;
     try {
       db.upsertSession({ sessionId: "pre-existing", cwd: join(root, "sub") });
       expect(db.getSession("pre-existing")?.domainId).toBe(NO_DOMAIN_ID);
@@ -166,7 +166,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
 
   test("adoption falls back to repo_root when cwd is absent", () => {
     const db = open();
-    const root = mkdtempSync(join(tmpdir(), "mcx-adopt-repo-"));
+    const root = tmpDir("mcx-adopt-repo-").path;
     try {
       db.upsertSession({ sessionId: "s", repoRoot: root });
       const domain = db.createDomain("phoenix", root);
@@ -178,8 +178,8 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
 
   test("sessions outside the new domain are left alone, not swept in", () => {
     const db = open();
-    const inside = mkdtempSync(join(tmpdir(), "mcx-adopt-in-"));
-    const outside = mkdtempSync(join(tmpdir(), "mcx-adopt-out-"));
+    const inside = tmpDir("mcx-adopt-in-").path;
+    const outside = tmpDir("mcx-adopt-out-").path;
     try {
       db.upsertSession({ sessionId: "in", cwd: inside });
       db.upsertSession({ sessionId: "out", cwd: outside });
@@ -195,7 +195,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
 
   test("adoption is idempotent and never re-homes an already-assigned session", () => {
     const db = open();
-    const outer = mkdtempSync(join(tmpdir(), "mcx-adopt-outer-"));
+    const outer = tmpDir("mcx-adopt-outer-").path;
     try {
       const inner = join(outer, "inner");
       mkdirSync(inner, { recursive: true });
@@ -214,7 +214,7 @@ describe("the upgrade path — adopting pre-domain sessions (#3039 review 3)", (
 
   test("a malformed stored path does not abort the rest of the backfill", () => {
     const db = open();
-    const root = mkdtempSync(join(tmpdir(), "mcx-adopt-mixed-"));
+    const root = tmpDir("mcx-adopt-mixed-").path;
     try {
       db.upsertSession({ sessionId: "bad", cwd: "relative/path" });
       db.upsertSession({ sessionId: "good", cwd: root });
@@ -246,7 +246,7 @@ describe("deleteDomain must not orphan live processes (#3039 review 7)", () => {
       for (const suffix of ["", "-wal", "-shm"]) {
         try {
           unlinkSync(`${path}${suffix}`);
-          // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+          // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
         } catch {
           /* ignore */
         }
@@ -260,7 +260,7 @@ describe("deleteDomain must not orphan live processes (#3039 review 7)", () => {
     // Deleting it leaves an unreapable, un-endable process. This PR is what armed the
     // hazard — before domain_id had a writer, every row was 0 and never matched.
     const db = open();
-    const root = mkdtempSync(join(tmpdir(), "mcx-del-"));
+    const root = tmpDir("mcx-del-").path;
     try {
       const domain = db.createDomain("phoenix", root);
       db.upsertSession({ sessionId: "live", cwd: root, domainId: domain.id });

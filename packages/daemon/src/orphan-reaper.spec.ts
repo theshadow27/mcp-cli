@@ -1,20 +1,20 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capturingLogger, silentLogger } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { McxDb } from "./db/state";
 import { reapOrphanedSessions } from "./orphan-reaper";
 
 function tmpDb(): string {
-  return join(tmpdir(), `mcp-cli-orphan-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  return tmpFile("mcp-cli-orphan-test.db").path;
 }
 
 function cleanup(path: string): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(path + suffix);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       // ignore
     }

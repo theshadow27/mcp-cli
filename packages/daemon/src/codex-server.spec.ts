@@ -202,7 +202,7 @@ describe("CodexServer", () => {
     const handle = (server as unknown as { handleWorkerEvent: (e: unknown) => void }).handleWorkerEvent.bind(server);
     handle({
       type: "db:upsert",
-      session: { sessionId: "s1", state: "active", model: "codex-mini", cwd: "/tmp" },
+      session: { sessionId: "s1", state: "active", model: "codex-mini", cwd: "/work" },
     });
 
     const row = db.getSession("s1");

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import {
   LOCKFILE_VERSION,
   type Lockfile,
@@ -38,7 +38,7 @@ describe("canonicalJson", () => {
 describe("hashImportClosureSync", () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "closure-hash-"));
+    dir = tmpDir("closure-hash-").path;
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -82,7 +82,7 @@ describe("hashImportClosureSync", () => {
   });
 
   test("is independent of repoRoot location for identical content", () => {
-    const other = mkdtempSync(join(tmpdir(), "closure-hash2-"));
+    const other = tmpDir("closure-hash2-").path;
     try {
       for (const d of [dir, other]) {
         writeFileSync(join(d, "helper.ts"), "export const N = 1;\n");

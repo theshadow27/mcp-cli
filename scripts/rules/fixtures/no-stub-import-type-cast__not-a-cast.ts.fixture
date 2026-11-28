@@ -1,0 +1,10 @@
+// @expect 0
+// @path scripts/_runner/example.spec.ts
+// A plain ReturnType annotation (no `as`), a `satisfies`, and an unrelated `as` cast are all fine.
+
+import type { FileCacheFile } from "./file-cache";
+
+declare const value: unknown;
+const f = (): ReturnType<typeof import("./file-cache").readFileCache> => ({ version: 1, entries: {} });
+const stub = { entries: {} } satisfies Partial<FileCacheFile>;
+const x = value as SomeConcreteType;

@@ -1,0 +1,22 @@
+// @expect 4
+// @path packages/core/src/example-variants.spec.ts
+// toStrictEqual([]), `.length` with toBe(0), and a matcher reached through `.resolves` are
+// flagged. `.not` forms assert that something matched, and filters stored in a variable first
+// are out of reach.
+
+import { expect, it } from "bun:test";
+
+declare const rows: Array<{ status: string }>;
+declare const pending: Promise<string[]>;
+
+it("variants", async () => {
+  expect(rows.filter((r) => r.status === "bad")).toStrictEqual([]);
+  expect(rows.filter((r) => r.status === "bad").length).toBe(0);
+  expect((await pending).filter(Boolean)).toHaveLength(0);
+  expect(rows.filter((r) => r.status === "bad").map((r) => r.status)).toEqual([]);
+
+  expect(rows.filter((r) => r.status === "ok")).not.toHaveLength(0);
+  const bad = rows.filter((r) => r.status === "bad");
+  expect(bad).toEqual([]);
+  expect(rows.filter(Boolean).length).toBe(3);
+});

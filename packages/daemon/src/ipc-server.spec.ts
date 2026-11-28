@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcResponse } from "@mcp-cli/core";
 import { IPC_ERROR, NO_DOMAIN_ID, PROTOCOL_VERSION, options, silentLogger } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { testOptions } from "../../../test/test-options";
 import { ClaudeServer } from "./claude-server";
 import { installDaemonLogCapture } from "./daemon-log";
@@ -20,7 +20,7 @@ installDaemonLogCapture();
 
 /** Unique socket path per test run to avoid conflicts */
 function tmpSocket(): string {
-  return join(tmpdir(), `mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+  return tmpFile("mcp-test.sock").path;
 }
 
 // Shared poll helper — throws on timeout for visible test failures
@@ -114,7 +114,7 @@ describe("IpcServer HTTP transport", () => {
     server = undefined;
     try {
       unlinkSync(socketPath);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* already cleaned up */
     }
@@ -172,7 +172,7 @@ describe("IpcServer HTTP transport", () => {
       sharedServer?.stop();
       try {
         unlinkSync(sharedSocket);
-        // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
       } catch {
         /* already cleaned up */
       }
@@ -559,7 +559,7 @@ describe("IpcServer HTTP transport", () => {
       body: JSON.stringify({ id: "sig1", method: "callTool", params: { server: "s", tool: "t", arguments: {} } }),
       unix: socketPath,
       signal: controller.signal,
-    } as RequestInit).catch(() => undefined);
+    } as RequestInit).catch(() => /* the request is aborted on purpose, so it rejects */ undefined);
 
     await handlerStarted;
     expect(seenSignal).toBeInstanceOf(AbortSignal);
@@ -679,7 +679,9 @@ describe("IpcServer HTTP transport", () => {
 
     // Unblock the stuck handler so the test can clean up
     resolveStuck?.();
-    await stuckReq.catch(() => {});
+    await stuckReq.catch(() => {
+      /* the stuck request may reject once the server shuts down */
+    });
   });
 
   test("shutdown works when pool has active servers", async () => {
@@ -3424,7 +3426,7 @@ describe("IpcServer HTTP transport", () => {
       for (const l of buffer.split("\n").filter((s) => s.startsWith("{"))) {
         try {
           parsed.push(JSON.parse(l) as Record<string, unknown>);
-          // dotw-ignore test-empty-catch: best-effort parse — partial JSON chunks expected
+          // doing-it-wrong-ignore test-empty-catch: best-effort parse — partial JSON chunks expected (#3465)
         } catch {
           /* partial chunk */
         }
@@ -3550,7 +3552,9 @@ describe("IpcServer HTTP transport", () => {
 
       // Clean up the stream
       streamController.abort();
-      await streamRes.catch(() => {});
+      await streamRes.catch(() => {
+        /* the aborted stream request rejects with AbortError */
+      });
     });
   });
 
@@ -3878,7 +3882,9 @@ describe("IpcServer HTTP transport", () => {
       // calling setInterval before returning. We just need to trigger stream creation.
       const res = es.handleEventsNDJSON(new URL("http://localhost/events"));
       // Cancel the body to release resources; we only care about the setInterval call.
-      res.body?.cancel().catch(() => {});
+      res.body?.cancel().catch(() => {
+        /* cleanup: only the setInterval call is under test */
+      });
 
       const pollInterval = capturedIntervals[capturedIntervals.length - 1];
       expect(pollInterval).toBeDefined();
@@ -4400,7 +4406,7 @@ describe("socket theft prevention (#2370)", () => {
     serverB = undefined;
     try {
       unlinkSync(socketPath);
-      // dotw-ignore test-empty-catch: best-effort cleanup
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup (#3465)
     } catch {
       /* already cleaned up */
     }

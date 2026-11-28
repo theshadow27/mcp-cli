@@ -1,0 +1,5 @@
+// @expect 0
+// Control messages the worker accepts.
+
+const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set<string>(["init", "bogus_control"]);
+void CONTROL_MESSAGE_TYPES;

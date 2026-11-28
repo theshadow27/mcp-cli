@@ -1,0 +1,5 @@
+// @expect 1
+// @path scripts/_runner/example.spec.ts
+// Whitespace around `as`, `<`, `typeof` and `(` is tolerated, so a trivial reformat cannot slip past.
+
+const x = ({} as  ReturnType < typeof   import ("./file-cache").readFileCache>);

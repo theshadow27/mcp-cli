@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMethod, IpcMethodResult, Manifest, TrackableField, WorkItem } from "@mcp-cli/core";
 import {
@@ -14,6 +13,7 @@ import {
   workItemStateNamespace,
   workItemStateRoot,
 } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { TrackDeps } from "./track";
 import { cmdTrack, cmdTracked, cmdUntrack, formatWorkItemRow, parseMetadataFlags } from "./track";
 
@@ -44,7 +44,7 @@ function makeDeps(overrides: Partial<Record<IpcMethod, unknown>> = {}): TrackDep
 const realManifestLoader = (dir: string): Manifest | null => {
   try {
     return loadManifest(dir)?.manifest ?? null;
-    // dotw-ignore test-empty-catch: parse-probe — fallback on expected parse failure
+    // doing-it-wrong-ignore test-empty-catch: parse-probe — fallback on expected parse failure (#3465)
   } catch {
     return null;
   }
@@ -568,12 +568,11 @@ describe("formatWorkItemRow", () => {
   });
 
   describe("manifest integration", () => {
-    const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
-    const { tmpdir } = require("node:os");
+    const { writeFileSync, rmSync } = require("node:fs");
     const { join } = require("node:path");
 
     function withManifestDir(manifestYaml: string, run: (dir: string) => Promise<void>): Promise<void> {
-      const dir = mkdtempSync(join(tmpdir(), "mcx-track-manifest-"));
+      const dir = tmpDir("mcx-track-manifest-").path;
       writeFileSync(join(dir, ".mcx.yaml"), manifestYaml);
       return run(dir).finally(() => {
         rmSync(dir, { recursive: true, force: true });
@@ -924,7 +923,7 @@ describe("pruneStaleHistory integration (#2463)", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "track-prune-"));
+    dir = tmpDir("track-prune-").path;
   });
 
   afterEach(() => {
@@ -1259,7 +1258,7 @@ describe("phase-state round trip from a linked worktree", () => {
 
   /** A real repo with `.mcx.yaml` committed, plus a real linked worktree that inherits it. */
   function withWorktree(run: (repo: string, wt: string) => Promise<void>): Promise<void> {
-    const repo = mkdtempSync(join(tmpdir(), "mcx-track-roundtrip-"));
+    const repo = tmpDir("mcx-track-roundtrip-").path;
     clearFindGitRootCache();
     const { GIT_DIR: _d, GIT_WORK_TREE: _w, GIT_COMMON_DIR: _c, GIT_INDEX_FILE: _i, ...base } = process.env;
     const env = {
@@ -1373,8 +1372,8 @@ describe("cmdTrack/cmdUntrack/cmdTracked — -d redirects the state root too (#3
     // Real repos: `workItemStateRoot` resolves through `findGitRoot` and answers with a
     // `__none__` sentinel outside one, which would make both roots compare equal and the
     // assertions below vacuous.
-    callerDir = mkdtempSync(join(tmpdir(), "mcx-caller-"));
-    otherDir = mkdtempSync(join(tmpdir(), "mcx-otherdom-"));
+    callerDir = tmpDir("mcx-caller-").path;
+    otherDir = tmpDir("mcx-otherdom-").path;
     // Sanitized env, for the same reason `withWorktree` below does it: under the pre-push
     // hook `GIT_DIR` is set, and `git init -C <tmp>` would honour it and initialize the
     // hook's repo instead. The temp dir then is not a repo, `findGitRoot` (which strips the

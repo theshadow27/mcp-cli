@@ -1,0 +1,20 @@
+// @expect 1
+// only the provider missing evidence is flagged
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "has-cost",
+	serverName: "_has",
+	toolPrefix: "has-cost",
+	buildSpawnArgs: () => ({}),
+	native: { costTracking: true },
+});
+
+registerProvider({
+	name: "no-cost",
+	serverName: "_no",
+	toolPrefix: "no-cost",
+	buildSpawnArgs: () => ({}),
+	native: { costTracking: true },
+});

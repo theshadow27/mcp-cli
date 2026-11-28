@@ -873,7 +873,7 @@ export class PrHandle {
       ...this.reqOpts(),
       method: "POST",
       body: {
-        // dotw-ignore gql-query-paginates: comments(first:1) is intentionally root-only; per-thread reply truncation is not a concern for this summary — full threads are handled by getPrThreadSnapshot
+        // doing-it-wrong-ignore gql-query-paginates: comments(first:1) is intentionally root-only; per-thread reply truncation is not a concern for this summary — full threads are handled by getPrThreadSnapshot (#3465)
         query: `query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {

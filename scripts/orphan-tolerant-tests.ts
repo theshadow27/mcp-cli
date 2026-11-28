@@ -24,7 +24,7 @@
  *
  * Deliberately a standalone const-only module (mirrors `bun-summary.ts`) so a
  * bun upgrade or file rename can't let the exclusion drift out of lockstep
- * across the call sites (package.json, am-i-done.ts, ci-steps.ts,
+ * across the call sites (package.json, scripts/stages/,
  * check-coverage.ts, test-timing.ts), and so importing it never drags
  * un-exercised function bodies into the coverage per-file floor.
  *

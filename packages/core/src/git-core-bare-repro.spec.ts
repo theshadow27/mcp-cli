@@ -7,11 +7,11 @@
  */
 
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { tmpDir } from "am-i-done/tmp";
 
 setDefaultTimeout(15_000);
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function cleanGitEnv(): Record<string, string | undefined> {
@@ -46,7 +46,7 @@ function git(cwd: string, ...args: string[]) {
 }
 
 function initRepo(): string {
-  const repo = mkdtempSync(join(tmpdir(), "core-bare-repro-"));
+  const repo = tmpDir("core-bare-repro-").path;
   git(repo, "init", "-q");
   writeFileSync(join(repo, "README.md"), "init");
   git(repo, "add", ".");

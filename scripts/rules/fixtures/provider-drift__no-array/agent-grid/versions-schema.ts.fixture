@@ -1,0 +1,4 @@
+// @expect 0
+// The schema lost its PROVIDER_NAMES array.
+
+export const NAMES = ["claude"];

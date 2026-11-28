@@ -18,9 +18,9 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
+import { tmpDir } from "am-i-done/tmp";
 
 // ── Config ──
 
@@ -301,7 +301,7 @@ async function runSpike(config: Config): Promise<Findings> {
   };
 
   // Create temp working directory
-  const workDir = join(tmpdir(), `acp-spike-${Date.now()}`);
+  const workDir = tmpDir("acp-spike-").path;
   mkdirSync(workDir, { recursive: true });
   console.error(`[spike] Work directory: ${workDir}`);
 
@@ -610,7 +610,7 @@ async function runSpike(config: Config): Promise<Findings> {
     console.error(`[spike] Token info: ${findings.tokenInfo}`);
     // ── Step 7: SDK compatibility test ──
     console.error("\n[spike] === Step 7: @agentclientprotocol/sdk compatibility ===");
-    const sdkWorkDir = join(tmpdir(), `acp-spike-sdk-${Date.now()}`);
+    const sdkWorkDir = tmpDir("acp-spike-sdk-").path;
     mkdirSync(sdkWorkDir, { recursive: true });
     const sdkProc = Bun.spawn(command, {
       stdin: "pipe",

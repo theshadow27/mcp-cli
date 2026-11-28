@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { ContainmentGuard, gateContainment } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { buildRules, evaluatePermission, mapPermissionRequest } from "./opencode-permission-adapter";
 
 describe("mapPermissionRequest", () => {
@@ -167,7 +167,7 @@ describe("buildRules", () => {
 // the guard fail-closes on any write whose real path it can't resolve.
 describe("opencode adapter → ContainmentGuard contract", () => {
   test("a write inside the worktree (real `file` key) resolves to allow", () => {
-    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    const wt = tmpDir("oc-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const perm = mapPermissionRequest({
@@ -184,7 +184,7 @@ describe("opencode adapter → ContainmentGuard contract", () => {
   });
 
   test("a write outside the worktree (real `file` key) is denied", () => {
-    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    const wt = tmpDir("oc-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const perm = mapPermissionRequest({
@@ -201,7 +201,7 @@ describe("opencode adapter → ContainmentGuard contract", () => {
   });
 
   test("a bash command (real `command` key) escaping the worktree is denied", () => {
-    const wt = mkdtempSync(join(tmpdir(), "oc-contract-"));
+    const wt = tmpDir("oc-contract-").path;
     try {
       const guard = new ContainmentGuard(wt);
       const perm = mapPermissionRequest({

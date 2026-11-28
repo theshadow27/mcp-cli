@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NO_DOMAIN_ID } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import { testOptions } from "../../../../test/test-options";
 import { migrateDerivedCursor } from "../derived-events";
 import { EventLog } from "../event-log";
@@ -111,7 +111,7 @@ describe("importLegacyState", () => {
   });
 
   function workspace(): { dir: string; legacyPath: string; targetPath: string; scopesDir: string } {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-"));
+    const dir = tmpDir("mcx-import-").path;
     dirs.push(dir);
     return {
       dir,
@@ -371,7 +371,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
     for (const d of dirs) {
       try {
         chmodSync(join(d, "state.db"), 0o644);
-        // dotw-ignore test-empty-catch: best-effort — the file may not exist in every case
+        // doing-it-wrong-ignore test-empty-catch: best-effort — the file may not exist in every case (#3465)
       } catch {
         /* ignore */
       }
@@ -381,7 +381,7 @@ describe("importLegacyState — marker sealing contract (#3034 review B2/B3/B4)"
   });
 
   function workspace() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-seal-"));
+    const dir = tmpDir("mcx-import-seal-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
@@ -646,7 +646,7 @@ describe("importLegacyState — against the PRODUCTION schema (#3034 review cove
   });
 
   function workspace() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-prod-"));
+    const dir = tmpDir("mcx-import-prod-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
@@ -755,7 +755,7 @@ describe("import atomicity — an unsealed run leaves the target untouched (#303
   });
 
   function workspace() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-atomic-"));
+    const dir = tmpDir("mcx-import-atomic-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
@@ -940,7 +940,7 @@ describe("recoveryInstructions (#3034 review R2)", () => {
     // `mcx domain import --force` performs the clear, so the assertion follows it there:
     // leaving the row-count key behind would make `importedDataMissing` compare against a
     // stale expectation and mis-report the next import as data loss.
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-keys-"));
+    const dir = tmpDir("mcx-import-keys-").path;
     try {
       const legacyPath = join(dir, "state.db");
       const legacy = new Database(legacyPath, { create: true });
@@ -974,7 +974,7 @@ describe("legacy handle contention (#3034 review Y7)", () => {
   });
 
   test("a held write lock is waited out, not reported in 2ms as a permissions problem", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-lock-"));
+    const dir = tmpDir("mcx-import-lock-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     const targetPath = join(dir, "mcx.db");
@@ -1013,7 +1013,7 @@ describe("legacy handle contention (#3034 review Y7)", () => {
   });
 
   test("the default wait is 3s, not the 2ms that misdiagnosed contention", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-lock2-"));
+    const dir = tmpDir("mcx-import-lock2-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     writeLegacyDb(legacyPath);
@@ -1036,7 +1036,7 @@ describe("cleanup cannot poison the shared connection (#3143 stacked-PR review)"
   });
 
   function ws() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-detach-"));
+    const dir = tmpDir("mcx-import-detach-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db") };
   }
@@ -1116,7 +1116,7 @@ describe("every write is inside the transaction boundary (#3143 enumeration)", (
     // marker and its row count (both in the LEGACY db), and the writability probe's
     // temp table — must be undone or never have landed. A future write added outside the
     // BEGIN fails here without anyone remembering to extend a list.
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-boundary-"));
+    const dir = tmpDir("mcx-import-boundary-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     const targetPath = join(dir, "mcx.db");
@@ -1149,7 +1149,7 @@ describe("every write is inside the transaction boundary (#3143 enumeration)", (
   });
 
   test("a successful import writes the marker AND the row count, both in the legacy db", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-boundary2-"));
+    const dir = tmpDir("mcx-import-boundary2-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     const targetPath = join(dir, "mcx.db");
@@ -1198,7 +1198,7 @@ describe("clampDerivedCursor bounds on the LEGACY range (#3143 stacked-PR blocke
     // target already holds seq 100-190. Reading main. parks the cursor at 190 and
     // permanently skips 90 live events; reading legacy. parks it at 5, which is exactly
     // the imported history and nothing more.
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-clamp-"));
+    const dir = tmpDir("mcx-import-clamp-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     const targetPath = join(dir, "mcx.db");
@@ -1268,7 +1268,7 @@ describe("clampDerivedCursor bounds on the LEGACY range (#3143 stacked-PR blocke
   test("on the reachable path the cursor parks at the imported range, not beyond it", () => {
     // The half of #3143's invariant that survives: import into an EMPTY target and the
     // cursor lands exactly on the imported history.
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-clamp-ok-"));
+    const dir = tmpDir("mcx-import-clamp-ok-").path;
     dirs.push(dir);
     const legacyPath = join(dir, "state.db");
     const targetPath = join(dir, "mcx.db");
@@ -1320,7 +1320,7 @@ describe("the target must be empty (#3035 review finding 1)", () => {
   });
 
   function ws() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-import-guard-"));
+    const dir = tmpDir("mcx-import-guard-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }
@@ -1564,7 +1564,7 @@ describe("importLegacyState domain mapping", () => {
   let phoenixId = -1;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-import-domain-"));
+    dir = tmpDir("mcx-import-domain-").path;
     // Real directories: the scope import canonicalizes roots, so a non-existent or
     // symlinked path would make the stored domain path and the row's repo_root disagree.
     phoenixRoot = join(dir, "phoenix");
@@ -1667,7 +1667,7 @@ describe("import atomicity covers the domain stamp (#3040 review R4)", () => {
   let phoenixId = -1;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "mcx-import-r4-"));
+    dir = tmpDir("mcx-import-r4-").path;
     phoenixRoot = join(dir, "phoenix");
     const scopesDir = join(dir, "scopes");
     mkdirSync(phoenixRoot, { recursive: true });
@@ -1738,7 +1738,7 @@ describe("what a failed import actually leaves on disk (#3160 review N2)", () =>
   }
 
   function ws() {
-    const dir = mkdtempSync(join(tmpdir(), "mcx-n2-"));
+    const dir = tmpDir("mcx-n2-").path;
     dirs.push(dir);
     return { dir, legacyPath: join(dir, "state.db"), targetPath: join(dir, "mcx.db"), scopesDir: join(dir, "scopes") };
   }

@@ -1,0 +1,4 @@
+// @expect 0
+// every type in code is documented in Appendix A
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready", "db:end"]);

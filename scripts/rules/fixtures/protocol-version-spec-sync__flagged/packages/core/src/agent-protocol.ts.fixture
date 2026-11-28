@@ -1,0 +1,4 @@
+// @expect 1
+// Version 999 in code, spec says 1.
+
+export const AGENT_PROTOCOL_VERSION = 999;

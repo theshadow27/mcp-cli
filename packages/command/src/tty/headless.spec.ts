@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "am-i-done/tmp";
 import { spawnHeadless } from "./headless";
 
 const POLL_MS = 10;
@@ -10,7 +10,7 @@ describe("spawnHeadless with real spawn", () => {
   let testDir: string;
 
   beforeEach(() => {
-    testDir = join(tmpdir(), `mcp-headless-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    testDir = tmpDir("mcp-headless-test-").join("work");
   });
 
   afterEach(() => {
@@ -32,7 +32,7 @@ describe("spawnHeadless with real spawn", () => {
       try {
         logContent = readFileSync(result.logFile, "utf-8");
         if (logContent.includes("headless-test-output")) break;
-        // dotw-ignore test-empty-catch: parse-probe — file may not exist yet during poll
+        // doing-it-wrong-ignore test-empty-catch: parse-probe — file may not exist yet during poll (#3465)
       } catch {
         // File may not exist yet
       }

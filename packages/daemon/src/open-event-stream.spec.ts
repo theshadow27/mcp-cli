@@ -12,16 +12,16 @@
 import { Database } from "bun:sqlite";
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _restoreOptions, openEventStream, options, silentLogger } from "@mcp-cli/core";
+import { tmpFile } from "am-i-done/tmp";
 import { pollUntil } from "../../../test/harness";
 import { EventBus } from "./event-bus";
 import { EventLog } from "./event-log";
 import { IpcServer } from "./ipc-server";
 
 function tmpSocket(): string {
-  return join(tmpdir(), `mcp-oes-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`);
+  return tmpFile("mcp-oes.sock").path;
 }
 
 function mockPool() {
@@ -104,7 +104,7 @@ describe("openEventStream() client integration", () => {
     _restoreOptions();
     try {
       unlinkSync(socketPath);
-      // dotw-ignore test-empty-catch: best-effort cleanup — resource may already be gone
+      // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — resource may already be gone (#3465)
     } catch {
       /* already cleaned up */
     }
@@ -254,7 +254,7 @@ describe("openEventStream() client integration", () => {
       errServer.stop(true);
       try {
         unlinkSync(errSocket);
-        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
       } catch {
         /* already cleaned up */
       }
@@ -361,7 +361,7 @@ describe("openEventStream() client integration", () => {
       malformServer.stop(true);
       try {
         unlinkSync(malformSocket);
-        // dotw-ignore test-empty-catch: best-effort cleanup — file may already be gone
+        // doing-it-wrong-ignore test-empty-catch: best-effort cleanup — file may already be gone (#3465)
       } catch {
         /* already cleaned up */
       }

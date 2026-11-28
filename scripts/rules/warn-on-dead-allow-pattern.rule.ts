@@ -11,22 +11,22 @@
  * strings as fixture inputs for the validator itself.
  */
 
-import type { PatternRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
-const rule: PatternRule = {
+export default {
   id: "warn-on-dead-allow-pattern",
-  kind: "pattern",
-  appliesToTests: false,
+  type: "pattern",
+  category: "architecture",
+  tests: "exclude",
+  // The pattern is a quoted string literal, so it has to see inside strings.
+  scope: "all",
   scold:
     'dead allow-pattern — `Tool(*)` is not a wildcard; use `"Tool"` (no parens) or `"Tool(:*)"` for prefix matching',
-  pattern: /["'`]\w+\(\*\)["'`]/,
-  except: ["validateAllowPatterns", "dead.pattern", "dead-pattern", "parenMatch"],
+  pattern: /["'`]\w+\(\*\)["'`]/g,
   guidance: [
     'bare `(*)` is not a permission wildcard — `"Bash(*)"`  matches nothing at runtime',
     'to allow all calls to a tool, use just the tool name: `"Bash"`',
     'for prefix matching, use the `:*` suffix: `"Bash(:*)"` or `"mcp__echo(:*)"`',
   ],
   documentation: "#2491",
-};
-
-export default rule;
+} satisfies Rule;

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { silentLogger } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import type { ClaudeOAuthToken } from "./auth/keychain";
 import { QuotaPoller, type QuotaStatus, parseUsageResponse, stampActiveProfileQuota, toStoredQuota } from "./quota";
 
@@ -451,7 +451,7 @@ describe("stampActiveProfileQuota", () => {
   }
 
   function profileDir() {
-    const root = mkdtempSync(join(tmpdir(), "mcx-quota-"));
+    const root = tmpDir("mcx-quota-").path;
     const profilesDir = join(root, "auth-profiles");
     mkdirSync(profilesDir, { recursive: true });
     return {

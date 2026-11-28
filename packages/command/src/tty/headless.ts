@@ -14,7 +14,7 @@ export interface HeadlessResult {
 export type HeadlessSpawnFn = (command: string, logFile: string) => { pid: number; unref: () => void };
 
 const defaultHeadlessSpawn: HeadlessSpawnFn = (command, logFile) => {
-  // dotw-ignore no-raw-spawn: keeps proc.pid and proc.unref(); stdout/stderr redirect to file, not pipe
+  // doing-it-wrong-ignore no-raw-spawn: keeps proc.pid and proc.unref(); stdout/stderr redirect to file, not pipe (#3465)
   const proc = Bun.spawn(["sh", "-c", command], {
     stdout: Bun.file(logFile),
     stderr: Bun.file(logFile),

@@ -22,7 +22,7 @@
  * timeout is otherwise a no-op.
  */
 
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 const BUN_TEST_WATCHDOG_MS = 5000;
 
@@ -35,7 +35,7 @@ function effectiveWatchdog(content: string): number {
   let max = BUN_TEST_WATCHDOG_MS;
   const re = /setDefaultTimeout\(\s*([0-9_.]+)\s*\)/g;
   for (const m of content.matchAll(re)) {
-    const n = parseNumericLiteral(m[1]);
+    const n = parseNumericLiteral(m[1] ?? "");
     if (n !== null && n > max) max = n;
   }
   return max;
@@ -50,9 +50,10 @@ function collectCall(lines: string[], startLine: number, parenOffset: number): s
   let depth = 0;
 
   for (let j = startLine; j < Math.min(startLine + 30, lines.length); j++) {
-    const segment = j === startLine ? lines[j].slice(parenOffset) : lines[j];
+    const text0 = lines[j] ?? "";
+    const segment = j === startLine ? text0.slice(parenOffset) : text0;
     for (let c = 0; c < segment.length; c++) {
-      const ch = segment[c];
+      const ch = segment[c] ?? "";
       text += ch;
       if (ch === "(") depth++;
       else if (ch === ")") {
@@ -72,7 +73,7 @@ function collectCall(lines: string[], startLine: number, parenOffset: number): s
 function realCommentStart(line: string): number {
   let inStr: '"' | "'" | "`" | null = null;
   for (let i = 0; i < line.length - 1; i++) {
-    const ch = line[i];
+    const ch = line[i] ?? "";
     if (inStr !== null) {
       if (ch === "\\") {
         i++;
@@ -100,7 +101,7 @@ function firstTopLevelComma(s: string): number {
   let inStr: '"' | "'" | "`" | null = null;
 
   for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
+    const ch = s[i] ?? "";
     if (inStr !== null) {
       if (ch === "\\") {
         i++; // skip escaped char
@@ -133,9 +134,10 @@ function parseNumericLiteral(s: string): number | null {
   return Number.isFinite(n) && /^[0-9.e+\-]+$/i.test(cleaned) ? n : null;
 }
 
-const rule: CheckRule = {
+export default {
   id: "poll-until-headroom",
-  kind: "check",
+  type: "check",
+  category: "testing",
   scold:
     "pollUntil() called with a timeout ≥ the file's effective test watchdog (Bun's 5000ms default, or setDefaultTimeout(N) when the file raises it) — the watchdog fires first, so this deadline never surfaces its own error (flaky under CI pressure)",
   guidance: [
@@ -147,13 +149,13 @@ const rule: CheckRule = {
     "cross-reference test/CLAUDE.md flaky-prevention patterns",
   ],
   documentation: "#2248",
-  appliesToTests: true,
-  check({ file, violated }) {
+  tests: "only",
+  check({ file, violated, checked }) {
     const watchdog = effectiveWatchdog(file.content);
     const lines = file.content.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i] ?? "";
       const pollIdx = line.indexOf("pollUntil(");
       if (pollIdx === -1) continue;
 
@@ -188,7 +190,6 @@ const rule: CheckRule = {
         violated(i + 1, pollIdx + 1, line.trim());
       }
     }
+    return checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

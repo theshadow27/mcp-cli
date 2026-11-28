@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkItem } from "@mcp-cli/core";
+import { tmpDir } from "am-i-done/tmp";
 import {
   aggregateSession,
   cmdSprintStats,
@@ -16,7 +16,7 @@ import {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "sprint-stats-test-"));
+  return tmpDir("sprint-stats-test-").path;
 }
 
 function writeJsonl(dir: string, name: string, entries: object[]): string {

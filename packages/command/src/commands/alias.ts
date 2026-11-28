@@ -67,7 +67,7 @@ export function parseScopeFlag(
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--scope") {
       scopeTokens.push(args[i]);
-      // dotw-ignore no-manual-arg-parsing: pre-extraction to delegate to parseFlags; --scope must be stripped from rest before caller does further parsing
+      // doing-it-wrong-ignore no-manual-arg-parsing: pre-extraction to delegate to parseFlags; --scope must be stripped from rest before caller does further parsing (#3465)
       if (i + 1 < args.length) scopeTokens.push(args[i + 1]);
       i++;
     } else if (args[i].startsWith("--scope=")) {

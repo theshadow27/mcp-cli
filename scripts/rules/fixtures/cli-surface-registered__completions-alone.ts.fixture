@@ -1,0 +1,5 @@
+// @expect 0
+// @path packages/command/src/commands/completions.ts
+// Without main.ts in the file set there is no dispatch to compare against, so nothing is flagged.
+
+export const SUBCOMMANDS = ["ls", "orphaned"] as const;

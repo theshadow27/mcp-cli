@@ -90,7 +90,7 @@ export function parseMetadataFlags(
       continue;
     }
 
-    const value = args[i + 1]; // dotw-ignore no-manual-arg-parsing: dynamic metadata flags from manifest, schema not statically known
+    const value = args[i + 1]; // doing-it-wrong-ignore no-manual-arg-parsing: dynamic metadata flags from manifest, schema not statically known (#3465)
     if (value === undefined || value.startsWith("--")) {
       errors.push(`${arg} requires a value`);
       continue;

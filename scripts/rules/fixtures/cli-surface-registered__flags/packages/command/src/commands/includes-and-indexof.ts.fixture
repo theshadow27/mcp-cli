@@ -1,0 +1,9 @@
+// @expect 1
+// --since is parsed by includes() but missing from KNOWN_FLAGS.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--sprint"]);
+export const idx = args.indexOf("--sprint");
+export const since = args.includes("--since");
