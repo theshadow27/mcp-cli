@@ -45,7 +45,7 @@
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "latest",
     "@types/react": "^18.3.28",
-    "am-i-done": "^0.4.2",
+    "am-i-done": "^0.7.2",
     "typescript": "^7.0.2",
     "typescript-5": "npm:typescript@5.9.3"
   },

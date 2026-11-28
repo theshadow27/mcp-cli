@@ -13,7 +13,7 @@
         "@biomejs/biome": "^1.9.4",
         "@types/bun": "latest",
         "@types/react": "^18.3.28",
-        "am-i-done": "^0.4.2",
+        "am-i-done": "^0.7.2",
         "typescript": "^7.0.2",
         "typescript-5": "npm:typescript@5.9.3",
       },
@@ -264,7 +264,7 @@
 
     "ajv-formats": ["ajv-formats@3.0.1", "", { "dependencies": { "ajv": "^8.0.0" } }, "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ=="],
 
-    "am-i-done": ["am-i-done@0.4.2", "", { "dependencies": { "@typescript-eslint/types": "8.74.0", "@typescript-eslint/typescript-estree": "8.74.0", "oxc-parser": "0.160.0", "zod": "^4.6.7" }, "peerDependencies": { "typescript": ">=5.0.0" }, "optionalPeers": ["typescript"], "os": [ "linux", "darwin", ], "bin": { "am-i-done": "bin/am-i-done.ts", "doing-it-wrong": "bin/doing-it-wrong.ts" } }, "sha512-p5Jy7rVD/Wn7KFq8LallHt+YCESnVEcheLi3pTSHJoWJayrfMfwzxy1grtGD0XYIJCDeeROQQuZSrbLVmgryZw=="],
+    "am-i-done": ["am-i-done@0.7.2", "", { "dependencies": { "@typescript-eslint/types": "8.74.0", "@typescript-eslint/typescript-estree": "8.74.0", "oxc-parser": "0.160.0", "zod": "^4.6.7" }, "peerDependencies": { "typescript": ">=5.0.0" }, "optionalPeers": ["typescript"], "os": [ "linux", "darwin", ], "bin": { "am-i-done": "bin/am-i-done.ts", "doing-it-wrong": "bin/doing-it-wrong.ts" } }, "sha512-pLrJ/14Jl32ectlKaOHK1bW1IkFSmeCybrwA378lj/qHOGtZjpgL1xKKSgYB4ArjnjihFsSzusbLhT3gvxrSKg=="],
 
     "ansi-escapes": ["ansi-escapes@7.3.0", "", { "dependencies": { "environment": "^1.0.0" } }, "sha512-BvU8nYgGQBxcmMuEeUEmNTvrMVjJNSH7RgW24vXexN4Ven6qCvy4TntnvlnwnMLTVlcRQQdbRY8NKnaIoeWDNg=="],
 
