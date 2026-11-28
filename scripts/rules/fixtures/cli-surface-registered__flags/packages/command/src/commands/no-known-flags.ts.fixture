@@ -1,0 +1,11 @@
+// @expect 0
+// No KNOWN_FLAGS in the file, so there is nothing to compare.
+
+declare const args: string[];
+declare const i: number;
+
+export function parseGcArgs(): void {
+  if (args[i] === "--dry-run") {
+  } else if (args[i] === "--branches-only") {
+  }
+}

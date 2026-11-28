@@ -1,0 +1,4 @@
+// @expect 1
+// The schema file is absent: coverage cannot be verified.
+
+export const worker = "claude";

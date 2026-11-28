@@ -1,0 +1,12 @@
+// @expect 0
+// compactLog with compact evidence in the session dir
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "good",
+	serverName: "_good",
+	toolPrefix: "good",
+	buildSpawnArgs: () => ({}),
+	native: { compactLog: true },
+});

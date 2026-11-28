@@ -30,7 +30,7 @@
  *      `{ filePath: "/home/user/.mcp-cli/..." }` test row) that never
  *      reaches the filesystem.
  *
- * Suppression: `// dotw-ignore no-real-mcp-cli-home: <reason>` — expected
+ * Suppression: `// doing-it-wrong-ignore no-real-mcp-cli-home: <reason>` — expected
  * to be rare; the intended fix is almost always "read options.MCP_CLI_DIR
  * instead", not a suppression.
  *
@@ -38,8 +38,20 @@
  * parent epic #3231 ("no daemon interruption").
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
+
+/** The name a call is made through: `name()`, `obj.name()` or `obj["name"]()`. */
+function calleeName(call: TSESTree.CallExpression): string | undefined {
+  const callee = call.callee;
+  if (callee.type === "Identifier") return callee.name;
+  if (callee.type !== "MemberExpression") return undefined;
+  if (!callee.computed && callee.property.type === "Identifier") return callee.property.name;
+  if (callee.computed && callee.property.type === "Literal" && typeof callee.property.value === "string") {
+    return callee.property.value;
+  }
+  return undefined;
+}
 
 /** The one file allowed to derive MCP_CLI_DIR from homedir() — everyone else must read options.MCP_CLI_DIR. */
 const CANONICAL_FILES = new Set(["packages/core/src/constants.ts"]);
@@ -47,46 +59,58 @@ const CANONICAL_FILES = new Set(["packages/core/src/constants.ts"]);
 /** Absolute path into a real user's home directory's .mcp-cli — never a tilde form or a synthetic test path. */
 const REAL_HOME_MCP_CLI = /^\/(home|Users)\/[^/]+\/\.mcp-cli(\/|$)/;
 
-const rule: CheckRule = {
+/** The text of a plain string literal or a template literal with no substitutions. */
+function plainString(node: TSESTree.Node): string | undefined {
+  if (node.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0)
+    return node.quasis[0]?.value.cooked ?? undefined;
+  return undefined;
+}
+
+export default {
   id: "no-real-mcp-cli-home",
-  kind: "check",
+  type: "check",
+  category: "architecture",
+  ast: true,
   scold: "builds a path into the real ~/.mcp-cli home directory instead of reading options.MCP_CLI_DIR — see #3233",
   guidance: [
     'read options.MCP_CLI_DIR (from "@mcp-cli/core") instead of homedir() + ".mcp-cli" — it is mutable and respects the MCP_CLI_DIR env override and every test\'s per-run override',
     "if you need the path at module scope, wrap it in a function so it is read lazily — a module-level const computed at import time freezes in whatever MCP_CLI_DIR was set first and ignores every later override (see packages/core/src/constants.ts's `options` object and its doc comment)",
     "in tests, isolate via test/test-options.ts's testOptions() (in-process) or by spawning a subprocess with an explicit MCP_CLI_DIR env override (see test/harness.ts)",
-    "suppress with // dotw-ignore no-real-mcp-cli-home: <reason> only if this genuinely is the canonical constants.ts definition",
+    "suppress with // doing-it-wrong-ignore no-real-mcp-cli-home: <reason> (#issue) only if this genuinely is the canonical constants.ts definition",
   ],
   documentation: "#3233",
-  check({ file, violated, checked, ast }) {
-    if (CANONICAL_FILES.has(file.relPath)) return;
-    checked();
+  check(ctx) {
+    const { file } = ctx;
+    if (CANONICAL_FILES.has(file.relativePath)) return ctx.skipped();
 
-    // Pattern 1: homedir() and a ".mcp-cli" string literal as sibling
-    // arguments to the same join()/resolve() call.
-    const homedirCalls = new Set(ast.callsTo("homedir"));
-    for (const call of [...ast.callsTo("join"), ...ast.callsTo("resolve")]) {
-      const hasHomedirArg = call.arguments.some((a) => ts.isCallExpression(a) && homedirCalls.has(a));
-      if (!hasHomedirArg) continue;
-      const hasMcpCliLiteral = call.arguments.some(
-        (a) => (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a)) && a.text === ".mcp-cli",
-      );
-      if (!hasMcpCliLiteral) continue;
-      const pos = ast.positionOf(call);
-      violated(pos.line, pos.column, call.getText(ast.sourceFile).slice(0, 100));
-    }
+    walk(ctx.ast().program, (node) => {
+      // Pattern 1: homedir() and a ".mcp-cli" string literal as sibling
+      // arguments to the same join()/resolve() call.
+      if (node.type === "CallExpression") {
+        const name = calleeName(node);
+        if (name === "join" || name === "resolve") {
+          const hasHomedirArg = node.arguments.some((a) => a.type === "CallExpression" && calleeName(a) === "homedir");
+          if (hasHomedirArg && node.arguments.some((a) => plainString(a) === ".mcp-cli")) {
+            ctx.violated(
+              node.loc.start.line,
+              node.loc.start.column + 1,
+              file.content.slice(...node.range).slice(0, 100),
+            );
+          }
+        }
+      }
 
-    // Pattern 2: a hardcoded absolute real-home .mcp-cli path used directly
-    // as a call argument (join/readFileSync/existsSync/... — anything that
-    // could touch the filesystem).
-    for (const lit of ast.find(ts.isStringLiteral)) {
-      if (!REAL_HOME_MCP_CLI.test(lit.text)) continue;
-      const parent = lit.parent;
-      if (!parent || !ts.isCallExpression(parent) || !parent.arguments.includes(lit)) continue;
-      const pos = ast.positionOf(lit);
-      violated(pos.line, pos.column, lit.text);
-    }
+      // Pattern 2: a hardcoded absolute real-home .mcp-cli path used directly
+      // as a call argument (join/readFileSync/existsSync/... — anything that
+      // could touch the filesystem).
+      if (node.type === "Literal" && typeof node.value === "string" && REAL_HOME_MCP_CLI.test(node.value)) {
+        const parent = node.parent;
+        if (parent?.type === "CallExpression" && parent.arguments.includes(node)) {
+          ctx.violated(node.loc.start.line, node.loc.start.column + 1, node.value);
+        }
+      }
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

@@ -1,0 +1,31 @@
+// @expect 0
+// Dispatch: ls (with a nested switch on the same discriminant), plus the pre-switch `args[0]`
+// checks. Flag-looking `args[0]` comparisons are not commands.
+
+declare let command: string;
+declare const args: string[];
+
+if (args[0] === "help") {
+  console.log("usage");
+}
+if (args[0] === "--help") {
+  console.log("usage");
+}
+
+switch (command) {
+  case "ls":
+    switch (command) {
+      case "kill":
+        break;
+    }
+    break;
+}
+
+function resolveTransport(t: string) {
+  switch (t) {
+    case "stdio":
+      break;
+    case "http":
+      break;
+  }
+}

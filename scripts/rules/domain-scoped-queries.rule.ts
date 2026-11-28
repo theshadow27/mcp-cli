@@ -24,9 +24,8 @@
  *   adds it the sprint its behaviour is scoped, and cannot regress afterwards.
  */
 
-import ts from "typescript-5";
-import type { FileMeta } from "./_engine/file-loader";
-import type { CheckRule, RuleContext } from "./_engine/rule";
+import type { FileMeta, Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 /**
  * Marker that opts a module into this rule.
@@ -68,7 +67,7 @@ const INSERT_COLUMNS = /insert\s+(?:or\s+\w+\s+)?into\s+[a-z_][a-z0-9_]*\s*\(([^
  */
 function constrainsDomain(sql: string): boolean {
   const insert = INSERT_COLUMNS.exec(sql);
-  if (insert) return /\bdomain_id\b/i.test(insert[1]);
+  if (insert) return /\bdomain_id\b/i.test(insert[1] ?? "");
 
   // Only predicate positions count. Splitting on WHERE/ON drops the projection and the
   // SET clause, which is where the bypasses lived.
@@ -76,7 +75,7 @@ function constrainsDomain(sql: string): boolean {
   return predicates.some((clause) => {
     const match = DOMAIN_COMPARISON.exec(clause);
     if (!match) return false;
-    const rhs = match[1].replace(/^[a-z_][a-z0-9_]*\./i, "");
+    const rhs = (match[1] ?? "").replace(/^[a-z_][a-z0-9_]*\./i, "");
     return rhs.toLowerCase() !== "domain_id";
   });
 }
@@ -103,16 +102,17 @@ function tablesReferenced(sql: string, partitioned: ReadonlySet<string>): string
 }
 
 /** Every string literal and template in a file, with the line each starts on. */
-function sqlStrings(file: FileMeta, ast: RuleContext["ast"]): Array<{ text: string; line: number }> {
+function sqlStrings(file: FileMeta, program: TSESTree.Program): Array<{ text: string; line: number }> {
   const out: Array<{ text: string; line: number }> = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) {
-      out.push({ text: node.getText(ast.sourceFile), line: ast.positionOf(node).line });
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(ast.sourceFile, visit);
+  // A template nested inside another template's `${}` is part of the outer one, as it always was.
+  let consumedUntil = 0;
+  walk(program, (node) => {
+    if (node.range[0] < consumedUntil) return;
+    const isString = (node.type === "Literal" && typeof node.value === "string") || node.type === "TemplateLiteral";
+    if (!isString) return;
+    consumedUntil = node.range[1];
+    out.push({ text: file.content.slice(...node.range), line: node.loc.start.line });
+  });
   return out;
 }
 
@@ -121,22 +121,24 @@ function sqlStrings(file: FileMeta, ast: RuleContext["ast"]): Array<{ text: stri
  *
  * Cross-file on purpose: a marked module may query a table another module declares.
  */
-function partitionedTables(files: Map<string, FileMeta>): Set<string> {
+function partitionedTables(files: ReadonlyMap<string, FileMeta>): Set<string> {
   const tables = new Set<string>();
   for (const f of files.values()) {
-    if (!f.relPath.startsWith("packages/")) continue;
+    if (!f.relativePath.startsWith("packages/")) continue;
     for (const match of f.content.matchAll(CREATE_TABLE)) {
-      const [, name, body] = match;
+      const [, name = "", body = ""] = match;
       if (/\bdomain_id\b/i.test(body)) tables.add(name.toLowerCase());
     }
   }
   return tables;
 }
 
-const rule: CheckRule = {
+export default {
   id: "domain-scoped-queries",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "architecture",
+  ast: true,
+  tests: "exclude",
   scold: "SQL against a domain-partitioned table with no domain_id predicate",
   guidance: [
     "add `domain_id = ?` to the WHERE clause, or `domain_id` to the INSERT column list",
@@ -149,15 +151,15 @@ const rule: CheckRule = {
   // No `anchors`: this rule globs for CREATE TABLE DDL rather than peering at one named
   // sibling, and the marked module declares its own tables — so a narrowed `--filter` that
   // loads the marked file always loads its DDL with it.
-  check({ file, files, violated, ast, checked }) {
-    if (!file.relPath.startsWith("packages/")) return;
-    if (!file.content.includes(OPT_IN)) return;
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/")) return ctx.skipped();
+    if (!file.content.includes(OPT_IN)) return ctx.skipped();
 
-    const partitioned = partitionedTables(files);
-    if (partitioned.size === 0) return;
-    checked();
+    const partitioned = partitionedTables(ctx.files);
+    if (partitioned.size === 0) return ctx.skipped();
 
-    for (const { text, line } of sqlStrings(file, ast)) {
+    for (const { text, line } of sqlStrings(file, ctx.ast().program)) {
       if (!IS_DML.test(text)) continue;
       for (const stmt of statements(text)) {
         if (!IS_DML.test(stmt)) continue;
@@ -167,10 +169,9 @@ const rule: CheckRule = {
         const hits = tablesReferenced(stmt, partitioned);
         if (hits.length === 0) continue;
         if (constrainsDomain(stmt)) continue;
-        violated(line, 1, `${hits.join(", ")}: ${stmt.replace(/\s+/g, " ").trim().slice(0, 100)}`);
+        ctx.violated(line, 1, `${hits.join(", ")}: ${stmt.replace(/\s+/g, " ").trim().slice(0, 100)}`);
       }
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

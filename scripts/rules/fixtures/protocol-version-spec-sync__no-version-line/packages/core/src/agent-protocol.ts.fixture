@@ -1,0 +1,4 @@
+// @expect 1
+// The spec has no **Version:** line.
+
+export const AGENT_PROTOCOL_VERSION = 1;

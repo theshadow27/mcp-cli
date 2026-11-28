@@ -1,0 +1,10 @@
+// @expect 1
+// state.cost is assigned in setup but never asserted
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

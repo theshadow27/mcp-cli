@@ -1,0 +1,7 @@
+// @expect 0
+// Evidence context: the rule scans this spec for the cost assertion.
+
+test("agent_message_chunk", () => {
+  const state = createAcpEventMapState();
+  expect(state.cost).toBeNull();
+});

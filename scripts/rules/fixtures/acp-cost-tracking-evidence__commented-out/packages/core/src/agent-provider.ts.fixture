@@ -1,0 +1,10 @@
+// @expect 1
+// expect(state.cost) only in a line comment
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

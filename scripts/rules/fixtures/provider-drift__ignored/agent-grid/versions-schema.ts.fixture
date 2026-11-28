@@ -1,0 +1,5 @@
+// @expect 0
+// Schema context: the rule reads PROVIDER_NAMES from here.
+
+const PROVIDER_NAMES = ["claude", "codex", "acp", "mock"] as const;
+export type ProviderName = (typeof PROVIDER_NAMES)[number];

@@ -21,8 +21,8 @@
  * by a narrowing guard is fine; `as const` is fine.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const SCOPED_PATH_RE = /(^|\/)(db|ipc[^/]*)\.ts$|\/db\//;
 
@@ -33,10 +33,12 @@ function isInScope(relPath: string, content: string): boolean {
 }
 
 /** Casts that are part of an explicit re-narrowing flow, not a lie. */
-function isExemptTargetType(typeNode: ts.TypeNode): boolean {
-  if (typeNode.kind === ts.SyntaxKind.UnknownKeyword) return true;
+function isExemptTargetType(typeNode: TSESTree.TypeNode): boolean {
+  if (typeNode.type === "TSUnknownKeyword") return true;
   // `as const` arrives as a TypeReference named "const"
-  return ts.isTypeReferenceNode(typeNode) && typeNode.typeName.getText() === "const";
+  return (
+    typeNode.type === "TSTypeReference" && typeNode.typeName.type === "Identifier" && typeNode.typeName.name === "const"
+  );
 }
 
 /**
@@ -46,43 +48,46 @@ function isExemptTargetType(typeNode: ts.TypeNode): boolean {
  */
 const BOUNDARY_BASE_RE = /^(row|rows|result|results|data|payload|parsed|json|record|records)$/;
 
-function boundaryBaseName(operand: ts.Expression): string | null {
-  let node: ts.Expression = operand;
-  while (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-    node = node.expression;
-  }
-  return ts.isIdentifier(node) ? node.text : null;
+/** Property and element accesses are the same thing to the rule, optional chains included. */
+function unchain(node: TSESTree.Node): TSESTree.Node {
+  return node.type === "ChainExpression" ? node.expression : node;
 }
 
-const rule: CheckRule = {
+function boundaryBaseName(operand: TSESTree.Node): string | null {
+  let node = unchain(operand);
+  while (node.type === "MemberExpression") node = unchain(node.object);
+  return node.type === "Identifier" ? node.name : null;
+}
+
+export default {
   id: "no-db-ipc-cast",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "conventions",
+  ast: true,
+  tests: "exclude",
   scold:
     "field-level `as` cast on a DB/IPC read — garbage values pass the compiler and bypass runtime fallbacks (#2602)",
   guidance: [
     'validate at runtime: a type guard (`isTransport(row.transport) ? row.transport : "ws"`) or a Zod parse',
     "`as unknown` + a narrowing guard is fine; the ban is on casting straight to the target type",
     "whole-row casts (`stmt.get() as SessionRow`) are out of scope — the rule targets per-field narrowing",
-    "legitimate exception? suppress with `// dotw-ignore no-db-ipc-cast: <reason>`",
+    "legitimate exception? suppress with `// doing-it-wrong-ignore no-db-ipc-cast: <reason> (#issue)`",
   ],
   documentation: "#2622",
-  check({ file, violated, checked, ast }) {
-    if (!file.relPath.startsWith("packages/")) return;
-    if (!isInScope(file.relPath, file.content)) return;
-    checked();
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/")) return ctx.skipped();
+    if (!isInScope(file.relativePath, file.content)) return ctx.skipped();
 
-    for (const cast of ast.find(ts.isAsExpression)) {
-      const operand = cast.expression;
-      if (!ts.isPropertyAccessExpression(operand) && !ts.isElementAccessExpression(operand)) continue;
-      if (isExemptTargetType(cast.type)) continue;
-      const base = boundaryBaseName(operand);
-      if (base === null || !BOUNDARY_BASE_RE.test(base)) continue;
-      const { line, column } = ast.positionOf(cast);
-      const snippet = file.content.split("\n")[line - 1]?.trim() ?? "";
-      violated(line, column, snippet);
-    }
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "TSAsExpression") return;
+      if (unchain(node.expression).type !== "MemberExpression") return;
+      if (isExemptTargetType(node.typeAnnotation)) return;
+      const base = boundaryBaseName(node.expression);
+      if (base === null || !BOUNDARY_BASE_RE.test(base)) return;
+      const { line, column } = node.loc.start;
+      ctx.violated(line, column + 1, file.content.split("\n")[line - 1]?.trim() ?? "");
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

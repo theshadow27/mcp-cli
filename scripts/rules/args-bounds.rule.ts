@@ -29,14 +29,14 @@
  *      variable, and one of the next 2 lines checks it via `!varName`,
  *      `varName === undefined`, `varName === null`, or `varName == null`.
  *
- * Suppression: `// dotw-ignore args-bounds: <reason>` (handled by the
+ * Suppression: `// doing-it-wrong-ignore args-bounds: <reason>` (handled by the
  * engine boundary).
  *
  * Migrated from the standalone `scripts/check-args-bounds.ts` — same
  * detection semantics, same lookback/lookahead windows.
  */
 
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 const ACCESS_PATTERN = /args\[\+\+i\]/;
 const ASSIGN_PATTERN = /\b(\w+)\s*=\s*args\[\+\+i\]/;
@@ -79,9 +79,10 @@ export function isSafe(lines: string[], lineIdx: number): boolean {
   return false;
 }
 
-const rule: CheckRule = {
+export default {
   id: "args-bounds",
-  kind: "check",
+  type: "check",
+  category: "conventions",
   scold: "args[++i] without bounds check — silently produces undefined when i is at the last position",
   guidance: [
     "Bad:   val = args[++i];",
@@ -89,19 +90,18 @@ const rule: CheckRule = {
     "Good:  val = args[++i] ?? defaultValue;",
     "Good:  const val = args[++i]; if (!val) { /* error */ }",
     "prefer parseFlags(argv, specs) from packages/command/src/flags.ts — it handles bounds, --flag=value, and unknown-flag detection",
-    "permanent escape hatch: // dotw-ignore args-bounds: <reason> (non-empty reason required)",
+    "permanent escape hatch: // doing-it-wrong-ignore args-bounds: <reason> (#issue)",
   ],
   documentation: "#1967, #1968, #1969",
-  check({ file, violated }) {
-    const lines = file.content.split("\n");
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";
       if (!ACCESS_PATTERN.test(line)) continue;
       if (!isSafe(lines, i)) {
-        violated(i + 1, 1, line.trim());
+        ctx.violated(i + 1, 1, line.trim());
       }
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

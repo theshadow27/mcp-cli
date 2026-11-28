@@ -1,0 +1,19 @@
+// @expect 4
+// @path packages/daemon/src/example-variants.spec.ts
+// A zero delay is flagged like any other literal, a member call named setTimeout counts, and
+// Bun.sleepSync (a synchronous spin in cross-process polling loops) is not scanned.
+
+declare function fn(): void;
+declare const api: { setTimeout(fn: () => void, ms: number): void };
+
+async function run(): Promise<void> {
+  await new Promise<void>((r) => setTimeout(r, 0));
+  await Bun.sleep(0);
+  globalThis.setTimeout(fn, 25);
+  api.setTimeout(fn, 500);
+
+  Bun.sleepSync(5);
+  setTimeout(fn, 1.5);
+}
+
+void run();

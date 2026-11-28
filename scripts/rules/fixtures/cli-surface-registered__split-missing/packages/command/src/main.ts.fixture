@@ -1,0 +1,13 @@
+// @expect 1
+// SUBCOMMANDS lives in a separate completions.ts; "missing" is dispatched but not listed there.
+
+declare let command: string;
+
+switch (command) {
+  case "ls":
+    break;
+  case "call":
+    break;
+  case "missing":
+    break;
+}

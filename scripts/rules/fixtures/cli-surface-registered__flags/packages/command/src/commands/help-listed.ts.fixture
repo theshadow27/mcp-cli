@@ -1,0 +1,8 @@
+// @expect 0
+// -h and --help in KNOWN_FLAGS are not reported as unparsed (help-flag symmetry).
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose", "-h", "--help"]);
+export const verbose = args[i] === "--verbose";

@@ -1,0 +1,4 @@
+// @expect 1
+// The spec is absent from the file set: cannot verify, so the rule fires.
+
+export const AGENT_PROTOCOL_VERSION = 1;

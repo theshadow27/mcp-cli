@@ -1,0 +1,4 @@
+// @expect 0
+// @path packages/core/src/domain.ts
+declare const db: { createDomain(a: string, b: string): void };
+db.createDomain("a", "b");

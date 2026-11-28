@@ -20,67 +20,58 @@
  * IPC_REQUEST_TIMEOUT_MS, CONNECT_TIMEOUT_MS, …) where one fits.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const TIMER_FN_NAMES = new Set(["setTimeout", "setInterval"]);
 const TIMEOUT_OPT_KEYS = new Set(["timeout", "timeoutMs"]);
 
 /**
- * Resolve the real numeric value of a `ts.NumericLiteral` text. Strips
- * numeric separators (`1_000` → `1000`) and uses `Number()` so non-decimal
- * forms (`0x1F4`, `0o755`, `0b111`) parse to their actual value — unlike
- * `parseFloat`, which stops at the `x`/`o`/`b`/`_` and silently returns 0.
+ * True for a numeric literal, optionally wrapped in a unary `+`, whose real value is not 0. The
+ * parser has already resolved `1_000`, `0x1F4`, `0o755` and `0b111` to their values, so `0x0` and
+ * `0_000` are 0 and exempt (next tick) while `0x1f4` is a real delay. Any non-literal expression —
+ * variables, member accesses, arithmetic, template literals — falls through as "named enough"
+ * because it carries an identifier the reader can chase.
  */
-function numericLiteralValue(text: string): number {
-  return Number(text.replace(/_/g, ""));
-}
-
-/**
- * Match a NumericLiteral, optionally wrapped in a unary `+`. Excludes `0`
- * (the next-tick form) and any non-literal expression — variables, member
- * accesses, arithmetic, and template literals all fall through as "named
- * enough" because they carry an identifier the reader can chase.
- */
-function flaggedLiteralValue(node: ts.Expression | undefined): string | undefined {
-  if (!node) return undefined;
-  let inner: ts.Expression = node;
-  if (ts.isPrefixUnaryExpression(inner) && inner.operator === ts.SyntaxKind.PlusToken) {
-    inner = inner.operand;
-  }
-  if (!ts.isNumericLiteral(inner)) return undefined;
-  // `0`, `0.0`, `0x0`, `0_000`, etc. — next-tick is always allowed.
-  if (numericLiteralValue(inner.text) === 0) return undefined;
-  return inner.text;
+function isMagicDelay(node: TSESTree.Node | undefined): boolean {
+  if (node === undefined) return false;
+  const inner = node.type === "UnaryExpression" && node.operator === "+" ? node.argument : node;
+  return inner.type === "Literal" && typeof inner.value === "number" && inner.value !== 0;
 }
 
 /** True for `AbortSignal.timeout` — keep callee-shape matching tight. */
-function isAbortSignalTimeout(call: ts.CallExpression): boolean {
-  const expr = call.expression;
-  if (!ts.isPropertyAccessExpression(expr)) return false;
-  if (!ts.isIdentifier(expr.expression) || expr.expression.text !== "AbortSignal") return false;
-  return expr.name.text === "timeout";
+function isAbortSignalTimeout(call: TSESTree.CallExpression): boolean {
+  const callee = call.callee;
+  return (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    callee.object.type === "Identifier" &&
+    callee.object.name === "AbortSignal" &&
+    callee.property.type === "Identifier" &&
+    callee.property.name === "timeout"
+  );
 }
 
 /** True for a bare `setTimeout(...)` / `setInterval(...)` identifier call (no method form). */
-function timerFunctionName(call: ts.CallExpression): string | undefined {
-  const expr = call.expression;
-  if (!ts.isIdentifier(expr)) return undefined;
-  return TIMER_FN_NAMES.has(expr.text) ? expr.text : undefined;
+function isTimerCall(call: TSESTree.CallExpression): boolean {
+  return call.callee.type === "Identifier" && TIMER_FN_NAMES.has(call.callee.name);
 }
 
-/** Resolve a PropertyAssignment's key text (handles identifier and string-literal keys). */
-function propertyKeyName(prop: ts.PropertyAssignment): string | undefined {
-  const name = prop.name;
-  if (ts.isIdentifier(name)) return name.text;
-  if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
+/** A plain `key: value` property's key text (identifier or string-literal key, not computed). */
+function propertyKeyName(prop: TSESTree.Property): string | undefined {
+  if (prop.computed || prop.shorthand || prop.method) return undefined;
+  const key = prop.key;
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
   return undefined;
 }
 
-const rule: CheckRule = {
+export default {
   id: "named-timeouts",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "conventions",
+  ast: true,
+  tests: "exclude",
   scold:
     "timeout/delay is a magic numeric literal — hoist to a named `*_MS` constant so the value carries meaning at the call site and can't drift from related constants",
   guidance: [
@@ -91,42 +82,31 @@ const rule: CheckRule = {
     "for config-driven durations: validate with `z.number()` and thread a named default — keeps the value tunable and self-documenting",
   ],
   documentation: "#2262",
-  check({ file, ast, violated }) {
-    const flag = (node: ts.Node): void => {
-      const pos = ast.positionOf(node);
-      const line = file.content.split("\n")[pos.line - 1] ?? "";
-      violated(pos.line, pos.column, line.trim());
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
+    const flag = (node: TSESTree.Node): void => {
+      const line = node.loc.start.line;
+      ctx.violated(line, node.loc.start.column + 1, (lines[line - 1] ?? "").trim());
     };
 
-    // Call-site checks: setTimeout / setInterval / AbortSignal.timeout.
-    for (const call of ast.find(ts.isCallExpression)) {
-      const timerName = timerFunctionName(call);
-      if (timerName !== undefined) {
-        // 2nd arg is the delay; if absent we have nothing to flag.
-        const delay = call.arguments[1];
-        if (flaggedLiteralValue(delay) !== undefined && delay !== undefined) {
-          flag(delay);
-        }
-        continue;
+    walk(ctx.ast().program, (node) => {
+      // Call-site checks: setTimeout / setInterval (2nd arg) and AbortSignal.timeout (1st arg).
+      if (node.type === "CallExpression") {
+        const delay = isTimerCall(node)
+          ? node.arguments[1]
+          : isAbortSignalTimeout(node)
+            ? node.arguments[0]
+            : undefined;
+        if (delay !== undefined && isMagicDelay(delay)) flag(delay);
       }
-      if (isAbortSignalTimeout(call)) {
-        const ms = call.arguments[0];
-        if (flaggedLiteralValue(ms) !== undefined && ms !== undefined) {
-          flag(ms);
-        }
-      }
-    }
 
-    // Option-property checks: { timeout: N } and { timeoutMs: N } anywhere.
-    // PropertyAssignment is precise — shorthand assignments (`{ timeoutMs }`)
-    // already carry an identifier, so they're skipped naturally.
-    for (const prop of ast.find(ts.isPropertyAssignment)) {
-      const key = propertyKeyName(prop);
-      if (!key || !TIMEOUT_OPT_KEYS.has(key)) continue;
-      if (flaggedLiteralValue(prop.initializer) === undefined) continue;
-      flag(prop.initializer);
-    }
+      // Option-property checks: { timeout: N } and { timeoutMs: N } anywhere. Shorthand
+      // (`{ timeoutMs }`) already carries an identifier, so it is skipped.
+      if (node.type === "Property" && node.parent?.type === "ObjectExpression") {
+        const key = propertyKeyName(node);
+        if (key !== undefined && TIMEOUT_OPT_KEYS.has(key) && isMagicDelay(node.value)) flag(node.value);
+      }
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

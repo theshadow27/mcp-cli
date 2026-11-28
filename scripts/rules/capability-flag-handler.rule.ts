@@ -1,9 +1,16 @@
-import ts from "typescript-5";
+/**
+ * Rule: capability-flag-handler
+ *
+ * A provider's `native` flags (costTracking, compactLog) gate CLI behavior. A flag set to `true` with
+ * no handler in the provider's session code silently no-ops or shows misleading data. The provider
+ * file is read through its syntax tree; the evidence is a text match over the provider's non-test
+ * session files under packages/daemon/src/ (`<prefix>-session/`, `<prefix>-session-worker*`,
+ * `<prefix>-server*`), where the prefix is the provider's `serverName` without its leading `_`.
+ *
+ * Sources: #2421, #2391.
+ */
 
-import type { AstHelper } from "./_engine/ast";
-import { createAstHelper } from "./_engine/ast";
-import type { FileMeta } from "./_engine/file-loader";
-import type { CheckRule, RuleContext } from "./_engine/rule";
+import { type FileMeta, type Rule, type TSESTree, walk } from "am-i-done";
 
 const PROVIDER_REL = "packages/core/src/agent-provider.ts";
 const SESSION_DIR = "packages/daemon/src/";
@@ -18,8 +25,6 @@ interface ProviderInfo {
   name: string;
   serverName: string;
   flags: FlagEntry[];
-  nameLine: number;
-  nameCol: number;
 }
 
 const EVIDENCE: Record<string, RegExp> = {
@@ -40,84 +45,80 @@ function isSessionFile(relPath: string, prefix: string): boolean {
   );
 }
 
-function extractProviders(ast: AstHelper): ProviderInfo[] {
-  const results: ProviderInfo[] = [];
-
-  for (const call of ast.callsTo("registerProvider")) {
-    const arg = call.arguments[0];
-    if (!arg || !ts.isObjectLiteralExpression(arg)) continue;
-
-    let name: string | undefined;
-    let serverName: string | undefined;
-    let nameLine = 0;
-    let nameCol = 0;
-    const flags: FlagEntry[] = [];
-
-    for (const prop of arg.properties) {
-      if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) continue;
-
-      if (prop.name.text === "name" && ts.isStringLiteral(prop.initializer)) {
-        name = prop.initializer.text;
-        const pos = ast.positionOf(prop.initializer);
-        nameLine = pos.line;
-        nameCol = pos.column;
-      }
-
-      if (prop.name.text === "serverName" && ts.isStringLiteral(prop.initializer)) {
-        serverName = prop.initializer.text;
-      }
-
-      if (prop.name.text === "native" && ts.isObjectLiteralExpression(prop.initializer)) {
-        for (const flagProp of prop.initializer.properties) {
-          if (!ts.isPropertyAssignment(flagProp) || !ts.isIdentifier(flagProp.name)) continue;
-          if (flagProp.initializer.kind === ts.SyntaxKind.TrueKeyword) {
-            const flagName = flagProp.name.text;
-            if (flagName in EVIDENCE) {
-              const pos = ast.positionOf(flagProp);
-              flags.push({ flag: flagName, line: pos.line, column: pos.column });
-            }
-          }
-        }
-      }
-    }
-
-    if (name && serverName) {
-      results.push({ name, serverName, flags, nameLine, nameCol });
+/** The property of `obj` named `key` (an identifier key), if any. */
+function findProperty(obj: TSESTree.ObjectExpression, key: string): TSESTree.Property | undefined {
+  for (const prop of obj.properties) {
+    if (prop.type === "Property" && !prop.computed && prop.key.type === "Identifier" && prop.key.name === key) {
+      return prop;
     }
   }
+  return undefined;
+}
+
+function extractProviders(program: TSESTree.Program): ProviderInfo[] {
+  const results: ProviderInfo[] = [];
+
+  walk(program, (node) => {
+    if (node.type !== "CallExpression" || node.callee.type !== "Identifier") return;
+    if (node.callee.name !== "registerProvider") return;
+    const arg = node.arguments[0];
+    if (arg?.type !== "ObjectExpression") return;
+
+    const nameValue = findProperty(arg, "name")?.value;
+    const serverNameValue = findProperty(arg, "serverName")?.value;
+    const name = nameValue?.type === "Literal" && typeof nameValue.value === "string" ? nameValue.value : undefined;
+    const serverName =
+      serverNameValue?.type === "Literal" && typeof serverNameValue.value === "string"
+        ? serverNameValue.value
+        : undefined;
+
+    const flags: FlagEntry[] = [];
+    const native = findProperty(arg, "native")?.value;
+    if (native?.type === "ObjectExpression") {
+      for (const flagProp of native.properties) {
+        if (flagProp.type !== "Property" || flagProp.computed || flagProp.key.type !== "Identifier") continue;
+        if (flagProp.value.type !== "Literal" || flagProp.value.value !== true) continue;
+        const flag = flagProp.key.name;
+        if (flag in EVIDENCE)
+          flags.push({ flag, line: flagProp.loc.start.line, column: flagProp.loc.start.column + 1 });
+      }
+    }
+
+    if (name && serverName) results.push({ name, serverName, flags });
+  });
 
   return results;
 }
 
-function sessionFilesHaveEvidence(files: Map<string, FileMeta>, prefix: string, pattern: RegExp): boolean {
+function sessionFilesHaveEvidence(files: ReadonlyMap<string, FileMeta>, prefix: string, pattern: RegExp): boolean {
   for (const meta of files.values()) {
     if (meta.isTest) continue;
-    if (!meta.relPath.startsWith(SESSION_DIR)) continue;
-    if (!isSessionFile(meta.relPath, prefix)) continue;
+    if (!meta.relativePath.startsWith(SESSION_DIR)) continue;
+    if (!isSessionFile(meta.relativePath, prefix)) continue;
     if (pattern.test(meta.content)) return true;
   }
   return false;
 }
 
-const rule: CheckRule = {
+export default {
   id: "capability-flag-handler",
-  kind: "check",
+  type: "check",
+  category: "architecture",
+  ast: true,
   scold: "Provider advertises a capability flag but no session handler exercises it",
   guidance: [
-    "A provider's `native` flags (costTracking, compactLog, …) gate CLI behavior — setting one to `true` without a corresponding handler means the feature silently no-ops or displays misleading data.",
+    "A provider's `native` flags (costTracking, compactLog, …) gate CLI behavior: setting one to `true` without a corresponding handler means the feature silently no-ops or displays misleading data.",
     "`costTracking: true` → the provider's session code must reference cost / total_cost_usd fields.",
     "`compactLog: true` → the provider's session code must contain a compact-log code path.",
     "Fix: add the missing handler in packages/daemon/src/<provider>-session/, or set the flag to `false`.",
   ],
   documentation: "#2421, #2391",
-  appliesToTests: false,
-  anchors: [PROVIDER_REL],
-  check(ctx: RuleContext) {
-    if (ctx.file.relPath !== PROVIDER_REL) return;
-    ctx.checked();
+  tests: "exclude",
+  anchors: [(files) => files.has(PROVIDER_REL)],
+  check(ctx) {
+    if (ctx.file.relativePath !== PROVIDER_REL) return ctx.skipped();
 
-    const providers = extractProviders(ctx.ast);
-    for (const provider of providers) {
+    for (const provider of extractProviders(ctx.ast().program)) {
       const prefix = sessionPrefix(provider.serverName);
       for (const { flag, line, column } of provider.flags) {
         const pattern = EVIDENCE[flag];
@@ -131,7 +132,6 @@ const rule: CheckRule = {
         }
       }
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

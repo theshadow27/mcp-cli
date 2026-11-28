@@ -35,8 +35,8 @@
  * Regression in PR #2689 (session-deps.spec.ts, commit 2bf501b5).
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 const GIT_HOOK_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]);
 
@@ -45,15 +45,22 @@ const SPAWN_EXEC_NAMES = new Set(["spawn", "spawnSync", "execSync", "execFileSyn
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-function calleeMethodName(expr: ts.Expression): string | undefined {
-  if (ts.isIdentifier(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr)) return expr.name.text;
+function calleeMethodName(expr: TSESTree.Node): string | undefined {
+  if (expr.type === "Identifier") return expr.name;
+  if (expr.type === "MemberExpression" && !expr.computed && expr.property.type === "Identifier") {
+    return expr.property.name;
+  }
   return undefined;
 }
 
 /** True when a command string is `git` or begins with `git `. */
 function isGitCommandString(text: string): boolean {
   return text === "git" || text.startsWith("git ");
+}
+
+/** A string-literal node (not a template). */
+function isStringLiteral(node: TSESTree.Node | null | undefined): node is TSESTree.StringLiteral {
+  return node?.type === "Literal" && typeof node.value === "string";
 }
 
 /**
@@ -65,63 +72,69 @@ function isGitCommandString(text: string): boolean {
  * no-substitution literal text and, for interpolated commands, the template
  * head — otherwise a trivial backtick swap bypasses the rule.
  */
-function firstArgIsGit(call: ts.CallExpression): boolean {
+function firstArgIsGit(call: TSESTree.CallExpression): boolean {
   const first = call.arguments[0];
   if (!first) return false;
-  if (ts.isArrayLiteralExpression(first)) {
+  if (first.type === "ArrayExpression") {
     const head = first.elements[0];
-    return !!head && ts.isStringLiteral(head) && head.text === "git";
+    return isStringLiteral(head) && head.value === "git";
   }
-  if (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) {
-    return isGitCommandString(first.text);
-  }
-  if (ts.isTemplateExpression(first)) {
-    return isGitCommandString(first.head.text);
-  }
+  if (isStringLiteral(first)) return isGitCommandString(first.value);
+  if (first.type === "TemplateLiteral") return isGitCommandString(first.quasis[0]?.value.cooked ?? "");
   return false;
 }
 
-/**
- * True when `expr` is exactly `process.env`.
- */
-function isProcessEnv(expr: ts.Expression): boolean {
+/** True when `expr` is exactly `process.env`. */
+function isProcessEnv(expr: TSESTree.Node): boolean {
   return (
-    ts.isPropertyAccessExpression(expr) &&
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "process" &&
-    expr.name.text === "env"
+    expr.type === "MemberExpression" &&
+    !expr.computed &&
+    expr.object.type === "Identifier" &&
+    expr.object.name === "process" &&
+    expr.property.type === "Identifier" &&
+    expr.property.name === "env"
   );
 }
 
-/**
- * Return the value of a named property in an object literal, or undefined.
- */
-function objPropValue(obj: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+/** A plain `key: value` property (not shorthand, method, spread or computed), with its key name. */
+function plainProperty(p: TSESTree.Node): { name: string; value: TSESTree.Node } | undefined {
+  if (p.type !== "Property" || p.computed || p.shorthand || p.method || p.kind !== "init") return undefined;
+  if (p.key.type === "Identifier") return { name: p.key.name, value: p.value };
+  if (isStringLiteral(p.key)) return { name: p.key.value, value: p.value };
+  return undefined;
+}
+
+/** The value of a named property in an object literal, or undefined. */
+function objPropValue(obj: TSESTree.ObjectExpression, name: string): TSESTree.Node | undefined {
   for (const p of obj.properties) {
-    if (!ts.isPropertyAssignment(p)) continue;
-    const k = ts.isIdentifier(p.name) ? p.name.text : ts.isStringLiteral(p.name) ? p.name.text : undefined;
-    if (k === name) return p.initializer;
+    const prop = plainProperty(p);
+    if (prop?.name === name) return prop.value;
   }
   return undefined;
 }
 
 /**
- * Resolve an Identifier to the ObjectLiteralExpression it was initialised to,
- * searching all VariableDeclarations in the file. Returns undefined if the
+ * Resolve an Identifier to the ObjectExpression it was initialised to,
+ * searching all VariableDeclarators in the file. Returns undefined if the
  * initialiser is not a plain object literal (function call, conditional, etc.).
  */
 function resolveIdentToObjLit(
-  ident: ts.Identifier,
-  varDecls: ts.VariableDeclaration[],
-): ts.ObjectLiteralExpression | undefined {
+  ident: TSESTree.Identifier,
+  varDecls: TSESTree.VariableDeclarator[],
+): TSESTree.ObjectExpression | undefined {
   for (const decl of varDecls) {
-    if (!ts.isIdentifier(decl.name) || decl.name.text !== ident.text) continue;
-    if (!decl.initializer) continue;
+    if (decl.id.type !== "Identifier" || decl.id.name !== ident.name) continue;
+    if (!decl.init) continue;
     // Unwrap `as …` casts
-    const init = ts.isAsExpression(decl.initializer) ? decl.initializer.expression : decl.initializer;
-    if (ts.isObjectLiteralExpression(init)) return init;
+    const init = decl.init.type === "TSAsExpression" ? decl.init.expression : decl.init;
+    if (init.type === "ObjectExpression") return init;
   }
   return undefined;
+}
+
+/** Strip `as` casts recursively to reach the base expression. */
+function stripCasts(expr: TSESTree.Node): TSESTree.Node {
+  return expr.type === "TSAsExpression" ? stripCasts(expr.expression) : expr;
 }
 
 /**
@@ -129,31 +142,19 @@ function resolveIdentToObjLit(
  * in the collected delete expressions — a heuristic that the variable's
  * GIT_* properties are manually stripped before use.
  */
-/** Strip `as` casts and parentheses recursively to reach the base expression. */
-function stripCasts(expr: ts.Expression): ts.Expression {
-  if (ts.isAsExpression(expr)) return stripCasts(expr.expression);
-  if (ts.isParenthesizedExpression(expr)) return stripCasts(expr.expression);
-  return expr;
-}
-
-function varHasAnyDelete(varName: string, deleteExprs: ts.DeleteExpression[]): boolean {
+function varHasAnyDelete(varName: string, deleteExprs: TSESTree.UnaryExpression[]): boolean {
   for (const del of deleteExprs) {
-    const op = del.expression;
-    const rawObj = ts.isElementAccessExpression(op)
-      ? op.expression
-      : ts.isPropertyAccessExpression(op)
-        ? op.expression
-        : undefined;
-    if (!rawObj) continue;
-    const obj = stripCasts(rawObj);
-    if (ts.isIdentifier(obj) && obj.text === varName) return true;
+    const op = del.argument;
+    if (op.type !== "MemberExpression") continue;
+    const obj = stripCasts(op.object);
+    if (obj.type === "Identifier" && obj.name === varName) return true;
   }
   return false;
 }
 
 /**
- * Find the `...process.env` SpreadAssignment within an env expression that is
- * missing a GIT_DIR strip. Returns the SpreadAssignment to report, or undefined
+ * Find the `...process.env` SpreadElement within an env expression that is
+ * missing a GIT_DIR strip. Returns the SpreadElement to report, or undefined
  * if the env is safe (no process.env spread, or GIT_DIR is stripped, or
  * delete-based stripping is present).
  *
@@ -163,37 +164,37 @@ function varHasAnyDelete(varName: string, deleteExprs: ts.DeleteExpression[]): b
  *   - Delete-based stripping heuristic
  */
 function findUnsafeProcessEnvSpread(
-  envExpr: ts.Expression,
-  varDecls: ts.VariableDeclaration[],
-  deleteExprs: ts.DeleteExpression[],
+  envExpr: TSESTree.Node,
+  varDecls: TSESTree.VariableDeclarator[],
+  deleteExprs: TSESTree.UnaryExpression[],
   depth = 0,
-): ts.SpreadAssignment | undefined {
+): TSESTree.SpreadElement | undefined {
   if (depth > 3) return undefined;
 
-  if (ts.isObjectLiteralExpression(envExpr)) {
-    let spreadNode: ts.SpreadAssignment | undefined;
+  if (envExpr.type === "ObjectExpression") {
+    let spreadNode: TSESTree.SpreadElement | undefined;
     let hasGitDirStrip = false;
 
     for (const prop of envExpr.properties) {
-      if (ts.isSpreadAssignment(prop) && isProcessEnv(prop.expression)) {
-        spreadNode = prop;
-      }
-      if (ts.isPropertyAssignment(prop)) {
-        const k = ts.isIdentifier(prop.name) ? prop.name.text : ts.isStringLiteral(prop.name) ? prop.name.text : "";
-        // GIT_DIR: undefined (or any other known hook var stripped to undefined)
-        if (GIT_HOOK_VARS.has(k) && ts.isIdentifier(prop.initializer) && prop.initializer.text === "undefined") {
-          hasGitDirStrip = true;
-        }
+      if (prop.type === "SpreadElement" && isProcessEnv(prop.argument)) spreadNode = prop;
+      const plain = plainProperty(prop);
+      // GIT_DIR: undefined (or any other known hook var stripped to undefined)
+      if (
+        plain &&
+        GIT_HOOK_VARS.has(plain.name) &&
+        plain.value.type === "Identifier" &&
+        plain.value.name === "undefined"
+      ) {
+        hasGitDirStrip = true;
       }
     }
 
-    if (spreadNode && !hasGitDirStrip) return spreadNode;
-    return undefined;
+    return spreadNode && !hasGitDirStrip ? spreadNode : undefined;
   }
 
-  if (ts.isIdentifier(envExpr)) {
+  if (envExpr.type === "Identifier") {
     // delete-loop stripping: if the variable has any delete operations, assume safe
-    if (varHasAnyDelete(envExpr.text, deleteExprs)) return undefined;
+    if (varHasAnyDelete(envExpr.name, deleteExprs)) return undefined;
 
     const obj = resolveIdentToObjLit(envExpr, varDecls);
     if (!obj) return undefined; // function call or unresolvable — conservative: don't flag
@@ -219,8 +220,11 @@ function findUnsafeProcessEnvSpread(
  * node takes the command string first with args at index 1 (opts at 2).
  * Disambiguate by whether the first arg is a string (node) vs array (Bun).
  */
-function getEnvValue(call: ts.CallExpression, varDecls: ts.VariableDeclaration[]): ts.Expression | undefined {
-  const name = calleeMethodName(call.expression);
+function getEnvValue(
+  call: TSESTree.CallExpression,
+  varDecls: TSESTree.VariableDeclarator[],
+): TSESTree.Node | undefined {
+  const name = calleeMethodName(call.callee);
   if (!name) return undefined;
 
   // Node-form spawnSync/execFileSync put args at index 1 and opts at index 2.
@@ -230,10 +234,10 @@ function getEnvValue(call: ts.CallExpression, varDecls: ts.VariableDeclaration[]
     const second = call.arguments[1];
     // Only the string-command form has an args slot; Bun.spawnSync([...], opts)
     // has an array first arg and keeps opts at index 1.
-    if (first && ts.isStringLiteral(first) && second) {
-      if (ts.isArrayLiteralExpression(second)) {
+    if (isStringLiteral(first) && second) {
+      if (second.type === "ArrayExpression") {
         optIdx = 2;
-      } else if (ts.isIdentifier(second)) {
+      } else if (second.type === "Identifier") {
         // Ambiguous: `spawnSync(cmd, argsIdent, opts)` vs `spawnSync(cmd, optsIdent)`.
         // Prefer index 2 only when a third arg exists.
         optIdx = call.arguments[2] ? 2 : 1;
@@ -244,12 +248,9 @@ function getEnvValue(call: ts.CallExpression, varDecls: ts.VariableDeclaration[]
   const optArg = call.arguments[optIdx];
   if (!optArg) return undefined;
 
-  let opts: ts.ObjectLiteralExpression | undefined;
-  if (ts.isObjectLiteralExpression(optArg)) {
-    opts = optArg;
-  } else if (ts.isIdentifier(optArg)) {
-    opts = resolveIdentToObjLit(optArg, varDecls);
-  }
+  let opts: TSESTree.ObjectExpression | undefined;
+  if (optArg.type === "ObjectExpression") opts = optArg;
+  else if (optArg.type === "Identifier") opts = resolveIdentToObjLit(optArg, varDecls);
   if (!opts) return undefined;
 
   return objPropValue(opts, "env");
@@ -257,10 +258,12 @@ function getEnvValue(call: ts.CallExpression, varDecls: ts.VariableDeclaration[]
 
 // ── rule ────────────────────────────────────────────────────────────────────
 
-const rule: CheckRule = {
+export default {
   id: "spec-git-env-spread",
-  kind: "check",
-  appliesToTests: true,
+  type: "check",
+  category: "testing",
+  ast: true,
+  tests: "only",
   scold:
     "spreading process.env into a git subprocess env inherits GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE from a parent hook — git ignores -C and operates on the real worktree",
   guidance: [
@@ -269,13 +272,19 @@ const rule: CheckRule = {
     "delete-based stripping (const e = {...process.env}; delete e.GIT_DIR) is also recognized as safe",
   ],
   documentation: "#2696",
-  check({ file, violated, checked, ast }) {
-    const sf = ast.sourceFile;
-    const varDecls = ast.find(ts.isVariableDeclaration);
-    const deleteExprs = ast.find(ts.isDeleteExpression);
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
+    const varDecls: TSESTree.VariableDeclarator[] = [];
+    const deleteExprs: TSESTree.UnaryExpression[] = [];
+    const calls: TSESTree.CallExpression[] = [];
+    walk(ctx.ast().program, (node) => {
+      if (node.type === "VariableDeclarator") varDecls.push(node);
+      else if (node.type === "UnaryExpression" && node.operator === "delete") deleteExprs.push(node);
+      else if (node.type === "CallExpression") calls.push(node);
+    });
 
-    for (const call of ast.find(ts.isCallExpression)) {
-      const name = calleeMethodName(call.expression);
+    for (const call of calls) {
+      const name = calleeMethodName(call.callee);
       if (!name || !SPAWN_EXEC_NAMES.has(name)) continue;
       if (!firstArgIsGit(call)) continue;
 
@@ -285,11 +294,9 @@ const rule: CheckRule = {
       const spreadNode = findUnsafeProcessEnvSpread(envExpr, varDecls, deleteExprs);
       if (!spreadNode) continue;
 
-      const { line, column } = ast.positionOf(spreadNode.expression);
-      violated(line, column, file.content.split("\n")[line - 1]?.trim() ?? "");
+      const { line, column } = spreadNode.argument.loc.start;
+      ctx.violated(line, column + 1, lines[line - 1]?.trim() ?? "");
     }
-    checked();
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

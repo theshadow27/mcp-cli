@@ -14,13 +14,11 @@
  * function is fine; copying the internals is not.
  */
 
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 const CANONICAL_PATH = "packages/core/src/allow-patterns.ts";
 
 const EXEMPT_PREFIXES = ["packages/permissions/"];
-
-const IN_SCOPE_PREFIXES = ["packages/", ".claude/phases/"];
 
 const REIMPLEMENT_SIGNALS: readonly { pattern: RegExp; label: string }[] = [
   {
@@ -41,11 +39,14 @@ const REIMPLEMENT_SIGNALS: readonly { pattern: RegExp; label: string }[] = [
   },
 ];
 
-const rule: CheckRule = {
+export default {
   id: "no-triplicate-allow-parsing",
-  kind: "check",
-  appliesToTests: false,
-  anchors: [CANONICAL_PATH],
+  type: "check",
+  category: "architecture",
+  tests: "exclude",
+  // `files` replaces the default include, and `.claude/` is excluded from it.
+  files: ["packages/**/*.{ts,tsx}", ".claude/phases/**/*.ts"],
+  anchors: [(files) => files.has(CANONICAL_PATH)],
   scold:
     "allow-pattern parsing logic re-implemented outside packages/core/src/allow-patterns.ts — use validateAllowPatterns() instead",
   guidance: [
@@ -54,24 +55,15 @@ const rule: CheckRule = {
     "if the shared function is missing a capability you need, extend it there — do not fork the logic",
   ],
   documentation: "#2491",
-  check({ file, violated, checked }) {
-    if (file.relPath === CANONICAL_PATH) return;
-    if (!IN_SCOPE_PREFIXES.some((p) => file.relPath.startsWith(p))) return;
-    if (EXEMPT_PREFIXES.some((p) => file.relPath.startsWith(p))) return;
-    if (file.relPath.endsWith(".spec.ts") || file.relPath.endsWith(".test.ts")) return;
-
-    checked();
+  check(ctx) {
+    const { file } = ctx;
+    if (file.relativePath === CANONICAL_PATH) return ctx.skipped();
+    if (EXEMPT_PREFIXES.some((p) => file.relativePath.startsWith(p))) return ctx.skipped();
 
     const lines = file.content.split("\n");
     for (const [i, line] of lines.entries()) {
-      for (const signal of REIMPLEMENT_SIGNALS) {
-        if (signal.pattern.test(line)) {
-          violated(i + 1, 1, line.trim());
-          break;
-        }
-      }
+      if (REIMPLEMENT_SIGNALS.some((signal) => signal.pattern.test(line))) ctx.violated(i + 1, 1, line.trim());
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

@@ -1,0 +1,13 @@
+// @expect 0
+// @path packages/daemon/src/example-repro.test.ts
+// Same patterns as the flagged fixture, but the path is a `.test.ts` file, not `*.spec.ts`. The
+// rule keeps the standalone checker's surface (spec files only), so these are not scanned.
+
+declare function fn(): void;
+
+async function run(): Promise<void> {
+  await new Promise<void>((r) => setTimeout(r, 50));
+  await Bun.sleep(100);
+}
+
+void run();

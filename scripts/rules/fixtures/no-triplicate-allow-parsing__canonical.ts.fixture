@@ -1,0 +1,7 @@
+// @expect 0
+// @path packages/core/src/allow-patterns.ts
+// The canonical module owns the parsing logic, so the signals are fine here.
+
+export function isDead(pattern: string): boolean {
+  return /^(\w+)\((.+)\)$/.test(pattern);
+}

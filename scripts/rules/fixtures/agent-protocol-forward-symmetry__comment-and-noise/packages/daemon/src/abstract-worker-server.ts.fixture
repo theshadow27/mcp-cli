@@ -1,0 +1,4 @@
+// @expect 0
+// commented cases and non-session cases do not count
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

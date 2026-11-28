@@ -21,7 +21,7 @@
  * Migrated from the standalone `scripts/check-session-teardown.ts`.
  */
 
-import type { CheckRule } from "./_engine/rule";
+import type { Rule } from "am-i-done";
 
 const ASYNC_METHOD_RE =
   /\b(?:(?:private|public|protected|static|override|abstract)\s+)*async\s+(?:function\s+)?(\w+)\s*\(/;
@@ -62,7 +62,7 @@ export function findAsyncMethods(lines: string[]): MethodRegion[] {
       continue;
     }
 
-    const methodName = m[1];
+    const methodName = m[1] ?? "";
 
     let bodyStart = -1;
     let bodyStartCol = -1;
@@ -153,9 +153,10 @@ export function checkMethodViolation(
   return null;
 }
 
-const rule: CheckRule = {
+export default {
   id: "session-teardown",
-  kind: "check",
+  type: "check",
+  category: "architecture",
   scold:
     "this.sessions.delete must precede the first await — otherwise a concurrent teardown races on the map (TOCTOU)",
   guidance: [
@@ -164,8 +165,8 @@ const rule: CheckRule = {
     "JS is single-threaded: code before the first await runs atomically, so the early delete is the cheapest fix",
   ],
   documentation: "#1837 (incident), #1895 (fix)",
-  check({ file, violated }) {
-    if (!file.relPath.startsWith("packages/")) return;
+  check({ file, violated, checked, skipped }) {
+    if (!file.relativePath.startsWith("packages/")) return skipped();
 
     const lines = file.content.split("\n");
     for (const method of findAsyncMethods(lines)) {
@@ -178,7 +179,6 @@ const rule: CheckRule = {
         );
       }
     }
+    return checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

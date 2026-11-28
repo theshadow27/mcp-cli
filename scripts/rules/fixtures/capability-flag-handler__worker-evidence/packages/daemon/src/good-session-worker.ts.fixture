@@ -1,0 +1,4 @@
+// @expect 0
+// Session code context: the rule searches it for handler evidence.
+export const run = (args: { compact: boolean }) => (args.compact ? compactifyEntry() : null);
+declare function compactifyEntry(): null;

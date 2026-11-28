@@ -1,0 +1,14 @@
+// @expect 0
+// acp worker.
+
+type AgentSessionEvent = { type: string };
+
+function forwardSessionEvent(sessionId: string, event: AgentSessionEvent): void {
+  void sessionId;
+  switch (event.type) {
+    case "session:init": break;
+    case "session:ended": break;
+    case "session:disconnected": break;
+  }
+}
+void forwardSessionEvent;

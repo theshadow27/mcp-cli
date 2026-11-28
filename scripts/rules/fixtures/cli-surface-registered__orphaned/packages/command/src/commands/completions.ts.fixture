@@ -1,0 +1,11 @@
+// @expect 3
+// "orphaned", "dead2" and "kill" have no dispatch case ("kill" is only in a nested switch);
+// "ls" is a case and "help" is dispatched before the switch.
+
+export const SUBCOMMANDS = [
+  "ls",
+  "help",
+  "orphaned",
+  "dead2",
+  "kill",
+] as const;

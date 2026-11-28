@@ -1,0 +1,4 @@
+// @expect 0
+// Session code context: the rule searches it for handler evidence.
+export const c = msg.total_cost_usd;
+declare const msg: { total_cost_usd: number };

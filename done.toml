@@ -17,15 +17,22 @@ dirs = ["scripts/stages"]
 [rules]
 recommended = true
 dirs = ["scripts/rules"]
-# What the rules have always scanned: the workspace packages, scripts and tests.
+# What the rules have always scanned: the TypeScript of the workspace packages, scripts and
+# tests. A rule that reads a doc or a schema names it in its own `files`.
 include = ["packages/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}", "test/**/*.{ts,tsx}"]
-# Declarations are not source; rule files document the very shapes they flag.
+# Declarations are not source, and rule files document the very shapes they flag.
 exclude = ["**/*.d.ts", "scripts/rules/*.rule.ts"]
 # typescript here is 7.x, which has no standalone parser (see CLAUDE.md), so the rules parse with oxc.
 parser = "oxc"
 
 [suppression]
 require_issue = true
+
+[[suppression.waive]]
+rule = "no-raw-temp"
+file = ".claude/phases/phase-types.ts"
+match = "STATE_DIR=$(mktemp -d)"
+reason = "shell steps in an agent prompt, which removes the dir itself; text, not code that runs here (#3467)"
 
 [cache]
 skip = true

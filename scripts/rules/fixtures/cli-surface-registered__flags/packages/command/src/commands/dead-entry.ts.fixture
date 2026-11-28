@@ -1,0 +1,12 @@
+// @expect 1
+// --dead-flag is in KNOWN_FLAGS but nothing parses it.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose", "--dead-flag"]);
+
+export function parseExampleArgs(): void {
+  if (args[i] === "--verbose") {
+  }
+}

@@ -1,0 +1,7 @@
+// @expect 0
+// @path scripts/_runner/example.spec.ts
+// Direct return-type annotation — the good shape the rule steers toward.
+
+import type { FileCacheFile } from "./file-cache";
+
+const emptyCache = (): FileCacheFile => ({ version: 1, entries: {} });

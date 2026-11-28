@@ -1,0 +1,4 @@
+// @expect 0
+// `claude` is listed in PROVIDER_NAMES: no drift.
+
+export const worker = "claude";

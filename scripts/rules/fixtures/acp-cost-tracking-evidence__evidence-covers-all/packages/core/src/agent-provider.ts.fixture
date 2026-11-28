@@ -1,0 +1,16 @@
+// @expect 0
+// one spec evidence clears every _acp provider in the file
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});
+
+registerProvider({
+  name: "copilot",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

@@ -1,0 +1,5 @@
+// @expect 0
+// A *-session-worker.ts that is not an agent provider is exempted by a file-level suppression.
+
+// doing-it-wrong-ignore-file provider-drift: fakeprovider is a test fixture, not a real agent provider (#3465)
+export const worker = "fakeprovider";

@@ -1,0 +1,21 @@
+// @expect 6
+// @path packages/daemon/src/example-variants.ts
+// Other ways to test a message inside a condition, all flagged, and near-misses that are not.
+
+declare function run(): void;
+
+export function variants(err: Error, other: { cause: Error }, flag: boolean) {
+  if (/timeout/i.test(err.message)) run();
+  if (!(err as Error).message.endsWith("closed")) run();
+  if (other.cause.message.indexOf("x") !== -1) run();
+  if (err.message?.includes("maybe")) run();
+  if (err!.message.includes("bang")) run();
+  if (flag && err.message.search(/x/) > -1) run();
+
+  // Not conditions: stored, passed along, or an exact comparison.
+  const stored = err.message.includes("x");
+  const both = flag && err.message.includes("y");
+  console.log(err.message.includes("z"));
+  if (err.message === "exact") run();
+  return stored || both;
+}

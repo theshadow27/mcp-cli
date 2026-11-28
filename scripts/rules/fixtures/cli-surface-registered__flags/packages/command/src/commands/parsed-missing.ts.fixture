@@ -1,0 +1,15 @@
+// @expect 1
+// --quiet is parsed but not in KNOWN_FLAGS.
+
+declare const args: string[];
+declare const i: number;
+
+const KNOWN_FLAGS = new Set(["--verbose"]);
+
+export function parseExampleArgs(): void {
+  for (let n = 0; n < args.length; n++) {
+    if (args[n] === "--verbose") {
+    } else if (args[n] === "--quiet") {
+    }
+  }
+}

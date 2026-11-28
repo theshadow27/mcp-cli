@@ -1,0 +1,4 @@
+// @expect 1
+// codex drops session:disconnected that acp handles
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

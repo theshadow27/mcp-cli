@@ -23,12 +23,14 @@
  * Scope: production code under `packages/`. Test files are exempt — a spec constructs
  * resolvers over hand-written lists and asserts the staleness directly.
  *
- * Suppression: `// dotw-ignore domain-mutation-invalidates-resolver: <reason>` — e.g. a
+ * Suppression: `// doing-it-wrong-ignore domain-mutation-invalidates-resolver: <reason> (#issue)` — e.g. a
  * file that creates domains before any resolver exists (the one-shot import).
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
+
+type Node = TSESTree.Node;
 
 /** McxDb methods that write the `domains` table. */
 const MUTATORS = new Set(["createDomain", "renameDomain", "deleteDomain"]);
@@ -49,50 +51,53 @@ const RESOLVER_NAMES = new Set(["domains", "domainresolver", "resolver"]);
 /**
  * Does this receiver name a domain resolver?
  *
- * A file-wide "someone called .invalidate() somewhere" is not a check — it silenced the
+ * A file-wide "someone called .invalidate() somewhere" is not a check: it silenced the
  * rule on the exact input it exists to catch (#3040 review R5): `db.createDomain(a, b)`
  * next to an unrelated `someCache.invalidate()` reported clean.
  *
  * Deliberately errs toward FLAGGING: an unrecognised receiver means the rule reports and
- * a human either renames or suppresses. The opposite bias — accepting anything that looks
- * vaguely related — is how this rule shipped passing on its own target input.
+ * a human either renames or suppresses.
  */
-function isResolverReceiver(expr: ts.Expression, sf: ts.SourceFile): boolean {
-  const last = ts.isPropertyAccessExpression(expr) ? expr.name.text : expr.getText(sf);
+function isResolverReceiver(expr: Node, content: string): boolean {
+  const last =
+    expr.type === "MemberExpression" && !expr.computed && expr.property.type === "Identifier"
+      ? expr.property.name
+      : content.slice(...expr.range);
   return RESOLVER_NAMES.has(last.toLowerCase());
 }
 
 /** The method name a call invokes, whether `db.createDomain(…)` or a destructured `createDomain(…)`. */
-function calleeName(call: ts.CallExpression): string | null {
-  if (ts.isPropertyAccessExpression(call.expression)) return call.expression.name.text;
+function calleeName(call: TSESTree.CallExpression): string | null {
+  const callee = call.callee;
+  if (callee.type === "MemberExpression" && !callee.computed && callee.property.type === "Identifier") {
+    return callee.property.name;
+  }
   // Destructuring is the other residual bypass the delta review drove:
   // `const { createDomain } = db; createDomain(a, b)` matched nothing at all.
-  if (ts.isIdentifier(call.expression)) return call.expression.text;
+  if (callee.type === "Identifier") return callee.name;
   return null;
 }
 
 /**
- * The function body enclosing `node`, or the SourceFile for a top-level statement.
+ * The function enclosing `node`, or the Program for a top-level statement.
  *
  * Used so an `invalidate()` in a *different* function does not count as covering a
- * mutation over here — "somewhere in this file" is not the same claim as "on this path".
+ * mutation over here: "somewhere in this file" is not the same claim as "on this path".
  */
-function enclosingScope(node: ts.Node): ts.Node {
-  let cur: ts.Node | undefined = node.parent;
+function enclosingScope(node: Node): Node {
+  let cur: Node | undefined = node.parent;
   while (cur) {
     if (
-      ts.isFunctionDeclaration(cur) ||
-      ts.isFunctionExpression(cur) ||
-      ts.isArrowFunction(cur) ||
-      ts.isMethodDeclaration(cur) ||
-      ts.isConstructorDeclaration(cur) ||
-      ts.isSourceFile(cur)
+      cur.type === "FunctionDeclaration" ||
+      cur.type === "FunctionExpression" ||
+      cur.type === "ArrowFunctionExpression" ||
+      cur.type === "Program"
     ) {
       return cur;
     }
     cur = cur.parent;
   }
-  return node.getSourceFile();
+  return node;
 }
 
 /**
@@ -107,57 +112,57 @@ function isExempt(relPath: string): boolean {
   );
 }
 
-const rule: CheckRule = {
+export default {
   id: "domain-mutation-invalidates-resolver",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "architecture",
+  ast: true,
+  tests: "exclude",
   scold:
     "writes the domains table without invalidating the DomainResolver memo — every later lookup answers from a stale cache",
   guidance: [
     "call `<resolver>.invalidate()` after createDomain / renameDomain / deleteDomain",
     "the daemon builds one resolver in index.ts and shares it with the EventBus and the IPC server — invalidate that one",
     "a stale resolver does not error: it silently stamps NO_DOMAIN_ID on every event and every ctx.state write",
-    "if this file genuinely runs before any resolver exists, add: // dotw-ignore domain-mutation-invalidates-resolver: <reason>",
+    "if this file genuinely runs before any resolver exists, add: // doing-it-wrong-ignore domain-mutation-invalidates-resolver: <reason> (#issue)",
   ],
   documentation: "#3040",
-  check({ file, violated, checked, ast }) {
-    if (!file.relPath.startsWith("packages/")) return;
-    if (isExempt(file.relPath)) return;
-    checked();
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/")) return ctx.skipped();
+    if (isExempt(file.relativePath)) return ctx.skipped();
 
-    const sf = ast.sourceFile;
-    const mutations: ts.CallExpression[] = [];
-    const invalidations: ts.CallExpression[] = [];
+    const mutations: TSESTree.CallExpression[] = [];
+    const invalidations: TSESTree.CallExpression[] = [];
 
-    for (const call of ast.find(ts.isCallExpression)) {
-      const name = calleeName(call);
-      if (name === null) continue;
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "CallExpression") return;
+      const name = calleeName(node);
+      if (name === null) return;
       if (MUTATORS.has(name)) {
-        mutations.push(call);
+        mutations.push(node);
       } else if (
         INVALIDATORS.has(name) &&
-        ts.isPropertyAccessExpression(call.expression) &&
-        isResolverReceiver(call.expression.expression, sf)
+        node.callee.type === "MemberExpression" &&
+        isResolverReceiver(node.callee.object, file.content)
       ) {
-        invalidations.push(call);
+        invalidations.push(node);
       }
-    }
-
-    if (mutations.length === 0) return;
+    });
 
     for (const mutation of mutations) {
       const scope = enclosingScope(mutation);
       // Must be a resolver-looking receiver, in the same function, AFTER the mutation.
       // Ordering matters: invalidating and then mutating leaves the memo just as stale.
-      const covered = invalidations.some(
-        (inv) => enclosingScope(inv) === scope && inv.getStart(sf) > mutation.getStart(sf),
-      );
+      const covered = invalidations.some((inv) => enclosingScope(inv) === scope && inv.range[0] > mutation.range[0]);
       if (covered) continue;
 
-      const { line, column } = ast.positionOf(mutation);
-      violated(line, column, mutation.getText(sf).split("\n")[0] ?? "");
+      ctx.violated(
+        mutation.loc.start.line,
+        mutation.loc.start.column + 1,
+        file.content.slice(...mutation.range).split("\n")[0] ?? "",
+      );
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

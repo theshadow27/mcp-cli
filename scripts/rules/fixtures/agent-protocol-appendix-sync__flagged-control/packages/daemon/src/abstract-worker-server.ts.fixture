@@ -1,0 +1,4 @@
+// @expect 1
+// a CONTROL_MESSAGE_TYPES entry that Appendix A omits
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready"]);

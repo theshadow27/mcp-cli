@@ -1,0 +1,7 @@
+// @expect 0
+// @path scripts/_runner/example.spec.ts
+// The doing-it-wrong-ignore comment suppresses the cast on that line.
+
+const emptyCache = () =>
+  // doing-it-wrong-ignore no-stub-import-type-cast: legacy stub, tracked for removal (#3465)
+  ({ entries: {} }) as ReturnType<typeof import("./file-cache").readFileCache>;

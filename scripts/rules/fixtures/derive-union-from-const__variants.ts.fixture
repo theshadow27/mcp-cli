@@ -1,0 +1,25 @@
+// @expect 4
+// @path packages/core/src/example-variants.ts
+// Shapes beyond the plain alias:
+//   - union that adds nothing to an exported array but is written as a field type, parameter
+//     type or return type (3 flagged, one per position)
+//   - union holding every string of an exported array plus an extra (flagged)
+//   - array mixing strings and other elements: its strings still count (clean here because the
+//     union is only part of them), `as const satisfies` counts as `as const`
+//   - subset via Extract<> and `(typeof X)[number]` are the fix and are not flagged
+
+export const SIDES = ["left", "right"] as const satisfies readonly string[];
+export const MIXED = ["a", 2, "b"] as const;
+
+export interface Options {
+  side?: "left" | "right";
+}
+export function paint(side: "left" | "right"): "left" | "right" {
+  return side;
+}
+export type WithExtra = "left" | "right" | "centre";
+
+export type Side = (typeof SIDES)[number];
+export type Picked = Extract<Side, "left">;
+export type Partial = "a" | "other";
+export type Open = "left" | string;

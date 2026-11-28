@@ -21,114 +21,106 @@
  * are also out of scope (tracked separately).
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
-/** Build a child→parent map for every descendant of `root`. */
-function buildParentMap(root: ts.Node): Map<ts.Node, ts.Node> {
-  const map = new Map<ts.Node, ts.Node>();
-  function walk(node: ts.Node): void {
-    ts.forEachChild(node, (child) => {
-      map.set(child, node);
-      walk(child);
-    });
-  }
-  walk(root);
-  return map;
+type Callback = TSESTree.ArrowFunctionExpression | TSESTree.FunctionExpression;
+
+const VERBOSE_NAMES = new Set(["verbose", "isVerbose", "verbosity"]);
+
+/** `.catch(...)`, written `x.catch(` or `x["catch"](`. */
+function isCatchCall(call: TSESTree.CallExpression): boolean {
+  const callee = call.callee;
+  if (callee.type !== "MemberExpression") return false;
+  if (!callee.computed) return callee.property.type === "Identifier" && callee.property.name === "catch";
+  return callee.property.type === "Literal" && callee.property.value === "catch";
+}
+
+function isConsoleWarn(node: TSESTree.Node): node is TSESTree.CallExpression {
+  if (node.type !== "CallExpression") return false;
+  const callee = node.callee;
+  return (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    callee.object.type === "Identifier" &&
+    callee.object.name === "console" &&
+    callee.property.type === "Identifier" &&
+    callee.property.name === "warn"
+  );
 }
 
 /**
  * Returns true if `node` is a recognised verbosity guard:
  *   - `process.env.DEBUG` (exact property access chain)
- *   - an identifier whose text is `verbose`, `isVerbose`, or `verbosity`
+ *   - an identifier whose name is `verbose`, `isVerbose`, or `verbosity`
  */
-function isVerbosityGuardNode(node: ts.Node): boolean {
+function isVerbosityGuardNode(node: TSESTree.Node): boolean {
   if (
-    ts.isPropertyAccessExpression(node) &&
-    node.name.text === "DEBUG" &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    node.expression.name.text === "env" &&
-    ts.isIdentifier(node.expression.expression) &&
-    node.expression.expression.text === "process"
+    node.type === "MemberExpression" &&
+    !node.computed &&
+    node.property.type === "Identifier" &&
+    node.property.name === "DEBUG" &&
+    node.object.type === "MemberExpression" &&
+    !node.object.computed &&
+    node.object.property.type === "Identifier" &&
+    node.object.property.name === "env" &&
+    node.object.object.type === "Identifier" &&
+    node.object.object.name === "process"
   ) {
     return true;
   }
-  if (ts.isIdentifier(node)) {
-    return node.text === "verbose" || node.text === "isVerbose" || node.text === "verbosity";
-  }
-  return false;
+  return node.type === "Identifier" && VERBOSE_NAMES.has(node.name);
 }
 
 /** Returns true if any node in the `condition` subtree is a verbosity guard. */
-function conditionHasGuard(condition: ts.Node): boolean {
+function conditionHasGuard(condition: TSESTree.Node): boolean {
   let found = false;
-  function walk(node: ts.Node): void {
-    if (found) return;
-    if (isVerbosityGuardNode(node)) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, walk);
-  }
-  walk(condition);
+  walk(condition, (node) => {
+    if (isVerbosityGuardNode(node)) found = true;
+  });
   return found;
 }
 
 /**
- * Returns true if `warnNode` is directly dominated by a verbosity guard within
- * `callbackRoot`. Walks up the parent chain; stops at the callback boundary.
+ * Returns true if `warn` is directly dominated by a verbosity guard within `callback`. Walks up
+ * the parent chain; stops at the callback boundary.
  *
- * A warn is guarded when it is inside the then-branch of an `if (guard) {}`
- * statement or the true-branch of a `guard ? ... : ...` expression, where the
- * condition contains a recognised verbosity guard node.
+ * A warn is guarded when it is inside the then-branch of an `if (guard) {}` statement or the
+ * true-branch of a `guard ? ... : ...` expression, where the condition contains a recognised
+ * verbosity guard node.
  */
-function isGuardedWarn(warnNode: ts.Node, callbackRoot: ts.Node, parentMap: Map<ts.Node, ts.Node>): boolean {
-  let current: ts.Node = warnNode;
-  let parent: ts.Node | undefined = parentMap.get(warnNode);
-
-  while (parent && parent !== callbackRoot) {
-    if (ts.isIfStatement(parent) && current === parent.thenStatement) {
-      if (conditionHasGuard(parent.expression)) return true;
-    }
-    if (ts.isConditionalExpression(parent) && current === parent.whenTrue) {
-      if (conditionHasGuard(parent.condition)) return true;
-    }
+function isGuardedWarn(warn: TSESTree.Node, callback: Callback): boolean {
+  let current: TSESTree.Node = warn;
+  let parent = warn.parent;
+  while (parent && parent !== callback) {
+    if (parent.type === "IfStatement" && current === parent.consequent && conditionHasGuard(parent.test)) return true;
+    if (parent.type === "ConditionalExpression" && current === parent.consequent && conditionHasGuard(parent.test))
+      return true;
     current = parent;
-    parent = parentMap.get(parent);
+    parent = parent.parent;
   }
   return false;
 }
 
 /**
- * Collects all `console.warn(...)` call expressions inside `root`, stopping
- * recursion at nested function/arrow boundaries so warns in inner closures are
- * not attributed to the outer catch callback.
+ * True if `warn` belongs to `callback` itself: no function boundary (nested closure) and no other
+ * `console.warn` call lies between them, so warns in inner closures are not attributed to the
+ * outer catch callback and a warn's own arguments are not scanned for more warns.
  */
-function findConsoleWarns(root: ts.Node, warns: ts.CallExpression[]): void {
-  ts.forEachChild(root, function visit(node) {
-    if (ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node)) {
-      return; // nested scope — not owned by this catch callback
-    }
-    if (ts.isCallExpression(node)) {
-      const expr = node.expression;
-      if (
-        ts.isPropertyAccessExpression(expr) &&
-        ts.isIdentifier(expr.expression) &&
-        expr.expression.text === "console" &&
-        expr.name.text === "warn"
-      ) {
-        warns.push(node);
-        return; // don't recurse into the warn's own arguments
-      }
-    }
-    ts.forEachChild(node, visit);
-  });
+function ownedBy(warn: TSESTree.Node, callback: Callback): boolean {
+  for (let p = warn.parent; p && p !== callback; p = p.parent) {
+    if (p.type === "FunctionExpression" || p.type === "ArrowFunctionExpression") return false;
+    if (isConsoleWarn(p)) return false;
+  }
+  return true;
 }
 
-const rule: CheckRule = {
+export default {
   id: "no-cli-catch-warn",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "conventions",
+  ast: true,
+  tests: "exclude",
   scold:
     "console.warn inside .catch() in packages/command/src/ — writes to terminal stderr even for unactionable bookkeeping failures",
   guidance: [
@@ -138,29 +130,23 @@ const rule: CheckRule = {
     "the daemon ring buffer absorbs console.warn; the CLI binary writes it directly to the user's terminal",
   ],
   documentation: "#2474",
-  check({ file, violated, checked, ast }) {
-    if (!file.relPath.startsWith("packages/command/src/")) return;
+  check(ctx) {
+    const { file } = ctx;
+    if (!file.relativePath.startsWith("packages/command/src/")) return ctx.skipped();
 
-    const catchCalls = ast.callsTo("catch");
-    for (const call of catchCalls) {
-      const [callback] = call.arguments;
-      if (!callback) continue;
-      if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) continue;
+    const lines = file.content.split("\n");
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "CallExpression" || !isCatchCall(node)) return;
+      const callback = node.arguments[0];
+      if (callback?.type !== "ArrowFunctionExpression" && callback?.type !== "FunctionExpression") return;
 
-      checked();
-
-      const parentMap = buildParentMap(callback);
-      const warns: ts.CallExpression[] = [];
-      findConsoleWarns(callback, warns);
-
-      for (const warn of warns) {
-        if (isGuardedWarn(warn, callback, parentMap)) continue;
-        const { line, column } = ast.positionOf(warn);
-        const snippet = file.content.split("\n")[line - 1]?.trim() ?? "";
-        violated(line, column, snippet);
-      }
-    }
+      walk(callback, (inner) => {
+        if (inner === callback || !isConsoleWarn(inner)) return;
+        if (!ownedBy(inner, callback) || isGuardedWarn(inner, callback)) return;
+        const line = inner.loc.start.line;
+        ctx.violated(line, inner.loc.start.column + 1, lines[line - 1]?.trim() ?? "");
+      });
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

@@ -1,0 +1,10 @@
+// @expect 0
+// single provider, spec has session_info_update and expect(state.cost)
+
+declare function registerProvider(spec: unknown): void;
+
+registerProvider({
+  name: "grok",
+  serverName: "_acp",
+  native: { costTracking: true },
+});

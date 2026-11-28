@@ -1,0 +1,12 @@
+// @expect 1
+// session files exist but carry evidence for the other flag
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "wrong",
+	serverName: "_wrong",
+	toolPrefix: "wrong",
+	buildSpawnArgs: () => ({}),
+	native: { costTracking: true },
+});

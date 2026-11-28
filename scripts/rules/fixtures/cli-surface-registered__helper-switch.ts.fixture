@@ -1,0 +1,21 @@
+// @expect 0
+// @path packages/command/src/main.ts
+// Only `switch (command)` is the dispatch; a switch on anything else is not.
+
+declare let command: string;
+
+const SUBCOMMANDS = ["ls"] as const;
+
+switch (command) {
+  case "ls":
+    break;
+}
+
+function resolveTransport(t: string) {
+  switch (t) {
+    case "stdio":
+      break;
+    case "http":
+      break;
+  }
+}

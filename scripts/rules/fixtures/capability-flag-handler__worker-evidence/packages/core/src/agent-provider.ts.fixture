@@ -1,0 +1,12 @@
+// @expect 0
+// evidence in the -session-worker file counts
+
+function registerProvider(_p: unknown): void {}
+
+registerProvider({
+	name: "good",
+	serverName: "_good",
+	toolPrefix: "good",
+	buildSpawnArgs: () => ({}),
+	native: { compactLog: true },
+});

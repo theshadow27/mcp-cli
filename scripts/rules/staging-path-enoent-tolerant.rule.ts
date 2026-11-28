@@ -31,8 +31,8 @@
  * fine.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import type { Rule, TSESTree } from "am-i-done";
+import { walk } from "am-i-done";
 
 /** Syscall wrappers that throw ENOENT when their target has already vanished. */
 const FS_CALLS = new Set([
@@ -55,22 +55,35 @@ const FS_CALLS = new Set([
 const STAGING_IDENT = /^(staging|stagingPath|abandoned|claimed)$/;
 
 /** True when `node` sits inside a try block whose catch handles ENOENT. */
-function insideEnoentGuard(node: ts.Node, sourceFile: ts.SourceFile): boolean {
-  for (let cur: ts.Node | undefined = node; cur; cur = cur.parent) {
-    const parent: ts.Node | undefined = cur.parent;
-    if (!parent || !ts.isTryStatement(parent)) continue;
+function insideEnoentGuard(node: TSESTree.Node, content: string): boolean {
+  for (let cur: TSESTree.Node | undefined = node; cur; cur = cur.parent) {
+    const parent: TSESTree.Node | undefined = cur.parent;
+    if (!parent || parent.type !== "TryStatement") continue;
     // Only the try block is guarded — a call sitting in the catch or finally of
     // the same statement is not protected by it.
-    if (parent.tryBlock !== cur) continue;
-    if (parent.catchClause?.getText(sourceFile).includes("ENOENT")) return true;
+    if (parent.block !== cur) continue;
+    if (parent.handler && content.slice(...parent.handler.range).includes("ENOENT")) return true;
   }
   return false;
 }
 
-const rule: CheckRule = {
+/** The name a call invokes: `name()`, `obj.name()` or `obj["name"]()`. */
+function calledName(call: TSESTree.CallExpression): string | undefined {
+  const callee = call.callee;
+  if (callee.type === "Identifier") return callee.name;
+  if (callee.type !== "MemberExpression") return undefined;
+  if (!callee.computed) return callee.property.type === "Identifier" ? callee.property.name : undefined;
+  return callee.property.type === "Literal" && typeof callee.property.value === "string"
+    ? callee.property.value
+    : undefined;
+}
+
+export default {
   id: "staging-path-enoent-tolerant",
-  kind: "check",
-  appliesToTests: false,
+  type: "check",
+  category: "architecture",
+  ast: true,
+  tests: "exclude",
   scold: "filesystem call on a peer-visible staging path without an ENOENT branch — a concurrent park makes this throw",
   guidance: [
     'wrap it in try/catch and branch on errnoCode(err) === "ENOENT"',
@@ -79,24 +92,24 @@ const rule: CheckRule = {
     "throwing here reports an already-committed transition as a failure (#1328, PR #2964)",
   ],
   documentation: "#1328",
-  check({ file, violated, checked, ast }) {
+  check(ctx) {
+    const { file } = ctx;
     // Staging paths exist only in the transition store. Scoping to the files
     // that actually mint them keeps the identifier heuristic from firing on
     // unrelated code that happens to use the name.
-    if (!file.content.includes("IMPORTING_SUFFIX")) return;
-    checked();
+    if (!file.content.includes("IMPORTING_SUFFIX")) return ctx.skipped();
 
-    for (const name of FS_CALLS) {
-      for (const call of ast.callsTo(name)) {
-        const namesStaging = call.arguments.some((arg) => ts.isIdentifier(arg) && STAGING_IDENT.test(arg.text));
-        if (!namesStaging) continue;
-        if (insideEnoentGuard(call, ast.sourceFile)) continue;
+    walk(ctx.ast().program, (node) => {
+      if (node.type !== "CallExpression") return;
+      const name = calledName(node);
+      if (name === undefined || !FS_CALLS.has(name)) return;
+      const namesStaging = node.arguments.some((arg) => arg.type === "Identifier" && STAGING_IDENT.test(arg.name));
+      if (!namesStaging) return;
+      if (insideEnoentGuard(node, file.content)) return;
 
-        const { line, column } = ast.positionOf(call);
-        violated(line, column, file.content.split("\n")[line - 1]?.trim() ?? "");
-      }
-    }
+      const { line, column } = node.loc.start;
+      ctx.violated(line, column + 1, file.content.split("\n")[line - 1]?.trim() ?? "");
+    });
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

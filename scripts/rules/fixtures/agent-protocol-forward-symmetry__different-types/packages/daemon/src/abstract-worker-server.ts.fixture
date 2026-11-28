@@ -1,0 +1,4 @@
+// @expect 0
+// claude's SessionEvent vocabulary is a separate class: not compared against AgentSessionEvent
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

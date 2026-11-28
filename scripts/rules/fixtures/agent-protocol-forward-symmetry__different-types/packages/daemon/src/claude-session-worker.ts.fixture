@@ -1,0 +1,13 @@
+// @expect 0
+// claude worker.
+
+type SessionEvent = { type: string };
+
+function forwardSessionEvent(sessionId: string, event: SessionEvent): void {
+  void sessionId;
+  switch (event.type) {
+    case "session:init": break;
+    case "session:cleared": break;
+  }
+}
+void forwardSessionEvent;

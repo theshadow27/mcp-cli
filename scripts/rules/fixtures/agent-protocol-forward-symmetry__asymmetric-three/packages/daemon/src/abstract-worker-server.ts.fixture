@@ -1,0 +1,4 @@
+// @expect 3
+// each of three providers misses a case a peer handles
+
+export const BASE_WORKER_EVENT_TYPES = new Set(["ready"]);

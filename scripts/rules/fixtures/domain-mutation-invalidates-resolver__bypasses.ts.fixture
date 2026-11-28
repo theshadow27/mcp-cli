@@ -1,0 +1,44 @@
+// @expect 7
+// @path packages/daemon/src/handlers/domain-bypasses.ts
+// Inputs that used to report clean (#3040 review R5, #3169): each mutation below is flagged.
+
+declare const db: { createDomain(a: string, b: string): void; deleteDomain(a: string): void; renameDomain(a: string, b: string): void };
+declare const domains: { invalidate(): void };
+declare const unrelatedCache: { invalidate(): void };
+declare const domainNameCache: { invalidate(): void };
+
+// An unrelated receiver's invalidate does not silence the rule.
+export function unrelated(): void {
+  db.createDomain("a", "b");
+  unrelatedCache.invalidate();
+}
+
+// Invalidating BEFORE the mutation: the memo is stale again afterwards.
+export function before(): void {
+  domains.invalidate();
+  db.createDomain("a", "b");
+}
+
+// An invalidate in a DIFFERENT function does not cover this mutation.
+export function add(name: string, path: string): void {
+  db.createDomain(name, path);
+}
+export function elsewhere(): void {
+  domains.invalidate();
+}
+
+// A receiver that merely CONTAINS a resolver word does not count.
+export function containsWord(): void {
+  db.createDomain("a", "b");
+  domainNameCache.invalidate();
+}
+
+// Every unguarded mutation is reported, not just the first.
+db.renameDomain("a", "b");
+db.deleteDomain("c");
+
+// A DESTRUCTURED mutation is caught, not invisible.
+const { createDomain } = db;
+export function destructured(n: string, p: string): void {
+  createDomain(n, p);
+}

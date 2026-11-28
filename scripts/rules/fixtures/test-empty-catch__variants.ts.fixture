@@ -1,0 +1,43 @@
+// @expect 3
+// @path packages/daemon/src/example-variants.spec.ts
+// Every catch in a test file counts, not only those inside a test body: a hook, a helper, and a
+// catch that only rethrows or records the error make no assertion either.
+
+import { afterEach, expect, it } from "bun:test";
+
+declare function run(): void;
+declare function log(error: unknown): void;
+
+afterEach(() => {
+  try {
+    run();
+  } catch {
+    // cleanup failure ignored
+  }
+});
+
+function helper(): void {
+  try {
+    run();
+  } catch (error) {
+    throw error;
+  }
+}
+
+it("records the error", () => {
+  try {
+    run();
+  } catch (error) {
+    log(error);
+  }
+  helper();
+});
+
+it("asserts through expect", () => {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+  }
+  void Promise.reject(new Error("x")).catch(() => {});
+});

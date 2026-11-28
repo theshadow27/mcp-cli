@@ -1,0 +1,8 @@
+// @expect 0
+// A comment naming "ghost" inside the array is not an entry.
+
+export const SUBCOMMANDS = [
+  "ls",
+  // "ghost"
+  "call",
+] as const;

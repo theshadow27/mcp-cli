@@ -37,74 +37,97 @@
  * Sources: #2420, flagged in #2391 adversarial review.
  */
 
-import ts from "typescript-5";
-import type { CheckRule } from "./_engine/rule";
+import { type Rule, type TSESTree, walk } from "am-i-done";
 
-function isRegistryIdentifier(node: ts.Node): boolean {
-  return ts.isIdentifier(node) && (node.text === "getAllProviders" || node.text === "getAllShims");
+type Node = TSESTree.Node;
+
+const isFunctionNode = (node: Node): boolean =>
+  node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression" || node.type === "FunctionDeclaration";
+
+/** The direct child nodes of `node`, in key order. */
+function childNodes(node: Node): Node[] {
+  const out: Node[] = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "parent" || key === "loc" || key === "range" || typeof value !== "object" || value === null) continue;
+    for (const v of Array.isArray(value) ? value : [value]) {
+      if (typeof v === "object" && v !== null && typeof (v as { type?: unknown }).type === "string")
+        out.push(v as Node);
+    }
+  }
+  return out;
 }
 
-// Quick scan (shallow — stops at nested function bodies): does this test body
+function isRegistryIdentifier(node: Node): boolean {
+  return node.type === "Identifier" && (node.name === "getAllProviders" || node.name === "getAllShims");
+}
+
+// Quick scan (shallow: stops at nested function bodies): does this test body
 // contain a direct getAllProviders/getAllShims call?
-function containsRegistryCallShallow(node: ts.Node): boolean {
-  if (ts.isCallExpression(node) && isRegistryIdentifier(node.expression)) return true;
-  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)) return false;
-  return ts.forEachChild(node, containsRegistryCallShallow) ?? false;
+function containsRegistryCallShallow(node: Node): boolean {
+  if (node.type === "CallExpression" && isRegistryIdentifier(node.callee)) return true;
+  if (isFunctionNode(node)) return false;
+  return childNodes(node).some(containsRegistryCallShallow);
 }
 
-function isStringOrNumberLiteral(node: ts.Node): boolean {
-  return ts.isStringLiteral(node) || ts.isNumericLiteral(node);
-}
+const isStringOrNumberLiteral = (node: Node | null): boolean =>
+  node?.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number");
 
 // Methods that preserve collection identity (result is still a collection of registry items).
-// Excludes .find, .reduce, .at, [N] — those produce single elements or scalars.
+// Excludes .find, .reduce, .at, [N]: those produce single elements or scalars.
 const COLLECTION_METHODS = new Set(["map", "filter", "sort", "slice", "concat", "flatMap", "reverse"]);
 
 // Is `node` the registry collection (or a collection-preserving chain thereof)?
 // Does NOT include single-element results (.find, index access, etc.).
-function isRegistryCollection(node: ts.Node, collectionVars: Set<string>): boolean {
-  if (ts.isCallExpression(node)) {
-    if (isRegistryIdentifier(node.expression)) return true;
-    if (ts.isPropertyAccessExpression(node.expression) && COLLECTION_METHODS.has(node.expression.name.text)) {
-      return isRegistryCollection(node.expression.expression, collectionVars);
+function isRegistryCollection(node: Node, collectionVars: Set<string>): boolean {
+  if (node.type === "CallExpression") {
+    if (isRegistryIdentifier(node.callee)) return true;
+    const callee = node.callee;
+    if (
+      callee.type === "MemberExpression" &&
+      !callee.computed &&
+      callee.property.type === "Identifier" &&
+      COLLECTION_METHODS.has(callee.property.name)
+    ) {
+      return isRegistryCollection(callee.object, collectionVars);
     }
   }
-  if (ts.isParenthesizedExpression(node)) return isRegistryCollection(node.expression, collectionVars);
-  return ts.isIdentifier(node) && collectionVars.has(node.text);
+  return node.type === "Identifier" && collectionVars.has(node.name);
 }
 
 // Is `node` the .length of a registry collection?
-function isRegistryLength(node: ts.Node, collectionVars: Set<string>): boolean {
+function isRegistryLength(node: Node, collectionVars: Set<string>): boolean {
   return (
-    ts.isPropertyAccessExpression(node) &&
-    node.name.text === "length" &&
-    isRegistryCollection(node.expression, collectionVars)
+    node.type === "MemberExpression" &&
+    !node.computed &&
+    node.property.type === "Identifier" &&
+    node.property.name === "length" &&
+    isRegistryCollection(node.object, collectionVars)
   );
 }
 
 // Walk body without descending into nested function bodies.
-function walkShallow(node: ts.Node, visit: (n: ts.Node) => void): void {
+function walkShallow(node: Node, visit: (n: Node) => void): void {
   visit(node);
-  ts.forEachChild(node, (child) => {
-    if (ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isFunctionDeclaration(child)) return;
+  for (const child of childNodes(node)) {
+    if (isFunctionNode(child)) continue;
     walkShallow(child, visit);
-  });
+  }
 }
 
 // Collect variables in the test body that are assigned from a registry collection.
 // Two passes handle one-hop derivation: const a = getAllProviders(); const b = a.map(...).
-function collectCollectionVars(body: ts.Node): Set<string> {
+function collectCollectionVars(body: Node): Set<string> {
   const vars = new Set<string>();
   for (let pass = 0; pass < 2; pass++) {
     walkShallow(body, (node) => {
       if (
-        ts.isVariableDeclaration(node) &&
-        node.initializer &&
-        ts.isIdentifier(node.name) &&
-        !vars.has(node.name.text) &&
-        isRegistryCollection(node.initializer, vars)
+        node.type === "VariableDeclarator" &&
+        node.init &&
+        node.id.type === "Identifier" &&
+        !vars.has(node.id.name) &&
+        isRegistryCollection(node.init, vars)
       ) {
-        vars.add(node.name.text);
+        vars.add(node.id.name);
       }
     });
   }
@@ -112,22 +135,22 @@ function collectCollectionVars(body: ts.Node): Set<string> {
 }
 
 // Resolve the subject of an expect() call, walking through .not/.resolves/.rejects.
-function findExpectSubject(node: ts.Node): ts.Expression | undefined {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "expect") {
+function findExpectSubject(node: Node): Node | undefined {
+  if (node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "expect") {
     return node.arguments[0];
   }
-  if (ts.isPropertyAccessExpression(node)) return findExpectSubject(node.expression);
+  if (node.type === "MemberExpression" && !node.computed) return findExpectSubject(node.object);
   return undefined;
 }
 
 // Is this an enumeration assertion on a registry collection?
 // Flags toHaveLength(N>0) and toEqual([...string/number literals...] with 1+ elements).
-function isCollectionEnumerationAssertion(methodName: string, args: ts.NodeArray<ts.Expression>): boolean {
+function isCollectionEnumerationAssertion(methodName: string, args: TSESTree.CallExpressionArgument[]): boolean {
   if (args.length !== 1) return false;
   const arg = args[0];
   if (!arg) return false;
-  if (methodName === "toHaveLength") return ts.isNumericLiteral(arg) && Number(arg.text) > 0;
-  if (methodName === "toEqual" && ts.isArrayLiteralExpression(arg)) {
+  if (methodName === "toHaveLength") return arg.type === "Literal" && typeof arg.value === "number" && arg.value > 0;
+  if (methodName === "toEqual" && arg.type === "ArrayExpression") {
     if (arg.elements.length === 0) return false; // empty check is legitimate
     return arg.elements.every(isStringOrNumberLiteral);
   }
@@ -136,75 +159,69 @@ function isCollectionEnumerationAssertion(methodName: string, args: ts.NodeArray
 
 // Is this an enumeration assertion on a registry .length value?
 // Flags toBe(N>0) and toEqual(N>0).
-function isLengthEnumerationAssertion(methodName: string, args: ts.NodeArray<ts.Expression>): boolean {
+function isLengthEnumerationAssertion(methodName: string, args: TSESTree.CallExpressionArgument[]): boolean {
   if (args.length !== 1) return false;
   const arg = args[0];
   if (!arg) return false;
-  return (methodName === "toBe" || methodName === "toEqual") && ts.isNumericLiteral(arg) && Number(arg.text) > 0;
+  return (
+    (methodName === "toBe" || methodName === "toEqual") &&
+    arg.type === "Literal" &&
+    typeof arg.value === "number" &&
+    arg.value > 0
+  );
 }
+
+const isTestName = (node: Node): boolean => node.type === "Identifier" && (node.name === "test" || node.name === "it");
 
 // Matches test/it and their modifier forms: test.skip, test.only, it.skip, it.only,
 // test.each(table)(...), it.each(table)(...).
-function isTestCallback(node: ts.Node): boolean {
-  if (!ts.isCallExpression(node)) return false;
-  const callee = node.expression;
+function isTestCallback(node: TSESTree.CallExpression): boolean {
+  const callee = node.callee;
   // bare test(...) / it(...)
-  if (ts.isIdentifier(callee)) return callee.text === "test" || callee.text === "it";
+  if (callee.type === "Identifier") return isTestName(callee);
   // test.skip(...) / test.only(...) / it.skip(...) / it.only(...) etc.
-  if (ts.isPropertyAccessExpression(callee)) {
-    const root = callee.expression;
-    return ts.isIdentifier(root) && (root.text === "test" || root.text === "it");
-  }
-  // test.each(table)(name, fn) — outer callee is itself a call expression
-  if (ts.isCallExpression(callee) && ts.isPropertyAccessExpression(callee.expression)) {
-    const root = callee.expression.expression;
-    return ts.isIdentifier(root) && (root.text === "test" || root.text === "it");
+  if (callee.type === "MemberExpression") return isTestName(callee.object);
+  // test.each(table)(name, fn): the outer callee is itself a call expression
+  if (callee.type === "CallExpression" && callee.callee.type === "MemberExpression") {
+    return isTestName(callee.callee.object);
   }
   return false;
 }
 
-function findTestCallbackBody(node: ts.Node): ts.Node | undefined {
-  if (isTestCallback(node)) {
-    const call = node as ts.CallExpression;
-    const last = call.arguments[call.arguments.length - 1];
-    if (last && (ts.isArrowFunction(last) || ts.isFunctionExpression(last))) {
-      return last.body;
-    }
-  }
+function findTestCallbackBody(node: TSESTree.CallExpression): Node | undefined {
+  if (!isTestCallback(node)) return undefined;
+  const last = node.arguments[node.arguments.length - 1];
+  if (last && (last.type === "ArrowFunctionExpression" || last.type === "FunctionExpression")) return last.body;
   return undefined;
 }
 
-function collectAll<T extends ts.Node>(root: ts.Node, guard: (n: ts.Node) => n is T): T[] {
-  const results: T[] = [];
-  function walk(n: ts.Node): void {
-    if (guard(n)) results.push(n);
-    ts.forEachChild(n, walk);
-  }
-  walk(root);
+function collectCalls(root: Node): TSESTree.CallExpression[] {
+  const results: TSESTree.CallExpression[] = [];
+  walk(root, (n) => {
+    if (n.type === "CallExpression") results.push(n);
+  });
   return results;
 }
 
-const rule: CheckRule = {
+export default {
   id: "provider-spec-shape",
-  kind: "check",
+  type: "check",
+  category: "testing",
+  ast: true,
   scold:
-    "getAllProviders/getAllShims enumeration assertion — assert each provider's capability shape instead of registry count or name list",
+    "getAllProviders/getAllShims enumeration assertion: assert each provider's capability shape instead of registry count or name list",
   guidance: [
-    "a count or exhaustive name list forces a mechanical bump on every new provider with zero validation of its shape — adding a provider should require a new test that asserts name, serverName, toolPrefix, and relevant native.* fields, not a number change",
+    "a count or exhaustive name list forces a mechanical bump on every new provider with zero validation of its shape: adding a provider should require a new test that asserts name, serverName, toolPrefix, and relevant native.* fields, not a number change",
     "delete the enumeration assertion; the per-provider shape tests prove membership implicitly (requireProvider/getProvider fails the test if the provider is absent)",
     "example: expect(getProvider('newprovider').native.costTracking).toBe(false) is load-bearing; expect(getAllProviders().length).toBe(9) is not",
-    "only the collection itself (and collection-preserving chains: .map/.filter/.sort/etc.) is tracked — shape assertions on individual elements obtained via .find, .reduce, or index access are not flagged",
+    "only the collection itself (and collection-preserving chains: .map/.filter/.sort/etc.) is tracked: shape assertions on individual elements obtained via .find, .reduce, or index access are not flagged",
   ],
   documentation: "#2420",
-  appliesToTests: true,
-  check({ file, ast, violated, checked }) {
-    const lines = file.content.split("\n");
-    const sf = ast.sourceFile;
+  tests: "only",
+  check(ctx) {
+    const lines = ctx.file.content.split("\n");
 
-    const allCalls = collectAll(sf, ts.isCallExpression);
-    checked(); // signal that we performed real AST inspection on this file
-
-    for (const call of allCalls) {
+    for (const call of collectCalls(ctx.ast().program)) {
       const body = findTestCallbackBody(call);
       if (!body) continue;
 
@@ -216,12 +233,12 @@ const rule: CheckRule = {
       const collectionVars = collectCollectionVars(body);
 
       // Scan for expect(...).method(...) calls whose subject traces to the registry.
-      const assertCalls = collectAll(body, ts.isCallExpression);
-      for (const assertCall of assertCalls) {
-        if (!ts.isPropertyAccessExpression(assertCall.expression)) continue;
-        const methodName = assertCall.expression.name.text;
+      for (const assertCall of collectCalls(body)) {
+        const callee = assertCall.callee;
+        if (callee.type !== "MemberExpression" || callee.computed || callee.property.type !== "Identifier") continue;
+        const methodName = callee.property.name;
 
-        const subject = findExpectSubject(assertCall.expression.expression);
+        const subject = findExpectSubject(callee.object);
         if (!subject) continue;
 
         let isViolation = false;
@@ -232,11 +249,10 @@ const rule: CheckRule = {
         }
         if (!isViolation) continue;
 
-        const pos = ast.positionOf(assertCall);
-        violated(pos.line, pos.column, lines[pos.line - 1]?.trim() ?? "");
+        const { line, column } = assertCall.loc.start;
+        ctx.violated(line, column + 1, lines[line - 1]?.trim() ?? "");
       }
     }
+    return ctx.checked();
   },
-};
-
-export default rule;
+} satisfies Rule;

@@ -1,0 +1,4 @@
+// @expect 1
+// a provider WORKER_EVENT_TYPES extension adds an undocumented type
+
+export const BASE_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<string>(["ready"]);
