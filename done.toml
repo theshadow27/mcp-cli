@@ -22,8 +22,6 @@ dirs = ["scripts/rules"]
 include = ["packages/**/*.{ts,tsx}", "scripts/**/*.{ts,tsx}", "test/**/*.{ts,tsx}"]
 # Declarations are not source, and rule files document the very shapes they flag.
 exclude = ["**/*.d.ts", "scripts/rules/*.rule.ts"]
-# typescript here is 7.x, which has no standalone parser (see CLAUDE.md), so the rules parse with oxc.
-parser = "oxc"
 
 [suppression]
 require_issue = true

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { testRule } from "am-i-done";
 
-import { runScenario } from "./_spec-harness";
+import { loadScenario } from "./_spec-harness";
 import rule, { extractForwardHandler } from "./agent-protocol-forward-symmetry.rule";
 
 describe("extractForwardHandler", () => {
@@ -61,10 +62,12 @@ describe("check over its scenario fixtures", () => {
     "lone-anchor",
     "symmetric",
   ]) {
-    it(scenario, () => {
-      const { files } = runScenario(rule, scenario);
-      expect(files.length).toBeGreaterThan(0);
-      for (const f of files) expect({ path: f.path, found: f.found }).toEqual({ path: f.path, found: f.expected });
+    it(scenario, async () => {
+      const { files, expected } = loadScenario(rule.id, scenario);
+      const found = await testRule(rule, files);
+      const counts = Object.fromEntries(Object.keys(expected).map((path) => [path, 0]));
+      for (const f of found) counts[f.file] = (counts[f.file] ?? 0) + 1;
+      expect(counts).toEqual(expected);
     });
   }
 });

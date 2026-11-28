@@ -1,37 +1,25 @@
 /**
- * Runs a text-only check rule over one of its scenario fixtures, in a spec. The engine runs every
- * fixture on each `doing-it-wrong` sweep; this exists so `bun test --coverage` (and the coverage
- * ratchet) also sees the rule's `check` run, which the package has no public API for. Rules that
- * call `ctx.ast()` or `ctx.graph()` are out of scope here, and suppressions are not applied.
+ * Loads one of a rule's scenario fixtures for a spec, so `bun test --coverage` (and the coverage
+ * ratchet) sees the rule's `check` run; the engine runs the same fixtures on every sweep. The rule
+ * itself runs through the package's `testRule`.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CheckRule, FileMeta, RuleContext, Verdict } from "am-i-done";
 
 const DIRECTIVE = /^\s*(?:\/\/+|#|--|<!--|\/\*+|\*)\s*@(expect|path)\s+(\S+)/;
 
-export interface FixtureResult {
-  /** Per file the rule checked: violations found and the count its fixture expects. */
-  files: { path: string; found: number; expected: number }[];
+export interface Scenario {
+  /** Each file at the path the rule should believe, with its directives blanked. */
+  files: Record<string, string>;
+  /** Each file's `@expect` (default 0). */
+  expected: Record<string, number>;
 }
 
-function meta(path: string, content: string): FileMeta {
-  return {
-    path: `/fixture/${path}`,
-    relativePath: path,
-    ext: path.slice(path.lastIndexOf(".") + 1),
-    content,
-    isTest: /\.(?:spec|test)\.[^/.]+$/.test(path),
-    imports: [],
-  };
-}
-
-/** Load `fixtures/<rule>__<scenario>/` and run `rule.check` on each of its files. */
-export function runScenario(rule: CheckRule, scenario: string): FixtureResult {
-  const dir = join(import.meta.dir, "fixtures", `${rule.id}__${scenario}`);
-  const files = new Map<string, FileMeta>();
-  const expected = new Map<string, number>();
+/** `fixtures/<ruleId>__<scenario>/`, as the engine reads it. */
+export function loadScenario(ruleId: string, scenario: string): Scenario {
+  const dir = join(import.meta.dir, "fixtures", `${ruleId}__${scenario}`);
+  const result: Scenario = { files: {}, expected: {} };
   for (const rel of new Bun.Glob("**/*.fixture").scanSync({ cwd: dir, dot: true })) {
     const lines = readFileSync(join(dir, rel), "utf8").split("\n");
     let path = rel.slice(0, -".fixture".length);
@@ -43,28 +31,8 @@ export function runScenario(rule: CheckRule, scenario: string): FixtureResult {
       else path = m[2] as string;
       lines[i] = "";
     });
-    files.set(path, meta(path, lines.join("\n")));
-    expected.set(path, expect);
-  }
-  const checkedToken = { checked: true } as unknown as Verdict;
-  const result: FixtureResult = { files: [] };
-  for (const file of files.values()) {
-    let found = 0;
-    const ctx = {
-      file,
-      files,
-      violated: () => void found++,
-      checked: () => checkedToken,
-      skipped: () => ({ checked: false }) as unknown as Verdict,
-      ast: () => {
-        throw new Error("runScenario does not parse");
-      },
-      graph: () => {
-        throw new Error("runScenario builds no import graph");
-      },
-    } satisfies RuleContext;
-    if (rule.check(ctx) === checkedToken)
-      result.files.push({ path: file.relativePath, found, expected: expected.get(file.relativePath) ?? 0 });
+    result.files[path] = lines.join("\n");
+    result.expected[path] = expect;
   }
   return result;
 }
