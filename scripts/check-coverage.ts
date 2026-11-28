@@ -118,8 +118,6 @@ const EXCLUSIONS: Record<string, string> = {
 
   // CI scripts — git-dependent, tested via pure-function unit tests + CI integration
   "scripts/release.ts": "CI-only release script, git-dependent async functions untestable in isolation",
-  "scripts/doing-it-wrong.ts":
-    "Rule-engine CLI entry; runRules() is covered by doing-it-wrong.spec.ts — residual is main()/process.exit/import.meta.main plumbing, untestable in-process",
   // Test harness — not production code
   "test/harness.ts": "Test infrastructure, not source",
 };
@@ -128,6 +126,7 @@ const EXCLUSIONS: Record<string, string> = {
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { tmpFile } from "am-i-done/tmp";
 import { coveragePathInDiff, resolveChangedSourceFiles } from "./coverage-diff";
 import {
   checkSpecCountFloor,
@@ -241,18 +240,18 @@ const nonDaemonPaths = [
   // Daemon-free and fast (~0.5s); safe in run-1. (#2586 follow-up)
   "agent-grid/src",
   "scripts/rules",
-  "scripts/_runner",
+  "scripts/stages",
   ...topLevelTestFiles,
   ...RUN1_DAEMON_UNIT_TESTS,
 ];
 
 const testStart = Date.now();
 
-// --junit-outfile: structured test-failure summary for ci-steps.ts crash-after-pass
+// --junit-outfile: structured test-failure summary for scripts/stages/_lib/bun-test.ts crash-after-pass
 // detection (#2401). When provided, junit XML is written for each inner bun test
 // run, then aggregated into a single JSON { failures: N } at the specified path.
 const junitOutfile = process.argv.find((a) => a.startsWith("--junit-outfile="))?.slice("--junit-outfile=".length);
-const junit1Path = junitOutfile ? `/tmp/coverage-junit-run1-${Date.now()}.xml` : undefined;
+const junit1Path = junitOutfile ? tmpFile("coverage-junit-run1.xml").path : undefined;
 
 // Run 1: non-daemon tests with --coverage (produces the coverage table we parse).
 // NOTE: --parallel cannot be combined with --coverage — Bun's parallel workers
@@ -307,7 +306,7 @@ if (skipRun2) {
     .filter((f) => !ORPHAN_TOLERANT_TEST_FILES.includes(f));
   // Run 2: daemon tests. --parallel is safe here because no --coverage flag,
   // and ws-server's port-retry tax has been reduced (see ws-server.ts).
-  junit2Path = junitOutfile ? `/tmp/coverage-junit-run2-${Date.now()}.xml` : undefined;
+  junit2Path = junitOutfile ? tmpFile("coverage-junit-run2.xml").path : undefined;
   const run2Args = [
     "bun",
     "test",
@@ -341,7 +340,7 @@ if (skipRun2) {
 
   // Run 3: orphan-tolerant tests, no --no-orphans (#619). Only reachable when
   // run-2 also runs — pre-commit's fast-path skip covers this file too.
-  junit3Path = junitOutfile ? `/tmp/coverage-junit-run3-${Date.now()}.xml` : undefined;
+  junit3Path = junitOutfile ? tmpFile("coverage-junit-run3.xml").path : undefined;
   const run3Args = ["bun", "test", ...ORPHAN_TOLERANT_TEST_FILES];
   if (junit3Path) run3Args.push("--reporter", "junit", `--reporter-outfile=${junit3Path}`);
   const proc3 = Bun.spawn(run3Args, {
@@ -368,14 +367,14 @@ const stderr = stderr1 + stderr2 + stderr3;
 await Bun.write(Bun.stdout, stdout);
 await Bun.write(Bun.stderr, stderr);
 
-// Write aggregated junit summary for ci-steps.ts crash-after-pass detection (#2401).
+// Write aggregated junit summary for scripts/stages/_lib/bun-test.ts crash-after-pass detection (#2401).
 // Counts failures from each run's junit XML and writes { failures: N } to --junit-outfile.
-// Written before the exit so ci-steps.ts can read it regardless of whether this
+// Written before the exit so scripts/stages/_lib/bun-test.ts can read it regardless of whether this
 // process exits cleanly or with an error code.
 if (junitOutfile) {
   try {
     // Returns null when the junit file is absent or unparseable — mirrors
-    // parseJunitFailures() in ci-steps.ts. A missing file means the inner bun
+    // parseJunitFailures() in scripts/stages/_lib/bun-test.ts. A missing file means the inner bun
     // run crashed before flushing the reporter; returning 0 would fabricate a
     // false "clean" signal. The outer classifyCoverage falls back to the durable
     // stdout signal instead (#2401 hybrid).
@@ -498,7 +497,7 @@ console.log(
 // real regression. Fail closed and short-circuit BEFORE printing the misleading
 // per-file/global failures so the reader re-runs rather than chasing unrelated
 // files (#2759). Checked against run-1 output only (the coverage table we
-// parse); run-2 daemon specs have their own discovery gate in ci-steps.ts (#2719).
+// parse); run-2 daemon specs have their own discovery gate in scripts/stages/_lib/bun-test.ts (#2719).
 const expectedSpecFiles = countExpectedSpecFiles(nonDaemonPaths, resolve(import.meta.dir, ".."));
 const specFloor = checkSpecCountFloor(coverageRun1, expectedSpecFiles);
 console.log(`Spec floor: ${specFloor.discovered ?? "?"} discovered / ${specFloor.expected} expected spec file(s)`);
